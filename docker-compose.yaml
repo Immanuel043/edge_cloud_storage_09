@@ -1,0 +1,133 @@
+# path: infrastructure/docker-compose.yml
+version: '3.8'
+
+services:
+  # PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: edge_cloud
+      POSTGRES_USER: edge_admin
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+
+  # Redis Cluster
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 8gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  # Elasticsearch
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+
+  # ClickHouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.10
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+
+  # Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  # Storage Service (FastAPI)
+  storage-service:
+    build:
+      context: ./services/storage-service
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres/edge_cloud
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      KAFKA_BROKERS: kafka:9092
+      STORAGE_ROOT: /app/storage
+      SECRET_KEY: ${SECRET_KEY}
+    volumes:
+      - ./storage:/app/storage
+      - ./services/storage-service:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - elasticsearch
+
+  # Web Service (Node.js)
+  web-service:
+    build:
+      context: ./services/web-service
+      dockerfile: Dockerfile
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://edge_admin:secure_password@postgres/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
+      STORAGE_SERVICE_URL: http://storage-service:8000
+      SESSION_SECRET: ${SESSION_SECRET}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - storage-service
+      - postgres
+      - redis
+      - kafka
+
+  # Frontend (React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_URL: http://localhost:3001
+      VITE_WS_URL: ws://localhost:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - web-service
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:
+  clickhouse_data:
+  zookeeper_data:
+  kafka_data:
