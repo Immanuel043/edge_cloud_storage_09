@@ -1,0 +1,48 @@
+# infrastructure/monitoring/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Storage Service metrics (from your app/monitoring/metrics.py)
+  - job_name: 'storage-service'
+    static_configs:
+      - targets: ['storage-service:8000']
+    metrics_path: '/metrics'
+    
+  # Web Service metrics
+  - job_name: 'web-service'
+    static_configs:
+      - targets: ['web-service:3001']
+    metrics_path: '/metrics'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node Exporter (system metrics)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Redis metrics
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # PostgreSQL metrics
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Elasticsearch metrics
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch:9200']
+    metrics_path: '/_prometheus/metrics'
+
+  # Kafka metrics (if Kafka JMX is enabled)
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka:9092']

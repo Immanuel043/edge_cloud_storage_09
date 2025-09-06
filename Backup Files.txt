@@ -1,0 +1,133 @@
+# Frontend (React)
+  frontend:
+    build:
+      context: ../frontend-clean
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_URL: http://localhost:3001
+      VITE_WS_URL: ws://localhost:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - web-service
+
+**********************Frontend-Clean Structure*************************
+frontend-clean/
+├── public/
+│   ├── index.html
+│   └── manifest.json
+├── src/
+│   ├── components/
+│   │   ├── auth/
+│   │   │   └── AuthPage.jsx
+│   │   ├── dashboard/
+│   │   │   ├── Dashboard.jsx
+│   │   │   ├── StorageStats.jsx
+│   │   │   ├── FileGrid.jsx
+│   │   │   ├── FileList.jsx
+│   │   │   ├── UploadProgress.jsx
+│   │   │   ├── FilePreview.jsx
+│   │   │   ├── ShareModal.jsx
+│   │   │   ├── FilterPanel.jsx
+│   │   │   ├── KeyboardShortcuts.jsx
+│   │   │   └── BulkActions.jsx
+│   │   └── common/
+│   │       └── (shared components)
+│   ├── contexts/
+│   │   ├── AuthContext.jsx
+│   │   ├── ThemeContext.jsx
+│   │   └── StorageContext.jsx
+│   ├── services/
+│   │   ├── authService.js
+│   │   └── storageService.js
+│   ├── hooks/
+│   │   └── useKeyboardShortcuts.js
+│   ├── utils/
+│   │   ├── helpers.js
+│   │   ├── security.js
+│   │   ├── rateLimiter.js
+│   │   └── offlineStorage.js
+│   ├── config/
+│   │   └── constants.js
+│   ├── App.js
+│   ├── index.js
+│   └── index.css
+├── .env
+├── package.json
+├── tailwind.config.js
+└── postcss.config.js
+
+
+***************************************Storage-Service Structure*****************
+/services/storage-service/app/
+├── __init__.py
+├── main.py
+├── config.py
+├── database.py
+├── dependencies.py
+├── models/
+│   ├── __init__.py
+│   ├── database.py
+│   └── schemas.py
+├── services/
+│   ├── __init__.py
+│   ├── storage.py
+│   ├── encryption.py
+│   ├── auth.py
+│   └── activity.py
+├── routers/
+│   ├── __init__.py
+│   ├── auth.py
+│   ├── files.py
+│   ├── folders.py
+│   ├── upload.py
+│   └── storage.py
+└── utils/
+|    ├── __init__.py
+|    └── compression.py
+└── workers/
+|    └── chunk-processor.py
+├── alembic/
+│   ├── __pycache__
+│   ├── versions
+│   ├── env.py
+│   ├── script.py.mako
+***************************************Infrastructure Structure****************************  
+Infrastructure/
+├──.env
+├── docker-compose-monitoring.yml
+├── docker-compose.yml
+├── scripts/
+│   ├──init-db.sql
+│   ├── $migrate.sh
+│   └── $reset.sh
+|   └── $setup.sh  
+├── kubernetes/
+│   ├── configmaps/
+│   ├── deployments/
+│   ├── services
+|___terraform/   
+│   
+├── monitoring/
+│   ├── grafana/dashboard/dashboards.yml and node-exporter.JSON and Storage-node.JSON
+│   ├── grafana/datasources/prometheus.yml
+│   ├--prometheus.yml
+
+***************************************deduplication********************************
+class ContentBlock(Base):
+    __tablename__ = 'content_blocks'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    block_hash = Column(String(64), nullable=False, index=True)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id'))
+    block_size = Column(Integer)
+    block_offset = Column(Integer)
+    reference_count = Column(Integer, default=1)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Unique constraint on hash + file + offset
+    __table_args__ = (
+        UniqueConstraint('block_hash', 'file_id', 'block_offset'),
+    )
+
+**********************************upload.py********************************************

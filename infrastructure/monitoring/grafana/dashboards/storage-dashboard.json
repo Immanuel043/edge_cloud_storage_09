@@ -1,0 +1,60 @@
+{
+  "title": "Edge Storage Service",
+  "uid": "edge-storage-service",
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 2,
+  "refresh": "10s",
+  "panels": [
+    {
+      "title": "Uploads Initiated",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(storage_upload_initiated_total[5m])",
+          "legendFormat": "initiated"
+        }
+      ]
+    },
+    {
+      "title": "Active Uploads",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "storage_active_uploads",
+          "legendFormat": "active"
+        }
+      ]
+    },
+    {
+      "title": "Upload Success Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(storage_upload_completed_total{status=\"success\"}[5m]) / rate(storage_upload_completed_total[5m])",
+          "legendFormat": "success %"
+        }
+      ]
+    },
+    {
+      "title": "P95 Upload Duration (s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(storage_upload_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "title": "Upload Errors",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "increase(storage_errors_total[5m])",
+          "legendFormat": "{{error_type}}"
+        }
+      ]
+    }
+  ]
+}

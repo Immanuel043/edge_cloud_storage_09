@@ -1,0 +1,80 @@
+{
+  "title": "Node Exporter - System Metrics",
+  "uid": "node-exporter-system",
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 2,
+  "refresh": "10s",
+  "panels": [
+    {
+      "title": "CPU Usage (%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "100 - (avg by(instance)(irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "CPU Usage"
+        }
+      ]
+    },
+    {
+      "title": "Memory Usage (GB)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024 / 1024",
+          "legendFormat": "Used Memory"
+        },
+        {
+          "expr": "node_memory_MemTotal_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "Total Memory"
+        }
+      ]
+    },
+    {
+      "title": "Disk Usage (GB)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "(node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\",mountpoint!~\"/etc/hostname|/run/.*\"} - node_filesystem_free_bytes{fstype!~\"tmpfs|overlay\",mountpoint!~\"/etc/hostname|/run/.*\"}) / 1024 / 1024 / 1024",
+          "legendFormat": "{{mountpoint}} used"
+        },
+        {
+          "expr": "node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\",mountpoint!~\"/etc/hostname|/run/.*\"} / 1024 / 1024 / 1024",
+          "legendFormat": "{{mountpoint}} total"
+        }
+      ]
+    },
+    {
+      "title": "Network Traffic (MB/s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(node_network_receive_bytes_total{device!~\"lo|docker.*\"}[5m]) / 1024 / 1024",
+          "legendFormat": "{{device}} RX"
+        },
+        {
+          "expr": "rate(node_network_transmit_bytes_total{device!~\"lo|docker.*\"}[5m]) / 1024 / 1024",
+          "legendFormat": "{{device}} TX"
+        }
+      ]
+    },
+    {
+      "title": "System Load (1m, 5m, 15m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "node_load1",
+          "legendFormat": "Load 1m"
+        },
+        {
+          "expr": "node_load5",
+          "legendFormat": "Load 5m"
+        },
+        {
+          "expr": "node_load15",
+          "legendFormat": "Load 15m"
+        }
+      ]
+    }
+  ]
+}

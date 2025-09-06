@@ -1,4 +1,3 @@
-// services/web-service/src/app.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -6,11 +5,11 @@ const multer = require('multer');
 const Redis = require('ioredis');
 const { Kafka } = require('kafkajs');
 const session = require('express-session');
-const RedisStore = require('connect-redis')(session);
 const { Pool } = require('pg');
 const path = require('path');
 const FormData = require('form-data');
 const axios = require('axios');
+const RedisStore = require('connect-redis').default;
 
 // Initialize Express
 const app = express();
@@ -31,34 +30,42 @@ const config = {
     kafkaBrokers: (process.env.KAFKA_BROKERS || 'localhost:9092').split(',')
 };
 
-// Initialize services
-const redis = new Redis(config.redisUrl);
-const redisSubscriber = new Redis(config.redisUrl);
+// Initialize Redis clients
+const redisClient = new Redis(config.redisUrl);  // For sessions
+const redisCache = new Redis(config.redisUrl);   // For caching
+const redisSubscriber = new Redis(config.redisUrl); // For pub/sub
+
+// PostgreSQL
 const pgPool = new Pool({ connectionString: config.postgresUrl });
 
 // Kafka setup
 const kafka = new Kafka({
     clientId: 'web-service',
-    brokers: config.kafkaBrokers
+    brokers: config.kafkaBrokers,
+    retry: {
+        initialRetryTime: 100,
+        retries: 8
+    }
 });
-const kafkaProducer = kafka.producer();
-const kafkaConsumer = kafka.consumer({ groupId: 'web-service-group' });
+let kafkaProducer;
+let kafkaConsumer;
+let kafkaConnected = false;
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-// Session management with Redis
+// Session management
 app.use(session({
-    store: new RedisStore({ client: redis }),
-    secret: process.env.SESSION_SECRET || 'your-secret-key',
+    store: new RedisStore({ client: redisClient }),
+    secret: process.env.SESSION_SECRET || 'default-secret-change-this',
     resave: false,
     saveUninitialized: false,
     cookie: {
         secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24 // 24 hours
+        maxAge: 1000 * 60 * 60 * 24
     }
 }));
 
@@ -85,7 +92,113 @@ io.on('connection', (socket) => {
     });
 });
 
+// Utility function for retrying connections
+async function retryConnection(fn, serviceName, maxRetries = 10) {
+    let retries = 0;
+    let delay = 1000; // Start with 1 second
+    
+    while (retries < maxRetries) {
+        try {
+            await fn();
+            console.log(`✅ ${serviceName} connected successfully`);
+            return true;
+        } catch (error) {
+            retries++;
+            console.log(`⏳ Waiting for ${serviceName}... (attempt ${retries}/${maxRetries})`);
+            if (retries === maxRetries) {
+                throw new Error(`Failed to connect to ${serviceName} after ${maxRetries} attempts: ${error.message}`);
+            }
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay = Math.min(delay * 2, 10000); // Max 10 seconds
+        }
+    }
+}
+
+// Safe Kafka send function
+async function sendToKafka(topic, message) {
+    if (!kafkaConnected || !kafkaProducer) {
+        console.debug('Kafka not available, skipping message');
+        return;
+    }
+    
+    try {
+        await kafkaProducer.send({
+            topic,
+            messages: [{ value: JSON.stringify(message) }]
+        });
+    } catch (error) {
+        console.error('Failed to send to Kafka:', error.message);
+    }
+}
+
+// Initialize services with retry logic
+async function initializeServices() {
+    // PostgreSQL
+    await retryConnection(async () => {
+        const result = await pgPool.query('SELECT 1');
+        if (!result) throw new Error('PostgreSQL not ready');
+    }, 'PostgreSQL');
+    
+    // Redis
+    await retryConnection(async () => {
+        const pong = await redisClient.ping();
+        if (pong !== 'PONG') throw new Error('Redis not responding');
+    }, 'Redis');
+    
+    // Kafka
+    await retryConnection(async () => {
+        kafkaProducer = kafka.producer();
+        kafkaConsumer = kafka.consumer({ groupId: 'web-service-group' });
+        
+        await kafkaProducer.connect();
+        await kafkaConsumer.connect();
+        await kafkaConsumer.subscribe({ topics: ['storage-events', 'upload-events'] });
+        
+        await kafkaConsumer.run({
+            eachMessage: async ({ topic, partition, message }) => {
+                try {
+                    const event = JSON.parse(message.value.toString());
+                    if (event.userId) {
+                        io.to(`user-${event.userId}`).emit('storage-event', event);
+                    }
+                } catch (err) {
+                    console.error('Error processing Kafka message:', err);
+                }
+            }
+        });
+        
+        kafkaConnected = true;
+    }, 'Kafka');
+}
+
 // Routes
+
+// Health check
+app.get('/health', async (req, res) => {
+    const checks = {
+        postgres: false,
+        redis: false,
+        kafka: kafkaConnected
+    };
+    
+    try {
+        await pgPool.query('SELECT 1');
+        checks.postgres = true;
+    } catch (err) {}
+    
+    try {
+        await redisClient.ping();
+        checks.redis = true;
+    } catch (err) {}
+    
+    const allHealthy = Object.values(checks).every(v => v);
+    
+    res.status(allHealthy ? 200 : 503).json({
+        status: allHealthy ? 'healthy' : 'degraded',
+        services: checks,
+        timestamp: new Date().toISOString()
+    });
+});
 
 // Dashboard
 app.get('/', (req, res) => {
@@ -113,7 +226,7 @@ app.post('/api/auth/login', async (req, res) => {
         req.session.user = user;
         
         // Cache user data
-        await redis.setex(`user:${user.id}`, 3600, JSON.stringify(user));
+        await redisCache.setex(`user:${user.id}`, 3600, JSON.stringify(user));
         
         res.json({ 
             success: true, 
@@ -130,6 +243,16 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// Logout
+app.post('/api/auth/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            return res.status(500).json({ error: 'Failed to logout' });
+        }
+        res.json({ success: true });
+    });
+});
+
 // Chunked Upload Handler
 app.post('/api/upload/init', async (req, res) => {
     const { fileName, fileSize, mimeType } = req.body;
@@ -144,7 +267,7 @@ app.post('/api/upload/init', async (req, res) => {
     const totalChunks = Math.ceil(fileSize / chunkSize);
     
     // Store upload session in Redis
-    await redis.setex(
+    await redisCache.setex(
         `upload:${uploadId}`,
         3600,
         JSON.stringify({
@@ -186,7 +309,7 @@ app.post('/api/upload/chunk/:uploadId/:chunkIndex',
         
         try {
             // Get upload session
-            const sessionData = await redis.get(`upload:${uploadId}`);
+            const sessionData = await redisCache.get(`upload:${uploadId}`);
             if (!sessionData) {
                 return res.status(404).json({ error: 'Upload session not found' });
             }
@@ -201,10 +324,13 @@ app.post('/api/upload/chunk/:uploadId/:chunkIndex',
             });
             
             const response = await axios.post(
-                `${config.storageServiceUrl}/v1/chunks/${uploadId}/${chunkIndex}`,
+                `${config.storageServiceUrl}/api/v1/upload/chunk/${uploadId}`,
                 formData,
                 {
-                    headers: formData.getHeaders(),
+                    headers: {
+                        ...formData.getHeaders(),
+                        'chunk-index': chunkIndex
+                    },
                     maxBodyLength: Infinity,
                     maxContentLength: Infinity
                 }
@@ -212,7 +338,7 @@ app.post('/api/upload/chunk/:uploadId/:chunkIndex',
             
             // Update session
             session.uploadedChunks.push(parseInt(chunkIndex));
-            await redis.setex(
+            await redisCache.setex(
                 `upload:${uploadId}`,
                 3600,
                 JSON.stringify(session)
@@ -231,17 +357,12 @@ app.post('/api/upload/chunk/:uploadId/:chunkIndex',
             });
             
             // Send to Kafka for analytics
-            await kafkaProducer.send({
-                topic: 'upload-events',
-                messages: [{
-                    value: JSON.stringify({
-                        event: 'chunk_uploaded',
-                        uploadId,
-                        chunkIndex,
-                        userId: session.userId,
-                        timestamp: new Date().toISOString()
-                    })
-                }]
+            await sendToKafka('upload-events', {
+                event: 'chunk_uploaded',
+                uploadId,
+                chunkIndex,
+                userId: session.userId,
+                timestamp: new Date().toISOString()
             });
             
             res.json({
@@ -261,7 +382,7 @@ app.post('/api/upload/complete/:uploadId', async (req, res) => {
     const { uploadId } = req.params;
     
     try {
-        const sessionData = await redis.get(`upload:${uploadId}`);
+        const sessionData = await redisCache.get(`upload:${uploadId}`);
         if (!sessionData) {
             return res.status(404).json({ error: 'Upload session not found' });
         }
@@ -278,7 +399,7 @@ app.post('/api/upload/complete/:uploadId', async (req, res) => {
         
         // Finalize with storage service
         const response = await axios.post(
-            `${config.storageServiceUrl}/v1/uploads/${uploadId}/complete`,
+            `${config.storageServiceUrl}/api/v1/upload/complete/${uploadId}`,
             {
                 fileName: session.fileName,
                 fileSize: session.fileSize,
@@ -289,24 +410,25 @@ app.post('/api/upload/complete/:uploadId', async (req, res) => {
         
         const fileData = response.data;
         
-        // Store in PostgreSQL
-        await pgPool.query(
-            `INSERT INTO files (id, user_id, file_name, file_size, mime_type, storage_id, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-            [fileData.id, session.userId, session.fileName, session.fileSize, 
-             session.mimeType, fileData.storageId]
-        );
-        
         // Clean up Redis session
-        await redis.del(`upload:${uploadId}`);
+        await redisCache.del(`upload:${uploadId}`);
         
         // Send completion notification
         io.to(`user-${session.userId}`).emit('upload-complete', {
             uploadId,
-            fileId: fileData.id,
+            fileId: fileData.file_id,
             fileName: session.fileName,
             fileSize: session.fileSize,
             duration: Date.now() - session.startTime
+        });
+        
+        // Send to Kafka
+        await sendToKafka('upload-events', {
+            event: 'upload_completed',
+            uploadId,
+            fileId: fileData.file_id,
+            userId: session.userId,
+            timestamp: new Date().toISOString()
         });
         
         res.json({
@@ -329,19 +451,17 @@ app.get('/api/files', async (req, res) => {
     }
     
     try {
-        const result = await pgPool.query(
-            `SELECT id, file_name, file_size, mime_type, created_at, 
-                    last_accessed, access_count, is_shared
-             FROM files 
-             WHERE user_id = $1 
-             ORDER BY created_at DESC`,
-            [userId]
+        // Call storage service to get files
+        const response = await axios.get(
+            `${config.storageServiceUrl}/api/v1/files`,
+            {
+                headers: {
+                    'X-User-Id': userId
+                }
+            }
         );
         
-        res.json({
-            files: result.rows,
-            count: result.rows.length
-        });
+        res.json(response.data);
     } catch (error) {
         console.error('List files error:', error);
         res.status(500).json({ error: 'Failed to list files' });
@@ -358,34 +478,21 @@ app.get('/api/download/:fileId', async (req, res) => {
     }
     
     try {
-        // Get file metadata
-        const result = await pgPool.query(
-            'SELECT * FROM files WHERE id = $1 AND user_id = $2',
-            [fileId, userId]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'File not found' });
-        }
-        
-        const file = result.rows[0];
-        
         // Proxy download from storage service
         const response = await axios.get(
-            `${config.storageServiceUrl}/v1/objects/${file.storage_id}`,
-            { responseType: 'stream' }
+            `${config.storageServiceUrl}/api/v1/files/${fileId}/download`,
+            { 
+                responseType: 'stream',
+                headers: {
+                    'X-User-Id': userId
+                }
+            }
         );
         
-        // Update access count
-        await pgPool.query(
-            'UPDATE files SET access_count = access_count + 1, last_accessed = NOW() WHERE id = $1',
-            [fileId]
-        );
-        
-        // Set headers
-        res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
-        res.setHeader('Content-Length', file.file_size);
-        res.setHeader('Content-Disposition', `attachment; filename="${file.file_name}"`);
+        // Forward headers
+        res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+        res.setHeader('Content-Length', response.headers['content-length']);
+        res.setHeader('Content-Disposition', response.headers['content-disposition']);
         
         // Stream to client
         response.data.pipe(res);
@@ -396,10 +503,9 @@ app.get('/api/download/:fileId', async (req, res) => {
     }
 });
 
-// Share file
-app.post('/api/share/:fileId', async (req, res) => {
+// Delete file
+app.delete('/api/files/:fileId', async (req, res) => {
     const { fileId } = req.params;
-    const { expiresIn, password } = req.body;
     const userId = req.session.userId;
     
     if (!userId) {
@@ -407,75 +513,96 @@ app.post('/api/share/:fileId', async (req, res) => {
     }
     
     try {
-        // Verify ownership
-        const result = await pgPool.query(
-            'SELECT id FROM files WHERE id = $1 AND user_id = $2',
-            [fileId, userId]
+        const response = await axios.delete(
+            `${config.storageServiceUrl}/api/v1/files/${fileId}`,
+            {
+                headers: {
+                    'X-User-Id': userId
+                }
+            }
         );
         
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'File not found' });
-        }
-        
-        // Generate share token
-        const shareToken = require('crypto').randomUUID();
-        
-        // Store share link
-        await pgPool.query(
-            `INSERT INTO shared_links (id, file_id, user_id, share_token, password_hash, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [require('crypto').randomUUID(), fileId, userId, shareToken, 
-             password ? require('bcrypt').hashSync(password, 10) : null,
-             expiresIn ? new Date(Date.now() + expiresIn * 1000) : null]
+        res.json(response.data);
+    } catch (error) {
+        console.error('Delete error:', error);
+        res.status(500).json({ error: 'Failed to delete file' });
+    }
+});
+
+// Share file
+app.post('/api/share/:fileId', async (req, res) => {
+    const { fileId } = req.params;
+    const { expiresHours, password, maxDownloads } = req.body;
+    const userId = req.session.userId;
+    
+    if (!userId) {
+        return res.status(401).json({ error: 'Not authenticated' });
+    }
+    
+    try {
+        const response = await axios.post(
+            `${config.storageServiceUrl}/api/v1/files/${fileId}/share`,
+            {
+                expires_hours: expiresHours,
+                password: password,
+                max_downloads: maxDownloads
+            },
+            {
+                headers: {
+                    'X-User-Id': userId
+                }
+            }
         );
         
-        res.json({
-            shareUrl: `${req.protocol}://${req.get('host')}/share/${shareToken}`,
-            token: shareToken,
-            expiresAt: expiresIn ? new Date(Date.now() + expiresIn * 1000) : null
-        });
-        
+        res.json(response.data);
     } catch (error) {
         console.error('Share error:', error);
         res.status(500).json({ error: 'Failed to create share link' });
     }
 });
 
-// Kafka consumer for real-time updates
-async function startKafkaConsumer() {
-    await kafkaConsumer.connect();
-    await kafkaConsumer.subscribe({ topics: ['storage-events', 'upload-events'] });
-    
-    await kafkaConsumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
-            const event = JSON.parse(message.value.toString());
-            
-            // Process events and send real-time updates
-            if (event.userId) {
-                io.to(`user-${event.userId}`).emit('storage-event', event);
-            }
-            
-            // Store in ClickHouse for analytics
-            // ... analytics code ...
-        }
-    });
-}
-
-// Start server
+// Initialize services on module load
 async function start() {
     try {
-        await kafkaProducer.connect();
-        await startKafkaConsumer();
-        
-        server.listen(config.port, () => {
-            console.log(`Web service running on port ${config.port}`);
-        });
+        console.log('🚀 Initializing services...');
+        await initializeServices();
+        console.log('✅ All services connected successfully');
     } catch (error) {
-        console.error('Failed to start server:', error);
+        console.error('❌ Failed to initialize services:', error.message);
         process.exit(1);
     }
 }
 
+// Start initialization
 start();
 
-module.exports = app;
+// Graceful shutdown handler
+async function gracefulShutdown() {
+    console.log('🛑 Shutting down gracefully...');
+    
+    // Close Kafka connections
+    if (kafkaProducer) {
+        await kafkaProducer.disconnect().catch(console.error);
+    }
+    if (kafkaConsumer) {
+        await kafkaConsumer.disconnect().catch(console.error);
+    }
+    
+    // Close Redis connections
+    redisClient.disconnect();
+    redisCache.disconnect();
+    redisSubscriber.disconnect();
+    
+    // Close PostgreSQL pool
+    await pgPool.end().catch(console.error);
+    
+    console.log('👋 Cleanup completed');
+}
+
+// Export for use in server.js
+module.exports = { 
+    app, 
+    server, 
+    io, 
+    gracefulShutdown 
+};
