@@ -47,6 +47,7 @@ class Object(Base):
     content_hash = Column(String(64))
     encryption_key = Column(Text)
     chunk_info = Column(JSON)
+    metadata = Column(JSON)
     storage_tier = Column(String(20), default="cache")
     backup_status = Column(String(20), default="pending")
     backup_location = Column(String(500))
