@@ -37,7 +37,7 @@ set -e\n\
 \n\
 echo "Waiting for database to be ready..."\n\
 while ! nc -z ${DB_HOST:-postgres} ${DB_PORT:-5432}; do\n\
-  sleep 1\n\
+sleep 1\n\
 done\n\
 echo "Database is ready!"\n\
 \n\
@@ -45,7 +45,7 @@ echo "Running database migrations..."\n\
 alembic upgrade head\n\
 \n\
 echo "Starting application..."\n\
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4\n' > /entrypoint.sh
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000\n' > /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh
 

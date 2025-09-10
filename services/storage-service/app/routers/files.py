@@ -195,7 +195,7 @@ async def stream_chunked_range(
 async def download_file(
     file_id: str,
     request: Request,
-    range: Optional[str] = Header(None),
+    range_header: Optional[str] = Header(None, alias="range"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -241,7 +241,7 @@ async def download_file(
         return Response(status_code=200, headers=headers)
     
     # Parse range header
-    parsed_range = await parse_range_header(range, total_size)
+    parsed_range = await parse_range_header(range_header, total_size)
     
     # Update last accessed
     file_obj.last_accessed = datetime.utcnow()
@@ -263,7 +263,7 @@ async def download_file(
         data = encryption_service.decrypt_file(encrypted_data, file_key)
         
         # Handle compression
-        if file_obj.metadata and file_obj.metadata.get("compressed", False):
+        if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
             from ..utils.compression import compressor
             data = compressor.decompress(data)
         
@@ -315,7 +315,7 @@ async def download_file(
         data = encryption_service.decrypt_file(encrypted_data, file_key)
         
         # Handle compression
-        if file_obj.metadata and file_obj.metadata.get("compressed", False):
+        if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
             from ..utils.compression import compressor
             data = compressor.decompress(data)
         

@@ -13,8 +13,7 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Routers (these already have their own prefixes inside each module)
-from .routers import auth, files, folders, upload, storage
-
+from .routers import auth, files, folders, upload, storage, websocket
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -91,6 +90,7 @@ app.include_router(files.router)
 app.include_router(folders.router)
 app.include_router(upload.router)
 app.include_router(storage.router)
+app.include_router(websocket.router)
 
 
 # Helper functions
@@ -231,7 +231,6 @@ async def internal_error(request: Request, exc):
             "status": 500,
         },
     )
-
 
 # Run for local development
 if __name__ == "__main__":

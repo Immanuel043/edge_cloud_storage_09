@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..config import settings
 from ..models.database import User
+from ..database import get_db 
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -16,6 +17,22 @@ security = HTTPBearer()
 
 class AuthService:
     """Handles authentication and authorization"""
+
+    async def get_current_user_from_token(self, token: str, db: AsyncSession):
+        """Verify token and return user for WebSocket authentication"""
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            user_id = payload.get("sub")
+            if not user_id:
+                return None
+            
+            # Get user from database
+            result = await db.execute(
+                select(User).filter(User.id == user_id)
+            )
+            return result.scalar_one_or_none()
+        except JWTError:
+            return None
     
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -36,5 +53,6 @@ class AuthService:
         to_encode.update({"exp": expire})
         encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return encoded_jwt
+
 
 auth_service = AuthService()

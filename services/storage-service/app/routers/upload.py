@@ -392,7 +392,7 @@ async def complete_upload(
             content_hash=session.get("hash", ""),
             encryption_key=session["key"],
             storage_tier="cache",
-            metadata={"compressed": session.get("compress", False)}
+            file_metadata={"compressed": session.get("compress", False)}
         )
     
     elif storage_strategy == "single":
@@ -408,7 +408,7 @@ async def complete_upload(
             content_hash=session.get("hash", ""),
             encryption_key=session["key"],
             storage_tier="cache",
-            metadata={"compressed": session.get("compress", False)}
+            file_metadata={"compressed": session.get("compress", False)}
         )
     
     else:  # chunked

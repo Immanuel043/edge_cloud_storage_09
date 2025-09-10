@@ -1,6 +1,4 @@
 # services/storage-service/app/routers/auth.py
-
-# services/storage-service/app/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, Form, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -103,3 +101,4 @@ async def login(
             "theme": user.theme_preference,
         },
     }
+

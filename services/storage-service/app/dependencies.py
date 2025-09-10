@@ -43,6 +43,17 @@ async def get_current_user(
     
     return user
 
+async def get_current_user_ws(token: str):
+    """WebSocket authentication dependency"""
+    from .database import get_db
+    from .services.auth import auth_service
+    
+    async with get_db() as db:
+        user = await auth_service.get_current_user_from_token(token, db)
+        if not user:
+            return None
+        return user
+
 async def log_activity(
     db: AsyncSession,
     user_id: str,

@@ -4,7 +4,9 @@ import { rateLimiter } from '../utils/rateLimiter';
 
 // Threshold (bytes) above which we prefer native browser download instead of buffering in JS.
 // Set to 200 MB by default (adjust to taste).
-const MEMORY_BUFFER_THRESHOLD = 200 * 1024 * 1024;
+//const MEMORY_BUFFER_THRESHOLD = 200 * 1024 * 1024;
+const MEMORY_BUFFER_THRESHOLD = 50 * 1024 * 1024;
+
 
 class ResumableDownloadManager {
   constructor() {
@@ -275,18 +277,42 @@ class ResumableDownloadManager {
   // Native anchor fallback (preferred for very large files)
   async nativeDownload(token, fileId, fileName) {
     const url = `${API_URL}/files/${fileId}/download`;
-    // If you need a token in query string for cross-origin cases, generate a signed URL server-side.
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = url;
-    a.download = fileName || '';
-    // Use a user gesture to trigger — append and click
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      try { document.body.removeChild(a); } catch (_) {}
-    }, 1000);
-  }
+    
+    try {
+        // Fetch with authentication to get the file
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Download failed: ${response.status}`);
+        }
+        
+        // Get the blob
+        const blob = await response.blob();
+        
+        // Create object URL and trigger download
+        const blobUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = blobUrl;
+        a.download = fileName || 'download';
+        document.body.appendChild(a);
+        a.click();
+        
+        // Cleanup
+        setTimeout(() => {
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(blobUrl);
+        }, 1000);
+        
+    } catch (error) {
+        console.error('Native download failed:', error);
+        throw error;
+    }
+}
 
   formatBytes(bytes, decimals = 2) {
     if (!bytes) return '0 Bytes';

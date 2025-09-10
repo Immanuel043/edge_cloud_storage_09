@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { storageService } from '../services/storageService';
+import { websocketService } from '../services/websocketService';
 import { useAuth } from './AuthContext';
 import { offlineDB } from '../utils/offlineStorage';
 
@@ -49,7 +50,38 @@ export const StorageProvider = ({ children }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [isAuthenticated, token, currentFolder, isOnline]);
 
-  // In your StorageContext.jsx, replace your loadFiles function with this:
+useEffect(() => {
+  // WebSocket event listeners
+  const handleWSFileUploaded = (event) => {
+    console.log('File uploaded event received:', event.detail);
+    refreshFiles();
+  };
+  
+  const handleWSFileDeleted = (event) => {
+    console.log('File deleted event received:', event.detail);
+    refreshFiles();
+  };
+  
+  const handleWSStorageUpdate = (event) => {
+    console.log('Storage update event received:', event.detail);
+    if (event.detail) {
+      setStorageStats(event.detail);
+    }
+    loadStorageStats();
+  };
+  
+  // Add WebSocket event listeners
+  window.addEventListener('ws-file-uploaded', handleWSFileUploaded);
+  window.addEventListener('ws-file-deleted', handleWSFileDeleted);
+  window.addEventListener('ws-storage-update', handleWSStorageUpdate);
+  
+  // Cleanup
+  return () => {
+    window.removeEventListener('ws-file-uploaded', handleWSFileUploaded);
+    window.removeEventListener('ws-file-deleted', handleWSFileDeleted);
+    window.removeEventListener('ws-storage-update', handleWSStorageUpdate);
+  };
+}, [token]);
 
 const loadFiles = async (folderId = currentFolder) => {
   try {
@@ -129,7 +161,17 @@ const refreshFiles = async (folderId = currentFolder) => {
 
   const uploadFile = async (file, onProgress) => {
   try {
-    const result = await storageService.uploadFile(token, file, currentFolder, onProgress);
+    const result = await storageService.uploadFile(token, file, currentFolder, (progress) => {
+      // Call the original progress callback
+      if (onProgress) {
+        onProgress(progress);
+      }
+      
+      // Send progress via WebSocket to other sessions
+      if (websocketService.isConnected && progress.uploadId) {
+        websocketService.sendUploadProgress(progress.uploadId, progress.progress);
+      }
+    });
     
     // After successful upload, refresh everything
     await refreshFiles();

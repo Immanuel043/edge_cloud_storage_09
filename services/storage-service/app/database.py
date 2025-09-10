@@ -1,5 +1,5 @@
 # services/storage-service/app/database.py
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine,async_sessionmaker
 from sqlalchemy.orm import sessionmaker
 import redis.asyncio as redis
 from .config import settings
@@ -7,6 +7,7 @@ from .config import settings
 # Database Engine
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Redis Client (initialized at startup)
 redis_client = None
@@ -26,3 +27,8 @@ async def close_redis():
 async def get_redis():
     """Get Redis client instance"""
     return redis_client
+
+async def get_db():
+    """Dependency to get database session"""
+    async with AsyncSessionLocal() as session:
+        yield session
