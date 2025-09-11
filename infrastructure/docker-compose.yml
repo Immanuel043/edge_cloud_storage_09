@@ -20,12 +20,18 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
   # Redis Cache & Session Store
   redis:
     image: redis:7-alpine
     container_name: edge-redis
-    command: redis-server --appendonly yes --maxmemory 8gb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
     volumes:
@@ -36,6 +42,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+        reservations:
+          memory: 512M
 
   # Elasticsearch for Search & Analytics
   elasticsearch:
@@ -55,6 +67,12 @@ services:
       timeout: 10s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
   # ClickHouse for Analytics
   clickhouse:
@@ -71,6 +89,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
   # Zookeeper for Kafka
   zookeeper:
@@ -88,6 +112,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
 
   # Kafka Message Broker
   kafka:
@@ -116,8 +146,14 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
-  # Storage Service (FastAPI)
+  # Storage Service (FastAPI) - THE MAIN FIX
   storage-service:
     build:
       context: ../services/storage-service
@@ -136,23 +172,46 @@ services:
       KAFKA_BROKERS: kafka:9092
       STORAGE_ROOT: /app/storage
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
-      CHUNK_SIZE: 67108864
-      MAX_FILE_SIZE: 21474836480
+      # CRITICAL: Reduce chunk size for memory management
+      CHUNK_SIZE: 33554432          # 32MB chunks instead of 64MB
+      MAX_FILE_SIZE: 21474836480    # 20GB
       COMPRESSION_LEVEL: 3
       BACKUP_ENABLED: "false"
       USE_X_ACCEL: "1"
+      # Add memory management settings
+      PYTHONMALLOC: malloc
+      MALLOC_TRIM_THRESHOLD_: 131072
       
     ports:
       - "8001:8000"
     volumes:
       - storage_data:/app/storage
+      # Add temp directory with size limit
+      - /tmp/upload_temp:/tmp/upload_temp
+    # CRITICAL: Add resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 3G              # Allow up to 3GB
+          cpus: '2.0'             # Limit CPU usage
+        reservations:
+          memory: 1G              # Reserve 1GB
+          cpus: '0.5'
+    # Add swap accounting
+    memswap_limit: 4G             # Allow some swap
+    # Better healthcheck
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import requests; exit(0) if requests.get(\"http://localhost:8000/api/v1/health\").status_code == 200 else exit(1)'"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/v1/health\")' || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 60s
     restart: unless-stopped
+    # Add ulimits for file handling
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   # Web Service (Node.js)
   web-service:
@@ -188,6 +247,12 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
   chunk-processor:
     build:
@@ -195,11 +260,17 @@ services:
       dockerfile: Dockerfile
     command: python -m app.workers.chunk_processor
     deploy:
-      replicas: 5  # Scale based on load
+      replicas: 2              # Reduce replicas to save memory
+      resources:
+        limits:
+          memory: 1G           # Limit each processor
+        reservations:
+          memory: 256M
     environment:
       DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
       REDIS_URL: redis://redis:6379
       KAFKA_BROKERS: kafka:9092
+      CHUNK_SIZE: 33554432     # Same 32MB chunk size
     depends_on:
       kafka:
         condition: service_healthy
@@ -208,9 +279,9 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - /tmp/chunks:/tmp/chunks  # Shared temp storage
+      - /tmp/chunks:/tmp/chunks
 
-  # Nginx reverse-proxy (fronting FastAPI + optional static frontend)
+  # Nginx reverse-proxy
   nginx:
     image: nginx:stable
     container_name: edge-nginx
@@ -225,8 +296,15 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - storage_data:/app/storage:ro
-      # - ./frontend-clean/build:/usr/share/nginx/html:ro
+      # Create temp directory for uploads
+      - /tmp/nginx_uploads:/tmp/nginx_uploads
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
     networks:
       - default
 
@@ -249,7 +327,7 @@ volumes:
   storage_data:
     driver: local
 
-# Networks (optional - uses default bridge network if not specified)
+# Networks
 networks:
   default:
     name: edge-cloud-network

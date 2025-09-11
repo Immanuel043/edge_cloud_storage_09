@@ -239,6 +239,9 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=8001,
+        timeout_keep_alive=600,
+        timeout_graceful_shutdown=60,
+        limit_max_requests=None,
         reload=True,   # Enable auto-reload for development
         log_level="info",
         access_log=True,

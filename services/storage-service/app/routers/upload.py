@@ -41,10 +41,11 @@ kafka_lock = asyncio.Lock()
 executor = ThreadPoolExecutor(max_workers=8)  # For parallel processing
 
 # Optimized buffer sizes
-STREAM_BUFFER_SIZE = 32 * 1024 * 1024  # 32MB buffer for maximum throughput
-INLINE_THRESHOLD = 512 * 1024  # 512KB
-SINGLE_OBJECT_THRESHOLD = 100 * 1024 * 1024  # 100MB
-CHUNK_SIZE = 256 * 1024 * 1024  # 256MB chunks for fewer operations
+# Read from environment variables with fallbacks
+STREAM_BUFFER_SIZE = int(os.getenv('STREAM_BUFFER_SIZE', 8 * 1024 * 1024))  # 8MB default
+INLINE_THRESHOLD = int(os.getenv('INLINE_THRESHOLD', 512 * 1024))  # 512KB
+SINGLE_OBJECT_THRESHOLD = int(os.getenv('SINGLE_OBJECT_THRESHOLD', 50 * 1024 * 1024))  # 50MB
+CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 32 * 1024 * 1024))  # 32MB default - CRITICAL CHANGE
 
 # Files that are already compressed - DO NOT compress these
 COMPRESSED_FORMATS = {'.zip', '.gz', '.rar', '.7z', '.bz2', '.xz', 
