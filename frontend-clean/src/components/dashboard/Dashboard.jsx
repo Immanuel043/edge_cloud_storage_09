@@ -4,9 +4,10 @@ import {
   Share2, Download, Trash2, FolderPlus, Folder, Sun, Moon, 
   User, LogOut, Home, Search, Settings, ChevronRight, Grid, 
   List, Filter, Eye, Copy, Wifi, WifiOff, Check, Info,
-  Image, FileText, Video, Music, Archive, Code, Clock
+  Image, FileText, Video, Music, Archive, Code, Clock,
+  Zap
 } from 'lucide-react';
-
+import DeduplicationPanel from './DeduplicationPanel';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
@@ -62,6 +63,13 @@ export default function Dashboard() {
   const fileInputRef = useRef(null);
   const searchInputRef = useRef(null);
   const abortControllers = useRef({});
+  const [showDedupPanel, setShowDedupPanel] = useState(false);
+  const [dedupStats, setDedupStats] = useState(null);
+
+  useEffect(() => {
+  loadDedupStats();
+}, []);
+
 
   // Setup keyboard shortcuts
   useKeyboardShortcuts({
@@ -84,6 +92,16 @@ export default function Dashboard() {
     },
     'shift+?': () => setShowShortcuts(true)
   });
+
+  const loadDedupStats = async () => {
+  try {
+    const stats = await storageService.getDedupSavings(user?.token);
+    setDedupStats(stats);
+  } catch (error) {
+    console.error('Failed to load dedup stats:', error);
+  }
+};
+
 
   // Handle file upload
   const handleFileUpload = async (file) => {
@@ -253,11 +271,19 @@ export default function Dashboard() {
               </h1>
               <nav className="flex gap-2">
                 <button
+                  
                   onClick={() => navigateToFolder(null)}
                   className={`px-3 py-1 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
                   title="Home"
                 >
                   <Home size={18} />
+                  </button>
+                  <button
+                  onClick={() => setShowDedupPanel(!showDedupPanel)}
+                  className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} ${showDedupPanel ? 'ring-2 ring-indigo-500' : ''}`}
+                  title="Deduplication Analytics"
+                >
+                <Zap size={20} className={showDedupPanel ? 'text-indigo-500' : ''} />
                 </button>
               </nav>
               
@@ -340,6 +366,24 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto px-4 py-6">
         {/* Storage Stats */}
         {storageStats && <StorageStats stats={storageStats} darkMode={darkMode} />}
+
+        {/* Deduplication Panel - Add this */}
+        {showDedupPanel && (
+          <div className="mb-6">
+            <DeduplicationPanel 
+              darkMode={darkMode}
+              token={user?.token}
+              onOptimizeFile={async (fileId) => {
+              const result = await storageService.optimizeFileDedup(user?.token, fileId);
+              if (result.status === 'optimized') {
+                refreshFiles(); // Refresh file list
+                loadDedupStats(); // Reload dedup stats
+              }
+              return result;
+              }}
+            />
+          </div>
+    )}
 
         {/* Filter Panel */}
         {showFilters && (

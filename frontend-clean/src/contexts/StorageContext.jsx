@@ -17,11 +17,12 @@ export const useStorage = () => {
 };
 
 export const StorageProvider = ({ children }) => {
-  const { token, isAuthenticated } = useAuth();
+  const { token, isAuthenticated, user } = useAuth(); // Added user here
   const [files, setFiles] = useState([]);
   const [folders, setFolders] = useState([]);
   const [currentFolder, setCurrentFolder] = useState(null);
   const [storageStats, setStorageStats] = useState(null);
+  const [dedupStats, setDedupStats] = useState(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [selectedFiles, setSelectedFiles] = useState(new Set());
 
@@ -39,72 +40,73 @@ export const StorageProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-  if (isAuthenticated && token) {
-    if (isOnline) {
-      loadFiles();
+    if (isAuthenticated && token) {
+      if (isOnline) {
+        loadFiles();
+        loadStorageStats();
+        loadDedupStats(); // Load dedup stats on mount
+      } else {
+        loadOfflineData();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, token, currentFolder, isOnline]);
+
+  useEffect(() => {
+    // WebSocket event listeners
+    const handleWSFileUploaded = (event) => {
+      console.log('File uploaded event received:', event.detail);
+      refreshFiles();
+    };
+    
+    const handleWSFileDeleted = (event) => {
+      console.log('File deleted event received:', event.detail);
+      refreshFiles();
+    };
+    
+    const handleWSStorageUpdate = (event) => {
+      console.log('Storage update event received:', event.detail);
+      if (event.detail) {
+        setStorageStats(event.detail);
+      }
       loadStorageStats();
-    } else {
-      loadOfflineData();
-    }
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [isAuthenticated, token, currentFolder, isOnline]);
-
-useEffect(() => {
-  // WebSocket event listeners
-  const handleWSFileUploaded = (event) => {
-    console.log('File uploaded event received:', event.detail);
-    refreshFiles();
-  };
-  
-  const handleWSFileDeleted = (event) => {
-    console.log('File deleted event received:', event.detail);
-    refreshFiles();
-  };
-  
-  const handleWSStorageUpdate = (event) => {
-    console.log('Storage update event received:', event.detail);
-    if (event.detail) {
-      setStorageStats(event.detail);
-    }
-    loadStorageStats();
-  };
-  
-  // Add WebSocket event listeners
-  window.addEventListener('ws-file-uploaded', handleWSFileUploaded);
-  window.addEventListener('ws-file-deleted', handleWSFileDeleted);
-  window.addEventListener('ws-storage-update', handleWSStorageUpdate);
-  
-  // Cleanup
-  return () => {
-    window.removeEventListener('ws-file-uploaded', handleWSFileUploaded);
-    window.removeEventListener('ws-file-deleted', handleWSFileDeleted);
-    window.removeEventListener('ws-storage-update', handleWSStorageUpdate);
-  };
-}, [token]);
-
-const loadFiles = async (folderId = currentFolder) => {
-  try {
-    const [filesData, foldersData, statsData] = await Promise.all([
-      storageService.getFiles(token, folderId),
-      storageService.getFolders(token, folderId),
-      storageService.getStorageStats(token)
-    ]);
+    };
     
-    setFiles(filesData);
-    setFolders(foldersData);
-    setStorageStats(statsData);
+    // Add WebSocket event listeners
+    window.addEventListener('ws-file-uploaded', handleWSFileUploaded);
+    window.addEventListener('ws-file-deleted', handleWSFileDeleted);
+    window.addEventListener('ws-storage-update', handleWSStorageUpdate);
     
-    // Cache for offline
-    if (isOnline) {
-      await offlineDB.cacheFiles(filesData);
-      await offlineDB.cacheFolders(foldersData);
-      await offlineDB.cacheStats(statsData);
+    // Cleanup
+    return () => {
+      window.removeEventListener('ws-file-uploaded', handleWSFileUploaded);
+      window.removeEventListener('ws-file-deleted', handleWSFileDeleted);
+      window.removeEventListener('ws-storage-update', handleWSStorageUpdate);
+    };
+  }, [token]);
+
+  const loadFiles = async (folderId = currentFolder) => {
+    try {
+      const [filesData, foldersData, statsData] = await Promise.all([
+        storageService.getFiles(token, folderId),
+        storageService.getFolders(token, folderId),
+        storageService.getStorageStats(token)
+      ]);
+      
+      setFiles(filesData);
+      setFolders(foldersData);
+      setStorageStats(statsData);
+      
+      // Cache for offline
+      if (isOnline) {
+        await offlineDB.cacheFiles(filesData);
+        await offlineDB.cacheFolders(foldersData);
+        await offlineDB.cacheStats(statsData);
+      }
+    } catch (error) {
+      console.error('Failed to load files:', error);
     }
-  } catch (error) {
-    console.error('Failed to load files:', error);
-  }
-};
+  };
 
   const loadOfflineData = async () => {
     const cachedFiles = await offlineDB.getCachedFiles();
@@ -117,119 +119,136 @@ const loadFiles = async (folderId = currentFolder) => {
   };
 
   const loadStorageStats = async () => {
-  try {
-    const stats = await storageService.getStorageStats(token);
-    
-    // The backend already returns the correct format!
-    // No transformation needed since backend returns: quota, used, percentage_used, distribution
-    //console.log('Storage stats loaded:', stats);
-    
-    setStorageStats(stats);
-    
-    // Cache for offline
-    if (isOnline) {
-      await offlineDB.cacheStats(stats);
+    try {
+      const stats = await storageService.getStorageStats(token);
+      setStorageStats(stats);
+      
+      // Cache for offline
+      if (isOnline) {
+        await offlineDB.cacheStats(stats);
+      }
+    } catch (error) {
+      console.error('Failed to load storage stats:', error);
     }
+  };
+
+  // Deduplication stats
+  const loadDedupStats = async () => {
+  if (!token) return;
+  
+  try {
+    const stats = await storageService.getDedupSavings(token);
+    setDedupStats(stats);
   } catch (error) {
-    console.error('Failed to load storage stats:', error);
+    // Silently handle error if dedup endpoints not available yet
+    console.log('Deduplication stats not available');
+    // Set default values
+    setDedupStats({
+      logical_size: 0,
+      physical_size: 0,
+      saved_size: 0,
+      savings_percentage: 0,
+      storage_efficiency: 1
+    });
   }
 };
 
-const refreshFiles = async (folderId = currentFolder) => {
-  try {
-    // Load files and folders
-    const [filesData, foldersData] = await Promise.all([
-      storageService.getFiles(token, folderId),
-      storageService.getFolders(token, folderId)
-    ]);
-    
-    setFiles(filesData);
-    setFolders(foldersData);
-    
-    // ALSO refresh storage stats
-    await loadStorageStats();
-    
-    // Cache for offline
-    if (isOnline) {
-      await offlineDB.cacheFiles(filesData);
-      await offlineDB.cacheFolders(foldersData);
+  const refreshFiles = async (folderId = currentFolder) => {
+    try {
+      // Load files and folders
+      const [filesData, foldersData] = await Promise.all([
+        storageService.getFiles(token, folderId),
+        storageService.getFolders(token, folderId)
+      ]);
+      
+      setFiles(filesData);
+      setFolders(foldersData);
+      
+      // ALSO refresh storage stats
+      await loadStorageStats();
+      
+      // Cache for offline
+      if (isOnline) {
+        await offlineDB.cacheFiles(filesData);
+        await offlineDB.cacheFolders(foldersData);
+      }
+    } catch (error) {
+      console.error('Failed to load files:', error);
     }
-  } catch (error) {
-    console.error('Failed to load files:', error);
-  }
-};
+  };
 
   const uploadFile = async (file, onProgress) => {
-  try {
-    const result = await storageService.uploadFile(token, file, currentFolder, (progress) => {
-      // Call the original progress callback
-      if (onProgress) {
-        onProgress(progress);
-      }
+    try {
+      const result = await storageService.uploadFile(token, file, currentFolder, (progress) => {
+        // Call the original progress callback
+        if (onProgress) {
+          onProgress(progress);
+        }
+        
+        // Send progress via WebSocket to other sessions
+        if (websocketService.isConnected && progress.uploadId) {
+          websocketService.sendUploadProgress(progress.uploadId, progress.progress);
+        }
+      });
       
-      // Send progress via WebSocket to other sessions
-      if (websocketService.isConnected && progress.uploadId) {
-        websocketService.sendUploadProgress(progress.uploadId, progress.progress);
-      }
-    });
-    
-    // After successful upload, refresh everything
-    await refreshFiles();
-    
-    return result;
-  } catch (error) {
-    console.error('Upload failed:', error);
-    throw error;
-  }
-};
+      // After successful upload, refresh everything
+      await refreshFiles();
+      await loadDedupStats(); // Refresh dedup stats after upload
+      
+      return result;
+    } catch (error) {
+      console.error('Upload failed:', error);
+      throw error;
+    }
+  };
 
   const downloadFile = async (fileId, fileName) => {
     return await storageService.downloadFile(token, fileId, fileName);
   };
 
   const deleteFile = async (fileId) => {
-  try {
-    const result = await storageService.deleteFile(token, fileId);
-    //console.log('File deleted, freed space:', result.freed_space);
-    
-    // After successful deletion, refresh everything
-    await refreshFiles();
-    
-    return result;
-  } catch (error) {
-    console.error('Failed to delete file:', error);
-    throw error;
-  }
-};
+    try {
+      const result = await storageService.deleteFile(token, fileId);
+      
+      // After successful deletion, refresh everything
+      await refreshFiles();
+      await loadDedupStats(); // Refresh dedup stats after deletion
+      
+      return result;
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+      throw error;
+    }
+  };
 
   const bulkDelete = async (fileIds) => {
-  try {
-    // Use the bulk delete endpoint
-    const response = await fetch(`${API_URL}/files/bulk-delete`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ file_ids: fileIds })
-    });
-    
-    if (!response.ok) {
-      throw new Error('Bulk delete failed');
+    try {
+      // Use the bulk delete endpoint
+      const response = await fetch(`${API_URL}/files/bulk-delete`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ file_ids: fileIds })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Bulk delete failed');
+      }
+      
+      const result = await response.json();
+      
+      // After successful bulk deletion, refresh everything
+      await refreshFiles();
+      await loadDedupStats(); // Refresh dedup stats after bulk delete
+      
+      return result;
+    } catch (error) {
+      console.error('Failed to bulk delete:', error);
+      throw error;
     }
-    
-    const result = await response.json();
-    //console.log('Bulk delete completed:', result);
-    
-    // After successful bulk deletion, refresh everything
-    await refreshFiles();
-    
-    return result;
-  } catch (error) {
-    console.error('Failed to bulk delete:', error);
-    throw error;
-  }
-};
+  };
 
   const createFolder = async (name) => {
     await storageService.createFolder(token, name, currentFolder);
@@ -266,38 +285,40 @@ const refreshFiles = async (folderId = currentFolder) => {
   };
 
   const refreshAll = async () => {
-  await Promise.all([
-    loadFiles(),
-    loadStorageStats()
-  ]);
-};
-
+    await Promise.all([
+      loadFiles(),
+      loadStorageStats(),
+      loadDedupStats() // Include dedup stats in refresh all
+    ]);
+  };
 
   const clearSelection = () => {
     setSelectedFiles(new Set());
   };
 
   const value = {
-  files,
-  folders,
-  currentFolder,
-  storageStats,
-  isOnline,
-  selectedFiles,
-  uploadFile,
-  downloadFile,
-  deleteFile,
-  bulkDelete,
-  createFolder,
-  createShareLink,
-  navigateToFolder,
-  selectFile,
-  selectAll,
-  clearSelection,
-  refreshFiles,  // This now refreshes both files and stats
-  refreshStats: loadStorageStats,  // Direct access to refresh just stats
-  refreshAll  // Manual refresh everything
-};
+    files,
+    folders,
+    currentFolder,
+    storageStats,
+    isOnline,
+    selectedFiles,
+    dedupStats,
+    loadDedupStats,
+    uploadFile,
+    downloadFile,
+    deleteFile,
+    bulkDelete,
+    createFolder,
+    createShareLink,
+    navigateToFolder,
+    selectFile,
+    selectAll,
+    clearSelection,
+    refreshFiles,
+    refreshStats: loadStorageStats,
+    refreshAll
+  };
 
   return (
     <StorageContext.Provider value={value}>

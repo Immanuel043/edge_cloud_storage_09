@@ -1,3 +1,4 @@
+# services/storage-service/app/services/deduplication_enhanced.py
 import hashlib
 import os
 import asyncio
@@ -455,6 +456,12 @@ class EnhancedDeduplicationService:
             'freed_space': freed_space,
             'errors': errors
         }
+    
+    def get_content_address(self, content_hash: str) -> str:  
+    #Get storage path for content hash.
+    #Uses first 2 chars for sharding: /cas/ab/abcdef123456...
+        shard = content_hash[:2]
+        return os.path.join(self.cas_path, shard, content_hash)
 
 # Enhanced singleton instance
 enhanced_dedup_service = EnhancedDeduplicationService()

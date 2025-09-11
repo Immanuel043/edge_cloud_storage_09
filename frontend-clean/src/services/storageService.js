@@ -640,6 +640,87 @@ class StorageService {
     if (!response.ok) throw new Error('Failed to get preview');
     return await response.blob();
   }
+
+  // Deduplication related methods
+  async getDedupAnalytics(token) {
+  await rateLimiter.checkLimit();
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const response = await fetch(`${API_URL}/dedup/analytics`, { 
+    headers, 
+    credentials: 'include' 
+  });
+  if (!response.ok) throw new Error('Failed to load deduplication analytics');
+  return await response.json();
 }
+
+async getDedupSavings(token) {
+  await rateLimiter.checkLimit();
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const response = await fetch(`${API_URL}/dedup/savings`, { 
+    headers, 
+    credentials: 'include' 
+  });
+  if (!response.ok) throw new Error('Failed to load deduplication savings');
+  return await response.json();
+}
+
+async optimizeFileDedup(token, fileId) {
+  await rateLimiter.checkLimit();
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const response = await fetch(`${API_URL}/dedup/optimize/${fileId}`, {
+    method: 'POST',
+    headers,
+    credentials: 'include'
+  });
+  if (!response.ok) throw new Error('Failed to optimize file');
+  return await response.json();
+}
+
+async runGarbageCollection(token) {
+  await rateLimiter.checkLimit();
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const response = await fetch(`${API_URL}/dedup/gc`, {
+    method: 'POST',
+    headers,
+    credentials: 'include'
+  });
+  if (!response.ok) throw new Error('Failed to run garbage collection');
+  return await response.json();
+}
+
+async getDedupAnalytics(token) {
+  // Temporary mock data for testing
+  return {
+    summary: {
+      total_files: 0,
+      logical_size: 0,
+      physical_size: 0,
+      saved_size: 0,
+      dedup_ratio: 0,
+      compression_ratio: 1
+    },
+    blocks: {
+      total_blocks: 0,
+      total_size: 0,
+      avg_references: 0
+    },
+    top_duplicates: []
+  };
+}
+
+async getDedupSavings(token) {
+  // Temporary mock data for testing
+  return {
+    logical_size: 0,
+    physical_size: 0,
+    saved_size: 0,
+    savings_percentage: 0,
+    storage_efficiency: 1
+  };
+}
+}
+
+
+
 
 export const storageService = new StorageService();

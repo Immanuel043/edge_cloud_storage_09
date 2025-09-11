@@ -25,3 +25,4 @@ prometheus-fastapi-instrumentator==6.1.0
 aiocache[redis]==0.12.2
 psutil==5.9.6
 alembic==1.13.1
+xxhash==3.5.0

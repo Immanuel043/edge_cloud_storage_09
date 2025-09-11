@@ -32,6 +32,7 @@ import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from ..services.deduplication_enhanced import enhanced_dedup_service
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
 
@@ -355,7 +356,7 @@ async def complete_upload(
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Complete upload and create database record"""
+    """Complete upload and create database record with deduplication"""
     redis_client = await get_redis()
     
     session_data = await redis_client.get(f"up:{upload_id}")
@@ -375,6 +376,146 @@ async def complete_upload(
         if len(session["done"]) != session["chunks"]:
             missing = set(range(session["chunks"])) - set(session["done"])
             return {"status": "incomplete", "missing_chunks": list(missing)}
+    
+    # ============ DEDUPLICATION INTEGRATION START ============
+    # Check if file should be deduplicated (files > 10MB)
+    enable_dedup = session["size"] > 10 * 1024 * 1024 and storage_strategy in ["single", "chunked"]
+    
+    if enable_dedup:
+        print(f"🔍 Checking deduplication for {session['name']} ({session['size']/1024/1024:.1f}MB)")
+        
+        # First, assemble the file data for deduplication
+        file_data = None
+        
+        if storage_strategy == "single":
+            # Read the single file
+            storage_path = session.get("storage_path")
+            if storage_path and os.path.exists(storage_path):
+                async with aiofiles.open(storage_path, 'rb') as f:
+                    encrypted_data = await f.read()
+                # Decrypt the file
+                file_key = encryption_service.decrypt_key(session["key"])
+                file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+                
+                # Decompress if needed
+                if session.get("compress", False):
+                    from ..utils.compression import compressor
+                    file_data = compressor.decompress(file_data)
+        
+        elif storage_strategy == "chunked":
+            # Assemble chunks for deduplication
+            file_key = encryption_service.decrypt_key(session["key"])
+            chunks_data = []
+            
+            for i in range(session["chunks"]):
+                chunk_path = session.get("chunk_paths", {}).get(str(i))
+                if not chunk_path:
+                    shard = upload_id[:2]
+                    chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                
+                if os.path.exists(chunk_path):
+                    async with aiofiles.open(chunk_path, 'rb') as f:
+                        encrypted_chunk = await f.read()
+                    
+                    # Decrypt chunk
+                    decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, i)
+                    
+                    # Decompress if needed
+                    if session.get("compress", False):
+                        from ..utils.compression import compressor
+                        decrypted_chunk = compressor.decompress(decrypted_chunk)
+                    
+                    chunks_data.append(decrypted_chunk)
+            
+            file_data = b''.join(chunks_data)
+        
+        # If we have file data, try deduplication
+        if file_data:
+            try:
+                dedup_result = await enhanced_dedup_service.store_deduplicated_file(
+                    file_data=file_data,
+                    file_name=session["name"],
+                    user_id=str(current_user.id),
+                    db=db,
+                    metadata={
+                        'mime_type': mimetypes.guess_type(session["name"])[0],
+                        'folder_id': session.get("folder")
+                    },
+                    encrypt=True  # Re-encrypt with deduplication
+                )
+                
+                # If deduplication succeeded, clean up original storage
+                if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
+                    print(f"✅ Deduplication successful! Saved {dedup_result['saved_size']/1024/1024:.1f}MB")
+                    
+                    # Clean up original files
+                    if storage_strategy == "single" and session.get("storage_path"):
+                        try:
+                            os.remove(session["storage_path"])
+                        except:
+                            pass
+                    elif storage_strategy == "chunked":
+                        for path in session.get("chunk_paths", {}).values():
+                            try:
+                                os.remove(path)
+                            except:
+                                pass
+                    
+                    # Update user storage
+                    if hasattr(current_user, 'storage_used'):
+                        # Only add the actual storage used (after deduplication)
+                        actual_used = session["size"] - dedup_result.get('saved_size', 0)
+                        current_user.storage_used = (current_user.storage_used or 0) + actual_used
+                    
+                    await db.commit()
+                    
+                    # Log activity
+                    await log_activity(
+                        db, current_user.id, "file_uploaded", dedup_result['file_id'],
+                        {
+                            "file_name": session["name"], 
+                            "size": session["size"],
+                            "storage_type": "deduplicated",
+                            "saved_size": dedup_result['saved_size'],
+                            "dedup_ratio": dedup_result['dedup_ratio']
+                        },
+                        request,
+                    )
+                    
+                    # Clean up Redis
+                    await redis_client.delete(f"up:{upload_id}")
+                    
+                    # Metrics
+                    duration = (datetime.utcnow() - start_time).total_seconds()
+                    upload_completed.labels(
+                        user_type=getattr(current_user, 'user_type', 'standard'),
+                        storage_strategy="deduplicated",
+                        status="success"
+                    ).inc()
+                    upload_duration.labels(storage_strategy="deduplicated").observe(duration)
+                    active_uploads.dec()
+                    
+                    return {
+                        "status": "success",
+                        "file_id": dedup_result['file_id'],
+                        "file_name": session["name"],
+                        "file_size": session["size"],
+                        "storage_type": "deduplicated",
+                        "deduplication": {
+                            "enabled": True,
+                            "saved_size": dedup_result['saved_size'],
+                            "dedup_ratio": dedup_result['dedup_ratio'],
+                            "status": dedup_result['status']
+                        },
+                        "encrypted": True,
+                        "duration": round(duration, 2)
+                    }
+                    
+            except Exception as e:
+                print(f"⚠️ Deduplication failed, falling back to normal storage: {str(e)}")
+                # Continue with normal storage if deduplication fails
+    
+    # ============ DEDUPLICATION INTEGRATION END ============
     
     file_id = uuid.uuid4()
     mime_type = mimetypes.guess_type(session["name"])[0]
