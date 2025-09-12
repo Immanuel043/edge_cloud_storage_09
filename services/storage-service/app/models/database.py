@@ -92,3 +92,19 @@ class FileVersion(Base):
         UniqueConstraint('file_id', 'version_number', name='unique_file_version'),
     )
 
+
+class ContentBlock(Base):
+    __tablename__ = 'content_blocks'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    block_hash = Column(String(64), nullable=False, index=True)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id'))
+    block_size = Column(Integer)
+    block_offset = Column(Integer)
+    reference_count = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Unique constraint on hash + file + offset
+    __table_args__ = (
+        UniqueConstraint('block_hash', 'file_id', 'block_offset'),
+    )
