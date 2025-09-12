@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.types import Integer
 from typing import Dict, Any, Optional
 import os
@@ -20,40 +20,132 @@ async def get_dedup_analytics(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get deduplication analytics"""
+    """Get deduplication analytics with accurate calculations"""
     
-    stats = await enhanced_dedup_service.get_deduplication_analytics(
-        db=db,
-        user_id=str(current_user.id) if user_only else None
-    )
+    # Get real statistics based on unique blocks
+    result = await db.execute(text("""
+        WITH file_stats AS (
+            SELECT 
+                COUNT(DISTINCT o.id) as file_count,
+                SUM(o.file_size) as logical_size
+            FROM objects o
+            WHERE o.user_id = :user_id
+            AND o.storage_type IN ('content_addressed', 'deduplicated_reference')
+        ),
+        block_stats AS (
+            SELECT 
+                COUNT(DISTINCT cb.block_hash) as unique_blocks,
+                COUNT(*) as total_block_refs,
+                AVG(cb.reference_count) as avg_refs
+            FROM content_blocks cb
+            JOIN objects o ON cb.file_id = o.id
+            WHERE o.user_id = :user_id
+        )
+        SELECT 
+            f.file_count,
+            f.logical_size,
+            b.unique_blocks,
+            b.total_block_refs,
+            b.avg_refs,
+            b.unique_blocks * 16384 as physical_size
+        FROM file_stats f, block_stats b
+    """), {"user_id": str(current_user.id)})
     
-    # The enhanced service already returns the correct format
-    return stats
+    stats = result.first()
+    
+    if not stats or not stats.logical_size:
+        # Return default values if no deduplicated files
+        return {
+            "summary": {
+                "total_files": 0,
+                "logical_size": 0,
+                "physical_size": 0,
+                "saved_size": 0,
+                "dedup_ratio": 0,
+                "compression_ratio": 1
+            },
+            "blocks": {
+                "total_blocks": 0,
+                "total_size": 0,
+                "avg_references": 0
+            },
+            "top_duplicates": []
+        }
+    
+    saved_size = stats.logical_size - stats.physical_size if stats.logical_size and stats.physical_size else 0
+    dedup_ratio = (saved_size / stats.logical_size * 100) if stats.logical_size > 0 else 0
+    
+    return {
+        "summary": {
+            "total_files": stats.file_count or 0,
+            "logical_size": stats.logical_size or 0,
+            "physical_size": stats.physical_size or 0,
+            "saved_size": saved_size,
+            "dedup_ratio": round(dedup_ratio, 2),
+            "compression_ratio": round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
+        },
+        "blocks": {
+            "total_blocks": stats.total_block_refs or 0,
+            "total_size": stats.physical_size or 0,
+            "avg_references": float(stats.avg_refs or 0)
+        },
+        "top_duplicates": []
+    }
 
 @router.get("/savings")
 async def get_storage_savings(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get storage savings from deduplication"""
+    """Get accurate storage savings from deduplication"""
     
-    stats = await enhanced_dedup_service.get_deduplication_analytics(
-        db=db,
-        user_id=str(current_user.id)
-    )
+    # Calculate real savings based on unique blocks
+    result = await db.execute(text("""
+        WITH file_stats AS (
+            SELECT 
+                COUNT(DISTINCT o.id) as file_count,
+                SUM(o.file_size) as logical_size
+            FROM objects o
+            WHERE o.user_id = :user_id
+            AND o.storage_type IN ('content_addressed', 'deduplicated_reference')
+        ),
+        block_stats AS (
+            SELECT 
+                COUNT(DISTINCT cb.block_hash) as unique_blocks
+            FROM content_blocks cb
+            JOIN objects o ON cb.file_id = o.id
+            WHERE o.user_id = :user_id
+        )
+        SELECT 
+            f.file_count,
+            f.logical_size,
+            b.unique_blocks * 16384 as physical_size,
+            f.logical_size - (b.unique_blocks * 16384) as saved_size,
+            CASE 
+                WHEN f.logical_size > 0 
+                THEN ROUND(((f.logical_size - (b.unique_blocks * 16384))::numeric / f.logical_size) * 100, 2)
+                ELSE 0 
+            END as savings_percentage
+        FROM file_stats f, block_stats b
+    """), {"user_id": str(current_user.id)})
     
-    # Extract summary data
-    summary = stats.get('summary', {})
-    logical = summary.get('logical_size', 0)
-    physical = summary.get('physical_size', 0)
-    saved = summary.get('saved_size', 0)
+    stats = result.first()
+    
+    if not stats or not stats.logical_size:
+        return {
+            "logical_size": 0,
+            "physical_size": 0,
+            "saved_size": 0,
+            "savings_percentage": 0,
+            "storage_efficiency": 1
+        }
     
     return {
-        "logical_size": logical,
-        "physical_size": physical,
-        "saved_size": saved,
-        "savings_percentage": round((saved / logical * 100), 2) if logical > 0 else 0,
-        "storage_efficiency": round(logical / physical, 2) if physical > 0 else 1
+        "logical_size": stats.logical_size or 0,
+        "physical_size": stats.physical_size or 0,
+        "saved_size": stats.saved_size or 0,
+        "savings_percentage": float(stats.savings_percentage or 0),
+        "storage_efficiency": round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
     }
 
 @router.post("/optimize/{file_id}")

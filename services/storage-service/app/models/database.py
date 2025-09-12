@@ -60,6 +60,7 @@ class Object(Base):
     current_version = Column(Integer, default=1)
     version_count = Column(Integer, default=1)
     versioning_enabled = Column(Boolean, default=True)
+    dedup_info = Column(JSON, nullable=True)
 
 class ActivityLog(Base):
     __tablename__ = "activity_logs"

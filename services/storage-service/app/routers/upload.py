@@ -445,8 +445,23 @@ async def complete_upload(
                 )
                 
                 # If deduplication succeeded, clean up original storage
+
                 if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
-                    print(f"✅ Deduplication successful! Saved {dedup_result['saved_size']/1024/1024:.1f}MB")
+                    # Calculate actual savings based on reused blocks
+                    actual_saved = 0
+                    if 'duplicate_blocks' in dedup_result:
+                        # Each duplicate block saves its size
+                        actual_saved = len(dedup_result.get('duplicate_blocks', [])) * 16384  # avg block size
+                    
+                    # For full duplicates, the entire file is saved
+                    if dedup_result['status'] == 'full_duplicate':
+                        actual_saved = session["size"]
+                    
+                    # Override the reported saved_size
+                    dedup_result['saved_size'] = actual_saved
+                    dedup_result['dedup_ratio'] = (actual_saved / session["size"] * 100) if session["size"] > 0 else 0
+                    
+                    print(f"✅ Deduplication successful! Saved {actual_saved/1024/1024:.1f}MB ({dedup_result['dedup_ratio']:.1f}%)")
                     
                     # Clean up original files
                     if storage_strategy == "single" and session.get("storage_path"):

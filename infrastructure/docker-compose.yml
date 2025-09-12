@@ -180,15 +180,18 @@ services:
       USE_X_ACCEL: "1"
       # Add memory management settings
       PYTHONMALLOC: malloc
-      MALLOC_TRIM_THRESHOLD_: 131072
+      MALLOC_TRIM_THRESHOLD: 131072   # fixed env var name (no trailing underscore)
       
     ports:
       - "8001:8000"
     volumes:
-      - storage_data:/app/storage
+     - storage_data:/app/storage
       # Add temp directory with size limit
-      - /tmp/upload_temp:/tmp/upload_temp
-    # CRITICAL: Add resource limits
+     - /tmp/upload_temp:/tmp/upload_temp
+    # Local docker-compose resource limits (works with many compose setups)
+    mem_limit: 3g
+    cpus: "2.0"
+    # CRITICAL: Add resource limits for Swarm (only used when using `docker stack deploy`)
     deploy:
       resources:
         limits:
@@ -197,11 +200,10 @@ services:
         reservations:
           memory: 1G              # Reserve 1GB
           cpus: '0.5'
-    # Add swap accounting
-    memswap_limit: 4G             # Allow some swap
-    # Better healthcheck
+    # (removed invalid top-level memswap_limit — configure swap at daemon or use docker run flags)
+    # Better, simpler healthcheck (curl is more reliable & lighter weight)
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/v1/health\")' || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 10

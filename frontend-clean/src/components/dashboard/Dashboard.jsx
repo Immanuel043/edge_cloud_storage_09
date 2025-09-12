@@ -22,6 +22,7 @@ import KeyboardShortcuts from './KeyboardShortcuts';
 import BulkActions from './BulkActions';
 import { formatBytes, formatDate, getFileIcon, getFileType } from '../../utils/helpers';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { storageService } from '../../services/storageService';
 
 export default function Dashboard() {
   const { darkMode, toggleTheme } = useTheme();
@@ -287,15 +288,8 @@ export default function Dashboard() {
                 </button>
               </nav>
               
-              {/* Online/Offline Indicator */}
-              <div className={`flex items-center gap-1 px-2 py-1 rounded ${
-                isOnline 
-                  ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
-                  : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
-              }`}>
-                {isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}
-                <span className="text-xs">{isOnline ? 'Online' : 'Offline'}</span>
-              </div>
+              {/* Add other required indicators */}
+              
             </div>
             
             <div className="flex items-center gap-3">
