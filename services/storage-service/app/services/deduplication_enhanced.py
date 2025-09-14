@@ -91,6 +91,7 @@ class EnhancedDeduplicationService:
         
         return boundaries
     
+    
     async def deduplicate_before_encryption(
         self,
         file_data: bytes,
@@ -121,14 +122,17 @@ class EnhancedDeduplicationService:
             if self.bloom_enabled and block_hash in self.bloom_filter:
                 is_potential_duplicate = True
             
-            # Database check for existing block
+            # Database check for existing block - FIXED to handle multiple results
             query = select(ContentBlock).where(ContentBlock.block_hash == block_hash)
             if not self.enable_cross_user_dedup:
                 # Limit to user's own blocks
                 query = query.join(Object).where(Object.user_id == user_id)
             
-            existing_block = await db.execute(query)
-            existing_block = existing_block.scalar_one_or_none()
+            # Order by created_at to get the oldest block first
+            query = query.order_by(ContentBlock.created_at.asc())
+            
+            result = await db.execute(query)
+            existing_block = result.scalars().first()  # Use .first() instead of .scalar_one_or_none()
             
             if existing_block:
                 # Duplicate found
@@ -180,6 +184,19 @@ class EnhancedDeduplicationService:
             'block_count': len(blocks)
         }
     
+
+    def derive_key_from_content(self, data: bytes) -> bytes:
+        """
+        Derive encryption key from content hash (convergent encryption).
+        This ensures identical data always gets encrypted the same way.
+        """
+        # Use PBKDF2 to derive a key from the content hash
+        content_hash = hashlib.sha256(data).digest()
+        # Use a fixed salt for convergent encryption (not random!)
+        salt = b'dedup_convergent_encryption_salt'
+        key = hashlib.pbkdf2_hmac('sha256', content_hash, salt, 100000, dklen=32)
+        return key
+
     async def store_deduplicated_file(
         self,
         file_data: bytes,
@@ -192,124 +209,177 @@ class EnhancedDeduplicationService:
         """
         Enhanced file storage with pre-encryption deduplication.
         """
-        # Perform deduplication analysis
-        dedup_result = await self.deduplicate_before_encryption(
-            file_data, file_name, user_id, db
-        )
-        
-        # Calculate file-level hash
-        file_hash = self.calculate_block_hash(file_data)
-        
-        # Check for full-file duplicate
-        existing_file = await db.execute(
-            select(Object).where(
+        try:
+            # Perform deduplication analysis
+            dedup_result = await self.deduplicate_before_encryption(
+                file_data, file_name, user_id, db
+            )
+            
+            # Calculate file-level hash
+            file_hash = self.calculate_block_hash(file_data)
+            
+            # Check for full-file duplicate
+            query = select(Object).where(
                 Object.content_hash == file_hash,
                 Object.user_id == user_id if not self.enable_cross_user_dedup else True
-            )
-        )
-        existing_file = existing_file.scalar_one_or_none()
-        
-        if existing_file and not encrypt:
-            # Full file duplicate found (only if not encrypting per-user)
+            ).order_by(Object.created_at.asc())
+            
+            result = await db.execute(query)
+            existing_file = result.scalars().first()
+            
+            if existing_file:
+                # Full file duplicate found
+                print(f"🎯 Full duplicate found! File hash: {file_hash[:16]}...")
+                
+                new_file = Object(
+                    file_name=file_name,
+                    user_id=user_id,
+                    content_hash=file_hash,
+                    file_size=dedup_result['total_size'],
+                    storage_type='deduplicated_reference',
+                    dedup_info={
+                        'reference_file_id': str(existing_file.id),
+                        'is_full_duplicate': True,
+                        'saved_size': dedup_result['total_size']
+                    },
+                    mime_type=metadata.get('mime_type') if metadata else None,
+                    folder_id=metadata.get('folder_id') if metadata else None,
+                    # Reference the same encryption key
+                    encryption_key=existing_file.encryption_key
+                )
+                db.add(new_file)
+                await db.commit()
+                
+                return {
+                    'file_id': str(new_file.id),
+                    'status': 'full_duplicate',
+                    'saved_size': dedup_result['total_size'],
+                    'dedup_ratio': 100.0,
+                    'duplicate_blocks': []
+                }
+            
+            # Store new unique blocks
+            stored_blocks = []
+            
+            # For convergent encryption, use a master key for the file metadata
+            # but derive block keys from content
+            if encrypt:
+                # Generate a master key for file metadata (user-specific)
+                master_key = encryption_service.generate_file_key()
+                encrypted_master_key = encryption_service.encrypt_key(master_key)
+            else:
+                master_key = None
+                encrypted_master_key = None
+            
+            for new_block in dedup_result['new_blocks']:
+                block_data = new_block['data']
+                
+                # Check if this block already exists in CAS
+                content_path = self.get_content_address(new_block['hash'])
+                
+                if not os.path.exists(content_path):
+                    # Block doesn't exist, store it
+                    if encrypt:
+                        # Use convergent encryption - derive key from content
+                        block_key = self.derive_key_from_content(block_data)
+                        
+                        # Encrypt using AES-GCM with the derived key
+                        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                        from cryptography.hazmat.backends import default_backend
+                        import os as crypto_os
+                        
+                        # Generate a deterministic nonce from block hash
+                        nonce = hashlib.sha256(f"{new_block['hash']}_nonce".encode()).digest()[:12]
+                        
+                        cipher = Cipher(
+                            algorithms.AES(block_key),
+                            modes.GCM(nonce),
+                            backend=default_backend()
+                        )
+                        encryptor = cipher.encryptor()
+                        encrypted_data = encryptor.update(block_data) + encryptor.finalize()
+                        
+                        # Store encrypted block with tag
+                        block_to_store = nonce + encryptor.tag + encrypted_data
+                        
+                        print(f"📦 Storing new block {new_block['hash'][:8]}... ({len(block_data)/1024:.1f}KB)")
+                    else:
+                        block_to_store = block_data
+                    
+                    # Create directory if needed
+                    os.makedirs(os.path.dirname(content_path), exist_ok=True)
+                    
+                    # Store block
+                    async with aiofiles.open(content_path, 'wb') as f:
+                        await f.write(block_to_store)
+                else:
+                    print(f"♻️ Block {new_block['hash'][:8]}... already exists, reusing")
+                
+                stored_blocks.append({
+                    'hash': new_block['hash'],
+                    'path': content_path,
+                    'size': new_block['size'],
+                    'offset': new_block['offset']
+                })
+            
+            # Create file object with dedup info
             new_file = Object(
                 file_name=file_name,
                 user_id=user_id,
                 content_hash=file_hash,
                 file_size=dedup_result['total_size'],
-                storage_type='deduplicated_reference',
+                storage_type='content_addressed',
+                chunk_info={
+                    'blocks': dedup_result['blocks'],
+                    'stored_blocks': stored_blocks,
+                    'version': 2,
+                    'convergent_encryption': encrypt  # Mark as using convergent encryption
+                },
                 dedup_info={
-                    'reference_file_id': str(existing_file.id),
-                    'is_full_duplicate': True,
-                    'saved_size': dedup_result['total_size']
+                    'saved_size': dedup_result['saved_size'],
+                    'dedup_ratio': dedup_result['dedup_ratio'],
+                    'unique_blocks': len(dedup_result['new_blocks']),
+                    'duplicate_blocks': len(dedup_result['duplicate_blocks'])
                 },
                 mime_type=metadata.get('mime_type') if metadata else None,
-                encryption_key=existing_file.encryption_key if encrypt else None
+                folder_id=metadata.get('folder_id') if metadata else None,
+                encryption_key=encrypted_master_key  # Store master key for metadata
             )
             db.add(new_file)
+            
+            # Create ContentBlock entries for new blocks only
+            for block in dedup_result['blocks']:
+                if not block['is_duplicate']:
+                    content_block = ContentBlock(
+                        block_hash=block['hash'],
+                        file_id=new_file.id,
+                        block_size=block['size'],
+                        block_offset=block['offset'],
+                        reference_count=1
+                    )
+                    db.add(content_block)
+            
             await db.commit()
+            
+            print(f"✅ File stored with deduplication:")
+            print(f"   - Unique blocks: {len(dedup_result['new_blocks'])}")
+            print(f"   - Duplicate blocks: {len(dedup_result['duplicate_blocks'])}")
+            print(f"   - Saved: {dedup_result['saved_size']/1024/1024:.1f}MB ({dedup_result['dedup_ratio']:.1f}%)")
             
             return {
                 'file_id': str(new_file.id),
-                'status': 'full_duplicate',
-                'saved_size': dedup_result['total_size'],
-                'dedup_ratio': 100.0
-            }
-        
-        # Store new unique blocks
-        stored_blocks = []
-        file_key = encryption_service.generate_file_key() if encrypt else None
-        
-        for new_block in dedup_result['new_blocks']:
-            block_data = new_block['data']
-            
-            # Encrypt block if needed
-            if encrypt:
-                encrypted_data = encryption_service.encrypt_chunk(
-                    block_data, file_key, new_block['offset'] // self.avg_block_size
-                )
-                block_to_store = encrypted_data
-            else:
-                block_to_store = block_data
-            
-            # Store block
-            content_path = self.get_content_address(new_block['hash'])
-            os.makedirs(os.path.dirname(content_path), exist_ok=True)
-            
-            async with aiofiles.open(content_path, 'wb') as f:
-                await f.write(block_to_store)
-            
-            stored_blocks.append({
-                'hash': new_block['hash'],
-                'path': content_path,
-                'size': new_block['size'],
-                'offset': new_block['offset']
-            })
-        
-        # Create file object with dedup info
-        new_file = Object(
-            file_name=file_name,
-            user_id=user_id,
-            content_hash=file_hash,
-            file_size=dedup_result['total_size'],
-            storage_type='content_addressed',
-            chunk_info={
-                'blocks': dedup_result['blocks'],
-                'stored_blocks': stored_blocks,
-                'version': 2  # Mark as enhanced dedup version
-            },
-            dedup_info={
+                'status': 'stored_with_dedup',
                 'saved_size': dedup_result['saved_size'],
                 'dedup_ratio': dedup_result['dedup_ratio'],
                 'unique_blocks': len(dedup_result['new_blocks']),
-                'duplicate_blocks': len(dedup_result['duplicate_blocks'])
-            },
-            mime_type=metadata.get('mime_type') if metadata else None,
-            encryption_key=encryption_service.encrypt_key(file_key) if encrypt else None
-        )
-        db.add(new_file)
-        
-        # Create ContentBlock entries
-        for block in dedup_result['blocks']:
-            if not block['is_duplicate']:
-                content_block = ContentBlock(
-                    block_hash=block['hash'],
-                    file_id=new_file.id,
-                    block_size=block['size'],
-                    block_offset=block['offset'],
-                    reference_count=1
-                )
-                db.add(content_block)
-        
-        await db.commit()
-        
-        return {
-            'file_id': str(new_file.id),
-            'status': 'stored_with_dedup',
-            'saved_size': dedup_result['saved_size'],
-            'dedup_ratio': dedup_result['dedup_ratio'],
-            'unique_blocks': len(dedup_result['new_blocks']),
-            'total_blocks': len(dedup_result['blocks'])
-        }
+                'total_blocks': len(dedup_result['blocks']),
+                'duplicate_blocks': dedup_result['duplicate_blocks']
+            }
+            
+        except Exception as e:
+            await db.rollback()
+            raise Exception(f"Deduplication failed: {str(e)}")
+    
     
     async def get_deduplication_analytics(
         self,
@@ -346,13 +416,13 @@ class EnhancedDeduplicationService:
             if f.dedup_info
         )
         
-        # Get block statistics
+        # Get block statistics - FIXED query
         blocks_result = await db.execute(
             select(
                 func.count(ContentBlock.id).label('total_blocks'),
                 func.sum(ContentBlock.block_size).label('total_block_size'),
                 func.avg(ContentBlock.reference_count).label('avg_references')
-            ).select_from(blocks_query.subquery())
+            )
         )
         block_stats = blocks_result.first()
         
@@ -458,8 +528,9 @@ class EnhancedDeduplicationService:
         }
     
     def get_content_address(self, content_hash: str) -> str:  
-    #Get storage path for content hash.
-    #Uses first 2 chars for sharding: /cas/ab/abcdef123456...
+        """Get storage path for content hash.
+        Uses first 2 chars for sharding: /cas/ab/abcdef123456...
+        """
         shard = content_hash[:2]
         return os.path.join(self.cas_path, shard, content_hash)
 

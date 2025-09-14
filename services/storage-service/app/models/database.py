@@ -54,7 +54,7 @@ class Object(Base):
     backup_location = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
     last_accessed = Column(DateTime, default=datetime.utcnow)
-    storage_type = Column(String(20), default="chunked")
+    storage_type = Column(String(30), default="chunked")
     storage_key = Column(Text)
     object_path = Column(String(500))
     current_version = Column(Integer, default=1)

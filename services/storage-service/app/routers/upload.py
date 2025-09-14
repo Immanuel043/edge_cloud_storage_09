@@ -377,34 +377,34 @@ async def complete_upload(
             missing = set(range(session["chunks"])) - set(session["done"])
             return {"status": "incomplete", "missing_chunks": list(missing)}
     
-    # ============ DEDUPLICATION INTEGRATION START ============
+    # ============ FIXED DEDUPLICATION INTEGRATION ============
     # Check if file should be deduplicated (files > 10MB)
     enable_dedup = session["size"] > 10 * 1024 * 1024 and storage_strategy in ["single", "chunked"]
     
     if enable_dedup:
         print(f"🔍 Checking deduplication for {session['name']} ({session['size']/1024/1024:.1f}MB)")
         
-        # First, assemble the file data for deduplication
+        # CRITICAL: We need to get the ORIGINAL file data, not the encrypted version
         file_data = None
+        file_key = encryption_service.decrypt_key(session["key"])
         
         if storage_strategy == "single":
-            # Read the single file
+            # Read and DECRYPT the single file to get original data
             storage_path = session.get("storage_path")
             if storage_path and os.path.exists(storage_path):
                 async with aiofiles.open(storage_path, 'rb') as f:
                     encrypted_data = await f.read()
-                # Decrypt the file
-                file_key = encryption_service.decrypt_key(session["key"])
+                
+                # Decrypt to get original data
                 file_data = encryption_service.decrypt_file(encrypted_data, file_key)
                 
-                # Decompress if needed
+                # Decompress if needed to get truly original data
                 if session.get("compress", False):
                     from ..utils.compression import compressor
                     file_data = compressor.decompress(file_data)
         
         elif storage_strategy == "chunked":
-            # Assemble chunks for deduplication
-            file_key = encryption_service.decrypt_key(session["key"])
+            # Assemble and decrypt chunks to get original file
             chunks_data = []
             
             for i in range(session["chunks"]):
@@ -417,7 +417,7 @@ async def complete_upload(
                     async with aiofiles.open(chunk_path, 'rb') as f:
                         encrypted_chunk = await f.read()
                     
-                    # Decrypt chunk
+                    # Decrypt chunk to get original data
                     decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, i)
                     
                     # Decompress if needed
@@ -427,11 +427,13 @@ async def complete_upload(
                     
                     chunks_data.append(decrypted_chunk)
             
-            file_data = b''.join(chunks_data)
+            if chunks_data:
+                file_data = b''.join(chunks_data)
         
-        # If we have file data, try deduplication
+        # Now we have the ORIGINAL file data, perform deduplication
         if file_data:
             try:
+                # This will now properly deduplicate based on original content
                 dedup_result = await enhanced_dedup_service.store_deduplicated_file(
                     file_data=file_data,
                     file_name=session["name"],
@@ -441,45 +443,42 @@ async def complete_upload(
                         'mime_type': mimetypes.guess_type(session["name"])[0],
                         'folder_id': session.get("folder")
                     },
-                    encrypt=True  # Re-encrypt with deduplication
+                    encrypt=True  # Will encrypt with a new key for CAS storage
                 )
                 
                 # If deduplication succeeded, clean up original storage
-
                 if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
-                    # Calculate actual savings based on reused blocks
-                    actual_saved = 0
-                    if 'duplicate_blocks' in dedup_result:
-                        # Each duplicate block saves its size
-                        actual_saved = len(dedup_result.get('duplicate_blocks', [])) * 16384  # avg block size
+                    # Calculate actual savings
+                    actual_saved = dedup_result.get('saved_size', 0)
                     
                     # For full duplicates, the entire file is saved
                     if dedup_result['status'] == 'full_duplicate':
                         actual_saved = session["size"]
                     
-                    # Override the reported saved_size
-                    dedup_result['saved_size'] = actual_saved
-                    dedup_result['dedup_ratio'] = (actual_saved / session["size"] * 100) if session["size"] > 0 else 0
+                    print(f"✅ Deduplication successful! Saved {actual_saved/1024/1024:.1f}MB ({dedup_result.get('dedup_ratio', 0):.1f}%)")
                     
-                    print(f"✅ Deduplication successful! Saved {actual_saved/1024/1024:.1f}MB ({dedup_result['dedup_ratio']:.1f}%)")
-                    
-                    # Clean up original files
+                    # Clean up original encrypted files since we now have deduplicated storage
                     if storage_strategy == "single" and session.get("storage_path"):
                         try:
                             os.remove(session["storage_path"])
-                        except:
-                            pass
+                            print(f"🗑️ Removed original encrypted file: {session['storage_path']}")
+                        except Exception as e:
+                            print(f"⚠️ Could not remove original file: {e}")
+                    
                     elif storage_strategy == "chunked":
+                        removed_count = 0
                         for path in session.get("chunk_paths", {}).values():
                             try:
                                 os.remove(path)
+                                removed_count += 1
                             except:
                                 pass
+                        print(f"🗑️ Removed {removed_count} original encrypted chunks")
                     
-                    # Update user storage
+                    # Update user storage with actual usage
                     if hasattr(current_user, 'storage_used'):
                         # Only add the actual storage used (after deduplication)
-                        actual_used = session["size"] - dedup_result.get('saved_size', 0)
+                        actual_used = session["size"] - actual_saved
                         current_user.storage_used = (current_user.storage_used or 0) + actual_used
                     
                     await db.commit()
@@ -491,8 +490,8 @@ async def complete_upload(
                             "file_name": session["name"], 
                             "size": session["size"],
                             "storage_type": "deduplicated",
-                            "saved_size": dedup_result['saved_size'],
-                            "dedup_ratio": dedup_result['dedup_ratio']
+                            "saved_size": actual_saved,
+                            "dedup_ratio": dedup_result.get('dedup_ratio', 0)
                         },
                         request,
                     )
@@ -518,9 +517,11 @@ async def complete_upload(
                         "storage_type": "deduplicated",
                         "deduplication": {
                             "enabled": True,
-                            "saved_size": dedup_result['saved_size'],
-                            "dedup_ratio": dedup_result['dedup_ratio'],
-                            "status": dedup_result['status']
+                            "saved_size": actual_saved,
+                            "dedup_ratio": dedup_result.get('dedup_ratio', 0),
+                            "status": dedup_result['status'],
+                            "unique_blocks": dedup_result.get('unique_blocks', 0),
+                            "duplicate_blocks": len(dedup_result.get('duplicate_blocks', []))
                         },
                         "encrypted": True,
                         "duration": round(duration, 2)
@@ -528,7 +529,8 @@ async def complete_upload(
                     
             except Exception as e:
                 print(f"⚠️ Deduplication failed, falling back to normal storage: {str(e)}")
-                # Continue with normal storage if deduplication fails
+                import traceback
+                traceback.print_exc()
     
     # ============ DEDUPLICATION INTEGRATION END ============
     

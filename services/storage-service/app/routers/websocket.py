@@ -7,6 +7,7 @@ from datetime import datetime
 from ..database import get_redis, async_session
 from ..services.auth import auth_service
 from fastapi import WebSocket, Query
+import websockets  # to catch low-level connection closed exceptions
 
 router = APIRouter(prefix="/api/v1")
 
@@ -17,9 +18,31 @@ class ConnectionManager:
         # Store websocket to user mapping for cleanup
         self.websocket_to_user: Dict[WebSocket, str] = {}
         
+    async def safe_send_json(self, websocket: WebSocket, payload: dict) -> bool:
+        """
+        Send JSON to a websocket safely — catch common disconnect/transport errors.
+        Returns True if send succeeded, False if socket is closed or failed.
+        """
+        try:
+            await websocket.send_json(payload)
+            return True
+        except (WebSocketDisconnect, websockets.exceptions.ConnectionClosedError) as e:
+            # Client disconnected, mark for removal by caller
+            print(f"websocket send failed (client disconnected): {e}")
+            return False
+        except Exception as e:
+            # Unexpected error — log and treat as failure
+            print(f"websocket unexpected send error: {e}")
+            return False
+
     async def connect(self, websocket: WebSocket, user_id: str):
         """Accept and register a new WebSocket connection"""
-        await websocket.accept()
+        # Accept the socket (if already accepted elsewhere this will raise; handle gracefully)
+        try:
+            await websocket.accept()
+        except Exception:
+            # ignore if already accepted or accept failed; proceed to registration
+            pass
         
         # Add to user's connections
         if user_id not in self.active_connections:
@@ -29,15 +52,20 @@ class ConnectionManager:
         # Store reverse mapping
         self.websocket_to_user[websocket] = user_id
         
-        # Send connection confirmation
-        await websocket.send_json({
+        # Send connection confirmation safely
+        ok = await self.safe_send_json(websocket, {
             "type": "connection",
             "status": "connected",
             "user_id": user_id,
             "timestamp": datetime.utcnow().isoformat()
         })
+        if not ok:
+            # client disconnected during handshake — remove registration and return False
+            self.disconnect(websocket)
+            return False
         
         print(f"WebSocket connected for user: {user_id}")
+        return True
     
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection"""
@@ -47,33 +75,40 @@ class ConnectionManager:
         if user_id:
             # Remove from user's connections
             if user_id in self.active_connections:
-                self.active_connections[user_id].discard(websocket)
+                try:
+                    self.active_connections[user_id].discard(websocket)
+                except Exception:
+                    pass
                 
                 # Clean up empty sets
                 if not self.active_connections[user_id]:
                     del self.active_connections[user_id]
             
-            # Remove reverse mapping
-            del self.websocket_to_user[websocket]
+            # Remove reverse mapping safely
+            try:
+                del self.websocket_to_user[websocket]
+            except Exception:
+                pass
             
             print(f"WebSocket disconnected for user: {user_id}")
     
     async def send_to_user(self, user_id: str, message: dict):
         """Send message to all connections for a specific user"""
-        if user_id in self.active_connections:
-            # Send to all user's connections (multiple tabs/devices)
-            disconnected = []
-            
-            for websocket in self.active_connections[user_id]:
-                try:
-                    await websocket.send_json(message)
-                except:
-                    # Mark for removal if send fails
-                    disconnected.append(websocket)
-            
-            # Clean up disconnected websockets
-            for ws in disconnected:
-                self.disconnect(ws)
+        if user_id not in self.active_connections:
+            return
+        
+        # iterate over a shallow copy to avoid mutation while iterating
+        connections = list(self.active_connections.get(user_id, set()))
+        disconnected = []
+        
+        for websocket in connections:
+            ok = await self.safe_send_json(websocket, message)
+            if not ok:
+                disconnected.append(websocket)
+        
+        # Clean up disconnected websockets
+        for ws in disconnected:
+            self.disconnect(ws)
     
     async def broadcast_to_users(self, user_ids: list, message: dict):
         """Send message to multiple users"""
@@ -82,7 +117,8 @@ class ConnectionManager:
     
     async def broadcast_all(self, message: dict):
         """Broadcast message to all connected users"""
-        for user_id in self.active_connections:
+        # iterate over a shallow copy of keys
+        for user_id in list(self.active_connections.keys()):
             await self.send_to_user(user_id, message)
 
 # Create global connection manager
@@ -99,14 +135,16 @@ async def websocket_endpoint(
     
     # Authenticate user from token
     try:
-        # Don't re-import, use the ones from top
         async with async_session() as db:
             user = await auth_service.get_current_user_from_token(token, db)
             print(f"Authentication result: {user}")  # Debug log
             
             if not user:
                 print("User not found or token invalid")  # Debug log
-                await websocket.close(code=4001, reason="Unauthorized")
+                try:
+                    await websocket.close(code=4001, reason="Unauthorized")
+                except Exception:
+                    pass
                 return
         
         user_id = str(user.id)
@@ -116,11 +154,17 @@ async def websocket_endpoint(
         print(f"WebSocket auth error: {e}")
         import traceback
         traceback.print_exc()
-        await websocket.close(code=4001, reason="Authentication failed")
+        try:
+            await websocket.close(code=4001, reason="Authentication failed")
+        except Exception:
+            pass
         return
     
-    # Connect the WebSocket
-    await manager.connect(websocket, user_id)
+    # Connect the WebSocket (safe)
+    connected = await manager.connect(websocket, user_id)
+    if not connected:
+        # client disconnected during handshake
+        return
     
     # Get Redis for pub/sub
     redis_client = await get_redis()
@@ -128,7 +172,7 @@ async def websocket_endpoint(
     try:
         # Main message loop
         while True:
-            # Receive message from client
+            # Receive message from client (this will raise WebSocketDisconnect on client close)
             data = await websocket.receive_json()
             
             # Handle different message types
@@ -136,7 +180,7 @@ async def websocket_endpoint(
             
             if message_type == "ping":
                 # Heartbeat
-                await websocket.send_json({
+                await manager.safe_send_json(websocket, {
                     "type": "pong",
                     "timestamp": datetime.utcnow().isoformat()
                 })
@@ -179,12 +223,18 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         manager.disconnect(websocket)
         # Clean up Redis subscriptions
-        await redis_client.delete(f"ws:subs:{user_id}")
+        try:
+            await redis_client.delete(f"ws:subs:{user_id}")
+        except Exception:
+            pass
         
     except Exception as e:
         print(f"WebSocket error for user {user_id}: {e}")
         manager.disconnect(websocket)
-        await redis_client.delete(f"ws:subs:{user_id}")
+        try:
+            await redis_client.delete(f"ws:subs:{user_id}")
+        except Exception:
+            pass
 
 # Helper functions to send notifications from other parts of the app
 
