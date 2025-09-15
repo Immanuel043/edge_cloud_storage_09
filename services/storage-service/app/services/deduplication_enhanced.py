@@ -346,7 +346,7 @@ class EnhancedDeduplicationService:
                 encryption_key=encrypted_master_key  # Store master key for metadata
             )
             db.add(new_file)
-            
+            await db.flush()
             # Create ContentBlock entries for new blocks only
             for block in dedup_result['blocks']:
                 if not block['is_duplicate']:

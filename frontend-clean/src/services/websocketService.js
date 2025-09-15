@@ -12,7 +12,8 @@ class WebSocketService {
     this.messageQueue = [];
     this.heartbeatInterval = null;
     this.awaitingPong = false;
-    this.pingIntervalMs = 30000;
+    this.pingIntervalMs = 60000;
+    this.pongTimeoutMs = 10000;
     this.connectTimeoutMs = 15000;
     this.connectPromise = null;
     this.connectPromiseResolve = null;
@@ -20,6 +21,7 @@ class WebSocketService {
     this.manualClose = false; // true when client intentionally closed
     this.getToken = getToken; // optional function to retrieve a fresh token for reconnect
   }
+ 
 
   _makeWsUrl(token) {
   // Prefer explicit WS_URL; fall back to API_URL transformed to ws
@@ -100,6 +102,10 @@ class WebSocketService {
           // handle pong
           if (message && message.type === 'pong') {
             this.awaitingPong = false;
+            if (this.pongTimeout) {
+              clearTimeout(this.pongTimeout);
+              this.pongTimeout = null;
+            }
             this.emit('pong', message);
             return;
           }
@@ -238,14 +244,29 @@ class WebSocketService {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(() => {
       if (!this.isConnected) return;
+      
       if (this.awaitingPong) {
         console.warn('No pong received -> force reconnect');
         // try force close to trigger reconnect logic
-        try { this.ws.close(); } catch (e) {}
+        try { 
+          this.ws.close(); 
+        } catch (e) {}
         return;
       }
+      
       this.awaitingPong = true;
       this.send({ type: 'ping' });
+      
+      // Set a timeout for pong response
+      this.pongTimeout = setTimeout(() => {
+        if (this.awaitingPong) {
+          console.warn('Pong timeout -> force reconnect');
+          this.awaitingPong = false;
+          try { 
+            this.ws.close(); 
+          } catch (e) {}
+        }
+      }, this.pongTimeoutMs);
     }, this.pingIntervalMs);
   }
 
@@ -255,7 +276,12 @@ class WebSocketService {
       this.heartbeatInterval = null;
       this.awaitingPong = false;
     }
+    if (this.pongTimeout) {
+      clearTimeout(this.pongTimeout);
+      this.pongTimeout = null;
+    }
   }
+
 
   handleMessage(message) {
     if (!message) return;

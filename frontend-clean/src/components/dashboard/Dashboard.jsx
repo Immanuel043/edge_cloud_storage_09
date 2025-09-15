@@ -24,9 +24,10 @@ import { formatBytes, formatDate, getFileIcon, getFileType } from '../../utils/h
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../services/storageService';
 
+
 export default function Dashboard() {
   const { darkMode, toggleTheme } = useTheme();
-  const { user, logout } = useAuth();
+  const { user, logout, token, isAuthenticated, loading: authLoading } = useAuth();
   const { 
     files, 
     folders, 
@@ -66,11 +67,23 @@ export default function Dashboard() {
   const abortControllers = useRef({});
   const [showDedupPanel, setShowDedupPanel] = useState(false);
   const [dedupStats, setDedupStats] = useState(null);
+  const [dedupLoading, setDedupLoading] = useState(false);
+  
 
   useEffect(() => {
-  loadDedupStats();
-}, []);
+    // Don't attempt to load if auth is still loading or not authenticated
+    if (authLoading || !isAuthenticated || !token) {
+      console.log('Auth not ready for dedup load:', { 
+        authLoading, 
+        isAuthenticated, 
+        hasToken: !!token 
+      });
+      return;
+    }
 
+    // Load dedup stats when auth is ready
+    loadDedupStats();
+  }, [token, isAuthenticated, authLoading]);
 
   // Setup keyboard shortcuts
   useKeyboardShortcuts({
@@ -95,13 +108,51 @@ export default function Dashboard() {
   });
 
   const loadDedupStats = async () => {
-  try {
-    const stats = await storageService.getDedupSavings(user?.token);
-    setDedupStats(stats);
-  } catch (error) {
-    console.error('Failed to load dedup stats:', error);
-  }
-};
+    // Skip if no token or already loading
+    if (!token || dedupLoading) {
+      console.log('Skipping dedup load:', { hasToken: !!token, loading: dedupLoading });
+      return;
+    }
+    
+    setDedupLoading(true);
+    try {
+      console.log('Loading dedup stats with auth token');
+      const savings = await storageService.getDedupSavings(token);
+      setDedupStats({ savings, error: null });
+      console.log('Dedup stats loaded successfully:', savings);
+    } catch (error) {
+      console.error('Failed to load dedup stats:', error);
+      // Only set error if component is still mounted
+      setDedupStats({ 
+        savings: null, 
+        error: error.message || 'Failed to load deduplication stats' 
+      });
+    } finally {
+      setDedupLoading(false);
+    }
+  };
+
+  // Function to handle file optimization
+  const handleOptimizeFile = async (fileId) => {
+    if (!token) {
+      console.error('No token available for optimization');
+      return { error: 'Authentication required' };
+    }
+    
+    try {
+      const result = await storageService.optimizeFileDedup(token, fileId);
+      if (result.status === 'optimized') {
+        // Refresh files and dedup stats after successful optimization
+        if (refreshFiles) refreshFiles();
+        await loadDedupStats();
+      }
+      return result;
+    } catch (error) {
+      console.error('Optimization failed:', error);
+      return { error: error.message };
+    }
+  };
+
 
 
   // Handle file upload
@@ -285,6 +336,9 @@ export default function Dashboard() {
                   title="Deduplication Analytics"
                 >
                 <Zap size={20} className={showDedupPanel ? 'text-indigo-500' : ''} />
+                {dedupLoading && (
+                    <span className="ml-1 text-xs">Loading...</span>
+                  )}
                 </button>
               </nav>
               
@@ -362,22 +416,24 @@ export default function Dashboard() {
         {storageStats && <StorageStats stats={storageStats} darkMode={darkMode} />}
 
         {/* Deduplication Panel - Add this */}
-        {showDedupPanel && (
+        {showDedupPanel && token &&(
           <div className="mb-6">
             <DeduplicationPanel 
               darkMode={darkMode}
-              token={user?.token}
-              onOptimizeFile={async (fileId) => {
-              const result = await storageService.optimizeFileDedup(user?.token, fileId);
-              if (result.status === 'optimized') {
-                refreshFiles(); // Refresh file list
-                loadDedupStats(); // Reload dedup stats
-              }
-              return result;
-              }}
+              token={token}
+              onOptimizeFile={handleOptimizeFile}
+              stats={dedupStats}
+              loading={dedupLoading}
+              onRefresh={loadDedupStats}
             />
           </div>
     )}
+      {/* Show loading or error state*/}
+      {showDedupPanel && !token && (
+        <div className="mb-6 p-4 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded">
+          Authentication required to view deduplication stats
+        </div>
+      )}
 
         {/* Filter Panel */}
         {showFilters && (

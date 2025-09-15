@@ -23,21 +23,38 @@ const DeduplicationPanel = ({ darkMode, token, onOptimizeFile }) => {
     fetchData();
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const [analyticsData, savingsData] = await Promise.all([
-        storageService.getDedupAnalytics(token),
-        storageService.getDedupSavings(token)
-      ]);
-      setAnalytics(analyticsData);
-      setSavings(savingsData);
-    } catch (error) {
-      console.error('Failed to fetch dedup data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+//fetchData:
+const fetchData = async () => {
+  setLoading(true);
+  try {
+    const [analyticsData, savingsData] = await Promise.all([
+      storageService.getDedupAnalytics(token),
+      storageService.getDedupSavings(token)
+    ]);
+    
+    console.log('Analytics data:', analyticsData);  // Debug log
+    console.log('Savings data:', savingsData);      // Debug log
+    
+    setAnalytics(analyticsData);
+    setSavings(savingsData);
+  } catch (error) {
+    console.error('Failed to fetch dedup data:', error);
+    // Show error to user
+    setAnalytics({
+      summary: { total_files: 0, dedup_ratio: 0 },
+      blocks: { total_blocks: 0, avg_references: 0 }
+    });
+    setSavings({
+      logical_size: 0,
+      physical_size: 0,
+      saved_size: 0,
+      savings_percentage: 0,
+      storage_efficiency: 1
+    });
+  } finally {
+    setLoading(false);
+  }
+};
 
   const runGarbageCollection = async () => {
     if (!window.confirm('Run garbage collection to clean up unused blocks?')) return;

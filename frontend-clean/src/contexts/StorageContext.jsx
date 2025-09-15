@@ -4,6 +4,7 @@ import { websocketService } from '../services/websocketService';
 import { useAuth } from './AuthContext';
 import { offlineDB } from '../utils/offlineStorage';
 
+
 const API_URL = import.meta.env.VITE_API_URL;
 
 const StorageContext = createContext();
@@ -38,6 +39,24 @@ export const StorageProvider = ({ children }) => {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // Also add a WebSocket listener for file_uploaded events
+  useEffect(() => {
+    if (!websocketService || !token) return;
+    
+    // Listen for file upload events from WebSocket
+    const handleFileUploaded = (data) => {
+      console.log('WebSocket: file uploaded event', data);
+      // Refresh files when we get a file uploaded event
+      refreshFiles();
+    };
+    
+    const unsubscribe = websocketService.on('file_uploaded', handleFileUploaded);
+    
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [token]);
 
   useEffect(() => {
     if (isAuthenticated && token) {
@@ -154,53 +173,106 @@ export const StorageProvider = ({ children }) => {
 };
 
   const refreshFiles = async (folderId = currentFolder) => {
+  const maxRetries = 3;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
     try {
-      // Load files and folders
+      console.log(`Refreshing files (attempt ${retryCount + 1})...`);
+      
+      // Add a small delay between retries
+      if (retryCount > 0) {
+        await new Promise(resolve => setTimeout(resolve, 500 * retryCount));
+      }
+      
       const [filesData, foldersData] = await Promise.all([
         storageService.getFiles(token, folderId),
         storageService.getFolders(token, folderId)
       ]);
       
+      console.log(`Files loaded: ${filesData.length} files, ${foldersData.length} folders`);
+      
       setFiles(filesData);
       setFolders(foldersData);
       
-      // ALSO refresh storage stats
+      // Also refresh storage stats
       await loadStorageStats();
       
       // Cache for offline
       if (isOnline) {
-        await offlineDB.cacheFiles(filesData);
-        await offlineDB.cacheFolders(foldersData);
+        try {
+          await offlineDB.cacheFiles(filesData);
+          await offlineDB.cacheFolders(foldersData);
+        } catch (cacheError) {
+          console.warn('Failed to cache files:', cacheError);
+        }
       }
+      
+      // Success - exit the retry loop
+      return;
+      
     } catch (error) {
-      console.error('Failed to load files:', error);
+      retryCount++;
+      console.error(`Failed to load files (attempt ${retryCount}):`, error);
+      
+      if (retryCount >= maxRetries) {
+        console.error('Max retries reached, giving up');
+        throw error;
+      }
     }
-  };
+  }
+};
 
   const uploadFile = async (file, onProgress) => {
-    try {
-      const result = await storageService.uploadFile(token, file, currentFolder, (progress) => {
-        // Call the original progress callback
-        if (onProgress) {
-          onProgress(progress);
-        }
-        
-        // Send progress via WebSocket to other sessions
+  try {
+    const result = await storageService.uploadFile(token, file, currentFolder, (progress) => {
+      // Call the original progress callback
+      if (onProgress) {
+        onProgress(progress);
+      }
+      
+      // Send progress via WebSocket only if connected
+      // Don't let WebSocket issues affect upload
+      try {
         if (websocketService.isConnected && progress.uploadId) {
           websocketService.sendUploadProgress(progress.uploadId, progress.progress);
         }
-      });
-      
-      // After successful upload, refresh everything
+      } catch (wsError) {
+        console.warn('WebSocket progress update failed:', wsError);
+      }
+    });
+    
+    console.log('Upload completed:', result);
+    
+    // Wait a moment for backend to fully commit
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Force refresh files
+    try {
       await refreshFiles();
-      await loadDedupStats(); // Refresh dedup stats after upload
-      
-      return result;
-    } catch (error) {
-      console.error('Upload failed:', error);
-      throw error;
+      await loadDedupStats();
+    } catch (refreshError) {
+      console.error('Initial refresh failed, retrying:', refreshError);
+      // Retry after another delay
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await refreshFiles();
     }
-  };
+    
+    // Verify the file appears in the list
+    setTimeout(async () => {
+      const fileInList = files.some(f => f.id === result.fileId || f.id === result.file_id);
+      if (!fileInList) {
+        console.log('File not in list yet, forcing another refresh...');
+        await refreshFiles();
+      }
+    }, 2000);
+    
+    return result;
+  } catch (error) {
+    console.error('Upload failed:', error);
+    throw error;
+  }
+};
 
   const downloadFile = async (fileId, fileName) => {
     return await storageService.downloadFile(token, fileId, fileName);
@@ -213,6 +285,14 @@ export const StorageProvider = ({ children }) => {
       // After successful deletion, refresh everything
       await refreshFiles();
       await loadDedupStats(); // Refresh dedup stats after deletion
+      await loadStorageStats();
+      
+      // Clear selection if the deleted file was selected
+      setSelectedFiles(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(fileId);
+        return newSet;
+      });
       
       return result;
     } catch (error) {
@@ -222,33 +302,69 @@ export const StorageProvider = ({ children }) => {
   };
 
   const bulkDelete = async (fileIds) => {
-    try {
-      // Use the bulk delete endpoint
-      const response = await fetch(`${API_URL}/files/bulk-delete`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ file_ids: fileIds })
-      });
-      
-      if (!response.ok) {
-        throw new Error('Bulk delete failed');
+  if (!fileIds || fileIds.length === 0) {
+    console.error('No files selected for deletion');
+    return { deleted: 0, freed_space: 0 };
+  }
+
+  if (!token) {
+    console.error('No authentication token available');
+    throw new Error('Authentication required');
+  }
+
+  try {
+    console.log('Bulk deleting files:', fileIds);
+    
+    // Since API_URL already includes /api/v1, just append the endpoint
+    const url = `${API_URL}/files/bulk-delete`;  // NOT /api/v1/files/bulk-delete
+    console.log('Bulk delete URL:', url); // Should log: http://localhost:8001/api/v1/files/bulk-delete
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ file_ids: fileIds })
+    });
+    
+    if (!response.ok) {
+      let errorMessage = `Bulk delete failed: ${response.status}`;
+      try {
+        const errorData = await response.text();
+        errorMessage += ` - ${errorData}`;
+      } catch (e) {
+        // Ignore error reading response
       }
-      
-      const result = await response.json();
-      
-      // After successful bulk deletion, refresh everything
-      await refreshFiles();
-      await loadDedupStats(); // Refresh dedup stats after bulk delete
-      
-      return result;
-    } catch (error) {
-      console.error('Failed to bulk delete:', error);
-      throw error;
+      console.error(errorMessage);
+      throw new Error(errorMessage);
     }
-  };
+    
+    const result = await response.json();
+    console.log('Bulk delete successful:', result);
+    
+    // Update local state
+    setFiles(prevFiles => prevFiles.filter(file => !fileIds.includes(file.id)));
+    setSelectedFiles(new Set());
+    
+    // Refresh all data
+    await Promise.all([
+      refreshFiles(),
+      loadStorageStats(),
+      loadDedupStats()
+    ]);
+    
+    return result;
+  } catch (error) {
+    console.error('Failed to bulk delete:', error);
+    
+    if (error.message.includes('Failed to fetch')) {
+      throw new Error('Cannot connect to server. Please ensure the backend is running.');
+    }
+    
+    throw error;
+  }
+};
 
   const createFolder = async (name) => {
     await storageService.createFolder(token, name, currentFolder);

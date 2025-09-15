@@ -642,85 +642,142 @@ class StorageService {
   }
 
   // Deduplication related methods
-  async getDedupAnalytics(token) {
+  /**async getDedupAnalytics(token) {
+    await rateLimiter.checkLimit();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+    
+    const response = await fetch(`${API_URL}/dedup/analytics`, {
+      headers,
+      credentials: 'include'
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to load dedup analytics:', response.status);
+      throw new Error('Failed to load deduplication analytics');
+    }
+    
+    return await response.json();
+  }**/
+
+// Fixed deduplication methods for storageService.js
+
+async getDedupAnalytics(token) {
   await rateLimiter.checkLimit();
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-  const response = await fetch(`${API_URL}/dedup/analytics`, { 
-    headers, 
-    credentials: 'include' 
+  
+  if (!token) {
+    console.error('No token provided for getDedupAnalytics');
+    throw new Error('Authentication required');
+  }
+  
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+  
+  const response = await fetch(`${API_URL}/dedup/analytics`, {
+    method: 'GET',
+    headers
+    // Removed credentials: 'include' since using token auth
   });
-  if (!response.ok) throw new Error('Failed to load deduplication analytics');
+  
+  if (!response.ok) {
+    console.error('Failed to load dedup analytics:', response.status, 'URL:', `${API_URL}/dedup/analytics`);
+    throw new Error('Failed to load deduplication analytics');
+  }
+  
   return await response.json();
 }
 
 async getDedupSavings(token) {
   await rateLimiter.checkLimit();
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-  const response = await fetch(`${API_URL}/dedup/savings`, { 
-    headers, 
-    credentials: 'include' 
+  
+  if (!token) {
+    console.error('No token provided for getDedupSavings');
+    throw new Error('Authentication required');
+  }
+  
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+  
+  const response = await fetch(`${API_URL}/dedup/savings`, {
+    method: 'GET',
+    headers
+    // Removed credentials: 'include' since using token auth
   });
-  if (!response.ok) throw new Error('Failed to load deduplication savings');
+  
+  if (!response.ok) {
+    console.error('Failed to load dedup savings:', response.status, 'URL:', `${API_URL}/dedup/savings`);
+    throw new Error('Failed to load deduplication savings');
+  }
+  
   return await response.json();
 }
 
 async optimizeFileDedup(token, fileId) {
   await rateLimiter.checkLimit();
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  
+  if (!token) {
+    console.error('No token provided for optimizeFileDedup');
+    throw new Error('Authentication required');
+  }
+  
+  if (!fileId) {
+    console.error('No fileId provided for optimization');
+    throw new Error('File ID required');
+  }
+  
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+  
   const response = await fetch(`${API_URL}/dedup/optimize/${fileId}`, {
     method: 'POST',
-    headers,
-    credentials: 'include'
+    headers
+    // Removed credentials: 'include' since using token auth
   });
-  if (!response.ok) throw new Error('Failed to optimize file');
+  
+  if (!response.ok) {
+    console.error('Failed to optimize file:', response.status, 'FileId:', fileId);
+    throw new Error('Failed to optimize file');
+  }
+  
   return await response.json();
 }
 
 async runGarbageCollection(token) {
   await rateLimiter.checkLimit();
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  
+  if (!token) {
+    console.error('No token provided for runGarbageCollection');
+    throw new Error('Authentication required');
+  }
+  
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+  
   const response = await fetch(`${API_URL}/dedup/gc`, {
     method: 'POST',
-    headers,
-    credentials: 'include'
+    headers
+    // Removed credentials: 'include' since using token auth
   });
-  if (!response.ok) throw new Error('Failed to run garbage collection');
+  
+  if (!response.ok) {
+    console.error('Failed to run GC:', response.status);
+    throw new Error('Failed to run garbage collection');
+  }
+  
   return await response.json();
 }
 
-async getDedupAnalytics(token) {
-  // Temporary mock data for testing
-  return {
-    summary: {
-      total_files: 0,
-      logical_size: 0,
-      physical_size: 0,
-      saved_size: 0,
-      dedup_ratio: 0,
-      compression_ratio: 1
-    },
-    blocks: {
-      total_blocks: 0,
-      total_size: 0,
-      avg_references: 0
-    },
-    top_duplicates: []
-  };
+
 }
-
-async getDedupSavings(token) {
-  // Temporary mock data for testing
-  return {
-    logical_size: 0,
-    physical_size: 0,
-    saved_size: 0,
-    savings_percentage: 0,
-    storage_efficiency: 1
-  };
-}
-}
-
-
-
 
 export const storageService = new StorageService();

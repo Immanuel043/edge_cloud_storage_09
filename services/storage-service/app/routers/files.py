@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request,Header, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select,text
 from typing import List, Optional
 import os
 import json
@@ -495,14 +495,17 @@ async def get_file_preview(
         media_type=file_obj.mime_type,
     )
 
+
+
+
 @router.delete("/{file_id}")
 async def delete_file(
     file_id: str,
-    current_user: User = Depends(get_current_user),  # Fixed
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Delete file with support for all storage types"""
+    """Delete file with cascade handling"""
     redis_client = await get_redis()
     
     result = await db.execute(
@@ -513,45 +516,72 @@ async def delete_file(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
     
-    # Handle different storage types
-    if file_obj.storage_type == "inline":
-        if file_obj.storage_key:
-            await redis_client.delete(file_obj.storage_key)
-    
-    elif file_obj.storage_type == "single":
-        if file_obj.object_path and os.path.exists(file_obj.object_path):
-            try:
-                os.remove(file_obj.object_path)
-            except Exception as e:
-                print(f"Failed to delete file: {e}")
-    
-    else:  # chunked
-        if file_obj.chunk_info:
-            for chunk_hash in file_obj.chunk_info.get("chunks", []):
-                refs = await redis_client.decr(f"chunk:refs:{chunk_hash}")
-                if refs <= 0:
-                    chunk_info = await redis_client.get(f"chunk:{chunk_hash}")
-                    if chunk_info:
-                        chunk_data = json.loads(chunk_info)
+    try:
+        # First, delete related content_blocks to avoid foreign key constraint violation
+        await db.execute(
+            text("DELETE FROM content_blocks WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        
+        # Handle different storage types
+        if file_obj.storage_type == "inline":
+            if file_obj.storage_key:
+                try:
+                    await redis_client.delete(file_obj.storage_key)
+                except Exception as e:
+                    print(f"Failed to delete from Redis: {e}")
+        
+        elif file_obj.storage_type == "single":
+            if file_obj.object_path and os.path.exists(file_obj.object_path):
+                try:
+                    os.remove(file_obj.object_path)
+                except Exception as e:
+                    print(f"Failed to delete file: {e}")
+        
+        else:  # chunked
+            if file_obj.chunk_info:
+                # Handle chunk cleanup for chunked files
+                chunk_info = file_obj.chunk_info
+                upload_id = chunk_info.get("upload_id", str(file_obj.id))
+                chunk_count = chunk_info.get("count", 0)
+                chunk_paths = chunk_info.get("paths", {})
+                
+                for i in range(chunk_count):
+                    chunk_path = chunk_paths.get(str(i))
+                    if not chunk_path:
+                        shard = upload_id[:2] if len(upload_id) >= 2 else "00"
+                        chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                    
+                    if os.path.exists(chunk_path):
                         try:
-                            os.remove(chunk_data["path"])
-                        except Exception:
-                            pass
-                        await redis_client.delete(f"chunk:{chunk_hash}")
-                        await redis_client.delete(f"chunk:refs:{chunk_hash}")
-    
-    # Update user storage and delete from DB
-    current_user.storage_used -= file_obj.file_size
-    await db.delete(file_obj)
-    await db.commit()
-    
-    await log_activity(
-        db, current_user.id, "file_deleted", str(file_id),
-        {"file_name": file_obj.file_name, "storage_type": file_obj.storage_type},
-        request
-    )
-    
-    return {"status": "success", "freed_space": file_obj.file_size}
+                            os.remove(chunk_path)
+                            print(f"Deleted chunk: {chunk_path}")
+                        except Exception as e:
+                            print(f"Failed to delete chunk {chunk_path}: {e}")
+        
+        # Update user storage
+        if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
+            current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
+        
+        # Delete the file object
+        await db.delete(file_obj)
+        await db.commit()
+        
+        # Log activity
+        await log_activity(
+            db, current_user.id, "file_deleted", str(file_id),
+            {"file_name": file_obj.file_name, "storage_type": file_obj.storage_type},
+            request
+        )
+        
+        return {"status": "success", "freed_space": file_obj.file_size}
+        
+    except Exception as e:
+        await db.rollback()
+        print(f"Delete error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/bulk-delete")
 async def bulk_delete_files(
@@ -560,51 +590,102 @@ async def bulk_delete_files(
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Delete multiple files"""
+    """Delete multiple files with cascade handling"""
     file_ids = request_data.file_ids
     redis_client = await get_redis()
     deleted_count = 0
     freed_space = 0
+    deleted_files = []
+    failed_files = []
     
-    for file_id in file_ids:
-        result = await db.execute(
-            select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
-        )
-        file_obj = result.scalar_one_or_none()
-        
-        if file_obj:
-            # Handle different storage types (same logic as single delete)
-            if file_obj.storage_type == "inline":
-                if file_obj.storage_key:
-                    await redis_client.delete(file_obj.storage_key)
-            
-            elif file_obj.storage_type == "single":
-                if file_obj.object_path and os.path.exists(file_obj.object_path):
-                    try:
-                        os.remove(file_obj.object_path)
-                    except Exception:
-                        pass
-            
-            else:  # chunked
-                if file_obj.chunk_info:
-                    for chunk_hash in file_obj.chunk_info.get("chunks", []):
-                        refs = await redis_client.decr(f"chunk:refs:{chunk_hash}")
-                        if refs <= 0:
-                            chunk_info = await redis_client.get(f"chunk:{chunk_hash}")
-                            if chunk_info:
-                                chunk_data = json.loads(chunk_info)
+    try:
+        for file_id in file_ids:
+            try:
+                result = await db.execute(
+                    select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+                )
+                file_obj = result.scalar_one_or_none()
+                
+                if not file_obj:
+                    failed_files.append(file_id)
+                    continue
+                
+                # First, delete related content_blocks (if your app uses them)
+                await db.execute(
+                    text("DELETE FROM content_blocks WHERE file_id = :file_id"),
+                    {"file_id": file_id}
+                )
+                
+                # Handle different storage types
+                if file_obj.storage_type == "inline":
+                    if file_obj.storage_key:
+                        try:
+                            await redis_client.delete(file_obj.storage_key)
+                        except Exception as e:
+                            print(f"Failed to delete from Redis: {e}")
+                
+                elif file_obj.storage_type == "single":
+                    if file_obj.object_path and os.path.exists(file_obj.object_path):
+                        try:
+                            os.remove(file_obj.object_path)
+                        except Exception as e:
+                            print(f"Failed to delete file from disk: {e}")
+                
+                else:  # chunked
+                    if file_obj.chunk_info:
+                        # Handle chunk cleanup for chunked files
+                        chunk_info = file_obj.chunk_info
+                        upload_id = chunk_info.get("upload_id", str(file_obj.id))
+                        chunk_count = chunk_info.get("count", 0)
+                        chunk_paths = chunk_info.get("paths", {})
+                        
+                        for i in range(chunk_count):
+                            chunk_path = chunk_paths.get(str(i))
+                            if not chunk_path:
+                                shard = upload_id[:2] if len(upload_id) >= 2 else "00"
+                                chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                            
+                            if os.path.exists(chunk_path):
                                 try:
-                                    os.remove(chunk_data["path"])
-                                except Exception:
-                                    pass
-                                await redis_client.delete(f"chunk:{chunk_hash}")
-                                await redis_client.delete(f"chunk:refs:{chunk_hash}")
-            
-            freed_space += file_obj.file_size
-            await db.delete(file_obj)
-            deleted_count += 1
-    
-    current_user.storage_used -= freed_space
-    await db.commit()
-    
-    return {"deleted": deleted_count, "freed_space": freed_space}
+                                    os.remove(chunk_path)
+                                    print(f"Deleted chunk: {chunk_path}")
+                                except Exception as e:
+                                    print(f"Failed to delete chunk {chunk_path}: {e}")
+                
+                freed_space += file_obj.file_size
+                await db.delete(file_obj)
+                deleted_count += 1
+                deleted_files.append(file_id)
+                
+            except Exception as e:
+                print(f"Failed to delete file {file_id}: {e}")
+                failed_files.append(file_id)
+        
+        # Update user storage
+        if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
+            current_user.storage_used = max(0, current_user.storage_used - freed_space)
+        
+        # Commit all changes
+        await db.commit()
+        
+        # Log activity
+        if deleted_count > 0:
+            await log_activity(
+                db, current_user.id, "bulk_delete", None,
+                {"deleted_count": deleted_count, "freed_space": freed_space},
+                request
+            )
+        
+        return {
+            "deleted": deleted_count,
+            "freed_space": freed_space,
+            "deleted_files": deleted_files,
+            "failed_files": failed_files
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        print(f"Bulk delete error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

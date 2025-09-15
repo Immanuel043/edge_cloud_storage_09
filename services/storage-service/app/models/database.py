@@ -99,7 +99,7 @@ class ContentBlock(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     block_hash = Column(String(64), nullable=False, index=True)
-    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id'))
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id',ondelete='CASCADE'))
     block_size = Column(Integer)
     block_offset = Column(Integer)
     reference_count = Column(Integer, default=1)
