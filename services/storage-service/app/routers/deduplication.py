@@ -12,6 +12,11 @@ from ..dependencies import get_db, get_current_user
 from ..models.database import User, Object
 from ..services.deduplication_enhanced import enhanced_dedup_service
 
+# Get allowed emails from environment variable
+ALLOWED_GC_EMAILS = os.getenv("ALLOWED_GC_EMAILS", "").split(",")
+ALLOWED_GC_EMAILS = [email.strip() for email in ALLOWED_GC_EMAILS if email.strip()]
+
+
 router = APIRouter(prefix="/api/v1/dedup", tags=["deduplication"])
 logger = logging.getLogger(__name__)
 
@@ -100,7 +105,7 @@ async def get_storage_savings(
 ):
     """Get accurate storage savings from deduplication"""
     
-    # Calculate real savings based on unique blocks
+    # Use actual block sizes instead of assuming 16KB
     result = await db.execute(text("""
         WITH file_stats AS (
             SELECT 
@@ -112,7 +117,8 @@ async def get_storage_savings(
         ),
         block_stats AS (
             SELECT 
-                COUNT(DISTINCT cb.block_hash) as unique_blocks
+                COUNT(DISTINCT cb.block_hash) as unique_blocks,
+                SUM(cb.block_size) as actual_physical_size  -- Use actual block sizes
             FROM content_blocks cb
             JOIN objects o ON cb.file_id = o.id
             WHERE o.user_id = :user_id
@@ -120,11 +126,11 @@ async def get_storage_savings(
         SELECT 
             f.file_count,
             f.logical_size,
-            b.unique_blocks * 16384 as physical_size,
-            f.logical_size - (b.unique_blocks * 16384) as saved_size,
+            COALESCE(b.actual_physical_size, 0) as physical_size,
+            f.logical_size - COALESCE(b.actual_physical_size, 0) as saved_size,
             CASE 
                 WHEN f.logical_size > 0 
-                THEN ROUND(((f.logical_size - (b.unique_blocks * 16384))::numeric / f.logical_size) * 100, 2)
+                THEN ROUND(((f.logical_size - COALESCE(b.actual_physical_size, 0))::numeric / f.logical_size) * 100, 2)
                 ELSE 0 
             END as savings_percentage
         FROM file_stats f, block_stats b
@@ -226,14 +232,20 @@ async def run_garbage_collection(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Run garbage collection (admin only)"""
+    """Run garbage collection (admin only or authorized users)"""
     
-    if current_user.user_type != "admin":
-        raise HTTPException(403, "Admin access required")
+    # Get allowed emails from environment variable
+    allowed_emails_env = os.getenv("ALLOWED_GC_EMAILS", "")
+    allowed_emails = allowed_emails_env.split(",") if allowed_emails_env else []
+    allowed_emails = [email.strip() for email in allowed_emails if email.strip()]
+    
+    # Allow admin users or emails in the allowed list
+    if current_user.user_type != "admin" and current_user.email not in allowed_emails:
+        raise HTTPException(403, f"Access denied for {current_user.email}")
     
     # Run cleanup in background
     background_tasks.add_task(
         enhanced_dedup_service.garbage_collect, db
     )
     
-    return {"status": "gc_initiated"}
+    return {"status": "gc_initiated", "authorized_user": current_user.email}

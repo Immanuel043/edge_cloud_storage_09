@@ -159,6 +159,9 @@ services:
       context: ../services/storage-service
       dockerfile: Dockerfile
     container_name: edge-storage-service
+    env_file:
+      - .env # Load environment variables from .env file
+    
     depends_on:
       postgres:
         condition: service_healthy
