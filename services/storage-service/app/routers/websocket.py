@@ -1,275 +1,327 @@
-# services/storage-service/app/routers/websocket.py
+# services/storage-service/app/routers/websocket_optimized.py
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from typing import Dict, Set
-import json, uuid, asyncio
-from datetime import datetime
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends
+from typing import Dict, Set, Optional
+import json, asyncio, time
+from datetime import datetime, timedelta
+from collections import defaultdict
+import logging
 from ..database import get_redis, async_session
 from ..services.auth import auth_service
-from fastapi import WebSocket, Query
-import websockets  # to catch low-level connection closed exceptions
+from ..dependencies import get_current_user  # Add this import
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
 
-class ConnectionManager:
-    def __init__(self):
-        # Store active connections: user_id -> set of websockets
+class RateLimiter:
+    """Simple rate limiter for WebSocket messages"""
+    
+    def __init__(self, max_messages: int = 100, window_seconds: int = 60):
+        self.max_messages = max_messages
+        self.window_seconds = window_seconds
+        self.user_messages = defaultdict(list)
+    
+    def is_allowed(self, user_id: str) -> bool:
+        now = time.time()
+        # Clean old messages
+        self.user_messages[user_id] = [
+            timestamp for timestamp in self.user_messages[user_id]
+            if now - timestamp < self.window_seconds
+        ]
+        
+        # Check rate limit
+        if len(self.user_messages[user_id]) >= self.max_messages:
+            return False
+        
+        # Add current message
+        self.user_messages[user_id].append(now)
+        return True
+
+class EnhancedConnectionManager:
+    def __init__(self, 
+                 max_connections_per_user: int = 5,
+                 max_total_connections: int = 500,
+                 heartbeat_interval: int = 30):
+        
+        # Connection storage
         self.active_connections: Dict[str, Set[WebSocket]] = {}
-        # Store websocket to user mapping for cleanup
         self.websocket_to_user: Dict[WebSocket, str] = {}
         
-    async def safe_send_json(self, websocket: WebSocket, payload: dict) -> bool:
-        """
-        Send JSON to a websocket safely — catch common disconnect/transport errors.
-        Returns True if send succeeded, False if socket is closed or failed.
-        """
-        try:
-            await websocket.send_json(payload)
-            return True
-        except (WebSocketDisconnect, websockets.exceptions.ConnectionClosedError) as e:
-            # Client disconnected, mark for removal by caller
-            print(f"websocket send failed (client disconnected): {e}")
-            return False
-        except Exception as e:
-            # Unexpected error — log and treat as failure
-            print(f"websocket unexpected send error: {e}")
-            return False
-
-    async def connect(self, websocket: WebSocket, user_id: str):
+        # Connection limits
+        self.max_connections_per_user = max_connections_per_user
+        self.max_total_connections = max_total_connections
+        
+        # Heartbeat settings
+        self.heartbeat_interval = heartbeat_interval
+        self.last_ping: Dict[WebSocket, datetime] = {}
+        
+        # Rate limiting
+        self.rate_limiter = RateLimiter()
+        
+        # Metrics
+        self.metrics = {
+            "total_connections": 0,
+            "messages_sent": 0,
+            "messages_received": 0,
+            "errors": 0,
+            "rate_limit_hits": 0
+        }
+    
+    @property
+    def total_connections(self) -> int:
+        return sum(len(sockets) for sockets in self.active_connections.values())
+    
+    async def can_connect(self, user_id: str) -> tuple[bool, str]:
+        """Check if a new connection is allowed"""
+        
+        # Check total connections limit
+        if self.total_connections >= self.max_total_connections:
+            return False, "Server at capacity"
+        
+        # Check per-user limit
+        user_connections = len(self.active_connections.get(user_id, set()))
+        if user_connections >= self.max_connections_per_user:
+            return False, f"User connection limit reached ({self.max_connections_per_user})"
+        
+        return True, "OK"
+    
+    async def connect(self, websocket: WebSocket, user_id: str) -> bool:
         """Accept and register a new WebSocket connection"""
-        # Accept the socket (if already accepted elsewhere this will raise; handle gracefully)
+        
+        # Check connection limits
+        can_connect, reason = await self.can_connect(user_id)
+        if not can_connect:
+            await websocket.close(code=4008, reason=reason)
+            logger.warning(f"Connection rejected for user {user_id}: {reason}")
+            return False
+        
+        # Accept the connection
         try:
             await websocket.accept()
-        except Exception:
-            # ignore if already accepted or accept failed; proceed to registration
-            pass
+        except Exception as e:
+            logger.error(f"Failed to accept WebSocket: {e}")
+            return False
         
-        # Add to user's connections
+        # Register connection
         if user_id not in self.active_connections:
             self.active_connections[user_id] = set()
         self.active_connections[user_id].add(websocket)
-        
-        # Store reverse mapping
         self.websocket_to_user[websocket] = user_id
+        self.last_ping[websocket] = datetime.utcnow()
         
-        # Send connection confirmation safely
-        ok = await self.safe_send_json(websocket, {
+        # Update metrics
+        self.metrics["total_connections"] += 1
+        
+        # Send connection confirmation
+        await self.send_json_safe(websocket, {
             "type": "connection",
             "status": "connected",
             "user_id": user_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "limits": {
+                "max_connections": self.max_connections_per_user,
+                "current_connections": len(self.active_connections[user_id])
+            }
         })
-        if not ok:
-            # client disconnected during handshake — remove registration and return False
-            self.disconnect(websocket)
-            return False
         
-        print(f"WebSocket connected for user: {user_id}")
+        logger.info(f"WebSocket connected for user: {user_id} (total: {self.total_connections})")
         return True
     
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection"""
-        # Get user_id from reverse mapping
         user_id = self.websocket_to_user.get(websocket)
         
         if user_id:
-            # Remove from user's connections
+            # Remove from active connections
             if user_id in self.active_connections:
-                try:
-                    self.active_connections[user_id].discard(websocket)
-                except Exception:
-                    pass
-                
-                # Clean up empty sets
+                self.active_connections[user_id].discard(websocket)
                 if not self.active_connections[user_id]:
                     del self.active_connections[user_id]
             
-            # Remove reverse mapping safely
-            try:
-                del self.websocket_to_user[websocket]
-            except Exception:
-                pass
+            # Clean up mappings
+            self.websocket_to_user.pop(websocket, None)
+            self.last_ping.pop(websocket, None)
             
-            print(f"WebSocket disconnected for user: {user_id}")
+            logger.info(f"WebSocket disconnected for user: {user_id} (total: {self.total_connections})")
     
-    async def send_to_user(self, user_id: str, message: dict):
-        """Send message to all connections for a specific user"""
+    async def send_json_safe(self, websocket: WebSocket, data: dict) -> bool:
+        """Send JSON data safely, handling disconnections"""
+        try:
+            await websocket.send_json(data)
+            self.metrics["messages_sent"] += 1
+            return True
+        except (WebSocketDisconnect, ConnectionResetError, BrokenPipeError) as e:
+            logger.debug(f"WebSocket send failed (disconnected): {e}")
+            self.metrics["errors"] += 1
+            return False
+        except Exception as e:
+            logger.error(f"WebSocket send error: {e}")
+            self.metrics["errors"] += 1
+            return False
+    
+    async def handle_message(self, websocket: WebSocket, user_id: str, message: dict):
+        """Process incoming WebSocket message with rate limiting"""
+        
+        # Check rate limit
+        if not self.rate_limiter.is_allowed(user_id):
+            self.metrics["rate_limit_hits"] += 1
+            await self.send_json_safe(websocket, {
+                "type": "error",
+                "message": "Rate limit exceeded. Please slow down.",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            return
+        
+        self.metrics["messages_received"] += 1
+        message_type = message.get("type")
+        
+        # Handle different message types
+        if message_type == "ping":
+            self.last_ping[websocket] = datetime.utcnow()
+            await self.send_json_safe(websocket, {
+                "type": "pong",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        elif message_type == "upload_progress":
+            # Broadcast to user's other sessions
+            await self.send_to_user(user_id, {
+                "type": "upload_progress",
+                "file_id": message.get("file_id"),
+                "progress": message.get("progress"),
+                "timestamp": datetime.utcnow().isoformat()
+            }, exclude_socket=websocket)
+        
+        # Add more message handlers as needed
+    
+    async def send_to_user(self, user_id: str, message: dict, exclude_socket: WebSocket = None):
+        """Send message to all connections for a user"""
         if user_id not in self.active_connections:
             return
         
-        # iterate over a shallow copy to avoid mutation while iterating
-        connections = list(self.active_connections.get(user_id, set()))
-        disconnected = []
+        connections = list(self.active_connections[user_id])
+        failed_sockets = []
         
         for websocket in connections:
-            ok = await self.safe_send_json(websocket, message)
-            if not ok:
-                disconnected.append(websocket)
+            if websocket == exclude_socket:
+                continue
+            
+            if not await self.send_json_safe(websocket, message):
+                failed_sockets.append(websocket)
         
-        # Clean up disconnected websockets
-        for ws in disconnected:
-            self.disconnect(ws)
+        # Clean up failed connections
+        for websocket in failed_sockets:
+            self.disconnect(websocket)
     
-    async def broadcast_to_users(self, user_ids: list, message: dict):
-        """Send message to multiple users"""
-        for user_id in user_ids:
-            await self.send_to_user(user_id, message)
+    async def check_heartbeats(self):
+        """Background task to check connection health"""
+        while True:
+            try:
+                await asyncio.sleep(self.heartbeat_interval)
+                now = datetime.utcnow()
+                timeout = timedelta(seconds=self.heartbeat_interval * 3)
+                
+                disconnected = []
+                for websocket, last_ping in list(self.last_ping.items()):
+                    if now - last_ping > timeout:
+                        logger.warning(f"WebSocket timeout for socket {id(websocket)}")
+                        disconnected.append(websocket)
+                
+                # Close timed-out connections
+                for websocket in disconnected:
+                    try:
+                        await websocket.close(code=4009, reason="Heartbeat timeout")
+                    except:
+                        pass
+                    self.disconnect(websocket)
+                    
+            except Exception as e:
+                logger.error(f"Heartbeat check error: {e}")
     
-    async def broadcast_all(self, message: dict):
-        """Broadcast message to all connected users"""
-        # iterate over a shallow copy of keys
-        for user_id in list(self.active_connections.keys()):
-            await self.send_to_user(user_id, message)
+    def get_metrics(self) -> dict:
+        """Get connection metrics"""
+        return {
+            **self.metrics,
+            "active_connections": self.total_connections,
+            "users_connected": len(self.active_connections)
+        }
 
 # Create global connection manager
-manager = ConnectionManager()
+manager = EnhancedConnectionManager(
+    max_connections_per_user=5,
+    max_total_connections=500,  # For 100 users with headroom
+    heartbeat_interval=30
+)
+
+# Start heartbeat checker on startup
+@router.on_event("startup")
+async def startup_event():
+    asyncio.create_task(manager.check_heartbeats())
 
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
     token: str = Query(...),
 ):
-    """Main WebSocket endpoint for real-time communication"""
+    """Enhanced WebSocket endpoint with connection pooling and rate limiting"""
     
-    print(f"WebSocket connection attempt with token: {token[:20]}...")  # Debug log
-    
-    # Authenticate user from token
+    # Authenticate user
     try:
         async with async_session() as db:
             user = await auth_service.get_current_user_from_token(token, db)
-            print(f"Authentication result: {user}")  # Debug log
-            
             if not user:
-                print("User not found or token invalid")  # Debug log
-                try:
-                    await websocket.close(code=4001, reason="Unauthorized")
-                except Exception:
-                    pass
+                await websocket.close(code=4001, reason="Unauthorized")
                 return
         
         user_id = str(user.id)
-        print(f"WebSocket authenticated for user: {user_id}")  # Debug log
         
     except Exception as e:
-        print(f"WebSocket auth error: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            await websocket.close(code=4001, reason="Authentication failed")
-        except Exception:
-            pass
+        logger.error(f"WebSocket auth error: {e}")
+        await websocket.close(code=4001, reason="Authentication failed")
         return
     
-    # Connect the WebSocket (safe)
-    connected = await manager.connect(websocket, user_id)
-    if not connected:
-        # client disconnected during handshake
+    # Connect with limits
+    if not await manager.connect(websocket, user_id):
         return
     
-    # Get Redis for pub/sub
     redis_client = await get_redis()
     
     try:
         # Main message loop
         while True:
-            # Receive message from client (this will raise WebSocketDisconnect on client close)
-            data = await websocket.receive_json()
+            # Receive with timeout for better connection management
+            try:
+                data = await asyncio.wait_for(
+                    websocket.receive_json(),
+                    timeout=60.0  # 60 second timeout
+                )
+            except asyncio.TimeoutError:
+                # Send ping on timeout
+                if await manager.send_json_safe(websocket, {"type": "ping"}):
+                    continue
+                else:
+                    break
             
-            # Handle different message types
-            message_type = data.get("type")
+            # Handle message
+            await manager.handle_message(websocket, user_id, data)
             
-            if message_type == "ping":
-                # Heartbeat
-                await manager.safe_send_json(websocket, {
-                    "type": "pong",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            
-            elif message_type == "upload_progress":
-                # Broadcast upload progress to user's other sessions
-                await manager.send_to_user(user_id, {
-                    "type": "upload_progress",
-                    "file_id": data.get("file_id"),
-                    "progress": data.get("progress"),
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            
-            elif message_type == "file_operation":
-                # Handle file operations (delete, rename, move)
-                operation = data.get("operation")
-                file_id = data.get("file_id")
-                
-                # Broadcast to user's other sessions
-                await manager.send_to_user(user_id, {
-                    "type": "file_update",
-                    "operation": operation,
-                    "file_id": file_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            
-            elif message_type == "subscribe":
-                # Subscribe to specific events
-                channel = data.get("channel")
-                if channel:
-                    # Store subscription in Redis
-                    await redis_client.sadd(f"ws:subs:{user_id}", channel)
-            
-            elif message_type == "unsubscribe":
-                # Unsubscribe from events
-                channel = data.get("channel")
-                if channel:
-                    await redis_client.srem(f"ws:subs:{user_id}", channel)
-                    
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected normally for user {user_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user_id}: {e}")
+    finally:
         manager.disconnect(websocket)
         # Clean up Redis subscriptions
         try:
             await redis_client.delete(f"ws:subs:{user_id}")
-        except Exception:
-            pass
-        
-    except Exception as e:
-        print(f"WebSocket error for user {user_id}: {e}")
-        manager.disconnect(websocket)
-        try:
-            await redis_client.delete(f"ws:subs:{user_id}")
-        except Exception:
+        except:
             pass
 
-# Helper functions to send notifications from other parts of the app
-
-async def notify_file_uploaded(user_id: str, file_info: dict):
-    """Notify user when a file is uploaded"""
-    await manager.send_to_user(user_id, {
-        "type": "notification",
-        "event": "file_uploaded",
-        "data": file_info,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-async def notify_file_deleted(user_id: str, file_id: str):
-    """Notify user when a file is deleted"""
-    await manager.send_to_user(user_id, {
-        "type": "notification",
-        "event": "file_deleted",
-        "file_id": file_id,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-async def notify_storage_update(user_id: str, storage_info: dict):
-    """Notify user of storage quota updates"""
-    await manager.send_to_user(user_id, {
-        "type": "notification",
-        "event": "storage_update",
-        "data": storage_info,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-async def broadcast_system_message(message: str, level: str = "info"):
-    """Broadcast system message to all users"""
-    await manager.broadcast_all({
-        "type": "system",
-        "level": level,
-        "message": message,
-        "timestamp": datetime.utcnow().isoformat()
-    })
+# API endpoint to check WebSocket metrics
+@router.get("/ws/metrics")
+async def get_websocket_metrics(
+    current_user = Depends(get_current_user)  # Optional: require auth
+):
+    """Get WebSocket connection metrics"""
+    return manager.get_metrics()

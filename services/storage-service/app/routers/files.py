@@ -31,7 +31,7 @@ class BulkDeleteRequest(BaseModel):
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
-@router.get("/", response_model=List[FileResponse])
+@router.get("", response_model=List[FileResponse])
 async def list_files(
     folder_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),  # Use get_current_user from dependencies

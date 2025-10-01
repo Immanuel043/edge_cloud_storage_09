@@ -12,8 +12,8 @@ from .config import settings
 from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
-# Routers (these already have their own prefixes inside each module)
-from .routers import auth, files, folders, upload, storage, websocket,deduplication
+# Import routers
+from .routers import auth, files, folders, upload, storage, websocket, deduplication
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,11 +38,10 @@ async def lifespan(app: FastAPI):
     # Verify database connection
     try:
         async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))  # no commit needed
+            await conn.execute(text("SELECT 1"))
         print("✅ Database connection successful")
     except Exception as e:
         print(f"⚠️ Database connection failed: {e}")
-        # In prod, you might want to raise here.
 
     print("✅ Application startup complete")
     yield
@@ -65,10 +64,13 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# Instrument Prometheus metrics (also exposes /metrics)
-metrics_collector.instrument_app(app)
+# Instrument Prometheus metrics (if available)
+try:
+    metrics_collector.instrument_app(app)
+except Exception as e:
+    print(f"⚠️ Failed to instrument metrics: {e}")
 
-# Add middleware
+# Add HTTPS redirect if enabled
 if settings.ENABLE_HTTPS:
     app.add_middleware(HTTPSRedirectMiddleware)
 
@@ -84,7 +86,19 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Include routers WITHOUT extra prefixes (your routers already have prefixes)
+# Add Performance Monitoring Middleware
+# Import it after checking if the module exists
+try:
+    from .middleware.performance import PerformanceMiddleware
+    app.add_middleware(
+        PerformanceMiddleware,
+        slow_threshold=0.5  # Log requests slower than 500ms
+    )
+    print("✅ Performance monitoring enabled")
+except ImportError:
+    print("⚠️ Performance middleware not found - create app/middleware/performance.py")
+
+# Include routers
 app.include_router(auth.router)
 app.include_router(files.router)
 app.include_router(folders.router)
@@ -140,7 +154,7 @@ async def health_check():
         "checks": {},
     }
 
-    # DB
+    # Database check
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -149,7 +163,7 @@ async def health_check():
         health_status["checks"]["database"] = f"unhealthy: {str(e)}"
         health_status["status"] = "degraded"
 
-    # Redis
+    # Redis check
     try:
         redis = await get_redis()
         await redis.ping()
@@ -158,7 +172,7 @@ async def health_check():
         health_status["checks"]["redis"] = f"unhealthy: {str(e)}"
         health_status["status"] = "degraded"
 
-    # Storage dirs
+    # Storage directories check
     storage_status = {}
     for tier in ["cache", "warm", "cold"]:
         path = getattr(settings, f"{tier.upper()}_PATH", None)
@@ -175,6 +189,7 @@ async def health_check():
 
     return health_status
 
+
 # Ready check endpoint (for Kubernetes readiness probe)
 @app.get("/api/v1/ready", tags=["Health"])
 async def ready_check():
@@ -182,6 +197,8 @@ async def ready_check():
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
+        redis = await get_redis()
+        await redis.ping()
         return {"ready": True}
     except Exception as e:
         return JSONResponse(status_code=503, content={"ready": False, "error": str(e)})
@@ -233,17 +250,23 @@ async def internal_error(request: Request, exc):
         },
     )
 
+
 # Run for local development
 if __name__ == "__main__":
     import uvicorn
+    
+    # Development configuration optimized for debugging
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=8001,
-        timeout_keep_alive=600,
-        timeout_graceful_shutdown=60,
-        limit_max_requests=None,
-        reload=True,   # Enable auto-reload for development
+        reload=True,  # Auto-reload on code changes
         log_level="info",
         access_log=True,
+        
+        # Performance settings for handling 100 users
+        workers=1,  # Use 1 worker in dev, multiple in prod
+        limit_concurrency=1000,  # Handle many concurrent connections
+        timeout_keep_alive=60,  # Keep connections alive longer
+        timeout_graceful_shutdown=30,
     )

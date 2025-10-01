@@ -58,7 +58,7 @@ async def create_folder(
         created_at=folder.created_at,
     )
 
-@router.get("/", response_model=List[FolderResponse])
+@router.get("", response_model=List[FolderResponse])
 async def list_folders(
     parent_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
