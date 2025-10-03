@@ -39,21 +39,22 @@ async def get_dedup_analytics(
             AND o.storage_type IN ('content_addressed', 'deduplicated_reference')
         ),
         block_stats AS (
-            SELECT 
+            SELECT
                 COUNT(DISTINCT cb.block_hash) as unique_blocks,
                 COUNT(*) as total_block_refs,
-                AVG(cb.reference_count) as avg_refs
+                AVG(cb.reference_count) as avg_refs,
+                SUM(DISTINCT cb.block_size) as physical_size
             FROM content_blocks cb
             JOIN objects o ON cb.file_id = o.id
             WHERE o.user_id = :user_id
         )
-        SELECT 
+        SELECT
             f.file_count,
             f.logical_size,
             b.unique_blocks,
             b.total_block_refs,
             b.avg_refs,
-            b.unique_blocks * 16384 as physical_size
+            COALESCE(b.physical_size, 0) as physical_size
         FROM file_stats f, block_stats b
     """), {"user_id": str(current_user.id)})
     

@@ -13,55 +13,17 @@ import {
 import { formatBytes } from '../../utils/helpers';
 import { storageService } from '../../services/storageService';
 
-const DeduplicationPanel = ({ darkMode, token, onOptimizeFile }) => {
-  const [analytics, setAnalytics] = useState(null);
-  const [savings, setSavings] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [optimizing, setOptimizing] = useState(false);
-
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-//fetchData:
-const fetchData = async () => {
-  setLoading(true);
-  try {
-    const [analyticsData, savingsData] = await Promise.all([
-      storageService.getDedupAnalytics(token),
-      storageService.getDedupSavings(token)
-    ]);
-    
-    console.log('Analytics data:', analyticsData);  // Debug log
-    console.log('Savings data:', savingsData);      // Debug log
-    
-    setAnalytics(analyticsData);
-    setSavings(savingsData);
-  } catch (error) {
-    console.error('Failed to fetch dedup data:', error);
-    // Show error to user
-    setAnalytics({
-      summary: { total_files: 0, dedup_ratio: 0 },
-      blocks: { total_blocks: 0, avg_references: 0 }
-    });
-    setSavings({
-      logical_size: 0,
-      physical_size: 0,
-      saved_size: 0,
-      savings_percentage: 0,
-      storage_efficiency: 1
-    });
-  } finally {
-    setLoading(false);
-  }
-};
+const DeduplicationPanel = ({ darkMode, onOptimizeFile, stats, loading, onRefresh }) => {
+  // Use props from Dashboard instead of fetching here
+  const analytics = stats?.analytics || null;
+  const savings = stats?.savings || null;
 
   const runGarbageCollection = async () => {
     if (!window.confirm('Run garbage collection to clean up unused blocks?')) return;
-    
+
     try {
-      await storageService.runGarbageCollection(token);
-      await fetchData(); // Refresh stats
+      await storageService.runGarbageCollection(); // No token needed - uses cookie
+      if (onRefresh) onRefresh(); // Refresh stats via Dashboard
       alert('Garbage collection initiated successfully');
     } catch (error) {
       console.error('GC failed:', error);
@@ -99,7 +61,7 @@ const fetchData = async () => {
             <Trash2 size={18} />
           </button>
           <button
-            onClick={fetchData}
+            onClick={onRefresh}
             disabled={loading}
             className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'} transition-colors`}
             title="Refresh"

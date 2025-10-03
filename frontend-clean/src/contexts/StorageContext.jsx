@@ -42,24 +42,24 @@ export const StorageProvider = ({ children }) => {
 
   // Also add a WebSocket listener for file_uploaded events
   useEffect(() => {
-    if (!websocketService || !token) return;
-    
+    if (!websocketService || !isAuthenticated) return;
+
     // Listen for file upload events from WebSocket
     const handleFileUploaded = (data) => {
       console.log('WebSocket: file uploaded event', data);
       // Refresh files when we get a file uploaded event
       refreshFiles();
     };
-    
+
     const unsubscribe = websocketService.on('file_uploaded', handleFileUploaded);
-    
+
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [token]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    if (isAuthenticated && token) {
+    if (isAuthenticated) {
       if (isOnline) {
         loadFiles();
         loadStorageStats();
@@ -69,7 +69,7 @@ export const StorageProvider = ({ children }) => {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, token, currentFolder, isOnline]);
+  }, [isAuthenticated, currentFolder, isOnline]);
 
   useEffect(() => {
     // WebSocket event listeners
@@ -153,10 +153,10 @@ export const StorageProvider = ({ children }) => {
 
   // Deduplication stats
   const loadDedupStats = async () => {
-  if (!token) return;
-  
+  if (!isAuthenticated) return;
+
   try {
-    const stats = await storageService.getDedupSavings(token);
+    const stats = await storageService.getDedupSavings(); // No token needed - uses cookie
     setDedupStats(stats);
   } catch (error) {
     // Silently handle error if dedup endpoints not available yet
@@ -243,30 +243,15 @@ export const StorageProvider = ({ children }) => {
     });
     
     console.log('Upload completed:', result);
-    
-    // Wait a moment for backend to fully commit
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Force refresh files
+
+    // Immediately refresh - backend now commits before responding
     try {
       await refreshFiles();
       await loadDedupStats();
     } catch (refreshError) {
-      console.error('Initial refresh failed, retrying:', refreshError);
-      // Retry after another delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      await refreshFiles();
+      console.error('Refresh failed:', refreshError);
     }
-    
-    // Verify the file appears in the list
-    setTimeout(async () => {
-      const fileInList = files.some(f => f.id === result.fileId || f.id === result.file_id);
-      if (!fileInList) {
-        console.log('File not in list yet, forcing another refresh...');
-        await refreshFiles();
-      }
-    }, 2000);
-    
+
     return result;
   } catch (error) {
     console.error('Upload failed:', error);
@@ -307,22 +292,17 @@ export const StorageProvider = ({ children }) => {
     return { deleted: 0, freed_space: 0 };
   }
 
-  if (!token) {
-    console.error('No authentication token available');
-    throw new Error('Authentication required');
-  }
-
   try {
     console.log('Bulk deleting files:', fileIds);
-    
+
     // Since API_URL already includes /api/v1, just append the endpoint
     const url = `${API_URL}/files/bulk-delete`;  // NOT /api/v1/files/bulk-delete
     console.log('Bulk delete URL:', url); // Should log: http://localhost:8001/api/v1/files/bulk-delete
-    
+
     const response = await fetch(url, {
       method: 'POST',
+      credentials: 'include',  // Send HTTP-only cookie
       headers: {
-        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ file_ids: fileIds })

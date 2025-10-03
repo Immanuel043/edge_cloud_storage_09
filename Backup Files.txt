@@ -79,6 +79,10 @@ frontend-clean/
 │   ├── versions
 │   ├── env.py
 │   ├── script.py.mako
+|
+├── middleware/
+    |--__init__.py
+    |--performance.py
 ***************************************Infrastructure Structure****************************  
 Infrastructure/
 ├──.env
@@ -100,21 +104,3 @@ Infrastructure/
 │   ├── grafana/datasources/prometheus.yml
 │   ├--prometheus.yml
 
-***************************************deduplication********************************
-class ContentBlock(Base):
-    __tablename__ = 'content_blocks'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    block_hash = Column(String(64), nullable=False, index=True)
-    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id'))
-    block_size = Column(Integer)
-    block_offset = Column(Integer)
-    reference_count = Column(Integer, default=1)
-    created_at = Column(DateTime, server_default=func.now())
-    
-    # Unique constraint on hash + file + offset
-    __table_args__ = (
-        UniqueConstraint('block_hash', 'file_id', 'block_offset'),
-    )
-
-**********************************upload.py********************************************

@@ -13,6 +13,9 @@ from ..services.encryption import encryption_service
 import json
 import xxhash  # For faster non-cryptographic hashing
 from collections import defaultdict
+import logging
+
+logger = logging.getLogger(__name__)
 
 class EnhancedDeduplicationService:
     """
@@ -122,15 +125,20 @@ class EnhancedDeduplicationService:
             if self.bloom_enabled and block_hash in self.bloom_filter:
                 is_potential_duplicate = True
             
-            # Database check for existing block - FIXED to handle multiple results
+            # Database check for existing block with advisory lock to prevent race conditions
+            # Use PostgreSQL advisory lock for this block hash
+            from sqlalchemy import text
+            lock_id = int(hashlib.sha256(block_hash.encode()).hexdigest()[:8], 16) % 2147483647
+            await db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
+
             query = select(ContentBlock).where(ContentBlock.block_hash == block_hash)
             if not self.enable_cross_user_dedup:
                 # Limit to user's own blocks
                 query = query.join(Object).where(Object.user_id == user_id)
-            
+
             # Order by created_at to get the oldest block first
             query = query.order_by(ContentBlock.created_at.asc())
-            
+
             result = await db.execute(query)
             existing_block = result.scalars().first()  # Use .first() instead of .scalar_one_or_none()
             
@@ -185,15 +193,25 @@ class EnhancedDeduplicationService:
         }
     
 
-    def derive_key_from_content(self, data: bytes) -> bytes:
+    def derive_key_from_content(self, data: bytes, user_id: str = None) -> bytes:
         """
         Derive encryption key from content hash (convergent encryption).
-        This ensures identical data always gets encrypted the same way.
+        Uses user-specific salt to prevent cross-user privacy leaks.
+
+        SECURITY: User-specific salt prevents attackers from determining
+        if two users have the same file by comparing ciphertexts.
         """
         # Use PBKDF2 to derive a key from the content hash
         content_hash = hashlib.sha256(data).digest()
-        # Use a fixed salt for convergent encryption (not random!)
-        salt = b'dedup_convergent_encryption_salt'
+
+        # CRITICAL FIX: Use user-specific salt to prevent privacy leaks
+        # This prevents cross-user file detection while maintaining per-user dedup
+        if user_id:
+            salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
+        else:
+            # Fallback for backward compatibility (less secure)
+            salt = b'dedup_convergent_encryption_salt'
+
         key = hashlib.pbkdf2_hmac('sha256', content_hash, salt, 100000, dklen=32)
         return key
 
@@ -280,17 +298,24 @@ class EnhancedDeduplicationService:
                 if not os.path.exists(content_path):
                     # Block doesn't exist, store it
                     if encrypt:
-                        # Use convergent encryption - derive key from content
-                        block_key = self.derive_key_from_content(block_data)
-                        
+                        # Use convergent encryption - derive key from content with user-specific salt
+                        block_key = self.derive_key_from_content(block_data, user_id)
+
                         # Encrypt using AES-GCM with the derived key
                         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
                         from cryptography.hazmat.backends import default_backend
                         import os as crypto_os
-                        
-                        # Generate a deterministic nonce from block hash
-                        nonce = hashlib.sha256(f"{new_block['hash']}_nonce".encode()).digest()[:12]
-                        
+
+                        # CRITICAL FIX: Use synthetic IV for convergent encryption
+                        # Derive deterministic IV using HMAC to maintain dedup while staying secure
+                        import hmac
+                        synthetic_iv = hmac.new(
+                            block_key,
+                            new_block['hash'].encode(),
+                            hashlib.sha256
+                        ).digest()[:12]
+                        nonce = synthetic_iv
+
                         cipher = Cipher(
                             algorithms.AES(block_key),
                             modes.GCM(nonce),
@@ -298,17 +323,17 @@ class EnhancedDeduplicationService:
                         )
                         encryptor = cipher.encryptor()
                         encrypted_data = encryptor.update(block_data) + encryptor.finalize()
-                        
+
                         # Store encrypted block with tag
                         block_to_store = nonce + encryptor.tag + encrypted_data
                         
                         print(f"📦 Storing new block {new_block['hash'][:8]}... ({len(block_data)/1024:.1f}KB)")
                     else:
                         block_to_store = block_data
-                    
-                    # Create directory if needed
-                    os.makedirs(os.path.dirname(content_path), exist_ok=True)
-                    
+
+                    # Create directory if needed (non-blocking)
+                    await asyncio.to_thread(os.makedirs, os.path.dirname(content_path), exist_ok=True)
+
                     # Store block
                     async with aiofiles.open(content_path, 'wb') as f:
                         await f.write(block_to_store)
@@ -378,6 +403,7 @@ class EnhancedDeduplicationService:
             
         except Exception as e:
             await db.rollback()
+            logger.error(f"Deduplication failed for {file_name}: {e}", exc_info=True)
             raise Exception(f"Deduplication failed: {str(e)}")
     
     

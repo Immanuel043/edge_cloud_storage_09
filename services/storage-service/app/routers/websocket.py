@@ -88,17 +88,19 @@ class EnhancedConnectionManager:
     
     async def connect(self, websocket: WebSocket, user_id: str) -> bool:
         """Accept and register a new WebSocket connection"""
-        
+
         # Check connection limits
         can_connect, reason = await self.can_connect(user_id)
         if not can_connect:
             await websocket.close(code=4008, reason=reason)
             logger.warning(f"Connection rejected for user {user_id}: {reason}")
             return False
-        
-        # Accept the connection
+
+        # Accept the connection (if not already accepted)
         try:
-            await websocket.accept()
+            # Check if already accepted (client_state will be CONNECTED if accepted)
+            if websocket.client_state.name != 'CONNECTED':
+                await websocket.accept()
         except Exception as e:
             logger.error(f"Failed to accept WebSocket: {e}")
             return False
@@ -262,31 +264,75 @@ async def startup_event():
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str = Query(...),
+    token: Optional[str] = Query(None),  # SECURITY FIX: Token now optional
 ):
-    """Enhanced WebSocket endpoint with connection pooling and rate limiting"""
-    
-    # Authenticate user
+    """
+    Enhanced WebSocket endpoint with connection pooling and rate limiting
+    SECURITY FIX: Now checks HTTP-only cookies first, then auth message
+    """
+
+    user = None
+    user_id = None
+
+    # SECURITY FIX: Try to get token from HTTP-only cookie first (preferred)
+    cookie_token = websocket.cookies.get("access_token")
+    if cookie_token:
+        token = cookie_token
+        logger.info("WebSocket: Using token from HTTP-only cookie")
+
+    # If no token from cookie or URL, accept connection and wait for auth message
+    if not token:
+        logger.info("WebSocket: No token in cookie or URL, waiting for auth message")
+        try:
+            # Accept connection first to receive messages
+            await websocket.accept()
+
+            # Wait for auth message (max 10 seconds)
+            auth_message = await asyncio.wait_for(
+                websocket.receive_json(),
+                timeout=10.0
+            )
+
+            if auth_message.get('type') == 'auth':
+                token = auth_message.get('token')
+                logger.info("WebSocket: Received token via auth message")
+            else:
+                logger.warning(f"WebSocket: Expected auth message, got: {auth_message.get('type')}")
+                await websocket.close(code=4001, reason="Expected auth message")
+                return
+
+        except asyncio.TimeoutError:
+            logger.warning("WebSocket: Auth message timeout")
+            await websocket.close(code=4001, reason="Auth timeout")
+            return
+        except Exception as e:
+            logger.error(f"Auth message error: {e}")
+            await websocket.close(code=4001, reason="Invalid auth message")
+            return
+
+    # Authenticate user (from cookie, URL token, or auth message)
     try:
         async with async_session() as db:
             user = await auth_service.get_current_user_from_token(token, db)
             if not user:
+                logger.warning("WebSocket: Invalid token or user not found")
                 await websocket.close(code=4001, reason="Unauthorized")
                 return
-        
+
         user_id = str(user.id)
-        
+        logger.info(f"WebSocket: Authenticated user {user_id}")
+
     except Exception as e:
         logger.error(f"WebSocket auth error: {e}")
         await websocket.close(code=4001, reason="Authentication failed")
         return
-    
-    # Connect with limits
+
+    # Connect with limits (manager will accept if not already accepted)
     if not await manager.connect(websocket, user_id):
         return
-    
+
     redis_client = await get_redis()
-    
+
     try:
         # Main message loop
         while True:

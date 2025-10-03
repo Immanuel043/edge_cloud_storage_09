@@ -36,8 +36,9 @@ class WebSocketService {
   const hasApiV1 = /\/api\/v1$/i.test(base);
   const path = hasApiV1 ? '/ws' : '/api/v1/ws';
 
-  const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
-  return `${base}${path}${tokenQuery}`;
+  // SECURITY FIX: Don't put token in URL - send it in first message instead
+  // Tokens in URLs can leak via browser history, logs, referrer headers
+  return `${base}${path}`;
 }
 
   connect(token = null) {
@@ -81,6 +82,11 @@ class WebSocketService {
           this.reconnectAttempts = 0;
           this.reconnectDelay = 1000;
           this.awaitingPong = false;
+
+          // SECURITY FIX: Send auth token in first message (not in URL)
+          if (token) {
+            this.send({ type: 'auth', token: token });
+          }
 
           this.startHeartbeat();
           this.flushMessageQueue();
@@ -156,7 +162,12 @@ class WebSocketService {
     }
 
     this.reconnectAttempts += 1;
-    const delay = Math.min(this.reconnectDelay * 2 ** (this.reconnectAttempts - 1), 30000);
+
+    // PERFORMANCE FIX: Add jitter to prevent thundering herd problem
+    const jitter = Math.random() * 1000;  // 0-1000ms random jitter
+    const baseDelay = this.reconnectDelay * 2 ** (this.reconnectAttempts - 1);
+    const delay = Math.min(baseDelay + jitter, 30000);
+
     console.log(`WebSocket reconnect attempt ${this.reconnectAttempts} in ${delay}ms`);
 
     setTimeout(async () => {
@@ -380,7 +391,7 @@ class WebSocketService {
 }
 
 // Export singleton with optional token getter
-// If you have refresh tokens or async token retrieval, pass { getToken: async () => ... }
+// SECURITY FIX: No longer reading from localStorage (using HTTP-only cookies)
 export const websocketService = new WebSocketService({
-  getToken: () => localStorage.getItem('token') || null
+  getToken: () => null  // Token handled by cookies
 });

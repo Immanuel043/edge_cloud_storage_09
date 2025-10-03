@@ -517,7 +517,31 @@ async def delete_file(
         raise HTTPException(status_code=404, detail="File not found")
     
     try:
-        # First, delete related content_blocks to avoid foreign key constraint violation
+        # Handle content_blocks with proper reference counting
+        # First, get all blocks for this file
+        blocks_result = await db.execute(
+            text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        file_blocks = blocks_result.fetchall()
+
+        for block in file_blocks:
+            # Decrement reference count for each block
+            await db.execute(
+                text("""
+                    UPDATE content_blocks
+                    SET reference_count = reference_count - 1
+                    WHERE block_hash = :block_hash
+                """),
+                {"block_hash": block.block_hash}
+            )
+
+        # Delete blocks that are no longer referenced
+        await db.execute(
+            text("DELETE FROM content_blocks WHERE reference_count <= 0")
+        )
+
+        # Delete this file's block associations
         await db.execute(
             text("DELETE FROM content_blocks WHERE file_id = :file_id"),
             {"file_id": file_id}
@@ -610,7 +634,31 @@ async def bulk_delete_files(
                     failed_files.append(file_id)
                     continue
                 
-                # First, delete related content_blocks (if your app uses them)
+                # Handle content_blocks with proper reference counting
+                # First, get all blocks for this file
+                blocks_result = await db.execute(
+                    text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
+                    {"file_id": file_id}
+                )
+                file_blocks = blocks_result.fetchall()
+
+                for block in file_blocks:
+                    # Decrement reference count for each block
+                    await db.execute(
+                        text("""
+                            UPDATE content_blocks
+                            SET reference_count = reference_count - 1
+                            WHERE block_hash = :block_hash
+                        """),
+                        {"block_hash": block.block_hash}
+                    )
+
+                # Delete blocks that are no longer referenced
+                await db.execute(
+                    text("DELETE FROM content_blocks WHERE reference_count <= 0")
+                )
+
+                # Delete this file's block associations
                 await db.execute(
                     text("DELETE FROM content_blocks WHERE file_id = :file_id"),
                     {"file_id": file_id}

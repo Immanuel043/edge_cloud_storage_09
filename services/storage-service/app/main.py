@@ -15,42 +15,80 @@ from .monitoring.metrics import metrics_collector
 # Import routers
 from .routers import auth, files, folders, upload, storage, websocket, deduplication
 
+# Import background services
+from .routers.background_deduplication import background_dedup_service  # NEW
+#from .services.cold_storage_tiering import cold_storage_service  # NEW
+#from .services.production_upload_service import production_upload_service  # NEW
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     # Startup
-    print("🚀 Starting Edge Storage Service...")
+    print("Starting Edge Storage Service...")
 
     # Initialize Redis
     try:
         await init_redis()
-        print("✅ Redis connection established")
+        print("Redis connection established")
     except Exception as e:
-        print(f"⚠️ Redis connection failed: {e}")
+        print(f"Redis connection failed: {e}")
 
     # Create storage directories
     try:
         await create_storage_directories()
-        print("✅ Storage directories created")
+        print("Storage directories created")
     except Exception as e:
-        print(f"⚠️ Failed to create storage directories: {e}")
+        print(f"Failed to create storage directories: {e}")
 
     # Verify database connection
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        print("✅ Database connection successful")
+        print("Database connection successful")
     except Exception as e:
-        print(f"⚠️ Database connection failed: {e}")
+        print(f"Database connection failed: {e}")
 
-    print("✅ Application startup complete")
+    # NEW: Start background services
+    try:
+        await background_dedup_service.start()
+        print("Background deduplication service started")
+    except Exception as e:
+        print(f"Failed to start dedup service: {e}")
+
+    # try:
+    #     await cold_storage_service.start()
+    #     print("Cold storage tiering service started")
+    # except Exception as e:
+    #     print(f"Failed to start tiering service: {e}")
+
+    print("Application startup complete")
     yield
 
     # Shutdown
-    print("👋 Shutting down Edge Storage Service...")
+    print("Shutting down Edge Storage Service...")
+    
+    # NEW: Stop background services
+    try:
+        await background_dedup_service.stop()
+        print("Background dedup service stopped")
+    except Exception as e:
+        print(f"Error stopping dedup service: {e}")
+
+    # try:
+    #     await cold_storage_service.stop()
+    #     print("Cold storage service stopped")
+    # except Exception as e:
+    #     print(f"Error stopping tiering service: {e}")
+
+    # try:
+    #     production_upload_service.cleanup()
+    #     print("Upload service cleaned up")
+    # except Exception as e:
+    #     print(f"Error cleaning up upload service: {e}")
+
     await close_redis()
     await engine.dispose()
-    print("✅ Cleanup complete")
+    print("Cleanup complete")
 
 
 # Create FastAPI app
@@ -64,11 +102,11 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# Instrument Prometheus metrics (if available)
+# Instrument Prometheus metrics
 try:
     metrics_collector.instrument_app(app)
 except Exception as e:
-    print(f"⚠️ Failed to instrument metrics: {e}")
+    print(f"Failed to instrument metrics: {e}")
 
 # Add HTTPS redirect if enabled
 if settings.ENABLE_HTTPS:
@@ -87,16 +125,15 @@ app.add_middleware(
 )
 
 # Add Performance Monitoring Middleware
-# Import it after checking if the module exists
 try:
     from .middleware.performance import PerformanceMiddleware
     app.add_middleware(
         PerformanceMiddleware,
-        slow_threshold=0.5  # Log requests slower than 500ms
+        slow_threshold=0.5
     )
-    print("✅ Performance monitoring enabled")
+    print("Performance monitoring enabled")
 except ImportError:
-    print("⚠️ Performance middleware not found - create app/middleware/performance.py")
+    print("Performance middleware not found")
 
 # Include routers
 app.include_router(auth.router)
@@ -121,15 +158,12 @@ async def create_storage_directories():
 
     for path in paths:
         os.makedirs(path, exist_ok=True)
-        # Sharded directories (00-ff)
         for i in range(256):
             shard_path = os.path.join(path, f"{i:02x}")
             os.makedirs(shard_path, exist_ok=True)
-        # Objects directory for single-file storage mode
         os.makedirs(os.path.join(path, "objects"), exist_ok=True)
 
 
-# Root endpoint
 @app.get("/", tags=["Root"])
 async def root():
     """Root endpoint with service information"""
@@ -142,7 +176,6 @@ async def root():
     }
 
 
-# Health check endpoint
 @app.get("/api/v1/health", tags=["Health"])
 async def health_check():
     """Comprehensive health check endpoint"""
@@ -172,6 +205,16 @@ async def health_check():
         health_status["checks"]["redis"] = f"unhealthy: {str(e)}"
         health_status["status"] = "degraded"
 
+    # NEW: Background services check
+    health_status["checks"]["background_dedup"] = (
+        "running" if background_dedup_service.worker_task and
+        not background_dedup_service.worker_task.done() else "stopped"
+    )
+    # health_status["checks"]["cold_storage_tiering"] = (
+    #     "running" if cold_storage_service.worker_task and
+    #     not cold_storage_service.worker_task.done() else "stopped"
+    # )
+
     # Storage directories check
     storage_status = {}
     for tier in ["cache", "warm", "cold"]:
@@ -185,12 +228,25 @@ async def health_check():
         "https_enabled": settings.ENABLE_HTTPS,
         "compression_enabled": getattr(settings, "COMPRESSION_ENABLED", True),
         "encryption_enabled": getattr(settings, "ENCRYPTION_ENABLED", True),
+        "background_dedup": True,  # NEW
+        "cold_storage_tiering": False,  # NEW
     }
 
     return health_status
 
 
-# Ready check endpoint (for Kubernetes readiness probe)
+# NEW: Service statistics endpoint
+@app.get("/api/v1/stats", tags=["Info"])
+async def get_service_stats():
+    """Get real-time service statistics"""
+    return {
+        "deduplication": {
+            "active_jobs": len(background_dedup_service.active_jobs),
+            "queued_jobs": background_dedup_service.queue.qsize(),
+        }
+    }
+
+
 @app.get("/api/v1/ready", tags=["Health"])
 async def ready_check():
     """Readiness probe endpoint"""
@@ -204,14 +260,12 @@ async def ready_check():
         return JSONResponse(status_code=503, content={"ready": False, "error": str(e)})
 
 
-# Live check endpoint (for Kubernetes liveness probe)
 @app.get("/api/v1/live", tags=["Health"])
 async def live_check():
     """Liveness probe endpoint"""
     return {"live": True}
 
 
-# Version endpoint
 @app.get("/api/v1/version", tags=["Info"])
 async def version_info():
     """Get service version and build information"""
@@ -224,7 +278,6 @@ async def version_info():
     }
 
 
-# Error handlers
 @app.exception_handler(404)
 async def not_found(request: Request, exc):
     """Custom 404 handler"""
@@ -251,22 +304,18 @@ async def internal_error(request: Request, exc):
     )
 
 
-# Run for local development
 if __name__ == "__main__":
     import uvicorn
     
-    # Development configuration optimized for debugging
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=8001,
-        reload=True,  # Auto-reload on code changes
+        reload=True,
         log_level="info",
         access_log=True,
-        
-        # Performance settings for handling 100 users
-        workers=1,  # Use 1 worker in dev, multiple in prod
-        limit_concurrency=1000,  # Handle many concurrent connections
-        timeout_keep_alive=60,  # Keep connections alive longer
+        workers=1,
+        limit_concurrency=1000,
+        timeout_keep_alive=60,
         timeout_graceful_shutdown=30,
     )

@@ -1,8 +1,8 @@
 # services/storage-service/app/models/database.py
 
 from sqlalchemy import (
-    Column, String, Integer, DateTime, Boolean, 
-    ForeignKey, JSON, BigInteger, Text,UniqueConstraint
+    Column, String, Integer, DateTime, Boolean,
+    ForeignKey, JSON, BigInteger, Text, UniqueConstraint, Index
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
@@ -62,6 +62,13 @@ class Object(Base):
     versioning_enabled = Column(Boolean, default=True)
     dedup_info = Column(JSON, nullable=True)
 
+    # Performance indexes
+    __table_args__ = (
+        Index('idx_user_storage_type', 'user_id', 'storage_type'),
+        Index('idx_content_hash', 'content_hash'),
+        Index('idx_user_id', 'user_id'),
+    )
+
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
     
@@ -96,16 +103,18 @@ class FileVersion(Base):
 
 class ContentBlock(Base):
     __tablename__ = 'content_blocks'
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     block_hash = Column(String(64), nullable=False, index=True)
-    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id',ondelete='CASCADE'))
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id',ondelete='CASCADE'), index=True)
     block_size = Column(Integer)
     block_offset = Column(Integer)
-    reference_count = Column(Integer, default=1)
+    reference_count = Column(Integer, default=1, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Unique constraint on hash + file + offset
+
+    # Indexes and constraints for performance
     __table_args__ = (
         UniqueConstraint('block_hash', 'file_id', 'block_offset'),
+        Index('idx_block_file_id', 'file_id'),
+        Index('idx_ref_count_zero', 'reference_count'),
     )

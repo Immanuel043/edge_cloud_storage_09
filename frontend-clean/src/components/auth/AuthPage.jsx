@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Sun, Moon, Cloud, HardDrive, Shield, Zap, Database, Lock } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { validateEmail, validatePassword, sanitizeInput } from '../../utils/security';
 
 export default function AuthPage() {
+  const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
   const { login, register } = useAuth();
   const [authMode, setAuthMode] = useState('login');
@@ -51,9 +53,10 @@ export default function AuthPage() {
           formData.userType
         );
       }
+      // Redirect to dashboard after successful login/register
+      navigate('/');
     } catch (err) {
       setError(authMode === 'login' ? 'Invalid credentials' : 'Registration failed');
-    } finally {
       setLoading(false);
     }
   };

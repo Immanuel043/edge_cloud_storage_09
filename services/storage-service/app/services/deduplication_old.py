@@ -212,6 +212,20 @@ class DeduplicationService:
         
         # Track block references
         for block in dedup_result['blocks']:
+            if block['is_duplicate']:
+                # Increment reference count for existing blocks
+                from sqlalchemy import text
+                await db.execute(
+                    text("""
+                        UPDATE content_blocks
+                        SET reference_count = reference_count + 1
+                        WHERE block_hash = :hash
+                        LIMIT 1
+                    """),
+                    {"hash": block['hash']}
+                )
+
+            # Add block reference for this file
             block_ref = ContentBlock(
                 block_hash=block['hash'],
                 file_id=new_file.id,
@@ -312,26 +326,34 @@ class DeduplicationService:
         Remove blocks that are no longer referenced by any file.
         Returns number of blocks cleaned up.
         """
-        # Find unreferenced blocks
+        from sqlalchemy import delete, text
+
+        # Find unreferenced blocks (where total reference count is 0)
         result = await db.execute(
-            select(ContentBlock.block_hash)
-            .group_by(ContentBlock.block_hash)
-            .having(func.sum(ContentBlock.reference_count) == 0)
+            text("""
+                SELECT block_hash
+                FROM content_blocks
+                GROUP BY block_hash
+                HAVING SUM(reference_count) = 0
+            """)
         )
-        
-        unreferenced = result.scalars().all()
-        
+
+        unreferenced = [row[0] for row in result.fetchall()]
+
         # Delete unreferenced blocks from storage
         deleted_count = 0
         for block_hash in unreferenced:
             content_path = self.get_content_address(block_hash)
             if os.path.exists(content_path):
-                os.remove(content_path)
-                # Also remove key file if it exists
-                if os.path.exists(content_path + '.key'):
-                    os.remove(content_path + '.key')
-                deleted_count += 1
-        
+                try:
+                    os.remove(content_path)
+                    # Also remove key file if it exists
+                    if os.path.exists(content_path + '.key'):
+                        os.remove(content_path + '.key')
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting block {block_hash}: {e}")
+
         # Remove from database
         if unreferenced:
             await db.execute(
@@ -340,7 +362,7 @@ class DeduplicationService:
                 )
             )
             await db.commit()
-        
+
         return deleted_count
     
     async def update_dedup_stats(self, db: AsyncSession, user_id: str, saved_bytes: int):
@@ -352,9 +374,3 @@ class DeduplicationService:
 
 # Singleton instance
 deduplication_service = DeduplicationService()
-
-
-# Add to models/database.py
-"""
-
-"""

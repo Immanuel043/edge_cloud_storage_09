@@ -81,29 +81,25 @@ export const AuthProvider = ({ children }) => {
     let mounted = true;
 
     const bootstrap = async () => {
-      const savedToken = localStorage.getItem('token');
-      if (savedToken) {
-        setToken(savedToken);
+      // SECURITY FIX: Check if user is authenticated via HTTP-only cookie
+      // by attempting to load profile (backend will validate cookie)
+      try {
+        const userData = await loadUserData(null); // No token needed - uses cookie
+        if (!mounted) return;
+
         setIsAuthenticated(true);
 
+        // Connect WebSocket (will use cookie or token from backend response)
         try {
-          // connect and register listeners after connect resolves
-          await websocketService.connect(savedToken);
+          await websocketService.connect(null);
           if (!mounted) return;
           setupWebSocketListeners();
         } catch (error) {
           console.error('Failed to connect WebSocket on boot:', error);
-          // don't force logout here; let subsequent API calls handle auth failure
         }
-
-        // load user profile (non-blocking for WS)
-        try {
-          await loadUserData(savedToken);
-        } catch (err) {
-          console.error('Failed to load user data during bootstrap:', err);
-          // if profile load fails, ensure cleanup
-          logout();
-        }
+      } catch (err) {
+        // Not authenticated - this is fine, user needs to login
+        console.log('User not authenticated');
       }
 
       if (mounted) setLoading(false);
@@ -136,14 +132,16 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const data = await authService.login(email, password);
-    setToken(data.access_token);
-    localStorage.setItem('token', data.access_token);
+
+    // SECURITY FIX: Token now stored in HTTP-only cookie by backend
+    // No need to store in localStorage
+    setToken(null); // Not storing token in memory
     setUser(data.user);
     setIsAuthenticated(true);
 
-    // Connect WebSocket after successful login. Ensure we remove any previous listeners first.
+    // Connect WebSocket after successful login
     try {
-      await websocketService.connect(data.access_token);
+      await websocketService.connect(null); // Will use cookie
       setupWebSocketListeners();
     } catch (error) {
       console.error('Failed to connect WebSocket after login:', error);
@@ -154,14 +152,15 @@ export const AuthProvider = ({ children }) => {
 
   const register = async (email, password, username, userType) => {
     const data = await authService.register(email, password, username, userType);
-    setToken(data.access_token);
-    localStorage.setItem('token', data.access_token);
+
+    // SECURITY FIX: Token now stored in HTTP-only cookie by backend
+    setToken(null); // Not storing token in memory
     setUser(data.user);
     setIsAuthenticated(true);
 
     // Connect WebSocket after successful registration
     try {
-      await websocketService.connect(data.access_token);
+      await websocketService.connect(null); // Will use cookie
       setupWebSocketListeners();
     } catch (error) {
       console.error('Failed to connect WebSocket after registration:', error);
@@ -170,7 +169,7 @@ export const AuthProvider = ({ children }) => {
     return data;
   };
 
-  const logout = () => {
+  const logout = async () => {
     // Remove our listeners first
     removeWebSocketListeners();
 
@@ -179,8 +178,14 @@ export const AuthProvider = ({ children }) => {
       websocketService.disconnect();
     }
 
+    // Call backend logout to clear HTTP-only cookie
+    try {
+      await authService.logout();
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+
     setToken(null);
-    localStorage.removeItem('token');
     setIsAuthenticated(false);
     setUser(null);
   };

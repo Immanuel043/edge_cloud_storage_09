@@ -1,5 +1,5 @@
 # services/storage-service/app/dependencies.py
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Request, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9,8 +9,8 @@ from .database import AsyncSessionLocal
 from .models.database import User, ActivityLog
 from .config import settings
 
-# Security
-security = HTTPBearer()
+# Security - SECURITY FIX: Made optional to support cookie-based auth
+security = HTTPBearer(auto_error=False)
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session"""
@@ -18,29 +18,44 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db)
 ) -> User:
-    """Get the current authenticated user from JWT token"""
-    token = credentials.credentials
-    
+    """
+    Get the current authenticated user from JWT token
+    SECURITY FIX: Now supports both HTTP-only cookie AND Authorization header
+    """
+    token = None
+
+    # SECURITY FIX: Try to get token from HTTP-only cookie first (preferred)
+    cookie_token = request.cookies.get("access_token")
+    if cookie_token:
+        token = cookie_token
+    # Fallback to Authorization header for backward compatibility
+    elif credentials:
+        token = credentials.credentials
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+
     result = await db.execute(select(User).filter(User.id == user_id))
     user = result.scalar_one_or_none()
-    
+
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    
+
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account deactivated")
-    
+
     return user
 
 async def get_current_user_ws(token: str):

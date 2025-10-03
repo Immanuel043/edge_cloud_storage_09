@@ -1,11 +1,11 @@
 import { API_URL, CHUNK_SIZE } from '../config/constants';
 import { sanitizeInput, validateFileType, validateFileSize } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
+import { requestCache } from '../utils/requestCache';
 
 // Threshold (bytes) above which we prefer native browser download instead of buffering in JS.
-// Set to 200 MB by default (adjust to taste).
-//const MEMORY_BUFFER_THRESHOLD = 200 * 1024 * 1024;
-const MEMORY_BUFFER_THRESHOLD = 50 * 1024 * 1024;
+// PERFORMANCE FIX: Lowered to 10MB to prevent crashes on mobile devices
+const MEMORY_BUFFER_THRESHOLD = 10 * 1024 * 1024;  // 10MB
 
 
 class ResumableDownloadManager {
@@ -26,9 +26,7 @@ class ResumableDownloadManager {
       // HEAD to get metadata
       const headResp = await fetch(`${API_URL}/files/${fileId}/download`, {
         method: 'HEAD',
-        // include cookies/session; if you also use token-based auth keep it but cookies are primary for production
-        credentials: 'include',
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        credentials: 'include'  // Send HTTP-only cookie
       });
 
       if (!headResp.ok) {
@@ -116,12 +114,11 @@ class ResumableDownloadManager {
         const headers = {
           Range: `bytes=${start}-${end}`,
         };
-        if (token) headers.Authorization = `Bearer ${token}`;
 
         const resp = await fetch(url, {
           method: 'GET',
           headers,
-          credentials: 'include',
+          credentials: 'include',  // Send HTTP-only cookie
         });
 
         // Accept 206 (partial) or 200 (server responded with full content)
@@ -151,8 +148,7 @@ class ResumableDownloadManager {
     while (attempt < maxRetries) {
       attempt += 1;
       try {
-        const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-        const resp = await fetch(url, { method: 'GET', headers, credentials: 'include' });
+        const resp = await fetch(url, { method: 'GET', credentials: 'include' });
         if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
         await this.processResponse(resp, downloadInfo, onProgress);
         return;
@@ -277,12 +273,11 @@ class ResumableDownloadManager {
   // Native anchor fallback (preferred for very large files)
   async nativeDownload(token, fileId, fileName) {
     const url = `${API_URL}/files/${fileId}/download`;
-    
+
     try {
-        // Fetch with authentication to get the file
+        // Fetch with authentication via HTTP-only cookie
         const response = await fetch(url, {
             method: 'GET',
-            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
             credentials: 'include'
         });
         
@@ -331,20 +326,28 @@ class StorageService {
 
   async getFiles(token, folderId = null) {
     await rateLimiter.checkLimit();
-    const url = `${API_URL}/files${folderId ? `?folder_id=${folderId}` : ''}`;
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const response = await fetch(url, { headers, credentials: 'include' });
-    if (!response.ok) throw new Error('Failed to load files');
-    return await response.json();
+
+    // PERFORMANCE FIX: Deduplicate simultaneous requests
+    const cacheKey = `files-${folderId || 'root'}`;
+    return requestCache.dedupe(cacheKey, async () => {
+      const url = `${API_URL}/files${folderId ? `?folder_id=${folderId}` : ''}`;
+      const response = await fetch(url, { credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to load files');
+      return await response.json();
+    }, { useCache: true, ttl: 3000 }); // 3s cache
   }
 
   async getFolders(token, parentId = null) {
     await rateLimiter.checkLimit();
-    const url = `${API_URL}/folders${parentId ? `?parent_id=${parentId}` : ''}`;
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const response = await fetch(url, { headers, credentials: 'include' });
-    if (!response.ok) throw new Error('Failed to load folders');
-    return await response.json();
+
+    // PERFORMANCE FIX: Deduplicate simultaneous requests
+    const cacheKey = `folders-${parentId || 'root'}`;
+    return requestCache.dedupe(cacheKey, async () => {
+      const url = `${API_URL}/folders${parentId ? `?parent_id=${parentId}` : ''}`;
+      const response = await fetch(url, { credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to load folders');
+      return await response.json();
+    }, { useCache: true, ttl: 3000 }); // 3s cache
   }
 
   // Resumable download with progress and fallback
@@ -386,9 +389,7 @@ class StorageService {
 
   // Fallback simple download kept for compatibility (use nativeDownload instead for large files)
   async simpleDownload(token, fileId, fileName) {
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     const response = await fetch(`${API_URL}/files/${fileId}/download`, {
-      headers,
       credentials: 'include'
     });
     if (!response.ok) {
@@ -428,9 +429,7 @@ class StorageService {
 
     const initResponse = await fetch(`${API_URL}/upload/init?${params}`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
+      credentials: 'include'  // Send HTTP-only cookie
     });
     
     if (!initResponse.ok) {
@@ -462,9 +461,7 @@ class StorageService {
       await rateLimiter.checkLimit();
       const directResponse = await fetch(`${API_URL}/upload/direct/${upload_id}`, {
         method: 'POST',
-        headers: { 
-          'Authorization': `Bearer ${token}` 
-        },
+        credentials: 'include',  // Send HTTP-only cookie
         body: formData,
         signal: controller.signal
       });
@@ -500,7 +497,7 @@ class StorageService {
         await rateLimiter.checkLimit();
         const response = await fetch(`${API_URL}/upload/chunk/${upload_id}?chunk_index=${i}`, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}` },
+          credentials: 'include',  // Send HTTP-only cookie
           body: formData,
           signal: controller.signal
         });
@@ -530,9 +527,7 @@ class StorageService {
     
     const completeResponse = await fetch(`${API_URL}/upload/complete/${upload_id}`, {
       method: 'POST',
-      headers: { 
-        'Authorization': `Bearer ${token}`
-      }
+      credentials: 'include'  // Send HTTP-only cookie
     });
     
     if (!completeResponse.ok) {
@@ -577,10 +572,8 @@ class StorageService {
 
   async deleteFile(token, fileId) {
     await rateLimiter.checkLimit();
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     const response = await fetch(`${API_URL}/files/${fileId}`, {
       method: 'DELETE',
-      headers,
       credentials: 'include'
     });
     if (!response.ok) throw new Error('Failed to delete file');
@@ -589,10 +582,9 @@ class StorageService {
 
   async createFolder(token, name, parentId) {
     await rateLimiter.checkLimit();
-    const headers = token ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
     const response = await fetch(`${API_URL}/folders`, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ name: sanitizeInput(name), parent_id: parentId })
     });
@@ -602,10 +594,9 @@ class StorageService {
 
   async createShareLink(token, fileId, options = {}) {
     await rateLimiter.checkLimit();
-    const headers = token ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
     const response = await fetch(`${API_URL}/files/${fileId}/share`, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({
         expires_hours: options.expiresHours || 24,
@@ -619,24 +610,21 @@ class StorageService {
 
   async getStorageStats(token) {
     await rateLimiter.checkLimit();
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const response = await fetch(`${API_URL}/storage/stats`, { headers, credentials: 'include' });
+    const response = await fetch(`${API_URL}/storage/stats`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to load storage stats');
     return await response.json();
   }
 
   async getActivityLogs(token) {
     await rateLimiter.checkLimit();
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const response = await fetch(`${API_URL}/activity`, { headers, credentials: 'include' });
+    const response = await fetch(`${API_URL}/activity`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to load activity logs');
     return await response.json();
   }
 
   async getFilePreview(token, fileId) {
     await rateLimiter.checkLimit();
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const response = await fetch(`${API_URL}/files/${fileId}/preview`, { headers, credentials: 'include' });
+    const response = await fetch(`${API_URL}/files/${fileId}/preview`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to get preview');
     return await response.blob();
   }
@@ -666,107 +654,63 @@ class StorageService {
 
 async getDedupAnalytics(token) {
   await rateLimiter.checkLimit();
-  
-  if (!token) {
-    console.error('No token provided for getDedupAnalytics');
-    throw new Error('Authentication required');
-  }
-  
-  const headers = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  };
-  
+
   const response = await fetch(`${API_URL}/dedup/analytics`, {
     method: 'GET',
-    headers
-    // Removed credentials: 'include' since using token auth
+    credentials: 'include'  // Send HTTP-only cookie
   });
-  
+
   if (!response.ok) {
     console.error('Failed to load dedup analytics:', response.status, 'URL:', `${API_URL}/dedup/analytics`);
     throw new Error('Failed to load deduplication analytics');
   }
-  
+
   return await response.json();
 }
 
 async getDedupSavings(token) {
   await rateLimiter.checkLimit();
-  
-  if (!token) {
-    console.error('No token provided for getDedupSavings');
-    throw new Error('Authentication required');
-  }
-  
-  const headers = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  };
-  
+
   const response = await fetch(`${API_URL}/dedup/savings`, {
     method: 'GET',
-    headers
-    // Removed credentials: 'include' since using token auth
+    credentials: 'include'  // Send HTTP-only cookie
   });
-  
+
   if (!response.ok) {
     console.error('Failed to load dedup savings:', response.status, 'URL:', `${API_URL}/dedup/savings`);
     throw new Error('Failed to load deduplication savings');
   }
-  
+
   return await response.json();
 }
 
 async optimizeFileDedup(token, fileId) {
   await rateLimiter.checkLimit();
-  
-  if (!token) {
-    console.error('No token provided for optimizeFileDedup');
-    throw new Error('Authentication required');
-  }
-  
+
   if (!fileId) {
     console.error('No fileId provided for optimization');
     throw new Error('File ID required');
   }
-  
-  const headers = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  };
-  
+
   const response = await fetch(`${API_URL}/dedup/optimize/${fileId}`, {
     method: 'POST',
-    headers
-    // Removed credentials: 'include' since using token auth
+    credentials: 'include'  // Send HTTP-only cookie
   });
-  
+
   if (!response.ok) {
     console.error('Failed to optimize file:', response.status, 'FileId:', fileId);
     throw new Error('Failed to optimize file');
   }
-  
+
   return await response.json();
 }
 
 async runGarbageCollection(token) {
   await rateLimiter.checkLimit();
-  
-  if (!token) {
-    console.error('No token provided for runGarbageCollection');
-    throw new Error('Authentication required');
-  }
-  
-  const headers = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  };
-  
+
   const response = await fetch(`${API_URL}/dedup/gc`, {
     method: 'POST',
-    headers
-    // Removed credentials: 'include' since using token auth
+    credentials: 'include'  // Send HTTP-only cookie
   });
   
   if (!response.ok) {

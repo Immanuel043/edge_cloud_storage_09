@@ -3,152 +3,67 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from typing import Optional, AsyncGenerator
+from sqlalchemy import select
+from typing import Optional, AsyncGenerator, List
 import uuid
 import json
 import os
-import io
-import base64
 import hashlib
 import mimetypes
 from datetime import datetime
+
 from ..dependencies import get_db, log_activity, get_current_user
-from ..services.auth import auth_service
-from ..services.storage import storage_service
 from ..services.encryption import encryption_service
 from ..models.database import User, Object
 from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
 from ..config import settings
-from aiokafka import AIOKafkaProducer
 import aiofiles
-from ..utils.cache import cached
 from ..monitoring.metrics import (
     upload_initiated, upload_completed, upload_duration,
-    active_uploads, chunk_processing_duration, errors_total
+    active_uploads
 )
 import time
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
-from ..services.deduplication_enhanced import enhanced_dedup_service
-from .background_deduplication import background_dedup_service
-import logging
+
+# Import our services
+from ..services.production_upload_service import production_upload_service
+from ..services.background_deduplication import background_dedup_service
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
-logger = logging.getLogger(__name__)
 
-# Global resources
-kafka_producer = None
-kafka_lock = asyncio.Lock()
-executor = ThreadPoolExecutor(max_workers=100)  # Support 100 concurrent uploads
+# Configuration
+STREAM_BUFFER_SIZE = int(os.getenv('STREAM_BUFFER_SIZE', 8 * 1024 * 1024))
+INLINE_THRESHOLD = int(os.getenv('INLINE_THRESHOLD', 512 * 1024))
+SINGLE_OBJECT_THRESHOLD = int(os.getenv('SINGLE_OBJECT_THRESHOLD', 50 * 1024 * 1024))
+CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 32 * 1024 * 1024))
 
-# Optimized buffer sizes
-# Read from environment variables with fallbacks
-STREAM_BUFFER_SIZE = int(os.getenv('STREAM_BUFFER_SIZE', 8 * 1024 * 1024))  # 8MB default
-INLINE_THRESHOLD = int(os.getenv('INLINE_THRESHOLD', 512 * 1024))  # 512KB
-SINGLE_OBJECT_THRESHOLD = int(os.getenv('SINGLE_OBJECT_THRESHOLD', 50 * 1024 * 1024))  # 50MB
-CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 32 * 1024 * 1024))  # 32MB default - CRITICAL CHANGE
-
-# Files that are already compressed - DO NOT compress these
 COMPRESSED_FORMATS = {'.zip', '.gz', '.rar', '.7z', '.bz2', '.xz', 
-                      '.jpg', '.jpeg', '.png', '.mp4', '.mp3', '.avi',
-                      '.mkv', '.mov', '.webm', '.flac', '.aac', '.ogg',
-                      '.pdf', '.docx', '.xlsx', '.pptx'}  # Most modern formats are compressed
-
-# Only compress these text-based formats
-COMPRESSIBLE_FORMATS = {'.txt', '.log', '.csv', '.json', '.xml', '.sql', 
-                        '.html', '.css', '.js', '.py', '.java', '.c', '.cpp'}
+                      '.jpg', '.jpeg', '.png', '.mp4', '.mp3'}
+COMPRESSIBLE_FORMATS = {'.txt', '.log', '.csv', '.json', '.xml'}
 
 def should_compress(filename: str, size: int) -> bool:
-    """Determine if file should be compressed based on type and size"""
     ext = os.path.splitext(filename)[1].lower()
-    
-    # Never compress already-compressed formats
     if ext in COMPRESSED_FORMATS:
         return False
-    
-    # Only compress text formats larger than 1MB
     if ext in COMPRESSIBLE_FORMATS and size > 1024 * 1024:
         return True
-    
     return False
 
-async def get_kafka_producer():
-    """Get or create Kafka producer with connection management"""
-    global kafka_producer
-    
-    if not hasattr(settings, 'KAFKA_BROKERS'):
-        return None
-    
-    async with kafka_lock:
-        if kafka_producer is None:
-            try:
-                kafka_producer = AIOKafkaProducer(
-                    bootstrap_servers=settings.KAFKA_BROKERS,
-                    value_serializer=lambda v: json.dumps(v).encode(),
-                    compression_type='snappy',
-                    max_request_size=104857600,
-                    linger_ms=100,
-                    batch_size=524288,
-                )
-                await kafka_producer.start()
-                print("✅ Kafka producer initialized")
-            except Exception as e:
-                print(f"⚠️ Kafka unavailable: {e}")
-                return None
-    
-    return kafka_producer
-
-async def get_user_storage_info_fast(user_id: str, db: AsyncSession, redis_client):
-    """Lightweight storage check with Redis caching"""
-    # Try cache first (30 second TTL)
-    cache_key = f"quota:{user_id}"
-    cached = await redis_client.get(cache_key)
-
-    if cached:
-        # Redis returns bytes, decode to string
-        if isinstance(cached, bytes):
-            cached = cached.decode('utf-8')
-        return json.loads(cached)
-
-    # Cache miss - query database
+async def get_user_storage_info_fast(user_id: str, db: AsyncSession):
     result = await db.execute(
         select(User.storage_quota, User.storage_used)
         .where(User.id == user_id)
     )
     data = result.first()
-
+    
     if not data:
-        storage_info = {"quota": 0, "used": 0}
-    else:
-        storage_info = {
-            "quota": int(data.storage_quota or 0),
-            "used": int(data.storage_used or 0)
-        }
-
-    # Cache for 30 seconds (fire-and-forget)
-    asyncio.create_task(
-        redis_client.setex(cache_key, 30, json.dumps(storage_info))
-    )
-
-    return storage_info
-
-def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int, compress: bool = False):
-    """CPU-intensive operations in thread pool"""
-    # Hash calculation (before any processing)
-    original_hash = hashlib.sha256(chunk_data).hexdigest()
+        return {"quota": 0, "used": 0}
     
-    # Optional compression (only for compressible files)
-    if compress:
-        from ..utils.compression import compressor
-        chunk_data = compressor.compress(chunk_data)
-    
-    # Encryption (AES-GCM is fast with hardware acceleration)
-    encrypted_chunk = encryption_service.encrypt_chunk(chunk_data, file_key, chunk_index)
-    
-    return encrypted_chunk, original_hash
+    return {
+        "quota": int(data.storage_quota or 0),
+        "used": int(data.storage_used or 0)
+    }
 
 @router.post("/init", response_model=UploadInitResponse)
 async def init_upload(
@@ -164,13 +79,11 @@ async def init_upload(
         raise HTTPException(400, "file_name and file_size required")
     
     redis_client = await get_redis()
-
-    # Check storage quota (with caching)
-    storage_info = await get_user_storage_info_fast(str(current_user.id), db, redis_client)
+    
+    storage_info = await get_user_storage_info_fast(str(current_user.id), db)
     if storage_info['used'] + file_size > storage_info['quota']:
         raise HTTPException(status_code=413, detail="Storage quota exceeded")
     
-    # Determine storage strategy
     if file_size < INLINE_THRESHOLD:
         storage_strategy = "inline"
         total_chunks = 0
@@ -183,11 +96,8 @@ async def init_upload(
     
     upload_id = str(uuid.uuid4())
     
-    # Generate encryption key for this upload
     file_key = encryption_service.generate_file_key()
     encrypted_key = encryption_service.encrypt_key(file_key)
-    
-    # Check if compression should be used
     use_compression = should_compress(file_name, file_size)
     
     session_data = {
@@ -202,23 +112,19 @@ async def init_upload(
         "hashes": [],
         "chunk_paths": {},
         "key": encrypted_key,
-        "compress": use_compression,  # Store compression decision
+        "compress": use_compression,
         "start": datetime.utcnow().isoformat(),
     }
-
-    # Fire-and-forget Redis update (non-blocking)
-    asyncio.create_task(
-        redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
-    )
     
-    # Metrics
+    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
+    
     upload_initiated.labels(
         user_type=getattr(current_user, 'user_type', 'standard'),
         storage_strategy=storage_strategy
     ).inc()
     active_uploads.inc()
     
-    print(f"📤 Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Compression: {use_compression}")
+    print(f"Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB)")
     
     return UploadInitResponse(
         upload_id=upload_id,
@@ -236,16 +142,13 @@ async def upload_chunk(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Optimized chunk upload with smart compression"""
+    """Upload single chunk with parallel processing"""
     redis_client = await get_redis()
     
     session_data = await redis_client.get(f"up:{upload_id}")
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")
-
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
+    
     session = json.loads(session_data)
     
     if session["user"] != str(current_user.id):
@@ -254,40 +157,31 @@ async def upload_chunk(
     if chunk_index in session["done"]:
         return {"status": "already_uploaded", "chunk_index": chunk_index}
     
-    # Prepare storage path
     storage_tier = "cache"
     shard = f"{upload_id[:2]}"
     storage_dir = f"/app/storage/{storage_tier}/{shard}"
-
-    # Non-blocking directory creation
-    await asyncio.to_thread(os.makedirs, storage_dir, exist_ok=True)
-    storage_path = f"{storage_dir}/{upload_id}_chunk_{chunk_index}.enc"
+    os.makedirs(storage_dir, exist_ok=True)
     
-    # Read chunk data
     chunk_data = await chunk.read()
-    
-    # Get encryption key
     file_key = encryption_service.decrypt_key(session["key"])
-    
-    # Process in thread pool (encryption + optional compression)
-    loop = asyncio.get_event_loop()
     use_compression = session.get("compress", False)
     
-    encrypted_chunk, chunk_hash = await loop.run_in_executor(
-        executor,
-        partial(process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression)
+    result = await production_upload_service.process_chunk_async(
+        upload_id=upload_id,
+        chunk_index=chunk_index,
+        chunk_data=chunk_data,
+        file_key=file_key,
+        use_compression=use_compression,
+        storage_dir=storage_dir
     )
     
-    # Write encrypted data asynchronously with larger buffer
-    async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
-        await f.write(encrypted_chunk)
+    if result["status"] != "success":
+        raise HTTPException(500, f"Chunk processing failed: {result.get('error')}")
     
-    # Update session
     session["done"].append(chunk_index)
-    session["hashes"].append(chunk_hash)
-    session["chunk_paths"][str(chunk_index)] = storage_path
+    session["hashes"].append(result["hash"])
+    session["chunk_paths"][str(chunk_index)] = result["storage_path"]
     
-    # Fire-and-forget Redis update
     asyncio.create_task(
         redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
     )
@@ -299,7 +193,95 @@ async def upload_chunk(
         "chunk_index": chunk_index,
         "progress": round(progress, 1),
         "encrypted": True,
-        "compressed": use_compression,
+        "compressed": use_compression
+    }
+
+@router.post("/chunks-bulk/{upload_id}")
+async def upload_chunks_bulk(
+    upload_id: str,
+    chunks: List[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload multiple chunks in parallel"""
+    redis_client = await get_redis()
+    
+    session_data = await redis_client.get(f"up:{upload_id}")
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    
+    session = json.loads(session_data)
+    
+    if session["user"] != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    
+    storage_tier = "cache"
+    shard = f"{upload_id[:2]}"
+    storage_dir = f"/app/storage/{storage_tier}/{shard}"
+    os.makedirs(storage_dir, exist_ok=True)
+    
+    chunks_data = []
+    chunk_indices = []
+    
+    for i, chunk_file in enumerate(chunks):
+        chunk_index = i
+        
+        if chunk_index not in session["done"]:
+            chunk_data = await chunk_file.read()
+            chunks_data.append(chunk_data)
+            chunk_indices.append(chunk_index)
+    
+    if not chunks_data:
+        return {
+            "status": "success",
+            "message": "All chunks already uploaded",
+            "progress": 100.0
+        }
+    
+    file_key = encryption_service.decrypt_key(session["key"])
+    use_compression = session.get("compress", False)
+    
+    print(f"Processing {len(chunks_data)} chunks in parallel...")
+    
+    tasks = [
+        production_upload_service.process_chunk_async(
+            upload_id=upload_id,
+            chunk_index=chunk_indices[i],
+            chunk_data=chunk_data,
+            file_key=file_key,
+            use_compression=use_compression,
+            storage_dir=storage_dir
+        )
+        for i, chunk_data in enumerate(chunks_data)
+    ]
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    successful = 0
+    failed = 0
+    
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            failed += 1
+        elif result["status"] == "success":
+            chunk_idx = chunk_indices[i]
+            session["done"].append(chunk_idx)
+            session["hashes"].append(result["hash"])
+            session["chunk_paths"][str(chunk_idx)] = result["storage_path"]
+            successful += 1
+        else:
+            failed += 1
+    
+    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+    
+    progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
+    
+    return {
+        "status": "success" if failed == 0 else "partial",
+        "uploaded_chunks": successful,
+        "failed_chunks": failed,
+        "total_chunks": len(chunks_data),
+        "progress": round(progress, 1)
     }
 
 @router.post("/direct/{upload_id}")
@@ -309,60 +291,52 @@ async def upload_direct(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Direct upload for small and medium files with optimized processing"""
+    """Direct upload for small/medium files"""
     redis_client = await get_redis()
     
     session_data = await redis_client.get(f"up:{upload_id}")
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")
-
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
+    
     session = json.loads(session_data)
     
     if session["user"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
     
-    # Read file data
     file_data = await file.read()
     
-    # Process in thread pool
     loop = asyncio.get_event_loop()
     file_key = encryption_service.decrypt_key(session["key"])
     use_compression = session.get("compress", False)
     
     def process_file():
-        # Optional compression
         if use_compression:
             from ..utils.compression import compressor
             file_data_processed = compressor.compress(file_data)
         else:
             file_data_processed = file_data
         
-        # Encrypt
         encrypted_data = encryption_service.encrypt_file(file_data_processed, file_key)
-        file_hash = hashlib.sha256(file_data).hexdigest()  # Hash of original data
+        file_hash = hashlib.sha256(file_data).hexdigest()
         return encrypted_data, file_hash
     
-    encrypted_data, file_hash = await loop.run_in_executor(executor, process_file)
+    encrypted_data, file_hash = await loop.run_in_executor(
+        production_upload_service.executor, 
+        process_file
+    )
     
-    # Determine storage location
     file_id = session["id"]
     storage_tier = "cache"
     
     if session["strategy"] == "inline":
-        # For inline, store in database
+        import base64
         session["encrypted_data"] = base64.b64encode(encrypted_data).decode()
         session["storage_type"] = "inline"
-    else:  # single
-        # For single files, store on disk
+    else:
         shard = "objects"
         storage_dir = f"/app/storage/{storage_tier}/{shard}"
-
-        # Non-blocking directory creation
-        await asyncio.to_thread(os.makedirs, storage_dir, exist_ok=True)
-
+        os.makedirs(storage_dir, exist_ok=True)
+        
         storage_path = f"{storage_dir}/{file_id}.enc"
         
         async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
@@ -386,20 +360,21 @@ async def upload_direct(
 @router.post("/complete/{upload_id}")
 async def complete_upload(
     upload_id: str,
+    background_tasks: BackgroundTasks,  # NEW: Added BackgroundTasks
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Complete upload and create database record with deduplication"""
+    """
+    Complete upload and create database record
+    NEW: Deduplication runs as background task
+    """
     redis_client = await get_redis()
     
     session_data = await redis_client.get(f"up:{upload_id}")
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")
-
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
+    
     session = json.loads(session_data)
     
     if session["user"] != str(current_user.id):
@@ -408,18 +383,18 @@ async def complete_upload(
     storage_strategy = session.get("strategy", "chunked")
     start_time = datetime.fromisoformat(session["start"])
     
-    # Verify upload completion
+    # Verify completion
     if storage_strategy == "chunked":
         if len(session["done"]) != session["chunks"]:
             missing = set(range(session["chunks"])) - set(session["done"])
             return {"status": "incomplete", "missing_chunks": list(missing)}
     
-    
     file_id = uuid.uuid4()
     mime_type = mimetypes.guess_type(session["name"])[0]
     
-    # Create database record based on storage type
+    # Create database record IMMEDIATELY (no waiting for dedup)
     if storage_strategy == "inline":
+        import base64
         file_obj = Object(
             id=file_id,
             user_id=current_user.id,
@@ -474,62 +449,39 @@ async def complete_upload(
             storage_tier="cache",
         )
     
-    # Save to database with proper error handling
-    try:
-        db.add(file_obj)
-
-        # Update user storage
-        if hasattr(current_user, 'storage_used'):
-            current_user.storage_used = (current_user.storage_used or 0) + session["size"]
-
-        # Commit transaction
-        await db.commit()
-
-        # Log activity (separate transaction)
-        await log_activity(
-            db, current_user.id, "file_uploaded", str(file_id),
-            {
-                "file_name": session["name"],
-                "size": session["size"],
-                "storage_type": storage_strategy,
-                "compressed": session.get("compress", False)
-            },
-            request,
-        )
-    except Exception as e:
-        # Rollback on any database error
-        await db.rollback()
-        logger.error(f"Upload completion failed for {session['name']}: {e}", exc_info=True)
-
-        # Clean up uploaded files
-        if storage_strategy == "single" and session.get("storage_path"):
-            try:
-                os.remove(session.get("storage_path"))
-            except Exception as cleanup_error:
-                logger.error(f"Failed to cleanup file: {cleanup_error}")
-
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    db.add(file_obj)
     
-    # ============ BACKGROUND DEDUPLICATION ============
-    # Queue for background deduplication if file > 10MB
+    # Update user storage
+    if hasattr(current_user, 'storage_used'):
+        current_user.storage_used = (current_user.storage_used or 0) + session["size"]
+    
+    await db.commit()
+    
+    await log_activity(
+        db, current_user.id, "file_uploaded", str(file_id),
+        {"file_name": session["name"], "size": session["size"]},
+        request,
+    )
+    
+    # ============ KEY CHANGE: Background Deduplication ============
+    # Queue file for background deduplication if eligible
     enable_dedup = session["size"] > 10 * 1024 * 1024 and storage_strategy in ["single", "chunked"]
-
+    
     if enable_dedup:
-        print(f"📋 Queuing {session['name']} for background deduplication")
-        # Queue job without awaiting - fire and forget
-        asyncio.create_task(
-            background_dedup_service.enqueue_for_dedup(
-                file_id=str(file_id),
-                upload_id=upload_id,
-                user_id=str(current_user.id),
-                session_data=session
-            )
+        await background_dedup_service.enqueue_for_dedup(
+            file_id=str(file_id),
+            upload_id=upload_id,
+            user_id=str(current_user.id),
+            session_data=session
         )
-
+        dedup_status = "queued"
+    else:
+        dedup_status = "not_applicable"
+    # ============================================================
+    
     # Clean up Redis
     await redis_client.delete(f"up:{upload_id}")
-
-    # Metrics
+    
     duration = (datetime.utcnow() - start_time).total_seconds()
     upload_completed.labels(
         user_type=getattr(current_user, 'user_type', 'standard'),
@@ -538,9 +490,9 @@ async def complete_upload(
     ).inc()
     upload_duration.labels(storage_strategy=storage_strategy).observe(duration)
     active_uploads.dec()
-
+    
     throughput = (session["size"] / (1024 * 1024)) / duration if duration > 0 else 0
-
+    
     return {
         "status": "success",
         "file_id": str(file_id),
@@ -549,13 +501,52 @@ async def complete_upload(
         "storage_type": storage_strategy,
         "encrypted": True,
         "compressed": session.get("compress", False),
-        "deduplication": {
-            "enabled": enable_dedup,
-            "status": "queued" if enable_dedup else "disabled"
-        },
         "duration": round(duration, 2),
-        "throughput_mbps": round(throughput, 2)
+        "throughput_mbps": round(throughput, 2),
+        "deduplication": {
+            "status": dedup_status,
+            "message": "Deduplication running in background" if dedup_status == "queued" else "File too small for deduplication"
+        }
     }
+
+@router.get("/dedup-status/{file_id}")
+async def get_dedup_status(
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Check deduplication status for a file"""
+    
+    # Verify file ownership
+    result = await db.execute(
+        select(Object).where(
+            Object.id == file_id,
+            Object.user_id == current_user.id
+        )
+    )
+    file_obj = result.scalar_one_or_none()
+    
+    if not file_obj:
+        raise HTTPException(404, "File not found")
+    
+    # Get dedup job status
+    job_status = await background_dedup_service.get_job_status(file_id)
+    
+    if not job_status:
+        # Check if file is already deduplicated
+        if file_obj.storage_type in ['content_addressed', 'deduplicated_reference']:
+            return {
+                "status": "completed",
+                "message": "File already deduplicated",
+                "dedup_info": file_obj.dedup_info
+            }
+        else:
+            return {
+                "status": "not_queued",
+                "message": "File not queued for deduplication"
+            }
+    
+    return job_status
 
 @router.get("/download/{file_id}")
 async def download_file(
@@ -564,7 +555,6 @@ async def download_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Download and decrypt file with streaming"""
-    # Get file metadata
     result = await db.execute(
         select(Object).where(Object.id == file_id)
     )
@@ -576,10 +566,8 @@ async def download_file(
     if file_obj.user_id != current_user.id:
         raise HTTPException(403, "Unauthorized")
     
-    # Get encryption key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
     
-    # Check if file was compressed
     was_compressed = False
     if file_obj.metadata and isinstance(file_obj.metadata, dict):
         was_compressed = file_obj.metadata.get("compressed", False)
@@ -589,11 +577,10 @@ async def download_file(
     async def stream_file() -> AsyncGenerator[bytes, None]:
         """Stream file content in chunks"""
         if file_obj.storage_type == "inline":
-            # Decrypt inline data
+            import base64
             encrypted_data = base64.b64decode(file_obj.storage_key)
             file_data = encryption_service.decrypt_file(encrypted_data, file_key)
             
-            # Decompress if needed
             if was_compressed:
                 from ..utils.compression import compressor
                 file_data = compressor.decompress(file_data)
@@ -601,7 +588,6 @@ async def download_file(
             yield file_data
         
         elif file_obj.storage_type == "single":
-            # Read and decrypt single file
             if not os.path.exists(file_obj.object_path):
                 raise HTTPException(404, "File data not found on disk")
             
@@ -610,18 +596,15 @@ async def download_file(
             
             file_data = encryption_service.decrypt_file(encrypted_data, file_key)
             
-            # Decompress if needed
             if was_compressed:
                 from ..utils.compression import compressor
                 file_data = compressor.decompress(file_data)
             
-            # Stream in chunks
-            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+            chunk_size = 8 * 1024 * 1024
             for i in range(0, len(file_data), chunk_size):
                 yield file_data[i:i+chunk_size]
         
         else:  # chunked
-            # Stream chunks sequentially
             chunk_info = file_obj.chunk_info
             upload_id = chunk_info.get("upload_id", str(file_obj.id))
             
@@ -638,10 +621,8 @@ async def download_file(
                 async with aiofiles.open(chunk_path, 'rb') as f:
                     encrypted_chunk = await f.read()
                 
-                # Decrypt chunk
                 decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, i)
                 
-                # Decompress if needed
                 if was_compressed:
                     from ..utils.compression import compressor
                     decrypted_chunk = compressor.decompress(decrypted_chunk)
@@ -667,10 +648,7 @@ async def get_upload_status(
     session_data = await redis_client.get(f"up:{upload_id}")
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")
-
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
+    
     session = json.loads(session_data)
     if session["user"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
@@ -691,47 +669,15 @@ async def get_upload_status(
         progress=progress,
     )
 
-@router.post("/test-speed")
-async def test_speed(file: UploadFile = File(...)):
-    """Test raw upload speed without any processing"""
-    start = time.time()
-    total = 0
-    
-    while content := await file.read(64 * 1024 * 1024):
-        total += len(content)
-    
-    elapsed = time.time() - start
-    speed_mbps = (total / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-    
-    return {
-        "size_mb": round(total / (1024 * 1024), 2),
-        "time_seconds": round(elapsed, 2),
-        "speed_mbps": round(speed_mbps, 2),
-        "speed_gbps": round(speed_mbps * 8 / 1000, 2),
-        "note": "Raw speed without any processing"
-    }
+@router.on_event("startup")
+async def startup_event():
+    """Start background services on startup"""
+    await background_dedup_service.start()
+    print("Background deduplication service started")
 
-@router.post("/test-speed-encrypted")
-async def test_speed_encrypted(file: UploadFile = File(...)):
-    """Test upload speed with encryption only"""
-    start = time.time()
-    total = 0
-    file_key = encryption_service.generate_file_key()
-    
-    chunk_index = 0
-    while content := await file.read(CHUNK_SIZE):
-        # Encrypt chunk
-        encrypted = encryption_service.encrypt_chunk(content, file_key, chunk_index)
-        total += len(content)
-        chunk_index += 1
-    
-    elapsed = time.time() - start
-    speed_mbps = (total / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-    
-    return {
-        "size_mb": round(total / (1024 * 1024), 2),
-        "time_seconds": round(elapsed, 2),
-        "speed_mbps": round(speed_mbps, 2),
-        "speed_gbps": round(speed_mbps * 8 / 1000, 2),
-        "note": "Speed with AES-GCM encryption only (no compression)"
-    }
+@router.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup resources on shutdown"""
+    production_upload_service.cleanup()
+    await background_dedup_service.stop()
+    print("Services shutdown complete")
