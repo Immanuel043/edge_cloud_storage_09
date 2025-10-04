@@ -4,32 +4,40 @@ import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
 
 export default function FilePreview({ file, onClose, darkMode }) {
-  const { token } = useAuth();
-  const [imageUrl, setImageUrl] = useState('');
+  const { isAuthenticated } = useAuth();
+  const [previewUrl, setPreviewUrl] = useState('');
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    loadPreview();
+    if (isAuthenticated) {
+      loadPreview();
+    }
     return () => {
-      if (imageUrl) {
-        URL.revokeObjectURL(imageUrl);
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
       }
     };
-  }, [file]);
+  }, [file, isAuthenticated]);
 
   const loadPreview = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const response = await fetch(`${API_URL}/files/${file.id}/preview`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const response = await fetch(`${API_URL}/files/${file.id}/preview?size=large`, {
+        credentials: 'include'  // Use HTTP-only cookie authentication
       });
       if (response.ok) {
         const blob = await response.blob();
-        setImageUrl(URL.createObjectURL(blob));
+        setPreviewUrl(URL.createObjectURL(blob));
+      } else {
+        setError(`Failed to load preview (${response.status})`);
       }
-    } catch (error) {
-      console.error('Failed to load preview:', error);
+    } catch (err) {
+      console.error('Failed to load preview:', err);
+      setError('Failed to load preview');
     } finally {
       setLoading(false);
     }
@@ -84,13 +92,18 @@ export default function FilePreview({ file, onClose, darkMode }) {
           </div>
         </div>
         
-        {/* Image viewer */}
+        {/* Preview viewer */}
         <div className="flex-1 overflow-auto flex items-center justify-center p-4">
           {loading ? (
             <div className={darkMode ? 'text-white' : 'text-gray-900'}>Loading preview...</div>
-          ) : imageUrl ? (
+          ) : error ? (
+            <div className={`text-center ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              <p>{error}</p>
+              <p className="text-sm mt-2">Preview may not be available for this file type</p>
+            </div>
+          ) : previewUrl ? (
             <img
-              src={imageUrl}
+              src={previewUrl}
               alt={file.name}
               style={{
                 transform: `scale(${zoom}) rotate(${rotation}deg)`,

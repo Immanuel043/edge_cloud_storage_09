@@ -1,6 +1,7 @@
 import React from 'react';
 import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
+import FileThumbnail from './FileThumbnail';
 
 export default function FileList({ 
   folders, 
@@ -57,21 +58,25 @@ export default function FileList({
             darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-50 hover:bg-gray-100'
           } ${selectedFiles.has(file.id) ? 'ring-2 ring-blue-500' : ''}`}
         >
-          <div className="col-span-1 flex items-center gap-2">
+          <div className="col-span-1 flex items-center gap-3">
             <div
               onClick={(e) => {
                 e.stopPropagation();
                 onFileClick(file.id);
               }}
-              className={`w-5 h-5 rounded border-2 flex items-center justify-center cursor-pointer ${
-                selectedFiles.has(file.id) 
-                  ? 'bg-blue-500 border-blue-500' 
+              className={`w-5 h-5 rounded border-2 flex items-center justify-center cursor-pointer flex-shrink-0 ${
+                selectedFiles.has(file.id)
+                  ? 'bg-blue-500 border-blue-500'
                   : darkMode ? 'border-gray-500 bg-gray-600' : 'border-gray-300 bg-white'
               }`}
             >
               {selectedFiles.has(file.id) && <Check size={14} className="text-white" />}
             </div>
-            {getFileIcon(file.name, 24)}
+            <FileThumbnail
+              file={file}
+              size="small"
+              darkMode={darkMode}
+            />
           </div>
           <div className={`col-span-5 font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
             {sanitizeInput(file.name)}
@@ -84,15 +89,13 @@ export default function FileList({
             {file.storage_tier === 'cold' && <HardDrive size={16} className="text-gray-400" />}
           </div>
           <div className="col-span-1 flex gap-1">
-            {isImageFile(file.name) && (
-              <button
-                onClick={() => onFilePreview(file)}
-                className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}
-                title="Preview"
-              >
-                <Eye size={16} />
-              </button>
-            )}
+            <button
+              onClick={() => onFilePreview(file)}
+              className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}
+              title="Preview"
+            >
+              <Eye size={16} />
+            </button>
             <button
               onClick={() => onFileDownload(file.id, file.name)}
               className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}

@@ -6,12 +6,18 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including OpenCV and video codec dependencies)
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
     postgresql-client \
     netcat-traditional \
+    libgl1 \
+    libglib2.0-0 \
+    ffmpeg \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements

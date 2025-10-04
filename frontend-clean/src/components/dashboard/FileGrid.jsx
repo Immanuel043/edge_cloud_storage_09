@@ -1,6 +1,7 @@
 import React from 'react';
 import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
+import FileThumbnail from './FileThumbnail';
 
 export default function FileGrid({ 
   folders, 
@@ -68,7 +69,12 @@ export default function FileGrid({
           </div>
 
           <div className="flex flex-col items-center">
-            {getFileIcon(file.name, 48)}
+            <FileThumbnail
+              file={file}
+              size="large"
+              darkMode={darkMode}
+              className="mb-2"
+            />
             <p className={`text-sm mt-2 text-center font-medium truncate w-full ${
               darkMode ? 'text-white' : 'text-gray-900'
             }`} title={file.name}>
@@ -84,18 +90,16 @@ export default function FileGrid({
           
           {/* Actions */}
           <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            {isImageFile(file.name) && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFilePreview(file);
-                }}
-                className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}
-                title="Preview"
-              >
-                <Eye size={14} />
-              </button>
-            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onFilePreview(file);
+              }}
+              className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}
+              title="Preview"
+            >
+              <Eye size={14} />
+            </button>
             <button
               onClick={(e) => {
                 e.stopPropagation();
