@@ -16,9 +16,8 @@ from .monitoring.metrics import metrics_collector
 from .routers import auth, files, folders, upload, storage, websocket, deduplication
 
 # Import background services
-from .routers.background_deduplication import background_dedup_service  # NEW
-#from .services.cold_storage_tiering import cold_storage_service  # NEW
-#from .services.production_upload_service import production_upload_service  # NEW
+from .routers.background_deduplication import background_dedup_service
+from .services.cold_storage_tiering import cold_storage_service  # ENABLED
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,18 +47,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Database connection failed: {e}")
 
-    # NEW: Start background services
+    # Start background services
     try:
         await background_dedup_service.start()
         print("Background deduplication service started")
     except Exception as e:
         print(f"Failed to start dedup service: {e}")
 
-    # try:
-    #     await cold_storage_service.start()
-    #     print("Cold storage tiering service started")
-    # except Exception as e:
-    #     print(f"Failed to start tiering service: {e}")
+    try:
+        await cold_storage_service.start()
+        print("Cold storage tiering service started")
+    except Exception as e:
+        print(f"Failed to start tiering service: {e}")
 
     print("Application startup complete")
     yield
@@ -67,18 +66,18 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print("Shutting down Edge Storage Service...")
     
-    # NEW: Stop background services
+    # Stop background services
     try:
         await background_dedup_service.stop()
         print("Background dedup service stopped")
     except Exception as e:
         print(f"Error stopping dedup service: {e}")
 
-    # try:
-    #     await cold_storage_service.stop()
-    #     print("Cold storage service stopped")
-    # except Exception as e:
-    #     print(f"Error stopping tiering service: {e}")
+    try:
+        await cold_storage_service.stop()
+        print("Cold storage service stopped")
+    except Exception as e:
+        print(f"Error stopping tiering service: {e}")
 
     # try:
     #     production_upload_service.cleanup()
@@ -205,15 +204,15 @@ async def health_check():
         health_status["checks"]["redis"] = f"unhealthy: {str(e)}"
         health_status["status"] = "degraded"
 
-    # NEW: Background services check
+    # Background services check
     health_status["checks"]["background_dedup"] = (
         "running" if background_dedup_service.worker_task and
         not background_dedup_service.worker_task.done() else "stopped"
     )
-    # health_status["checks"]["cold_storage_tiering"] = (
-    #     "running" if cold_storage_service.worker_task and
-    #     not cold_storage_service.worker_task.done() else "stopped"
-    # )
+    health_status["checks"]["cold_storage_tiering"] = (
+        "running" if cold_storage_service.worker_task and
+        not cold_storage_service.worker_task.done() else "stopped"
+    )
 
     # Storage directories check
     storage_status = {}
@@ -228,14 +227,14 @@ async def health_check():
         "https_enabled": settings.ENABLE_HTTPS,
         "compression_enabled": getattr(settings, "COMPRESSION_ENABLED", True),
         "encryption_enabled": getattr(settings, "ENCRYPTION_ENABLED", True),
-        "background_dedup": True,  # NEW
-        "cold_storage_tiering": False,  # NEW
+        "background_dedup": True,
+        "cold_storage_tiering": True,  # ENABLED
     }
 
     return health_status
 
 
-# NEW: Service statistics endpoint
+# Service statistics endpoint
 @app.get("/api/v1/stats", tags=["Info"])
 async def get_service_stats():
     """Get real-time service statistics"""
@@ -243,6 +242,11 @@ async def get_service_stats():
         "deduplication": {
             "active_jobs": len(background_dedup_service.active_jobs),
             "queued_jobs": background_dedup_service.queue.qsize(),
+        },
+        "tiering": {
+            "enabled": cold_storage_service.is_running,
+            "cache_to_warm_days": cold_storage_service.cache_to_warm_days,
+            "warm_to_cold_days": cold_storage_service.warm_to_cold_days,
         }
     }
 

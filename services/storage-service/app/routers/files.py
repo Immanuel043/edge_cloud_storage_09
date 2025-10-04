@@ -214,7 +214,20 @@ async def download_file(
     
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
+    # Update last accessed time (for tiering)
+    file_obj.last_accessed = datetime.utcnow()
+
+    # TIERING: Promote file to hot storage if accessed from warm/cold tier
+    from ..services.cold_storage_tiering import cold_storage_service
+    try:
+        await cold_storage_service.promote_file_on_access(str(file_id), db)
+    except Exception as e:
+        # Don't fail download if promotion fails
+        print(f"Warning: Failed to promote file {file_id}: {e}")
+
+    await db.commit()
+
     # Decrypt key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
     
