@@ -1,19 +1,20 @@
 import React from 'react';
-import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive } from 'lucide-react';
+import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
-export default function FileList({ 
-  folders, 
-  files, 
+export default function FileList({
+  folders,
+  files,
   selectedFiles,
-  onFolderClick, 
+  onFolderClick,
   onFileClick,
   onFilePreview,
   onFileDownload,
   onFileShare,
   onFileDelete,
-  darkMode 
+  onVersionHistory,
+  darkMode
 }) {
   return (
     <div className="space-y-2">
@@ -109,6 +110,13 @@ export default function FileList({
               title="Share"
             >
               <Share2 size={16} />
+            </button>
+            <button
+              onClick={() => onVersionHistory(file)}
+              className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}
+              title="Version History"
+            >
+              <Clock size={16} className="text-blue-500" />
             </button>
             <button
               onClick={() => onFileDelete(file.id)}

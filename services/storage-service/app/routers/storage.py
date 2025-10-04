@@ -9,8 +9,11 @@ import json
 import secrets
 from ..dependencies import get_db, get_current_user, log_activity
 from ..services.auth import auth_service, pwd_context
-from ..models.database import User, Object, ActivityLog
-from ..models.schemas import StorageStats, ShareCreate, ShareResponse, ActivityResponse, ThemeUpdate
+from ..models.database import User, Object, ActivityLog, ShareLink, SharedAccess, Folder
+from ..models.schemas import (
+    StorageStats, ShareCreate, ShareResponse, ActivityResponse, ThemeUpdate,
+    CollaborativeShareCreate, CollaborativeShareResponse, SharedItemResponse
+)
 from ..database import get_redis, AsyncSessionLocal
 from ..services.storage import storage_service
 from ..config import settings
@@ -136,48 +139,80 @@ async def create_share_link(
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Create shareable link with permissions"""
-    redis_client = await get_redis()
-    
+    """Create shareable link with optional expiration and password"""
+    # Verify file exists and belongs to user
     result = await db.execute(
         select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
-    
+
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
+    # Generate unique share token
     share_token = secrets.token_urlsafe(32)
-    
-    share_info = {
-        "token": share_token,
-        "file_id": str(file_id),
-        "user_id": str(current_user.id),
-        "password": pwd_context.hash(share_data.password) if share_data.password else None,
-        "expires_at": (datetime.utcnow() + timedelta(hours=share_data.expires_hours)).isoformat(),
-        "max_downloads": share_data.max_downloads,
-        "download_count": 0,
-    }
-    
-    await redis_client.setex(
-        f"share:{share_token}",
-        share_data.expires_hours * 3600,
-        json.dumps(share_info)
+
+    # Calculate expiration
+    expires_at = None
+    if share_data.expires_hours:
+        expires_at = datetime.utcnow() + timedelta(hours=share_data.expires_hours)
+
+    # Hash password if provided
+    password_hash = None
+    if share_data.password:
+        password_hash = pwd_context.hash(share_data.password)
+
+    # Create share link in database
+    share_link = ShareLink(
+        share_token=share_token,
+        file_id=file_id,
+        user_id=current_user.id,
+        share_type=share_data.share_type,
+        password_hash=password_hash,
+        expires_at=expires_at,
+        max_downloads=share_data.max_downloads,
+        download_count=0,
+        view_count=0,
+        is_active=True,
+        allow_preview=share_data.allow_preview,
     )
-    
+
+    db.add(share_link)
+    await db.commit()
+    await db.refresh(share_link)
+
+    # Log activity
     await log_activity(
         db, current_user.id, "share_created", str(file_id),
-        {"expires_hours": share_data.expires_hours, "has_password": bool(share_data.password)},
+        {
+            "expires_hours": share_data.expires_hours,
+            "has_password": bool(share_data.password),
+            "max_downloads": share_data.max_downloads,
+        },
         request,
     )
-    
+
+    # Build frontend share URL (not API URL)
+    # In production, this should be the frontend domain
+    # For development, use localhost:3000
+    from ..config import settings
+    if hasattr(settings, 'FRONTEND_URL'):
+        frontend_url = settings.FRONTEND_URL
+    else:
+        # Default to development frontend URL
+        frontend_url = "http://localhost:3000"
+
+    share_url = f"{frontend_url}/share/{share_token}"
+
     return ShareResponse(
-        share_url=f"https://yourdomain.com/share/{share_token}",
+        share_url=share_url,
         token=share_token,
-        expires_at=share_info["expires_at"],
-        expires_hours=share_data.expires_hours,
-        password=bool(share_data.password),
+        share_type=share_data.share_type,
+        expires_at=expires_at.isoformat() if expires_at else None,
+        password_protected=bool(share_data.password),
         max_downloads=share_data.max_downloads,
+        downloads_used=0,
+        allow_preview=share_data.allow_preview,
     )
 
 @router.get("/share/{share_token}")
@@ -186,41 +221,65 @@ async def download_shared(
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """Download shared file"""
-    from fastapi import HTTPException
+    """Download shared file with validation"""
     from fastapi.responses import StreamingResponse
-    redis_client = await get_redis()
-    
-    share_data = await redis_client.get(f"share:{share_token}")
-    if not share_data:
-        raise HTTPException(status_code=404, detail="Share link expired or not found")
-    
-    share = json.loads(share_data)
-    
-    if share["password"]:
-        if not password or not pwd_context.verify(password, share["password"]):
+
+    # Get share link from database
+    result = await db.execute(
+        select(ShareLink).filter(ShareLink.share_token == share_token, ShareLink.is_active == True)
+    )
+    share_link = result.scalar_one_or_none()
+
+    if not share_link:
+        raise HTTPException(status_code=404, detail="Share link not found or has been disabled")
+
+    # Check expiration
+    if share_link.expires_at and share_link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Verify password if required
+    if share_link.password_hash:
+        if not password:
+            raise HTTPException(status_code=401, detail="Password required")
+        if not pwd_context.verify(password, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
-    
-    if share["max_downloads"] and share["download_count"] >= share["max_downloads"]:
+
+    # Check download limit
+    if share_link.max_downloads and share_link.download_count >= share_link.max_downloads:
         raise HTTPException(status_code=403, detail="Download limit exceeded")
-    
-    result = await db.execute(select(Object).filter(Object.id == share["file_id"]))
+
+    # Get file object
+    result = await db.execute(select(Object).filter(Object.id == share_link.file_id))
     file_obj = result.scalar_one_or_none()
-    
+
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
-    
-    share["download_count"] += 1
-    await redis_client.set(f"share:{share_token}", json.dumps(share))
-    
+
+    # Update download count and last accessed
+    share_link.download_count += 1
+    share_link.last_accessed = datetime.utcnow()
+    await db.commit()
+
+    # Decrypt and stream file
     from ..services.encryption import encryption_service
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
-    
+
     async def stream_chunks():
-        for chunk_hash in file_obj.chunk_info["chunks"]:
-            chunk_data = await storage_service.get_chunk(chunk_hash, file_key)
+        if file_obj.storage_type == "inline":
+            # Inline data stored directly
+            encrypted_data = file_obj.storage_key.encode() if isinstance(file_obj.storage_key, str) else file_obj.storage_key
+            decrypted_data = encryption_service.decrypt_data(encrypted_data, file_key)
+            yield decrypted_data
+        elif file_obj.chunk_info and "chunks" in file_obj.chunk_info:
+            # Chunked storage
+            for chunk_hash in file_obj.chunk_info["chunks"]:
+                chunk_data = await storage_service.get_chunk(chunk_hash, file_key)
+                yield chunk_data
+        else:
+            # Single file storage
+            chunk_data = await storage_service.get_chunk(file_obj.content_hash, file_key)
             yield chunk_data
-    
+
     return StreamingResponse(
         stream_chunks(),
         media_type=file_obj.mime_type or "application/octet-stream",

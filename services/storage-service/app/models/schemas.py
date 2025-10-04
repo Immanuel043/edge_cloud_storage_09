@@ -60,18 +60,45 @@ class FolderResponse(BaseModel):
 
 # Share Schemas
 class ShareCreate(BaseModel):
-    file_id: str
-    expires_hours: int = 24
+    share_type: str = 'view'  # view, download, edit
+    expires_hours: Optional[int] = None  # None = never expires
     password: Optional[str] = None
-    max_downloads: Optional[int] = None
+    max_downloads: Optional[int] = None  # None = unlimited
+    allow_preview: bool = True
 
 class ShareResponse(BaseModel):
     share_url: str
     token: str
-    expires_at: str
-    expires_hours: int
-    password: bool
-    max_downloads: Optional[int]
+    share_type: str
+    expires_at: Optional[str] = None
+    password_protected: bool
+    max_downloads: Optional[int] = None
+    downloads_used: int = 0
+    allow_preview: bool = True
+
+class CollaborativeShareCreate(BaseModel):
+    emails: List[str]  # List of emails to share with
+    permission: str = 'view'  # view, download, edit
+    expires_hours: Optional[int] = None
+    message: Optional[str] = None  # Optional message to recipients
+
+class CollaborativeShareResponse(BaseModel):
+    id: str
+    shared_with_email: str
+    permission: str
+    invitation_status: str
+    invitation_token: Optional[str] = None
+    created_at: datetime
+
+class SharedItemResponse(BaseModel):
+    id: str
+    owner_email: str
+    item_name: str
+    item_type: str  # file or folder
+    permission: str
+    shared_at: datetime
+    file_id: Optional[str] = None
+    folder_id: Optional[str] = None
 
 # Storage Schemas
 class StorageStats(BaseModel):

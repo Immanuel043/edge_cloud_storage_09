@@ -1,19 +1,20 @@
 import React from 'react';
-import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive } from 'lucide-react';
+import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
-export default function FileGrid({ 
-  folders, 
-  files, 
+export default function FileGrid({
+  folders,
+  files,
   selectedFiles,
-  onFolderClick, 
+  onFolderClick,
   onFileClick,
   onFilePreview,
   onFileDownload,
   onFileShare,
   onFileDelete,
-  darkMode 
+  onVersionHistory,
+  darkMode
 }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
@@ -119,6 +120,16 @@ export default function FileGrid({
               title="Share"
             >
               <Share2 size={14} />
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onVersionHistory(file);
+              }}
+              className={`p-1 rounded ${darkMode ? 'hover:bg-gray-500' : 'hover:bg-gray-200'}`}
+              title="Version History"
+            >
+              <Clock size={14} className="text-blue-500" />
             </button>
             <button
               onClick={(e) => {

@@ -118,3 +118,57 @@ class ContentBlock(Base):
         Index('idx_block_file_id', 'file_id'),
         Index('idx_ref_count_zero', 'reference_count'),
     )
+
+class ShareLink(Base):
+    __tablename__ = 'share_links'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_token = Column(String(64), unique=True, nullable=False, index=True)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=True)
+    folder_id = Column(UUID(as_uuid=True), ForeignKey('folders.id', ondelete='CASCADE'), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    share_type = Column(String(20), default='view')  # view, download, edit
+    password_hash = Column(String(255), nullable=True)
+    expires_at = Column(DateTime, nullable=True)  # NULL = never expires
+    max_downloads = Column(Integer, nullable=True)  # NULL = unlimited
+    download_count = Column(Integer, default=0)
+    view_count = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    allow_preview = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_accessed = Column(DateTime, nullable=True)
+
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_share_token', 'share_token'),
+        Index('idx_share_file_id', 'file_id'),
+        Index('idx_share_folder_id', 'folder_id'),
+        Index('idx_share_user_id', 'user_id'),
+        Index('idx_share_active', 'is_active'),
+    )
+
+class SharedAccess(Base):
+    """Collaborative sharing - share folders/files with specific users"""
+    __tablename__ = 'shared_access'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    shared_with_email = Column(String(255), nullable=False, index=True)
+    shared_with_user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)  # NULL if not registered
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=True)
+    folder_id = Column(UUID(as_uuid=True), ForeignKey('folders.id', ondelete='CASCADE'), nullable=True)
+    permission = Column(String(20), default='view')  # view, download, edit
+    invitation_status = Column(String(20), default='pending')  # pending, accepted, declined
+    invitation_token = Column(String(64), unique=True, nullable=True, index=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    accepted_at = Column(DateTime, nullable=True)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_shared_email', 'shared_with_email'),
+        Index('idx_shared_user', 'shared_with_user_id'),
+        Index('idx_shared_owner', 'owner_id'),
+        Index('idx_shared_file', 'file_id'),
+        Index('idx_shared_folder', 'folder_id'),
+    )

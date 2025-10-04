@@ -16,7 +16,8 @@ import FileGrid from './FileGrid';
 import FileList from './FileList';
 import UploadProgress from './UploadProgress';
 import FilePreview from './FilePreview';
-import ShareModal from './ShareModal';
+import ShareOptionsModal from './ShareOptionsModal';
+import VersionHistory from './VersionHistory';
 import FilterPanel from './FilterPanel';
 import KeyboardShortcuts from './KeyboardShortcuts';
 import BulkActions from './BulkActions';
@@ -52,8 +53,9 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [uploads, setUploads] = useState({});
   const [isDragging, setIsDragging] = useState(false);
-  const [shareModal, setShareModal] = useState(null);
+  const [shareFile, setShareFile] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [versionFile, setVersionFile] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [filters, setFilters] = useState({
@@ -101,7 +103,7 @@ export default function Dashboard() {
     'escape': () => {
       clearSelection();
       setPreviewFile(null);
-      setShareModal(null);
+      setShareFile(null);
     },
     'shift+?': () => setShowShortcuts(true)
   });
@@ -230,9 +232,20 @@ export default function Dashboard() {
     await createFolder(name);
   };
 
-  const handleShare = async (fileId) => {
-    const shareData = await createShareLink(fileId);
-    setShareModal(shareData);
+  const handleShare = (fileId) => {
+    const file = files.find(f => f.id === fileId);
+    if (file) {
+      setShareFile(file);
+    }
+  };
+
+  const handleVersionHistory = (file) => {
+    setVersionFile(file);
+  };
+
+  const handleVersionRestore = async () => {
+    // Reload files after restore
+    await fetchFiles();
   };
 
   const handleBulkDelete = async () => {
@@ -532,6 +545,7 @@ export default function Dashboard() {
                   onFileDownload={downloadFile}
                   onFileShare={handleShare}
                   onFileDelete={deleteFile}
+                  onVersionHistory={handleVersionHistory}
                   darkMode={darkMode}
                 />
               ) : (
@@ -545,6 +559,7 @@ export default function Dashboard() {
                   onFileDownload={downloadFile}
                   onFileShare={handleShare}
                   onFileDelete={deleteFile}
+                  onVersionHistory={handleVersionHistory}
                   darkMode={darkMode}
                 />
               )}
@@ -562,10 +577,10 @@ export default function Dashboard() {
         </div>
 
         {/* Modals */}
-        {shareModal && (
-          <ShareModal
-            shareData={shareModal}
-            onClose={() => setShareModal(null)}
+        {shareFile && (
+          <ShareOptionsModal
+            file={shareFile}
+            onClose={() => setShareFile(null)}
             darkMode={darkMode}
           />
         )}
@@ -581,6 +596,15 @@ export default function Dashboard() {
         {showShortcuts && (
           <KeyboardShortcuts
             onClose={() => setShowShortcuts(false)}
+            darkMode={darkMode}
+          />
+        )}
+
+        {versionFile && (
+          <VersionHistory
+            file={versionFile}
+            onClose={() => setVersionFile(null)}
+            onRestore={handleVersionRestore}
             darkMode={darkMode}
           />
         )}

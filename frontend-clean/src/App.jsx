@@ -6,6 +6,7 @@ import { StorageProvider } from './contexts/StorageContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import AuthPage from './components/auth/AuthPage';
 import Dashboard from './components/dashboard/Dashboard';
+import ShareViewer from './components/share/ShareViewer';
 import { useAuth } from './contexts/AuthContext';
 
 function ProtectedRoute({ children }) {
@@ -27,6 +28,7 @@ export default function App() {
             <Suspense fallback={<div>Loading app...</div>}>
               <Routes>
                 <Route path="/auth" element={<AuthPage />} />
+                <Route path="/share/:token" element={<ShareViewer />} />
                 <Route
                   path="/"
                   element={

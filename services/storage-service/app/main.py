@@ -13,7 +13,7 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication
+from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
@@ -140,6 +140,8 @@ app.include_router(files.router)
 app.include_router(folders.router)
 app.include_router(upload.router)
 app.include_router(storage.router)
+app.include_router(sharing.router)
+app.include_router(versions.router)
 app.include_router(websocket.router)
 app.include_router(deduplication.router)
 
