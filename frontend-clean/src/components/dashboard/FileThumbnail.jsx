@@ -97,6 +97,15 @@ export default function FileThumbnail({
           }
         );
 
+        // If file not found (404), silently fall back to icon instead of showing error
+        if (response.status === 404) {
+          if (mounted) {
+            setLoading(false);
+            setError(false); // Don't show error state, just use fallback icon
+          }
+          return;
+        }
+
         if (!response.ok) {
           throw new Error('Failed to load thumbnail');
         }

@@ -85,9 +85,11 @@ export default function Dashboard() {
       return;
     }
 
-    // Load dedup stats when auth is ready
-    loadDedupStats();
-  }, [isAuthenticated, authLoading]);
+    // Only load dedup stats when the panel is actually opened
+    if (showDedupPanel) {
+      loadDedupStats();
+    }
+  }, [isAuthenticated, authLoading, showDedupPanel]);
 
   // Setup keyboard shortcuts
   useKeyboardShortcuts({
@@ -333,8 +335,11 @@ export default function Dashboard() {
               </h1>
               <nav className="flex gap-2">
                 <button
-                  
-                  onClick={() => navigateToFolder(null)}
+
+                  onClick={() => {
+                    navigateToFolder(null);
+                    setShowDedupPanel(false); // Close dedup panel when going home
+                  }}
                   className={`px-3 py-1 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
                   title="Home"
                 >

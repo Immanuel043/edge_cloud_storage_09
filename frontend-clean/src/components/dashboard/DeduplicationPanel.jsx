@@ -17,6 +17,7 @@ const DeduplicationPanel = ({ darkMode, onOptimizeFile, stats, loading, onRefres
   // Use props from Dashboard instead of fetching here
   const analytics = stats?.analytics || null;
   const savings = stats?.savings || null;
+  const error = stats?.error || null;
 
   const runGarbageCollection = async () => {
     if (!window.confirm('Run garbage collection to clean up unused blocks?')) return;
@@ -38,6 +39,42 @@ const DeduplicationPanel = ({ darkMode, onOptimizeFile, stats, loading, onRefres
         <div className="space-y-3">
           <div className="h-4 bg-gray-300 dark:bg-gray-700 rounded"></div>
           <div className="h-4 bg-gray-300 dark:bg-gray-700 rounded w-3/4"></div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Zap className="w-6 h-6 text-indigo-500" />
+            <h2 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              Deduplication Analytics
+            </h2>
+          </div>
+          <button
+            onClick={onRefresh}
+            className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'} transition-colors`}
+            title="Retry"
+          >
+            <RefreshCw size={18} />
+          </button>
+        </div>
+        <div className={`p-4 rounded-lg ${darkMode ? 'bg-red-900/20 border border-red-800' : 'bg-red-50 border border-red-200'}`}>
+          <p className={`text-sm ${darkMode ? 'text-red-200' : 'text-red-700'}`}>
+            {error}
+          </p>
+          <button
+            onClick={onRefresh}
+            className={`mt-3 px-4 py-2 rounded-lg text-sm font-medium ${
+              darkMode ? 'bg-red-800 hover:bg-red-700 text-white' : 'bg-red-600 hover:bg-red-700 text-white'
+            }`}
+          >
+            Try Again
+          </button>
         </div>
       </div>
     );

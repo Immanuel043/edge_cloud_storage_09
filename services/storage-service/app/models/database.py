@@ -2,13 +2,16 @@
 
 from sqlalchemy import (
     Column, String, Integer, DateTime, Boolean,
-    ForeignKey, JSON, BigInteger, Text, UniqueConstraint, Index
+    ForeignKey, JSON, BigInteger, Text, UniqueConstraint, Index, Float
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
+from uuid import uuid4
+from sqlalchemy.sql import func
 
 Base = declarative_base()
 
@@ -282,4 +285,130 @@ class FileTag(Base):
         Index('idx_file_tag_tag', 'tag'),
         Index('idx_file_tag_source', 'source'),
         UniqueConstraint('file_id', 'tag', name='unique_file_tag'),
+    )
+
+
+# ============================================================================
+# SECURITY & AUDIT MODELS
+# ============================================================================
+
+class VirusScanLog(Base):
+    """Virus scan results for uploaded files"""
+    __tablename__ = 'virus_scan_logs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Scan results
+    is_infected = Column(Boolean, nullable=False, default=False)
+    virus_name = Column(String(255), nullable=True)  # Name of detected virus/malware
+    scan_engine = Column(String(50), default='clamav')  # e.g., 'clamav', 'virustotal'
+    scan_time = Column(Float, default=0.0)  # Scan duration in seconds
+
+    # Metadata
+    scanned_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    file_size = Column(BigInteger, nullable=True)  # Size of scanned file
+    file_hash = Column(String(64), nullable=True)  # SHA-256 hash
+    error_message = Column(Text, nullable=True)  # Error if scan failed
+
+    # Action taken
+    action_taken = Column(String(50), default='allowed')  # 'allowed', 'blocked', 'quarantined'
+
+    # Relationships
+    file = relationship('Object', backref='virus_scans')
+    user = relationship('User', backref='virus_scans')
+
+    __table_args__ = (
+        Index('idx_virus_scan_file_id', 'file_id'),
+        Index('idx_virus_scan_user_id', 'user_id'),
+        Index('idx_virus_scan_is_infected', 'is_infected'),
+        Index('idx_virus_scan_scanned_at', 'scanned_at'),
+    )
+
+
+class DLPScanLog(Base):
+    """Data Loss Prevention scan results"""
+    __tablename__ = 'dlp_scan_logs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Scan results
+    has_sensitive_data = Column(Boolean, nullable=False, default=False)
+    risk_score = Column(Float, default=0.0)  # 0-100 risk score
+    total_matches = Column(Integer, default=0)  # Total sensitive data matches
+    scan_time = Column(Float, default=0.0)
+
+    # Detected sensitive data types (JSON array)
+    detected_types = Column(Text, nullable=True)  # JSON: ['SSN', 'CREDIT_CARD', 'API_KEY']
+
+    # Metadata
+    scanned_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    file_size = Column(BigInteger, nullable=True)
+
+    # Action taken
+    action_taken = Column(String(50), default='allowed')  # 'allowed', 'blocked', 'flagged'
+    blocked = Column(Boolean, default=False)
+
+    # Relationships
+    file = relationship('Object', backref='dlp_scans')
+    user = relationship('User', backref='dlp_scans')
+
+    __table_args__ = (
+        Index('idx_dlp_scan_file_id', 'file_id'),
+        Index('idx_dlp_scan_user_id', 'user_id'),
+        Index('idx_dlp_scan_has_sensitive', 'has_sensitive_data'),
+        Index('idx_dlp_scan_risk_score', 'risk_score'),
+        Index('idx_dlp_scan_scanned_at', 'scanned_at'),
+    )
+
+
+class AuditLog(Base):
+    """Comprehensive audit logging for all user actions"""
+    __tablename__ = 'audit_logs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
+    # Action details
+    action = Column(String(100), nullable=False)  # e.g., 'file.upload', 'file.delete', 'user.login'
+    resource_type = Column(String(50), nullable=True)  # 'file', 'folder', 'user', 'share'
+    resource_id = Column(UUID(as_uuid=True), nullable=True)  # ID of affected resource
+    resource_name = Column(String(500), nullable=True)  # Name for easy reference
+
+    # Request context
+    ip_address = Column(String(45), nullable=True)  # IPv4 or IPv6
+    user_agent = Column(Text, nullable=True)
+    request_method = Column(String(10), nullable=True)  # GET, POST, PUT, DELETE
+    request_path = Column(String(500), nullable=True)
+
+    # Result
+    status = Column(String(20), nullable=False)  # 'success', 'failure', 'blocked'
+    status_code = Column(Integer, nullable=True)  # HTTP status code
+    error_message = Column(Text, nullable=True)
+
+    # Additional context data (JSON)
+    context_data = Column(Text, nullable=True)  # JSON: extra context like file size, permissions, etc.
+
+    # Timestamp
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Security flags
+    is_suspicious = Column(Boolean, default=False)  # Flag suspicious activity
+    risk_level = Column(String(20), default='low')  # 'low', 'medium', 'high', 'critical'
+
+    # Relationships
+    user = relationship('User', backref='audit_logs')
+
+    __table_args__ = (
+        Index('idx_audit_user_id', 'user_id'),
+        Index('idx_audit_action', 'action'),
+        Index('idx_audit_resource_type', 'resource_type'),
+        Index('idx_audit_resource_id', 'resource_id'),
+        Index('idx_audit_created_at', 'created_at'),
+        Index('idx_audit_status', 'status'),
+        Index('idx_audit_is_suspicious', 'is_suspicious'),
+        Index('idx_audit_ip_address', 'ip_address'),
     )

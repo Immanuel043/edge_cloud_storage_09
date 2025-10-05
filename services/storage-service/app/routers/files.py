@@ -11,7 +11,7 @@ from datetime import datetime
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
-from ..models.database import User, Object
+from ..models.database import User, Object, ActivityLog
 from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
@@ -645,19 +645,30 @@ async def delete_file(
         # Update user storage
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
-        
+
+        # Store file metadata before deletion (object will be detached after delete)
+        file_name = file_obj.file_name
+        storage_type = file_obj.storage_type
+        freed_space = file_obj.file_size
+
         # Delete the file object
         await db.delete(file_obj)
-        await db.commit()
-        
-        # Log activity
-        await log_activity(
-            db, current_user.id, "file_deleted", str(file_id),
-            {"file_name": file_obj.file_name, "storage_type": file_obj.storage_type},
-            request
+
+        # Log activity BEFORE commit (using stored metadata)
+        activity = ActivityLog(
+            user_id=current_user.id,
+            action="file_deleted",
+            object_id=file_id,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            meta_data={"file_name": file_name, "storage_type": storage_type}
         )
-        
-        return {"status": "success", "freed_space": file_obj.file_size}
+        db.add(activity)
+
+        # Single commit for both file deletion and activity log
+        await db.commit()
+
+        return {"status": "success", "freed_space": freed_space}
         
     except Exception as e:
         await db.rollback()
@@ -673,56 +684,64 @@ async def bulk_delete_files(
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Delete multiple files with cascade handling"""
+    """Delete multiple files with cascade handling - OPTIMIZED"""
     file_ids = request_data.file_ids
+
+    if not file_ids:
+        return {"deleted": 0, "freed_space": 0, "deleted_files": [], "failed_files": []}
+
     redis_client = await get_redis()
     deleted_count = 0
     freed_space = 0
     deleted_files = []
     failed_files = []
-    
+
     try:
-        for file_id in file_ids:
+        # OPTIMIZATION 1: Batch fetch all files at once
+        result = await db.execute(
+            select(Object).filter(
+                Object.id.in_(file_ids),
+                Object.user_id == current_user.id
+            )
+        )
+        files = result.scalars().all()
+
+        if not files:
+            return {"deleted": 0, "freed_space": 0, "deleted_files": [], "failed_files": file_ids}
+
+        # Track found vs missing files
+        found_ids = {str(f.id) for f in files}
+        failed_files = [fid for fid in file_ids if fid not in found_ids]
+
+        # OPTIMIZATION 2: Batch handle content blocks
+        file_ids_tuple = tuple(str(f.id) for f in files)
+
+        # Decrement reference counts for all blocks at once
+        await db.execute(
+            text("""
+                UPDATE content_blocks
+                SET reference_count = reference_count - 1
+                WHERE block_hash IN (
+                    SELECT block_hash FROM content_blocks WHERE file_id = ANY(:file_ids)
+                )
+            """),
+            {"file_ids": file_ids_tuple}
+        )
+
+        # Delete file-block associations for all files
+        await db.execute(
+            text("DELETE FROM content_blocks WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids_tuple}
+        )
+
+        # OPTIMIZATION 3: Clean up unreferenced blocks once (not per file)
+        await db.execute(
+            text("DELETE FROM content_blocks WHERE reference_count <= 0")
+        )
+
+        # OPTIMIZATION 4: Delete physical files (can be done async in production)
+        for file_obj in files:
             try:
-                result = await db.execute(
-                    select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
-                )
-                file_obj = result.scalar_one_or_none()
-                
-                if not file_obj:
-                    failed_files.append(file_id)
-                    continue
-                
-                # Handle content_blocks with proper reference counting
-                # First, get all blocks for this file
-                blocks_result = await db.execute(
-                    text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
-                    {"file_id": file_id}
-                )
-                file_blocks = blocks_result.fetchall()
-
-                for block in file_blocks:
-                    # Decrement reference count for each block
-                    await db.execute(
-                        text("""
-                            UPDATE content_blocks
-                            SET reference_count = reference_count - 1
-                            WHERE block_hash = :block_hash
-                        """),
-                        {"block_hash": block.block_hash}
-                    )
-
-                # Delete blocks that are no longer referenced
-                await db.execute(
-                    text("DELETE FROM content_blocks WHERE reference_count <= 0")
-                )
-
-                # Delete this file's block associations
-                await db.execute(
-                    text("DELETE FROM content_blocks WHERE file_id = :file_id"),
-                    {"file_id": file_id}
-                )
-                
                 # Handle different storage types
                 if file_obj.storage_type == "inline":
                     if file_obj.storage_key:
@@ -730,66 +749,68 @@ async def bulk_delete_files(
                             await redis_client.delete(file_obj.storage_key)
                         except Exception as e:
                             print(f"Failed to delete from Redis: {e}")
-                
+
                 elif file_obj.storage_type == "single":
                     if file_obj.object_path and os.path.exists(file_obj.object_path):
                         try:
                             os.remove(file_obj.object_path)
                         except Exception as e:
-                            print(f"Failed to delete file from disk: {e}")
-                
+                            print(f"Failed to delete file: {e}")
+
                 else:  # chunked
                     if file_obj.chunk_info:
-                        # Handle chunk cleanup for chunked files
                         chunk_info = file_obj.chunk_info
                         upload_id = chunk_info.get("upload_id", str(file_obj.id))
                         chunk_count = chunk_info.get("count", 0)
                         chunk_paths = chunk_info.get("paths", {})
-                        
+
+                        # Delete chunks
                         for i in range(chunk_count):
                             chunk_path = chunk_paths.get(str(i))
                             if not chunk_path:
                                 shard = upload_id[:2] if len(upload_id) >= 2 else "00"
                                 chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-                            
+
                             if os.path.exists(chunk_path):
                                 try:
                                     os.remove(chunk_path)
-                                    print(f"Deleted chunk: {chunk_path}")
                                 except Exception as e:
-                                    print(f"Failed to delete chunk {chunk_path}: {e}")
-                
+                                    print(f"Failed to delete chunk: {e}")
+
                 freed_space += file_obj.file_size
-                await db.delete(file_obj)
                 deleted_count += 1
-                deleted_files.append(file_id)
-                
+                deleted_files.append(str(file_obj.id))
+
             except Exception as e:
-                print(f"Failed to delete file {file_id}: {e}")
-                failed_files.append(file_id)
-        
+                print(f"Failed to cleanup file {file_obj.id}: {e}")
+                # Continue with database deletion even if file cleanup fails
+
+        # OPTIMIZATION 5: Batch delete database records
+        for file_obj in files:
+            await db.delete(file_obj)
+
         # Update user storage
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - freed_space)
-        
-        # Commit all changes
+
+        # Commit all changes once
         await db.commit()
-        
-        # Log activity
+
+        # Log activity (async in new transaction)
         if deleted_count > 0:
             await log_activity(
                 db, current_user.id, "bulk_delete", None,
                 {"deleted_count": deleted_count, "freed_space": freed_space},
                 request
             )
-        
+
         return {
             "deleted": deleted_count,
             "freed_space": freed_space,
             "deleted_files": deleted_files,
             "failed_files": failed_files
         }
-        
+
     except Exception as e:
         await db.rollback()
         print(f"Bulk delete error: {e}")

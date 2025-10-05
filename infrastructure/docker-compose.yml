@@ -75,6 +75,31 @@ services:
         reservations:
           memory: 512M
 
+  # ClamAV Antivirus Scanner
+  clamav:
+    image: clamav/clamav:latest
+    platform: linux/amd64  # Force AMD64 for ARM Mac compatibility
+    container_name: edge-clamav
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    environment:
+      - CLAMAV_NO_FRESHCLAM=false
+    healthcheck:
+      test: ["CMD", "sh", "-c", "[ -S /tmp/clamd.sock ] || exit 1"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 300s  # Takes ~5 minutes to download virus definitions on first start
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G  # ClamAV needs significant memory for virus databases
+        reservations:
+          memory: 1G
+
   # ClickHouse for Analytics
   clickhouse:
     image: clickhouse/clickhouse-server:23.10
@@ -162,11 +187,13 @@ services:
     container_name: edge-storage-service
     env_file:
       - .env # Load environment variables from .env file
-    
+
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      clamav:
         condition: service_healthy
     environment:
       DB_HOST: postgres
@@ -174,6 +201,8 @@ services:
       REDIS_URL: redis://redis:6379
       ELASTICSEARCH_URL: http://elasticsearch:9200
       KAFKA_BROKERS: kafka:9092
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
       STORAGE_ROOT: /app/storage
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
       # CRITICAL: Reduce chunk size for memory management
@@ -321,6 +350,8 @@ volumes:
   redis_data:
     driver: local
   elasticsearch_data:
+    driver: local
+  clamav_data:
     driver: local
   clickhouse_data:
     driver: local

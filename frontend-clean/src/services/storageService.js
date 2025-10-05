@@ -671,17 +671,32 @@ async getDedupAnalytics(token) {
 async getDedupSavings(token) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/dedup/savings`, {
-    method: 'GET',
-    credentials: 'include'  // Send HTTP-only cookie
-  });
+  // Add timeout to prevent hanging on large dedup calculations
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
-  if (!response.ok) {
-    console.error('Failed to load dedup savings:', response.status, 'URL:', `${API_URL}/dedup/savings`);
-    throw new Error('Failed to load deduplication savings');
+  try {
+    const response = await fetch(`${API_URL}/dedup/savings`, {
+      method: 'GET',
+      credentials: 'include',  // Send HTTP-only cookie
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.error('Failed to load dedup savings:', response.status, 'URL:', `${API_URL}/dedup/savings`);
+      throw new Error('Failed to load deduplication savings');
+    }
+
+    return await response.json();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error('Deduplication calculation timed out. Try again later.');
+    }
+    throw error;
   }
-
-  return await response.json();
 }
 
 async optimizeFileDedup(token, fileId) {

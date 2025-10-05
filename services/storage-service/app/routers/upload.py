@@ -35,6 +35,9 @@ from functools import partial
 from ..services.deduplication_enhanced import enhanced_dedup_service
 from .background_deduplication import background_dedup_service
 from ..services.search_service import search_service
+from ..services.virus_scanner import get_virus_scanner
+from ..services.dlp_service import get_dlp_service
+from ..services.audit_service import get_audit_service
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -527,6 +530,20 @@ async def complete_upload(
             )
         )
 
+    # ============ SECURITY SCANNING (BACKGROUND) ============
+    # Run virus scan and DLP scan in background
+    asyncio.create_task(
+        run_security_scans(
+            file_id=file_id,
+            user_id=current_user.id,
+            file_name=session['name'],
+            file_size=session['size'],
+            mime_type=mime_type,
+            storage_strategy=storage_strategy,
+            file_obj=file_obj
+        )
+    )
+
     # Index file in Elasticsearch (fire and forget)
     asyncio.create_task(
         search_service.index_file({
@@ -753,3 +770,178 @@ async def test_speed_encrypted(file: UploadFile = File(...)):
         "speed_gbps": round(speed_mbps * 8 / 1000, 2),
         "note": "Speed with AES-GCM encryption only (no compression)"
     }
+
+
+# ============================================================================
+# SECURITY SCANNING BACKGROUND TASK
+# ============================================================================
+
+async def run_security_scans(
+    file_id: uuid.UUID,
+    user_id: uuid.UUID,
+    file_name: str,
+    file_size: int,
+    mime_type: str,
+    storage_strategy: str,
+    file_obj: Object
+):
+    """
+    Run virus scan and DLP scan in background after file upload
+
+    Args:
+        file_id: ID of uploaded file
+        user_id: User who uploaded file
+        file_name: Name of file
+        file_size: Size in bytes
+        mime_type: MIME type
+        storage_strategy: Storage strategy used
+        file_obj: Database object
+    """
+    audit_service = get_audit_service()
+
+    try:
+        logger.info(f"🔒 Starting security scans for {file_name} ({file_id})")
+
+        # Retrieve file data
+        file_data = None
+        try:
+            if storage_strategy == "inline":
+                # Decrypt inline data
+                encrypted_data = base64.b64decode(file_obj.storage_key)
+                file_data = encryption_service.decrypt(encrypted_data, file_obj.encryption_key)
+            elif storage_strategy == "single":
+                # Read from file
+                if file_obj.object_path and os.path.exists(file_obj.object_path):
+                    async with aiofiles.open(file_obj.object_path, 'rb') as f:
+                        encrypted_data = await f.read()
+                    file_data = encryption_service.decrypt(encrypted_data, file_obj.encryption_key)
+            elif storage_strategy == "chunked":
+                # For chunked files, reassemble chunks
+                # Skip scanning very large chunked files to avoid memory issues
+                if file_size > 100 * 1024 * 1024:  # Skip files > 100MB for now
+                    logger.info(f"Skipping security scan for large chunked file: {file_name}")
+                    return
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve file data for scanning: {e}")
+            return
+
+        if not file_data:
+            logger.warning(f"No file data available for security scanning: {file_name}")
+            return
+
+        # ============ VIRUS SCANNING ============
+        try:
+            virus_scanner = get_virus_scanner()
+
+            # Check if ClamAV is available
+            if await virus_scanner.ping():
+                scan_result = await virus_scanner.scan_bytes(file_data)
+
+                # Log virus scan result
+                await audit_service.log_virus_scan(
+                    file_id=file_id,
+                    user_id=user_id,
+                    is_infected=scan_result.is_infected,
+                    virus_name=scan_result.virus_name,
+                    scan_time=scan_result.scan_time,
+                    file_size=file_size,
+                    file_hash=file_obj.content_hash,
+                    error_message=scan_result.error,
+                    action_taken='blocked' if scan_result.is_infected else 'allowed'
+                )
+
+                if scan_result.is_infected:
+                    logger.critical(f"🚨 VIRUS DETECTED: {scan_result.virus_name} in {file_name}")
+
+                    # Log suspicious activity
+                    await audit_service.log_action(
+                        action='security.virus_detected',
+                        user_id=user_id,
+                        resource_type='file',
+                        resource_id=file_id,
+                        resource_name=file_name,
+                        status='blocked',
+                        metadata={
+                            'virus_name': scan_result.virus_name,
+                            'file_size': file_size
+                        },
+                        is_suspicious=True,
+                        risk_level='critical'
+                    )
+
+                    # TODO: Quarantine or delete infected file
+                    # For now, just log it
+                else:
+                    logger.info(f"✅ Virus scan clean: {file_name} ({scan_result.scan_time:.2f}s)")
+            else:
+                logger.warning("ClamAV not available, skipping virus scan")
+
+        except Exception as e:
+            logger.error(f"Virus scan failed for {file_name}: {e}")
+
+        # ============ DLP SCANNING ============
+        # Only scan text-based files for DLP
+        text_mime_types = [
+            'text/', 'application/json', 'application/xml',
+            'application/pdf', 'application/msword',
+            'application/vnd.openxmlformats'
+        ]
+
+        should_dlp_scan = any(mime_type.startswith(mt) if mime_type else False for mt in text_mime_types)
+
+        if should_dlp_scan:
+            try:
+                dlp_service = get_dlp_service()
+                dlp_result = await dlp_service.scan_bytes(file_data, file_name)
+
+                # Get detected types
+                detected_types = list(set([m.type for m in dlp_result.matches]))
+
+                # Log DLP scan result
+                await audit_service.log_dlp_scan(
+                    file_id=file_id,
+                    user_id=user_id,
+                    has_sensitive_data=dlp_result.has_sensitive_data,
+                    risk_score=dlp_result.risk_score,
+                    total_matches=dlp_result.total_matches,
+                    scan_time=dlp_result.scan_time,
+                    detected_types=detected_types,
+                    file_size=file_size,
+                    action_taken='flagged' if dlp_result.has_sensitive_data else 'allowed',
+                    blocked=dlp_result.blocked
+                )
+
+                if dlp_result.has_sensitive_data:
+                    logger.warning(
+                        f"⚠️  Sensitive data detected in {file_name}: "
+                        f"risk={dlp_result.risk_score:.1f}, types={detected_types}"
+                    )
+
+                    # Log if high risk
+                    if dlp_result.risk_score > 50:
+                        await audit_service.log_action(
+                            action='security.sensitive_data_detected',
+                            user_id=user_id,
+                            resource_type='file',
+                            resource_id=file_id,
+                            resource_name=file_name,
+                            status='flagged',
+                            metadata={
+                                'risk_score': dlp_result.risk_score,
+                                'detected_types': detected_types,
+                                'total_matches': dlp_result.total_matches
+                            },
+                            is_suspicious=dlp_result.risk_score > 70,
+                            risk_level='high' if dlp_result.risk_score > 70 else 'medium'
+                        )
+                else:
+                    logger.info(f"✅ DLP scan clean: {file_name} ({dlp_result.scan_time:.2f}s)")
+
+            except Exception as e:
+                logger.error(f"DLP scan failed for {file_name}: {e}")
+
+        logger.info(f"🔒 Security scans completed for {file_name}")
+
+    except Exception as e:
+        logger.error(f"Security scanning failed for {file_name}: {e}", exc_info=True)

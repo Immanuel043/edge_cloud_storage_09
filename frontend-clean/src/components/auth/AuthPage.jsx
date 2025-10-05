@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sun, Moon, Cloud, Shield, Zap, Database, Lock, Upload, Download, Eye, ChevronRight, Check, Sparkles } from 'lucide-react';
+import { Sun, Moon, Cloud, Shield, Zap, Database, Lock, Upload, Download, Eye, ChevronRight, Check, Sparkles, Search, FileText, Copy, History, Share2, Scan } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { validateEmail, validatePassword, sanitizeInput } from '../../utils/security';
@@ -322,7 +322,7 @@ export default function AuthPage() {
             </p>
           </div>
 
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
             <FeatureCard
               icon={<Upload className="text-blue-500" size={32} />}
               title="Resumable Uploads"
@@ -357,6 +357,42 @@ export default function AuthPage() {
               icon={<Download className="text-indigo-500" size={32} />}
               title="Fast Downloads"
               description="Parallel chunk downloads with resume support for maximum speed."
+              darkMode={darkMode}
+            />
+            <FeatureCard
+              icon={<Scan className="text-orange-500" size={32} />}
+              title="AI-Powered OCR"
+              description="Extract text from scanned documents and images with multi-language support."
+              darkMode={darkMode}
+            />
+            <FeatureCard
+              icon={<Search className="text-cyan-500" size={32} />}
+              title="Smart Search"
+              description="Full-text search across files, folders, and OCR-extracted content with Elasticsearch."
+              darkMode={darkMode}
+            />
+            <FeatureCard
+              icon={<Copy className="text-pink-500" size={32} />}
+              title="Duplicate Detection"
+              description="Find similar images and near-duplicate files using perceptual hashing."
+              darkMode={darkMode}
+            />
+            <FeatureCard
+              icon={<FileText className="text-teal-500" size={32} />}
+              title="Metadata Extraction"
+              description="Auto-extract EXIF, ID3, PDF properties, and document metadata."
+              darkMode={darkMode}
+            />
+            <FeatureCard
+              icon={<History className="text-violet-500" size={32} />}
+              title="File Versioning"
+              description="Track complete version history with rollback support and change tracking."
+              darkMode={darkMode}
+            />
+            <FeatureCard
+              icon={<Share2 className="text-emerald-500" size={32} />}
+              title="Secure Sharing"
+              description="Share files with expiring links, password protection, and access controls."
               darkMode={darkMode}
             />
           </div>

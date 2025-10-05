@@ -29,15 +29,20 @@ export default function FilePreview({ file, onClose, darkMode }) {
       const response = await fetch(`${API_URL}/files/${file.id}/preview?size=large`, {
         credentials: 'include'  // Use HTTP-only cookie authentication
       });
+
       if (response.ok) {
         const blob = await response.blob();
         setPreviewUrl(URL.createObjectURL(blob));
+      } else if (response.status === 404) {
+        setError('File not found. It may have been deleted or moved.');
+      } else if (response.status === 401) {
+        setError('Authentication required. Please log in again.');
       } else {
-        setError(`Failed to load preview (${response.status})`);
+        setError(`Failed to load preview (Error ${response.status})`);
       }
     } catch (err) {
       console.error('Failed to load preview:', err);
-      setError('Failed to load preview');
+      setError('Failed to load preview. Please try again.');
     } finally {
       setLoading(false);
     }
