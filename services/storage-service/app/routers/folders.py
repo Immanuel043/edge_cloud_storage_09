@@ -9,6 +9,8 @@ from ..dependencies import get_db, get_current_user, log_activity
 from ..services.auth import auth_service
 from ..models.database import User, Folder
 from ..models.schemas import FolderCreate, FolderResponse
+from ..services.search_service import search_service
+import asyncio
 
 router = APIRouter(prefix="/api/v1/folders", tags=["folders"])
 
@@ -44,12 +46,25 @@ async def create_folder(
     )
     db.add(folder)
     await db.commit()
-    
+
     await log_activity(
         db, current_user.id, "folder_created", str(folder.id),
         {"name": folder_data.name}, request
     )
-    
+
+    # Index folder in Elasticsearch (fire and forget)
+    asyncio.create_task(
+        search_service.index_folder({
+            'id': folder.id,
+            'name': folder.name,
+            'parent_id': folder.parent_id,
+            'user_id': current_user.id,
+            'path': folder.path,
+            'created_at': folder.created_at,
+            'updated_at': folder.created_at
+        })
+    )
+
     return FolderResponse(
         id=str(folder.id),
         name=folder.name,

@@ -34,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from ..services.deduplication_enhanced import enhanced_dedup_service
 from .background_deduplication import background_dedup_service
+from ..services.search_service import search_service
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -525,6 +526,23 @@ async def complete_upload(
                 session_data=session
             )
         )
+
+    # Index file in Elasticsearch (fire and forget)
+    asyncio.create_task(
+        search_service.index_file({
+            'id': file_id,
+            'name': session['name'],
+            'original_name': session['name'],
+            'mime_type': mime_type,
+            'size': session['size'],
+            'hash': file_obj.content_hash,
+            'storage_tier': 'cache',
+            'folder_id': session.get('folder'),
+            'user_id': current_user.id,
+            'created_at': datetime.utcnow(),
+            'updated_at': datetime.utcnow()
+        })
+    )
 
     # Clean up Redis
     await redis_client.delete(f"up:{upload_id}")

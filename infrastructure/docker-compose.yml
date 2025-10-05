@@ -60,8 +60,8 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
+    # No volumes by default (non-persistent mode for development)
+    # For production with persistence, use docker-compose.persistent.yml override
     healthcheck:
       test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"[green|yellow]\"'"]
       interval: 30s

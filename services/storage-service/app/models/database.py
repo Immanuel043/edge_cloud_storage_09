@@ -172,3 +172,114 @@ class SharedAccess(Base):
         Index('idx_shared_file', 'file_id'),
         Index('idx_shared_folder', 'folder_id'),
     )
+
+
+class FileOCR(Base):
+    """OCR extracted text from files"""
+    __tablename__ = 'file_ocr'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False, unique=True)
+    extracted_text = Column(Text, nullable=False)
+    word_count = Column(Integer, default=0)
+    confidence = Column(Integer, default=0)  # 0-100
+    ocr_engine = Column(String(50), default='tesseract')
+    languages = Column(JSON)  # List of detected/used languages
+    page_count = Column(Integer, default=1)
+    extraction_method = Column(String(50))  # 'ocr', 'direct', 'pymupdf', etc.
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_file_ocr_file_id', 'file_id'),
+    )
+
+
+class FileMetadata(Base):
+    """Extended metadata for files"""
+    __tablename__ = 'file_metadata_extended'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False, unique=True)
+    metadata_type = Column(String(50))  # image, pdf, audio, video, document
+    raw_metadata = Column(JSONB)  # Full metadata JSON
+
+    # Common fields extracted for quick access
+    width = Column(Integer)
+    height = Column(Integer)
+    duration = Column(Integer)  # For audio/video
+    page_count = Column(Integer)  # For PDFs/documents
+
+    # Image specific
+    camera_make = Column(String(100))
+    camera_model = Column(String(100))
+    date_taken = Column(DateTime)
+    gps_latitude = Column(String(50))
+    gps_longitude = Column(String(50))
+
+    # Audio/Video specific
+    artist = Column(String(255))
+    album = Column(String(255))
+    title = Column(String(255))
+    genre = Column(String(100))
+    bitrate = Column(Integer)
+
+    # Document specific
+    author = Column(String(255))
+    word_count = Column(Integer)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_file_metadata_file_id', 'file_id'),
+        Index('idx_file_metadata_type', 'metadata_type'),
+        Index('idx_file_metadata_artist', 'artist'),
+        Index('idx_file_metadata_author', 'author'),
+    )
+
+
+class FileHash(Base):
+    """Perceptual hashes for similarity detection"""
+    __tablename__ = 'file_hashes'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False, unique=True)
+
+    # Different hash types for images
+    phash = Column(String(64))  # Perceptual hash
+    dhash = Column(String(64))  # Difference hash
+    whash = Column(String(64))  # Wavelet hash
+    average_hash = Column(String(64))  # Average hash
+    colorhash = Column(String(64))  # Color hash
+
+    # Text document hashes
+    text_hash = Column(String(64))  # Hash of extracted text
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_file_hash_file_id', 'file_id'),
+        Index('idx_file_hash_phash', 'phash'),
+        Index('idx_file_hash_dhash', 'dhash'),
+    )
+
+
+class FileTag(Base):
+    """AI-generated and user-defined tags for files"""
+    __tablename__ = 'file_tags'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    tag = Column(String(100), nullable=False)
+    confidence = Column(Integer, default=100)  # 0-100, 100 for manual tags
+    source = Column(String(50), default='manual')  # manual, ai_vision, ai_nlp, keywords, exif, etc.
+    created_by = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)  # NULL for auto-generated
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_file_tag_file_id', 'file_id'),
+        Index('idx_file_tag_tag', 'tag'),
+        Index('idx_file_tag_source', 'source'),
+        UniqueConstraint('file_id', 'tag', name='unique_file_tag'),
+    )

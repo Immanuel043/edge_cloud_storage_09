@@ -21,6 +21,8 @@ import VersionHistory from './VersionHistory';
 import FilterPanel from './FilterPanel';
 import KeyboardShortcuts from './KeyboardShortcuts';
 import BulkActions from './BulkActions';
+import SearchBar from './SearchBar';
+import SearchResults from './SearchResults';
 import { formatBytes, formatDate, getFileIcon, getFileType } from '../../utils/helpers';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../services/storageService';
@@ -70,6 +72,7 @@ export default function Dashboard() {
   const [showDedupPanel, setShowDedupPanel] = useState(false);
   const [dedupStats, setDedupStats] = useState(null);
   const [dedupLoading, setDedupLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState(null);
   
 
   useEffect(() => {
@@ -354,27 +357,12 @@ export default function Dashboard() {
             </div>
             
             <div className="flex items-center gap-3">
-              <div className="relative">
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  placeholder="Search files... (Ctrl+F)"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`pl-10 pr-4 py-2 rounded-lg w-64 ${darkMode ? 'bg-gray-700 text-white' : 'bg-gray-100'}`}
+              <div className="w-96">
+                <SearchBar
+                  onSearch={setSearchResults}
+                  darkMode={darkMode}
                 />
-                <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
               </div>
-              
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} ${
-                  showFilters ? 'ring-2 ring-blue-500' : ''
-                }`}
-                title="Filters"
-              >
-                <Filter size={20} />
-              </button>
               
               <button
                 onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
@@ -515,26 +503,37 @@ export default function Dashboard() {
           
           {!isDragging && (
             <div className="p-4">
-              {/* Breadcrumb */}
-              <div className="flex items-center gap-2 mb-4 text-sm">
-                <button
-                  onClick={() => navigateToFolder(null)}
-                  className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
-                >
-                  Home
-                </button>
-                {currentFolder && (
-                  <>
-                    <ChevronRight size={16} className="text-gray-400" />
-                    <span className={darkMode ? 'text-white' : 'text-gray-900'}>
-                      Current Folder
-                    </span>
-                  </>
-                )}
-              </div>
+              {/* Search Results */}
+              {searchResults ? (
+                <SearchResults
+                  results={searchResults}
+                  onClose={() => setSearchResults(null)}
+                  onFileClick={setPreviewFile}
+                  onFolderClick={navigateToFolder}
+                  darkMode={darkMode}
+                />
+              ) : (
+                <>
+                  {/* Breadcrumb */}
+                  <div className="flex items-center gap-2 mb-4 text-sm">
+                    <button
+                      onClick={() => navigateToFolder(null)}
+                      className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                    >
+                      Home
+                    </button>
+                    {currentFolder && (
+                      <>
+                        <ChevronRight size={16} className="text-gray-400" />
+                        <span className={darkMode ? 'text-white' : 'text-gray-900'}>
+                          Current Folder
+                        </span>
+                      </>
+                    )}
+                  </div>
 
-              {/* Files and Folders */}
-              {viewMode === 'grid' ? (
+                  {/* Files and Folders */}
+                  {viewMode === 'grid' ? (
                 <FileGrid
                   folders={folders}
                   files={filteredFiles}
@@ -564,13 +563,15 @@ export default function Dashboard() {
                 />
               )}
 
-              {files.length === 0 && folders.length === 0 && (
-                <div className="text-center py-12">
-                  <Upload className="mx-auto mb-3 text-gray-400" size={48} />
-                  <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
-                    No files or folders yet. Upload some files or create a folder to get started!
-                  </p>
-                </div>
+                  {files.length === 0 && folders.length === 0 && (
+                    <div className="text-center py-12">
+                      <Upload className="mx-auto mb-3 text-gray-400" size={48} />
+                      <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
+                        No files or folders yet. Upload some files or create a folder to get started!
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

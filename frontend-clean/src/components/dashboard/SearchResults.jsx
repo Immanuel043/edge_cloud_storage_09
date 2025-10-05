@@ -1,0 +1,161 @@
+import React from 'react';
+import { File, Folder, X, FileText, Image, Video, Archive } from 'lucide-react';
+import { formatBytes, formatDate } from '../../utils/helpers';
+
+export default function SearchResults({ results, onClose, onFileClick, onFolderClick, darkMode }) {
+  if (!results) return null;
+
+  const totalFiles = results.files?.total || 0;
+  const totalFolders = results.folders?.total || 0;
+  const totalResults = totalFiles + totalFolders;
+
+  const getFileIcon = (mimeType) => {
+    if (!mimeType) return <File size={20} />;
+
+    if (mimeType.startsWith('image/')) return <Image size={20} className="text-purple-500" />;
+    if (mimeType.startsWith('video/')) return <Video size={20} className="text-red-500" />;
+    if (mimeType.includes('pdf')) return <FileText size={20} className="text-red-500" />;
+    if (mimeType.includes('zip') || mimeType.includes('archive')) return <Archive size={20} className="text-yellow-500" />;
+
+    return <File size={20} className="text-blue-500" />;
+  };
+
+  const highlightText = (text, highlight) => {
+    if (!highlight || !highlight.name) return text;
+
+    const highlightedText = highlight.name[0];
+    if (!highlightedText) return text;
+
+    // Remove HTML tags and get the highlighted portion
+    const cleanHighlight = highlightedText.replace(/<\/?em>/g, '');
+    return cleanHighlight || text;
+  };
+
+  return (
+    <div className={`rounded-lg border ${
+      darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+    }`}>
+      {/* Header */}
+      <div className={`flex items-center justify-between px-4 py-3 border-b ${
+        darkMode ? 'border-gray-700' : 'border-gray-200'
+      }`}>
+        <div>
+          <h3 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            Search Results
+          </h3>
+          <p className={`text-sm mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            {totalResults} result{totalResults !== 1 ? 's' : ''} found
+            {totalFiles > 0 && ` (${totalFiles} file${totalFiles !== 1 ? 's' : ''})`}
+            {totalFolders > 0 && ` (${totalFolders} folder${totalFolders !== 1 ? 's' : ''})`}
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          className={`p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700`}
+        >
+          <X size={20} />
+        </button>
+      </div>
+
+      {/* Results List */}
+      <div className="max-h-96 overflow-y-auto">
+        {/* Folders */}
+        {results.folders?.hits?.length > 0 && (
+          <div className={`p-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+            <h4 className={`text-xs font-semibold uppercase tracking-wider px-2 py-1 ${
+              darkMode ? 'text-gray-400' : 'text-gray-500'
+            }`}>
+              Folders
+            </h4>
+            {results.folders.hits.map((folder) => (
+              <div
+                key={folder.id}
+                onClick={() => {
+                  onFolderClick(folder.id);
+                  onClose();
+                }}
+                className={`flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors ${
+                  darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
+                }`}
+              >
+                <Folder className="text-blue-500" size={20} />
+                <div className="flex-1 min-w-0">
+                  <p className={`font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {highlightText(folder.name, folder.highlight) || folder.name}
+                  </p>
+                  {folder.path && (
+                    <p className={`text-xs truncate ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      {folder.path}
+                    </p>
+                  )}
+                </div>
+                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  {formatDate(folder.created_at)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Files */}
+        {results.files?.hits?.length > 0 && (
+          <div className="p-2">
+            <h4 className={`text-xs font-semibold uppercase tracking-wider px-2 py-1 ${
+              darkMode ? 'text-gray-400' : 'text-gray-500'
+            }`}>
+              Files
+            </h4>
+            {results.files.hits.map((file) => (
+              <div
+                key={file.id}
+                onClick={() => {
+                  onFileClick({ id: file.id, name: file.name });
+                  onClose();
+                }}
+                className={`flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors ${
+                  darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
+                }`}
+              >
+                {getFileIcon(file.mime_type)}
+                <div className="flex-1 min-w-0">
+                  <p className={`font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {highlightText(file.name, file.highlight) || file.name}
+                  </p>
+                  <div className={`flex items-center gap-2 mt-0.5 text-xs ${
+                    darkMode ? 'text-gray-400' : 'text-gray-500'
+                  }`}>
+                    <span>{formatBytes(file.size)}</span>
+                    <span>•</span>
+                    <span>{formatDate(file.created_at)}</span>
+                    {file.storage_tier && (
+                      <>
+                        <span>•</span>
+                        <span className="capitalize">{file.storage_tier}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {file.score && (
+                  <div className={`text-xs px-2 py-1 rounded ${
+                    darkMode ? 'bg-blue-900/20 text-blue-400' : 'bg-blue-50 text-blue-600'
+                  }`}>
+                    {(file.score * 100).toFixed(0)}% match
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* No Results */}
+        {totalResults === 0 && (
+          <div className="p-8 text-center">
+            <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              No results found. Try a different search term or adjust your filters.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

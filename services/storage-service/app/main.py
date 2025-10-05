@@ -13,11 +13,12 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions
+from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
 from .services.cold_storage_tiering import cold_storage_service  # ENABLED
+from .services.search_service import search_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,6 +61,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Failed to start tiering service: {e}")
 
+    # Initialize Elasticsearch
+    try:
+        await search_service.connect()
+        print("Elasticsearch connection established")
+    except Exception as e:
+        print(f"Elasticsearch connection failed: {e}")
+
     print("Application startup complete")
     yield
 
@@ -78,6 +86,13 @@ async def lifespan(app: FastAPI):
         print("Cold storage service stopped")
     except Exception as e:
         print(f"Error stopping tiering service: {e}")
+
+    # Close Elasticsearch
+    try:
+        await search_service.close()
+        print("Elasticsearch connection closed")
+    except Exception as e:
+        print(f"Error closing Elasticsearch: {e}")
 
     # try:
     #     production_upload_service.cleanup()
@@ -142,8 +157,11 @@ app.include_router(upload.router)
 app.include_router(storage.router)
 app.include_router(sharing.router)
 app.include_router(versions.router)
+app.include_router(search.router)
 app.include_router(websocket.router)
 app.include_router(deduplication.router)
+app.include_router(file_analysis.router)
+app.include_router(similarity.router)
 
 
 # Helper functions

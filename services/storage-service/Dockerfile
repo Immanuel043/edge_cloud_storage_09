@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install system dependencies (including OpenCV and video codec dependencies)
+# Install system dependencies (including OpenCV, OCR, and video codec dependencies)
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
@@ -18,6 +18,9 @@ RUN apt-get update && apt-get install -y \
     libavcodec-dev \
     libavformat-dev \
     libswscale-dev \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
