@@ -333,6 +333,14 @@ services:
       - storage_data:/app/storage:ro
       # Create temp directory for uploads
       - /tmp/nginx_uploads:/tmp/nginx_uploads
+      # SSL certificates (uncomment based on your setup)
+      # For self-signed certificates:
+      - ./ssl:/etc/nginx/ssl:ro
+      # For Let's Encrypt certificates:
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+      # Logs
+      - ./logs/nginx:/var/log/nginx
     restart: unless-stopped
     deploy:
       resources:
@@ -340,6 +348,20 @@ services:
           memory: 512M
         reservations:
           memory: 128M
+    networks:
+      - default
+
+  # Certbot for Let's Encrypt SSL certificates (optional)
+  certbot:
+    image: certbot/certbot:latest
+    container_name: edge-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    restart: unless-stopped
+    profiles:
+      - production  # Only run in production (use: docker-compose --profile production up)
     networks:
       - default
 
