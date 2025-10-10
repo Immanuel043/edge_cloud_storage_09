@@ -330,8 +330,8 @@ export default function Dashboard() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-4">
-              <h1 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                ☁️ Edge Cloud Storage
+              <h1 className={`text-xl font-bold flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <Cloud size={24} /> Edge Cloud Storage
               </h1>
               <nav className="flex gap-2">
                 <button
@@ -395,7 +395,7 @@ export default function Dashboard() {
               
               <div className="flex items-center gap-2">
                 <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
-                  {user?.email}
+                  {user?.username}
                 </span>
                 <button
                   onClick={logout}
