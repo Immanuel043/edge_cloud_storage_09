@@ -35,8 +35,15 @@ const redisClient = new Redis(config.redisUrl);  // For sessions
 const redisCache = new Redis(config.redisUrl);   // For caching
 const redisSubscriber = new Redis(config.redisUrl); // For pub/sub
 
-// PostgreSQL
-const pgPool = new Pool({ connectionString: config.postgresUrl });
+// PostgreSQL with optimized connection pool for 500+ concurrent users
+const pgPool = new Pool({
+    connectionString: config.postgresUrl,
+    max: 50,  // Maximum pool size (up from default 10)
+    min: 10,  // Minimum idle connections
+    idleTimeoutMillis: 30000,  // Close idle connections after 30s
+    connectionTimeoutMillis: 5000,  // Wait 5s for connection before timing out
+    allowExitOnIdle: false,  // Keep pool alive
+});
 
 // Kafka setup
 const kafka = new Kafka({

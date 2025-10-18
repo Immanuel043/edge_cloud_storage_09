@@ -387,6 +387,89 @@ async def upload_direct(
         "ready_for_completion": True
     }
 
+@router.get("/status/{upload_id}")
+async def get_upload_status(
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get upload status - useful for resuming interrupted uploads
+
+    Returns:
+        - Upload session data
+        - List of uploaded chunks
+        - Missing chunks
+        - Progress percentage
+    """
+    redis_client = await get_redis()
+
+    session_data = await redis_client.get(f"up:{upload_id}")
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Upload session not found or expired")
+
+    # Handle both bytes and string from Redis
+    if isinstance(session_data, bytes):
+        session_data = session_data.decode('utf-8')
+    session = json.loads(session_data)
+
+    # Verify ownership
+    if session["user"] != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    # Calculate missing chunks
+    storage_strategy = session.get("strategy", "chunked")
+    if storage_strategy == "chunked":
+        total_chunks = session.get("chunks", 0)
+        uploaded_chunks = set(session.get("done", []))
+        missing_chunks = [i for i in range(total_chunks) if i not in uploaded_chunks]
+
+        progress = (len(uploaded_chunks) / total_chunks * 100) if total_chunks > 0 else 0
+
+        return {
+            "upload_id": upload_id,
+            "status": "in_progress" if missing_chunks else "ready_for_completion",
+            "strategy": storage_strategy,
+            "file_name": session["name"],
+            "file_size": session["size"],
+            "total_chunks": total_chunks,
+            "uploaded_chunks": sorted(list(uploaded_chunks)),
+            "missing_chunks": missing_chunks,
+            "progress": round(progress, 2),
+            "started_at": session.get("start"),
+        }
+    else:
+        # Direct upload
+        return {
+            "upload_id": upload_id,
+            "status": "ready_for_completion" if session.get("hash") else "waiting_for_upload",
+            "strategy": storage_strategy,
+            "file_name": session["name"],
+            "file_size": session["size"],
+            "progress": 100 if session.get("hash") else 0,
+            "started_at": session.get("start"),
+        }
+
+
+@router.post("/resume/{upload_id}")
+async def resume_upload(
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Resume an interrupted upload
+
+    This endpoint allows clients to:
+    1. Get the list of missing chunks
+    2. Continue uploading from where they left off
+
+    Returns the same structure as /status endpoint
+    """
+    # Use existing status endpoint
+    return await get_upload_status(upload_id, current_user, db)
+
+
 @router.post("/complete/{upload_id}")
 async def complete_upload(
     upload_id: str,
@@ -396,7 +479,7 @@ async def complete_upload(
 ):
     """Complete upload and create database record with deduplication"""
     redis_client = await get_redis()
-    
+
     session_data = await redis_client.get(f"up:{upload_id}")
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")

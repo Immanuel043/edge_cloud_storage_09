@@ -34,19 +34,54 @@ router = APIRouter(prefix="/api/v1/files", tags=["files"])
 @router.get("", response_model=List[FileResponse])
 async def list_files(
     folder_id: Optional[str] = None,
+    limit: int = 100,  # Default 100 files per page
+    offset: int = 0,  # Starting position
+    sort_by: str = "created_at",  # Sort field: created_at, name, size
+    sort_order: str = "desc",  # asc or desc
     current_user: User = Depends(get_current_user),  # Use get_current_user from dependencies
     db: AsyncSession = Depends(get_db),
 ):
-    """List user's files"""
+    """
+    List user's files with pagination and sorting
+
+    - **folder_id**: Filter by folder (null for root files)
+    - **limit**: Max files to return (default 100, max 500)
+    - **offset**: Number of files to skip for pagination
+    - **sort_by**: Field to sort by (created_at, name, size, last_accessed)
+    - **sort_order**: Sort direction (asc or desc)
+    """
+    # Validate and cap limit
+    limit = min(limit, 500)  # Max 500 files per request
+
+    # Build base query
     query = select(Object).filter(Object.user_id == current_user.id)
+
+    # Filter by folder
     if folder_id:
         query = query.filter(Object.folder_id == folder_id)
     else:
         query = query.filter(Object.folder_id == None)
-    
+
+    # Apply sorting
+    sort_column = {
+        "created_at": Object.created_at,
+        "name": Object.file_name,
+        "size": Object.file_size,
+        "last_accessed": Object.last_accessed,
+    }.get(sort_by, Object.created_at)
+
+    if sort_order.lower() == "asc":
+        query = query.order_by(sort_column.asc())
+    else:
+        query = query.order_by(sort_column.desc())
+
+    # Apply pagination
+    query = query.limit(limit).offset(offset)
+
+    # Execute query
     result = await db.execute(query)
     files = result.scalars().all()
-    
+
     return [
         FileResponse(
             id=str(f.id),
@@ -713,30 +748,36 @@ async def bulk_delete_files(
         found_ids = {str(f.id) for f in files}
         failed_files = [fid for fid in file_ids if fid not in found_ids]
 
-        # OPTIMIZATION 2: Batch handle content blocks
+        # OPTIMIZATION 2: Batch handle content blocks with single optimized CTE query
         file_ids_tuple = tuple(str(f.id) for f in files)
 
-        # Decrement reference counts for all blocks at once
+        # Single CTE query to update references and clean up blocks
         await db.execute(
             text("""
-                UPDATE content_blocks
-                SET reference_count = reference_count - 1
-                WHERE block_hash IN (
-                    SELECT block_hash FROM content_blocks WHERE file_id = ANY(:file_ids)
+                WITH blocks_to_update AS (
+                    -- Find all blocks associated with files being deleted
+                    SELECT DISTINCT block_hash
+                    FROM content_blocks
+                    WHERE file_id = ANY(:file_ids)
+                ),
+                updated_blocks AS (
+                    -- Decrement reference count for affected blocks
+                    UPDATE content_blocks
+                    SET reference_count = reference_count - 1
+                    WHERE block_hash IN (SELECT block_hash FROM blocks_to_update)
+                    RETURNING id, reference_count
+                ),
+                deleted_associations AS (
+                    -- Delete file-block associations for deleted files
+                    DELETE FROM content_blocks
+                    WHERE file_id = ANY(:file_ids)
+                    RETURNING id
                 )
+                -- Clean up blocks with zero references in same transaction
+                DELETE FROM content_blocks
+                WHERE reference_count <= 0
             """),
             {"file_ids": file_ids_tuple}
-        )
-
-        # Delete file-block associations for all files
-        await db.execute(
-            text("DELETE FROM content_blocks WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids_tuple}
-        )
-
-        # OPTIMIZATION 3: Clean up unreferenced blocks once (not per file)
-        await db.execute(
-            text("DELETE FROM content_blocks WHERE reference_count <= 0")
         )
 
         # OPTIMIZATION 4: Delete physical files (can be done async in production)
