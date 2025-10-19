@@ -1,57 +1,177 @@
+# =============================================================================
+# Edge Cloud Storage - Python Dependencies
+# =============================================================================
+# All versions are pinned for reproducible builds
+# Update with: pip list --format=freeze > requirements.txt
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Core Framework
+# -----------------------------------------------------------------------------
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-sqlalchemy==2.0.23
-asyncpg==0.29.0
-redis==5.0.1
-aioboto3==12.0.0
-zstandard==0.22.0
-cryptography==41.0.7
-PyJWT==2.9.0
-kafka-python==2.0.2
-aiofiles==23.2.1
 python-multipart==0.0.6
-python-jose[cryptography]==3.3.0
-passlib==1.7.4
-bcrypt==4.0.1
-prometheus-client==0.19.0
-elasticsearch[async]==8.11.0
-clickhouse-driver==0.2.6
-celery==5.3.4
-sqlalchemy[asyncio]
 email-validator==2.1.0
-requests==2.31.0
-aiokafka==0.10.0
-prometheus-fastapi-instrumentator==6.1.0
-aiocache[redis]==0.12.2
-psutil==5.9.6
+
+# -----------------------------------------------------------------------------
+# Database & ORM
+# -----------------------------------------------------------------------------
+sqlalchemy[asyncio]==2.0.23
+asyncpg==0.29.0
 alembic==1.13.1
+
+# -----------------------------------------------------------------------------
+# Caching & Queue
+# -----------------------------------------------------------------------------
+redis==5.0.1
+aiocache[redis]==0.12.2
+
+# -----------------------------------------------------------------------------
+# Cloud Storage & Backup
+# -----------------------------------------------------------------------------
+aioboto3==12.0.0
+
+# -----------------------------------------------------------------------------
+# Compression & Hashing
+# -----------------------------------------------------------------------------
+zstandard==0.22.0
 xxhash==3.5.0
 pybloom_live==4.0.0
 
-# File Preview Dependencies
-Pillow>=10.0.0
-PyMuPDF>=1.23.0
-opencv-python>=4.8.0
-python-docx>=1.0.0
+# -----------------------------------------------------------------------------
+# Security & Authentication
+# -----------------------------------------------------------------------------
+cryptography==41.0.7
+PyJWT==2.9.0
+python-jose[cryptography]==3.3.0
+passlib==1.7.4
+bcrypt==4.0.1
 
-# OCR and Text Extraction
-pytesseract>=0.3.10
-easyocr>=1.7.0
-pdfplumber>=0.10.0
-PyPDF2>=3.0.0
+# -----------------------------------------------------------------------------
+# Message Queue
+# -----------------------------------------------------------------------------
+kafka-python==2.0.2
+aiokafka==0.10.0
+celery==5.3.4
 
+# -----------------------------------------------------------------------------
+# File I/O
+# -----------------------------------------------------------------------------
+aiofiles==23.2.1
+
+# -----------------------------------------------------------------------------
+# Monitoring & Metrics
+# -----------------------------------------------------------------------------
+prometheus-client==0.19.0
+prometheus-fastapi-instrumentator==6.1.0
+psutil==5.9.6
+
+# -----------------------------------------------------------------------------
+# Search & Analytics
+# -----------------------------------------------------------------------------
+elasticsearch[async]==8.11.0
+clickhouse-driver==0.2.6
+
+# -----------------------------------------------------------------------------
+# HTTP Client
+# -----------------------------------------------------------------------------
+requests==2.31.0
+
+# -----------------------------------------------------------------------------
+# File Preview & Processing
+# -----------------------------------------------------------------------------
+Pillow==10.1.0
+PyMuPDF==1.23.5
+opencv-python==4.8.1.78
+python-docx==1.1.0
+
+# -----------------------------------------------------------------------------
+# OCR & Text Extraction
+# -----------------------------------------------------------------------------
+pytesseract==0.3.10
+easyocr==1.7.0
+pdfplumber==0.10.3
+PyPDF2==3.0.1
+
+# -----------------------------------------------------------------------------
 # Metadata Extraction
-mutagen>=1.47.0
-python-magic>=0.4.27
+# -----------------------------------------------------------------------------
+mutagen==1.47.0
+python-magic==0.4.27
 
-# Similar File Detection
-imagehash>=4.3.1
-scikit-learn>=1.3.0
-scipy>=1.11.0
-numpy>=1.24.0
-scikit-image>=0.21.0
+# -----------------------------------------------------------------------------
+# ML & Similar File Detection
+# -----------------------------------------------------------------------------
+imagehash==4.3.1
+scikit-learn==1.3.2
+scipy==1.11.4
+numpy==1.26.2
+scikit-image==0.22.0
+pandas==2.1.3
 
-# AI Tagging (Optional - for smart auto-tagging)
-transformers>=4.35.0
-torch>=2.1.0
-torchvision>=0.16.0
+# -----------------------------------------------------------------------------
+# ML - Time Series Forecasting (for Quota Prediction)
+# -----------------------------------------------------------------------------
+prophet==1.1.5
+statsmodels==0.14.0
+
+# -----------------------------------------------------------------------------
+# AI & NLP (Optional - for smart auto-tagging)
+# -----------------------------------------------------------------------------
+# Note: These are large dependencies (~2GB)
+# Comment out if not using AI tagging feature
+transformers==4.35.2
+torch==2.1.1
+torchvision==0.16.1
+sentencepiece==0.1.99  # Required by some transformers models
+
+# -----------------------------------------------------------------------------
+# Development Dependencies (install separately with requirements-dev.txt)
+# -----------------------------------------------------------------------------
+# pytest==7.4.3
+# pytest-asyncio==0.21.1
+# pytest-cov==4.1.0
+# black==23.11.0
+# flake8==6.1.0
+# mypy==1.7.1
+# isort==5.12.0
+# pre-commit==3.5.0
+
+# =============================================================================
+# Installation Instructions
+# =============================================================================
+#
+# 1. Create virtual environment:
+#    python -m venv venv
+#    source venv/bin/activate  # On Windows: venv\Scripts\activate
+#
+# 2. Upgrade pip:
+#    pip install --upgrade pip
+#
+# 3. Install dependencies:
+#    pip install -r requirements.txt
+#
+# 4. For development:
+#    pip install -r requirements-dev.txt
+#
+# 5. Verify installation:
+#    pip list
+#
+# =============================================================================
+# Platform-Specific Notes
+# =============================================================================
+#
+# macOS:
+#   - May need: brew install tesseract
+#   - For EasyOCR: brew install tesseract-lang
+#
+# Linux (Ubuntu/Debian):
+#   - sudo apt-get install tesseract-ocr
+#   - sudo apt-get install python3-dev
+#   - sudo apt-get install libmagic-dev
+#
+# Windows:
+#   - Install Tesseract from: https://github.com/UB-Mannheim/tesseract/wiki
+#   - Add Tesseract to PATH
+#
+# =============================================================================

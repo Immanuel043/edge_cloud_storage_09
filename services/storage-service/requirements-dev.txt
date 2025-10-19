@@ -1,0 +1,93 @@
+# =============================================================================
+# Edge Cloud Storage - Development Dependencies
+# =============================================================================
+# Install with: pip install -r requirements-dev.txt
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Testing
+# -----------------------------------------------------------------------------
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-xdist==3.5.0  # Parallel test execution
+pytest-timeout==2.2.0
+httpx==0.25.2  # For testing FastAPI
+faker==20.1.0  # Generate fake data for tests
+
+# -----------------------------------------------------------------------------
+# Code Quality & Linting
+# -----------------------------------------------------------------------------
+black==23.11.0  # Code formatter
+flake8==6.1.0  # Linter
+mypy==1.7.1  # Type checker
+isort==5.12.0  # Import sorter
+pylint==3.0.3  # Advanced linter
+bandit==1.7.5  # Security linter
+
+# -----------------------------------------------------------------------------
+# Pre-commit Hooks
+# -----------------------------------------------------------------------------
+pre-commit==3.5.0
+
+# -----------------------------------------------------------------------------
+# Documentation
+# -----------------------------------------------------------------------------
+sphinx==7.2.6  # Documentation generator
+sphinx-rtd-theme==2.0.0  # ReadTheDocs theme
+mkdocs==1.5.3  # Alternative doc generator
+mkdocs-material==9.5.2  # Material theme for MkDocs
+
+# -----------------------------------------------------------------------------
+# Development Tools
+# -----------------------------------------------------------------------------
+ipython==8.18.1  # Enhanced Python shell
+ipdb==0.13.13  # Debugger
+watchdog==3.0.0  # File system monitoring
+python-dotenv==1.0.0  # Load .env files
+
+# -----------------------------------------------------------------------------
+# Performance Profiling
+# -----------------------------------------------------------------------------
+py-spy==0.3.14  # Sampling profiler
+memory-profiler==0.61.0  # Memory usage profiler
+locust==2.19.1  # Load testing
+
+# -----------------------------------------------------------------------------
+# API Development
+# -----------------------------------------------------------------------------
+httpie==3.2.2  # HTTP client for testing APIs
+
+# -----------------------------------------------------------------------------
+# Database Tools
+# -----------------------------------------------------------------------------
+faker-sqlalchemy==0.2.0  # Generate fake DB data
+alembic-utils==0.8.1  # Alembic utilities
+
+# =============================================================================
+# Usage Instructions
+# =============================================================================
+#
+# 1. Install all dev dependencies:
+#    pip install -r requirements.txt -r requirements-dev.txt
+#
+# 2. Set up pre-commit hooks:
+#    pre-commit install
+#
+# 3. Run tests:
+#    pytest tests/ -v --cov=app --cov-report=html
+#
+# 4. Run linters:
+#    black app/
+#    flake8 app/
+#    mypy app/
+#    isort app/
+#
+# 5. Generate documentation:
+#    cd docs && make html
+#
+# 6. Run load tests:
+#    locust -f tests/load/locustfile.py
+#
+# =============================================================================

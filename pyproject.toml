@@ -1,0 +1,223 @@
+# =============================================================================
+# Python Project Configuration
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edge-cloud-storage"
+version = "1.0.0"
+description = "Production-Grade, AI-Powered, Self-Hosted File Storage System"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Edge Cloud Storage Team", email = "team@edgestorage.com"}
+]
+keywords = ["storage", "cloud", "ml", "ai", "self-hosted"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Filesystems",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/Immanuel043/edge_cloud_storage_09"
+Documentation = "https://github.com/Immanuel043/edge_cloud_storage_09/blob/main/README.md"
+Repository = "https://github.com/Immanuel043/edge_cloud_storage_09.git"
+Issues = "https://github.com/Immanuel043/edge_cloud_storage_09/issues"
+
+# -----------------------------------------------------------------------------
+# Black Configuration (Code Formatter)
+# -----------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.env
+  | venv
+  | env
+  | __pycache__
+  | \.pytest_cache
+  | \.mypy_cache
+  | node_modules
+  | build
+  | dist
+)/
+'''
+
+# -----------------------------------------------------------------------------
+# isort Configuration (Import Sorter)
+# -----------------------------------------------------------------------------
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+skip_glob = ["*/migrations/*", "*/node_modules/*", "*/__pycache__/*"]
+
+# -----------------------------------------------------------------------------
+# pytest Configuration (Testing)
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--cov=services/storage-service/app",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+    "--cov-report=xml",
+    "--cov-fail-under=80",
+    "--tb=short",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "ml: marks tests as ML feature tests",
+    "api: marks tests as API endpoint tests",
+]
+asyncio_mode = "auto"
+
+# -----------------------------------------------------------------------------
+# Coverage Configuration
+# -----------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["services/storage-service/app"]
+omit = [
+    "*/tests/*",
+    "*/migrations/*",
+    "*/__pycache__/*",
+    "*/node_modules/*",
+    "*/venv/*",
+    "*/env/*",
+]
+branch = true
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+# -----------------------------------------------------------------------------
+# mypy Configuration (Type Checking)
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false  # Set to true for strict typing
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+check_untyped_defs = true
+strict_equality = true
+exclude = [
+    'venv',
+    'env',
+    '__pycache__',
+    'node_modules',
+    'migrations',
+    'tests',
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "sklearn.*",
+    "scipy.*",
+    "prophet.*",
+    "easyocr.*",
+    "cv2.*",
+]
+ignore_missing_imports = true
+
+# -----------------------------------------------------------------------------
+# pylint Configuration
+# -----------------------------------------------------------------------------
+[tool.pylint.messages_control]
+max-line-length = 100
+disable = [
+    "C0111",  # missing-docstring
+    "C0103",  # invalid-name
+    "R0903",  # too-few-public-methods
+    "R0913",  # too-many-arguments
+    "W0212",  # protected-access
+]
+
+[tool.pylint.basic]
+good-names = ["i", "j", "k", "ex", "db", "id", "pk", "fk"]
+
+# -----------------------------------------------------------------------------
+# bandit Configuration (Security Linter)
+# -----------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = [
+    "tests",
+    "venv",
+    "env",
+    "__pycache__",
+    "node_modules",
+]
+skips = ["B101", "B601"]  # Skip assert_used and shell injection for tests
+
+# =============================================================================
+# Usage Instructions
+# =============================================================================
+#
+# Black (format code):
+#   black services/storage-service/app/
+#   black --check services/storage-service/app/  # Check without modifying
+#
+# isort (sort imports):
+#   isort services/storage-service/app/
+#   isort --check-only services/storage-service/app/
+#
+# pytest (run tests):
+#   pytest tests/ -v
+#   pytest tests/ -v --cov  # With coverage
+#   pytest tests/ -v -m unit  # Only unit tests
+#   pytest tests/ -v -m "not slow"  # Skip slow tests
+#
+# mypy (type check):
+#   mypy services/storage-service/app/
+#
+# pylint (lint):
+#   pylint services/storage-service/app/
+#
+# bandit (security):
+#   bandit -r services/storage-service/app/
+#
+# =============================================================================
