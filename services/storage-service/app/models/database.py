@@ -412,3 +412,625 @@ class AuditLog(Base):
         Index('idx_audit_is_suspicious', 'is_suspicious'),
         Index('idx_audit_ip_address', 'ip_address'),
     )
+
+
+class URLUploadJob(Base):
+    """URL upload job tracking for server-side downloads"""
+    __tablename__ = 'url_upload_jobs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    folder_id = Column(UUID(as_uuid=True), ForeignKey('folders.id', ondelete='SET NULL'), nullable=True)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='SET NULL'), nullable=True)
+
+    # URL and metadata
+    source_url = Column(Text, nullable=False)
+    filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+
+    # Status tracking
+    status = Column(String(20), default='pending', nullable=False)  # pending, downloading, completed, failed
+    progress = Column(Integer, default=0)  # 0-100
+    total_size = Column(BigInteger, default=0)
+    downloaded_size = Column(BigInteger, default=0)
+
+    # Error handling
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship('User', backref='url_upload_jobs')
+    folder = relationship('Folder', backref='url_upload_jobs')
+    file = relationship('Object', backref='url_upload_jobs')
+
+    __table_args__ = (
+        Index('idx_url_upload_user_id', 'user_id'),
+        Index('idx_url_upload_status', 'status'),
+        Index('idx_url_upload_created_at', 'created_at'),
+        Index('idx_url_upload_file_id', 'file_id'),
+    )
+
+
+# ============================================================================
+# ML FEATURES - QUOTA PREDICTION
+# ============================================================================
+
+class StorageUsageHistory(Base):
+    """Track daily storage usage per user for quota prediction"""
+    __tablename__ = 'storage_usage_history'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    date = Column(DateTime(timezone=True), nullable=False)  # Date of measurement
+    storage_used = Column(BigInteger, nullable=False)  # Bytes used on this date
+
+    # Breakdown by storage tier
+    cache_used = Column(BigInteger, default=0)
+    warm_used = Column(BigInteger, default=0)
+    cold_used = Column(BigInteger, default=0)
+
+    # File count
+    file_count = Column(Integer, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship('User', backref='usage_history')
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'date', name='unique_user_date'),
+        Index('idx_usage_history_user_id', 'user_id'),
+        Index('idx_usage_history_date', 'date'),
+    )
+
+
+class QuotaPrediction(Base):
+    """Store quota predictions for users"""
+    __tablename__ = 'quota_predictions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Prediction date (when prediction was made)
+    prediction_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Predictions for different time horizons (in bytes)
+    predicted_7d = Column(BigInteger)   # Predicted usage in 7 days
+    predicted_14d = Column(BigInteger)  # Predicted usage in 14 days
+    predicted_30d = Column(BigInteger)  # Predicted usage in 30 days
+
+    # Confidence scores (0.0 to 1.0)
+    confidence_7d = Column(Float, default=0.0)
+    confidence_14d = Column(Float, default=0.0)
+    confidence_30d = Column(Float, default=0.0)
+
+    # Days until quota is exceeded (null if won't exceed)
+    days_until_full = Column(Integer)
+
+    # Model used for prediction
+    model_type = Column(String(50))  # 'prophet', 'linear_regression', 'moving_average'
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship('User', backref='quota_predictions')
+
+    __table_args__ = (
+        Index('idx_quota_pred_user_id', 'user_id'),
+        Index('idx_quota_pred_date', 'prediction_date'),
+    )
+
+
+class QuotaAlert(Base):
+    """Track quota alerts sent to users"""
+    __tablename__ = 'quota_alerts'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Alert type
+    alert_type = Column(String(50), nullable=False)  # '70_percent', '85_percent', '95_percent', 'predicted_full'
+
+    # Alert details
+    current_usage_bytes = Column(BigInteger, nullable=False)
+    quota_bytes = Column(BigInteger, nullable=False)
+    threshold_percent = Column(Float)  # e.g., 0.70, 0.85, 0.95
+    predicted_days_remaining = Column(Integer)  # Days until predicted full (for predicted_full alerts)
+
+    # Status
+    is_dismissed = Column(Boolean, default=False)
+    is_sent = Column(Boolean, default=False)  # Whether notification was sent
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    dismissed_at = Column(DateTime(timezone=True), nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship('User', backref='quota_alerts')
+
+    __table_args__ = (
+        Index('idx_quota_alert_user_id', 'user_id'),
+        Index('idx_quota_alert_type', 'alert_type'),
+        Index('idx_quota_alert_dismissed', 'is_dismissed'),
+        Index('idx_quota_alert_created', 'created_at'),
+    )
+
+
+# ============================================================================
+# ML FEATURES - STORAGE OPTIMIZATION
+# ============================================================================
+
+class StorageAnalysis(Base):
+    """Store storage usage analysis results"""
+    __tablename__ = 'storage_analysis'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Overall metrics
+    total_files = Column(Integer, nullable=False)
+    total_size = Column(BigInteger, nullable=False)
+    duplicate_files = Column(Integer, default=0)
+    duplicate_size = Column(BigInteger, default=0)
+
+    # Tier distribution
+    cache_files = Column(Integer, default=0)
+    cache_size = Column(BigInteger, default=0)
+    warm_files = Column(Integer, default=0)
+    warm_size = Column(BigInteger, default=0)
+    cold_files = Column(Integer, default=0)
+    cold_size = Column(BigInteger, default=0)
+
+    # Access patterns
+    avg_access_frequency = Column(Float, default=0.0)  # Average accesses per file
+    files_never_accessed = Column(Integer, default=0)
+    size_never_accessed = Column(BigInteger, default=0)
+    files_accessed_once = Column(Integer, default=0)
+    size_accessed_once = Column(BigInteger, default=0)
+
+    # Age analysis
+    files_older_30d = Column(Integer, default=0)
+    size_older_30d = Column(BigInteger, default=0)
+    files_older_90d = Column(Integer, default=0)
+    size_older_90d = Column(BigInteger, default=0)
+    files_older_180d = Column(Integer, default=0)
+    size_older_180d = Column(BigInteger, default=0)
+
+    # Compression opportunities
+    compressible_files = Column(Integer, default=0)
+    compressible_size = Column(BigInteger, default=0)
+    estimated_savings_compression = Column(BigInteger, default=0)
+
+    # Tier migration opportunities
+    files_to_cold = Column(Integer, default=0)
+    size_to_cold = Column(BigInteger, default=0)
+    estimated_savings_tiering = Column(BigInteger, default=0)
+
+    # Total potential savings
+    total_potential_savings = Column(BigInteger, default=0)
+
+    # Analysis metadata
+    analysis_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    analysis_duration_ms = Column(Integer, default=0)
+
+    # Relationships
+    user = relationship('User', backref='storage_analyses')
+
+    __table_args__ = (
+        Index('idx_storage_analysis_user_id', 'user_id'),
+        Index('idx_storage_analysis_date', 'analysis_date'),
+    )
+
+
+class OptimizationSuggestion(Base):
+    """Store individual optimization suggestions"""
+    __tablename__ = 'optimization_suggestions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    analysis_id = Column(UUID(as_uuid=True), ForeignKey('storage_analysis.id', ondelete='CASCADE'), nullable=False)
+
+    # Suggestion details
+    suggestion_type = Column(String(50), nullable=False)  # 'tier_migration', 'deduplication', 'compression', 'cleanup'
+    priority = Column(String(20), nullable=False)  # 'low', 'medium', 'high', 'critical'
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+
+    # Impact estimates
+    files_affected = Column(Integer, default=0)
+    size_affected = Column(BigInteger, default=0)
+    estimated_savings = Column(BigInteger, default=0)
+    estimated_savings_percent = Column(Float, default=0.0)
+
+    # Actions
+    action_type = Column(String(50))  # 'move_to_cold', 'delete_duplicates', 'compress', 'delete_old'
+    action_details = Column(JSON)  # Specific file IDs, parameters, etc.
+
+    # Status
+    status = Column(String(20), default='pending')  # 'pending', 'accepted', 'rejected', 'completed'
+    is_dismissed = Column(Boolean, default=False)
+    is_auto_applicable = Column(Boolean, default=False)  # Can be applied automatically
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    applied_at = Column(DateTime(timezone=True), nullable=True)
+    dismissed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship('User', backref='optimization_suggestions')
+    analysis = relationship('StorageAnalysis', backref='suggestions')
+
+    __table_args__ = (
+        Index('idx_optimization_user_id', 'user_id'),
+        Index('idx_optimization_type', 'suggestion_type'),
+        Index('idx_optimization_priority', 'priority'),
+        Index('idx_optimization_status', 'status'),
+        Index('idx_optimization_created', 'created_at'),
+    )
+
+
+class OptimizationAction(Base):
+    """Track optimization actions taken by users"""
+    __tablename__ = 'optimization_actions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    suggestion_id = Column(UUID(as_uuid=True), ForeignKey('optimization_suggestions.id', ondelete='SET NULL'), nullable=True)
+
+    # Action details
+    action_type = Column(String(50), nullable=False)
+    files_processed = Column(Integer, default=0)
+    size_processed = Column(BigInteger, default=0)
+    actual_savings = Column(BigInteger, default=0)
+
+    # Status
+    status = Column(String(20), default='pending')  # 'pending', 'in_progress', 'completed', 'failed'
+    error_message = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship('User', backref='optimization_actions')
+    suggestion = relationship('OptimizationSuggestion', backref='actions')
+
+    __table_args__ = (
+        Index('idx_optimization_action_user_id', 'user_id'),
+        Index('idx_optimization_action_status', 'status'),
+        Index('idx_optimization_action_created', 'created_at'),
+    )
+
+
+# ============================================================================
+# ML FEATURES - AUTO-ORGANIZATION
+# ============================================================================
+
+class OrganizationCluster(Base):
+    """Store ML clustering results for file organization"""
+    __tablename__ = 'organization_clusters'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Cluster details
+    cluster_id = Column(Integer, nullable=False)  # Cluster number (0, 1, 2, ...)
+    cluster_name = Column(String(255), nullable=False)  # Generated name (e.g., "Photos 2024", "Work Documents")
+    cluster_description = Column(Text)  # Description of cluster contents
+
+    # ML metadata
+    algorithm = Column(String(50), nullable=False)  # 'kmeans', 'dbscan'
+    num_files = Column(Integer, default=0)
+    total_size = Column(BigInteger, default=0)
+
+    # Representative features
+    top_keywords = Column(JSON)  # Top TF-IDF keywords: ["report", "2024", "financial"]
+    common_extensions = Column(JSON)  # [".pdf", ".docx"]
+    date_range_start = Column(DateTime(timezone=True))
+    date_range_end = Column(DateTime(timezone=True))
+
+    # Quality metrics
+    silhouette_score = Column(Float)  # Cluster quality (0-1, higher is better)
+    cohesion_score = Column(Float)  # How similar files are within cluster
+
+    # Suggested folder
+    suggested_folder_path = Column(String(500))  # e.g., "/Work/Financial Reports 2024"
+
+    # Status
+    is_applied = Column(Boolean, default=False)
+    is_dismissed = Column(Boolean, default=False)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    applied_at = Column(DateTime(timezone=True))
+    dismissed_at = Column(DateTime(timezone=True))
+
+    # Relationships
+    user = relationship('User', backref='organization_clusters')
+
+    __table_args__ = (
+        Index('idx_org_cluster_user_id', 'user_id'),
+        Index('idx_org_cluster_algorithm', 'algorithm'),
+        Index('idx_org_cluster_applied', 'is_applied'),
+        Index('idx_org_cluster_created', 'created_at'),
+        UniqueConstraint('user_id', 'cluster_id', 'created_at', name='unique_user_cluster')
+    )
+
+
+class FileClusterAssignment(Base):
+    """Track which files belong to which clusters"""
+    __tablename__ = 'file_cluster_assignments'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    cluster_id = Column(UUID(as_uuid=True), ForeignKey('organization_clusters.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Assignment confidence
+    confidence_score = Column(Float, default=1.0)  # How confident is the assignment (0-1)
+    distance_to_centroid = Column(Float)  # Distance from cluster center
+
+    # Feature vector (for debugging/analysis)
+    feature_vector = Column(JSON)  # TF-IDF features used for clustering
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    file = relationship('Object', backref='cluster_assignments')
+    cluster = relationship('OrganizationCluster', backref='file_assignments')
+    user = relationship('User', backref='file_cluster_assignments')
+
+    __table_args__ = (
+        Index('idx_file_cluster_file_id', 'file_id'),
+        Index('idx_file_cluster_cluster_id', 'cluster_id'),
+        Index('idx_file_cluster_user_id', 'user_id'),
+    )
+
+
+class OrganizationRule(Base):
+    """User-defined or ML-generated organization rules"""
+    __tablename__ = 'organization_rules'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Rule definition
+    rule_name = Column(String(255), nullable=False)
+    rule_type = Column(String(50), nullable=False)  # 'pattern', 'extension', 'date', 'ml_cluster'
+
+    # Pattern matching
+    pattern = Column(String(500))  # e.g., "*_report_*.pdf", "IMG_*.jpg"
+    file_extensions = Column(JSON)  # [".pdf", ".docx"]
+    keywords = Column(JSON)  # ["invoice", "receipt"]
+
+    # Date-based rules
+    date_field = Column(String(50))  # 'created_at', 'modified_at'
+    date_range_days = Column(Integer)  # Files from last N days
+
+    # Target folder
+    target_folder_path = Column(String(500), nullable=False)
+    create_subfolder_by_date = Column(Boolean, default=False)  # Create YYYY/MM subfolders
+
+    # Rule behavior
+    is_active = Column(Boolean, default=True)
+    auto_apply = Column(Boolean, default=False)  # Automatically apply to new files
+    priority = Column(Integer, default=0)  # Higher priority rules run first
+
+    # Statistics
+    files_organized = Column(Integer, default=0)
+    last_applied_at = Column(DateTime(timezone=True))
+
+    # Source
+    source = Column(String(50), default='user')  # 'user', 'ml', 'suggested'
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship('User', backref='organization_rules')
+
+    __table_args__ = (
+        Index('idx_org_rule_user_id', 'user_id'),
+        Index('idx_org_rule_type', 'rule_type'),
+        Index('idx_org_rule_active', 'is_active'),
+        Index('idx_org_rule_priority', 'priority'),
+    )
+
+
+class OrganizationSession(Base):
+    """Track organization sessions (batch operations)"""
+    __tablename__ = 'organization_sessions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Session details
+    session_type = Column(String(50), nullable=False)  # 'ml_clustering', 'rule_based', 'manual'
+    algorithm = Column(String(50))  # 'kmeans', 'dbscan' (for ML sessions)
+
+    # Parameters
+    num_clusters = Column(Integer)  # For k-means
+    min_files = Column(Integer)  # Minimum files to organize
+
+    # Results
+    files_analyzed = Column(Integer, default=0)
+    files_organized = Column(Integer, default=0)
+    clusters_created = Column(Integer, default=0)
+    folders_created = Column(Integer, default=0)
+
+    # Quality metrics
+    avg_silhouette_score = Column(Float)
+
+    # Status
+    status = Column(String(20), default='pending')  # 'pending', 'running', 'completed', 'failed'
+    error_message = Column(Text)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+
+    # Relationships
+    user = relationship('User', backref='organization_sessions')
+
+    __table_args__ = (
+        Index('idx_org_session_user_id', 'user_id'),
+        Index('idx_org_session_status', 'status'),
+        Index('idx_org_session_created', 'created_at'),
+    )
+
+
+# ============================================================================
+# ML FEATURES - CONTENT RECOMMENDATIONS
+# ============================================================================
+
+class FileSimilarity(Base):
+    """Store pre-computed file similarity scores"""
+    __tablename__ = 'file_similarities'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    similar_file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Similarity metrics
+    similarity_score = Column(Float, nullable=False)  # 0-1, higher is more similar
+    similarity_type = Column(String(50), nullable=False)  # 'content', 'collaborative', 'hybrid'
+
+    # Feature details
+    common_keywords = Column(JSON)  # Shared TF-IDF keywords
+    name_similarity = Column(Float)  # Filename similarity
+    type_match = Column(Boolean, default=False)  # Same file type
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    file = relationship('Object', foreign_keys=[file_id], backref='similarities')
+    similar_file = relationship('Object', foreign_keys=[similar_file_id])
+    user = relationship('User', backref='file_similarities')
+
+    __table_args__ = (
+        Index('idx_file_sim_file_id', 'file_id'),
+        Index('idx_file_sim_user_id', 'user_id'),
+        Index('idx_file_sim_score', 'similarity_score'),
+        Index('idx_file_sim_type', 'similarity_type'),
+        UniqueConstraint('file_id', 'similar_file_id', name='unique_file_pair')
+    )
+
+
+class UserInteraction(Base):
+    """Track user interactions with files for collaborative filtering"""
+    __tablename__ = 'user_interactions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+
+    # Interaction types
+    interaction_type = Column(String(50), nullable=False)  # 'view', 'download', 'share', 'favorite', 'tag'
+    interaction_count = Column(Integer, default=1)
+
+    # Interaction strength (weighted score)
+    interaction_weight = Column(Float, default=1.0)  # view=1.0, download=2.0, share=3.0, favorite=5.0
+
+    # Context
+    last_interaction_at = Column(DateTime(timezone=True), nullable=False)
+    total_time_spent = Column(Integer, default=0)  # Seconds
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship('User', backref='interactions')
+    file = relationship('Object', backref='interactions')
+
+    __table_args__ = (
+        Index('idx_interaction_user_id', 'user_id'),
+        Index('idx_interaction_file_id', 'file_id'),
+        Index('idx_interaction_type', 'interaction_type'),
+        Index('idx_interaction_weight', 'interaction_weight'),
+        Index('idx_interaction_last', 'last_interaction_at'),
+        UniqueConstraint('user_id', 'file_id', 'interaction_type', name='unique_user_file_interaction')
+    )
+
+
+class Recommendation(Base):
+    """Store generated recommendations for users"""
+    __tablename__ = 'recommendations'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+
+    # Recommendation details
+    recommendation_type = Column(String(50), nullable=False)  # 'similar', 'collaborative', 'trending', 'personalized'
+    recommendation_score = Column(Float, nullable=False)  # 0-1, higher is better
+    rank = Column(Integer, default=0)  # Position in recommendation list
+
+    # Source
+    source_file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='SET NULL'), nullable=True)  # For similar files
+    algorithm = Column(String(50))  # 'tfidf', 'collaborative_user', 'collaborative_item', 'hybrid'
+
+    # Explanation
+    reason = Column(Text)  # Human-readable explanation
+
+    # Status
+    is_viewed = Column(Boolean, default=False)
+    is_accepted = Column(Boolean, default=False)  # User clicked/opened
+    is_dismissed = Column(Boolean, default=False)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True))  # Recommendations expire after N days
+    viewed_at = Column(DateTime(timezone=True))
+    accepted_at = Column(DateTime(timezone=True))
+
+    # Relationships
+    user = relationship('User', backref='recommendations')
+    file = relationship('Object', foreign_keys=[file_id], backref='recommendations')
+    source_file = relationship('Object', foreign_keys=[source_file_id])
+
+    __table_args__ = (
+        Index('idx_recommendation_user_id', 'user_id'),
+        Index('idx_recommendation_file_id', 'file_id'),
+        Index('idx_recommendation_type', 'recommendation_type'),
+        Index('idx_recommendation_score', 'recommendation_score'),
+        Index('idx_recommendation_created', 'created_at'),
+        Index('idx_recommendation_expires', 'expires_at'),
+    )
+
+
+class RecommendationFeedback(Base):
+    """Track user feedback on recommendations for ML improvement"""
+    __tablename__ = 'recommendation_feedback'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    recommendation_id = Column(UUID(as_uuid=True), ForeignKey('recommendations.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Feedback
+    feedback_type = Column(String(50), nullable=False)  # 'positive', 'negative', 'irrelevant'
+    feedback_score = Column(Integer)  # 1-5 rating
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    recommendation = relationship('Recommendation', backref='feedback')
+    user = relationship('User', backref='recommendation_feedback')
+
+    __table_args__ = (
+        Index('idx_rec_feedback_rec_id', 'recommendation_id'),
+        Index('idx_rec_feedback_user_id', 'user_id'),
+        Index('idx_rec_feedback_type', 'feedback_type'),
+    )

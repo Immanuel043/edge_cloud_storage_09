@@ -13,12 +13,14 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security
+from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
 from .services.cold_storage_tiering import cold_storage_service  # ENABLED
 from .services.search_service import search_service
+from .workers.quota_prediction_worker import quota_prediction_worker
+from .workers.storage_optimization_worker import storage_optimization_worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -68,6 +70,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Elasticsearch connection failed: {e}")
 
+    # Start quota prediction worker (ML feature)
+    if settings.QUOTA_PREDICTION_ENABLED:
+        try:
+            await quota_prediction_worker.start()
+            print("Quota prediction worker started")
+        except Exception as e:
+            print(f"Failed to start quota prediction worker: {e}")
+
+    # Start storage optimization worker (ML feature)
+    if settings.STORAGE_OPTIMIZATION_ENABLED:
+        try:
+            await storage_optimization_worker.start()
+            print("Storage optimization worker started")
+        except Exception as e:
+            print(f"Failed to start storage optimization worker: {e}")
+
     print("Application startup complete")
     yield
 
@@ -93,6 +111,22 @@ async def lifespan(app: FastAPI):
         print("Elasticsearch connection closed")
     except Exception as e:
         print(f"Error closing Elasticsearch: {e}")
+
+    # Stop quota prediction worker
+    if settings.QUOTA_PREDICTION_ENABLED:
+        try:
+            await quota_prediction_worker.stop()
+            print("Quota prediction worker stopped")
+        except Exception as e:
+            print(f"Error stopping quota prediction worker: {e}")
+
+    # Stop storage optimization worker
+    if settings.STORAGE_OPTIMIZATION_ENABLED:
+        try:
+            await storage_optimization_worker.stop()
+            print("Storage optimization worker stopped")
+        except Exception as e:
+            print(f"Error stopping storage optimization worker: {e}")
 
     # try:
     #     production_upload_service.cleanup()
@@ -154,6 +188,8 @@ app.include_router(auth.router)
 app.include_router(files.router)
 app.include_router(folders.router)
 app.include_router(upload.router)
+app.include_router(url_upload.router)
+app.include_router(folder_upload.router)
 app.include_router(storage.router)
 app.include_router(sharing.router)
 app.include_router(versions.router)
@@ -163,6 +199,10 @@ app.include_router(deduplication.router)
 app.include_router(file_analysis.router)
 app.include_router(similarity.router)
 app.include_router(security.router)
+app.include_router(quota_analytics.router)
+app.include_router(storage_optimization.router)
+app.include_router(auto_organization.router)
+app.include_router(recommendations.router)
 
 
 # Helper functions
@@ -234,6 +274,14 @@ async def health_check():
         "running" if cold_storage_service.worker_task and
         not cold_storage_service.worker_task.done() else "stopped"
     )
+    health_status["checks"]["quota_prediction"] = (
+        "running" if quota_prediction_worker.worker_task and
+        not quota_prediction_worker.worker_task.done() else "stopped"
+    )
+    health_status["checks"]["storage_optimization"] = (
+        "running" if storage_optimization_worker.worker_task and
+        not storage_optimization_worker.worker_task.done() else "stopped"
+    )
 
     # Storage directories check
     storage_status = {}
@@ -250,6 +298,13 @@ async def health_check():
         "encryption_enabled": getattr(settings, "ENCRYPTION_ENABLED", True),
         "background_dedup": True,
         "cold_storage_tiering": True,  # ENABLED
+        "url_upload": settings.URL_UPLOAD_ENABLED,
+        "folder_upload": settings.FOLDER_UPLOAD_ENABLED,
+        "ml_features": settings.ML_FEATURES_ENABLED,
+        "quota_prediction": settings.QUOTA_PREDICTION_ENABLED,
+        "auto_organization": settings.AUTO_ORGANIZATION_ENABLED,
+        "storage_optimization": settings.STORAGE_OPTIMIZATION_ENABLED,
+        "content_recommendations": settings.CONTENT_RECOMMENDATIONS_ENABLED,
     }
 
     return health_status
