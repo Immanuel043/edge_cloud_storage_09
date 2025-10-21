@@ -1,0 +1,199 @@
+{
+  "dashboard": {
+    "title": "Edge Cloud Storage - Main Dashboard",
+    "tags": ["edge-storage", "overview"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "type": "stat",
+        "title": "Total API Requests",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m]))",
+            "legendFormat": "Requests/sec"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "orientation": "auto"
+        }
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Active Users",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+        "targets": [
+          {
+            "expr": "count(count by (user_id) (rate(storage_upload_initiated_total[5m])))",
+            "legendFormat": "Active Users"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Error Rate",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(rate(storage_errors_total[5m])) / sum(rate(http_requests_total[5m])) * 100",
+            "legendFormat": "Error %"
+          }
+        ],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {"value": null, "color": "green"},
+            {"value": 1, "color": "yellow"},
+            {"value": 5, "color": "red"}
+          ]
+        }
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "P95 Latency",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P95 (ms)"
+          }
+        ],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {"value": null, "color": "green"},
+            {"value": 100, "color": "yellow"},
+            {"value": 500, "color": "red"}
+          ]
+        }
+      },
+      {
+        "id": 5,
+        "type": "graph",
+        "title": "Request Rate by Endpoint",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "sum by (handler) (rate(http_requests_total[5m]))",
+            "legendFormat": "{{handler}}"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Requests/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "type": "graph",
+        "title": "Response Time Percentiles",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P99"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms", "label": "Latency"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "type": "graph",
+        "title": "Upload Activity",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "targets": [
+          {
+            "expr": "rate(storage_upload_initiated_total[5m])",
+            "legendFormat": "Initiated"
+          },
+          {
+            "expr": "rate(storage_upload_completed_total{status=\"success\"}[5m])",
+            "legendFormat": "Completed"
+          },
+          {
+            "expr": "rate(storage_upload_completed_total{status=\"failed\"}[5m])",
+            "legendFormat": "Failed"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "type": "graph",
+        "title": "Storage Usage by Tier",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+        "targets": [
+          {
+            "expr": "storage_used_bytes_total{storage_tier=\"cache\"}",
+            "legendFormat": "Cache"
+          },
+          {
+            "expr": "storage_used_bytes_total{storage_tier=\"warm\"}",
+            "legendFormat": "Warm"
+          },
+          {
+            "expr": "storage_used_bytes_total{storage_tier=\"cold\"}",
+            "legendFormat": "Cold"
+          }
+        ],
+        "yaxes": [
+          {"format": "bytes", "label": "Storage"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 9,
+        "type": "graph",
+        "title": "CPU & Memory Usage",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+        "targets": [
+          {
+            "expr": "storage_cpu_usage_percent",
+            "legendFormat": "CPU %",
+            "yAxisIndex": 0
+          },
+          {
+            "expr": "storage_memory_usage_bytes / 1024 / 1024 / 1024",
+            "legendFormat": "Memory (GB)",
+            "yAxisIndex": 1
+          }
+        ],
+        "yaxes": [
+          {"format": "percent", "label": "CPU"},
+          {"format": "decgbytes", "label": "Memory"}
+        ]
+      },
+      {
+        "id": 10,
+        "type": "graph",
+        "title": "Database Connections",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+        "targets": [
+          {
+            "expr": "storage_db_connections_active",
+            "legendFormat": "Active Connections"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,256 @@
+{
+  "dashboard": {
+    "title": "Edge Cloud Storage - Performance Dashboard",
+    "tags": ["edge-storage", "performance"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "5s",
+    "panels": [
+      {
+        "id": 1,
+        "type": "row",
+        "title": "Query Performance",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+        "collapsed": false
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Slow Queries (>100ms)",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+        "targets": [
+          {
+            "expr": "sum(rate(http_request_duration_seconds_bucket{le=\"0.1\"}[5m]) < rate(http_request_duration_seconds_count[5m]))",
+            "legendFormat": "Slow Queries/sec"
+          }
+        ],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {"value": null, "color": "green"},
+            {"value": 1, "color": "yellow"},
+            {"value": 10, "color": "red"}
+          ]
+        }
+      },
+      {
+        "id": 3,
+        "type": "gauge",
+        "title": "Cache Hit Rate",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+        "targets": [
+          {
+            "expr": "(rate(keyspace_hits[5m]) / (rate(keyspace_hits[5m]) + rate(keyspace_misses[5m]))) * 100",
+            "legendFormat": "Hit Rate %"
+          }
+        ],
+        "options": {
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "red"},
+              {"value": 60, "color": "yellow"},
+              {"value": 80, "color": "green"}
+            ]
+          }
+        }
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "Database Connections",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+        "targets": [
+          {
+            "expr": "storage_db_connections_active",
+            "legendFormat": "Active"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Redis Connections",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+        "targets": [
+          {
+            "expr": "storage_redis_connections",
+            "legendFormat": "Active"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "type": "graph",
+        "title": "API Response Time Percentiles",
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 5},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P50"
+          },
+          {
+            "expr": "histogram_quantile(0.90, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P90"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P99"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms", "label": "Latency"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {"params": [500], "type": "gt"},
+              "operator": {"type": "and"},
+              "query": {"params": ["P95", "5m", "now"]},
+              "reducer": {"params": [], "type": "avg"},
+              "type": "query"
+            }
+          ],
+          "name": "High P95 Latency Alert"
+        }
+      },
+      {
+        "id": 7,
+        "type": "row",
+        "title": "Database Performance",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+        "collapsed": false
+      },
+      {
+        "id": 8,
+        "type": "graph",
+        "title": "Query Duration by Endpoint",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket[5m]))) * 1000",
+            "legendFormat": "{{handler}}"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 9,
+        "type": "graph",
+        "title": "Database Query Load",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+        "targets": [
+          {
+            "expr": "rate(pg_stat_database_xact_commit[5m])",
+            "legendFormat": "Commits/sec"
+          },
+          {
+            "expr": "rate(pg_stat_database_xact_rollback[5m])",
+            "legendFormat": "Rollbacks/sec"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "type": "row",
+        "title": "Cache Performance",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+        "collapsed": false
+      },
+      {
+        "id": 11,
+        "type": "graph",
+        "title": "Cache Operations",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+        "targets": [
+          {
+            "expr": "rate(keyspace_hits[5m])",
+            "legendFormat": "Hits/sec"
+          },
+          {
+            "expr": "rate(keyspace_misses[5m])",
+            "legendFormat": "Misses/sec"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "type": "graph",
+        "title": "Cache Memory Usage",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+        "targets": [
+          {
+            "expr": "redis_memory_used_bytes",
+            "legendFormat": "Used Memory"
+          },
+          {
+            "expr": "redis_memory_max_bytes",
+            "legendFormat": "Max Memory"
+          }
+        ],
+        "yaxes": [
+          {"format": "bytes"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 13,
+        "type": "row",
+        "title": "Upload Performance",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+        "collapsed": false
+      },
+      {
+        "id": 14,
+        "type": "graph",
+        "title": "Upload Duration",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(storage_upload_duration_seconds_bucket[5m]))",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(storage_upload_duration_seconds_bucket[5m]))",
+            "legendFormat": "P50"
+          }
+        ],
+        "yaxes": [
+          {"format": "s"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 15,
+        "type": "graph",
+        "title": "Chunk Processing Duration",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(storage_chunk_processing_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(storage_chunk_processing_seconds_bucket[5m])) * 1000",
+            "legendFormat": "P50"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms"},
+          {"format": "short"}
+        ]
+      }
+    ]
+  }
+}

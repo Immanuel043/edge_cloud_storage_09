@@ -1,0 +1,320 @@
+{
+  "dashboard": {
+    "title": "Edge Cloud Storage - ML Features Dashboard",
+    "tags": ["edge-storage", "ml", "ai"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "type": "row",
+        "title": "Quota Prediction",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+        "collapsed": false
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Predictions Generated (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+        "targets": [
+          {
+            "expr": "increase(quota_predictions_generated_total[24h])",
+            "legendFormat": "Predictions"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Alerts Generated (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+        "targets": [
+          {
+            "expr": "increase(quota_alerts_generated_total[24h])",
+            "legendFormat": "Alerts"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area"
+        }
+      },
+      {
+        "id": 4,
+        "type": "gauge",
+        "title": "Cache Hit Rate",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+        "targets": [
+          {
+            "expr": "rate(quota_prediction_cache_hits_total[5m]) / (rate(quota_prediction_cache_hits_total[5m]) + rate(quota_prediction_cache_misses_total[5m])) * 100",
+            "legendFormat": "Hit Rate %"
+          }
+        ],
+        "options": {
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "red"},
+              {"value": 50, "color": "yellow"},
+              {"value": 80, "color": "green"}
+            ]
+          }
+        }
+      },
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Worker Errors (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+        "targets": [
+          {
+            "expr": "increase(quota_prediction_worker_errors_total[24h])",
+            "legendFormat": "Errors"
+          }
+        ],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {"value": null, "color": "green"},
+            {"value": 1, "color": "yellow"},
+            {"value": 10, "color": "red"}
+          ]
+        }
+      },
+      {
+        "id": 6,
+        "type": "graph",
+        "title": "Prediction Confidence by Period",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(storage_quota_prediction_confidence_score_bucket{prediction_period=\"7d\"}[5m]))",
+            "legendFormat": "7d P50"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(storage_quota_prediction_confidence_score_bucket{prediction_period=\"14d\"}[5m]))",
+            "legendFormat": "14d P50"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(storage_quota_prediction_confidence_score_bucket{prediction_period=\"30d\"}[5m]))",
+            "legendFormat": "30d P50"
+          }
+        ],
+        "yaxes": [
+          {"format": "percentunit", "min": 0, "max": 1},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "type": "graph",
+        "title": "Model Usage Distribution",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+        "targets": [
+          {
+            "expr": "rate(quota_prediction_model_usage_total{model_type=\"prophet\"}[5m])",
+            "legendFormat": "Prophet"
+          },
+          {
+            "expr": "rate(quota_prediction_model_usage_total{model_type=\"linear_regression\"}[5m])",
+            "legendFormat": "Linear Regression"
+          },
+          {
+            "expr": "rate(quota_prediction_model_usage_total{model_type=\"moving_average\"}[5m])",
+            "legendFormat": "Moving Average"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "type": "row",
+        "title": "Storage Optimization",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+        "collapsed": false
+      },
+      {
+        "id": 9,
+        "type": "stat",
+        "title": "Analyses Completed (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 14},
+        "targets": [
+          {
+            "expr": "increase(storage_analyses_completed_total[24h])",
+            "legendFormat": "Analyses"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "type": "stat",
+        "title": "Suggestions Generated (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 14},
+        "targets": [
+          {
+            "expr": "increase(storage_optimization_suggestions_generated_total[24h])",
+            "legendFormat": "Suggestions"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "type": "stat",
+        "title": "Suggestions Applied (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 14},
+        "targets": [
+          {
+            "expr": "increase(storage_optimization_suggestions_applied_total[24h])",
+            "legendFormat": "Applied"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area"
+        }
+      },
+      {
+        "id": 12,
+        "type": "graph",
+        "title": "Analysis Duration",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 18},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(storage_optimization_analysis_duration_ms_bucket[5m]))",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(storage_optimization_analysis_duration_ms_bucket[5m]))",
+            "legendFormat": "P50"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 13,
+        "type": "row",
+        "title": "Auto-Organization",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 26},
+        "collapsed": false
+      },
+      {
+        "id": 14,
+        "type": "stat",
+        "title": "Sessions Completed (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 27},
+        "targets": [
+          {
+            "expr": "increase(organization_sessions_completed_total[24h])",
+            "legendFormat": "Sessions"
+          }
+        ]
+      },
+      {
+        "id": 15,
+        "type": "stat",
+        "title": "Files Moved (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 27},
+        "targets": [
+          {
+            "expr": "increase(organization_files_moved_total[24h])",
+            "legendFormat": "Files"
+          }
+        ]
+      },
+      {
+        "id": 16,
+        "type": "graph",
+        "title": "Clustering Quality (Silhouette Score)",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(organization_silhouette_score_bucket{algorithm=\"kmeans\"}[5m]))",
+            "legendFormat": "K-Means"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(organization_silhouette_score_bucket{algorithm=\"dbscan\"}[5m]))",
+            "legendFormat": "DBSCAN"
+          }
+        ],
+        "yaxes": [
+          {"format": "percentunit", "min": 0, "max": 1},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 17,
+        "type": "row",
+        "title": "Content Recommendations",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39},
+        "collapsed": false
+      },
+      {
+        "id": 18,
+        "type": "stat",
+        "title": "Recommendations Generated (24h)",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 40},
+        "targets": [
+          {
+            "expr": "sum(increase(recommendations_generated_total[24h]))",
+            "legendFormat": "Recommendations"
+          }
+        ]
+      },
+      {
+        "id": 19,
+        "type": "graph",
+        "title": "Recommendations by Algorithm",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
+        "targets": [
+          {
+            "expr": "rate(recommendations_generated_total{algorithm=\"hybrid\"}[5m])",
+            "legendFormat": "Hybrid"
+          },
+          {
+            "expr": "rate(recommendations_generated_total{algorithm=\"content\"}[5m])",
+            "legendFormat": "Content-Based"
+          },
+          {
+            "expr": "rate(recommendations_generated_total{algorithm=\"collaborative\"}[5m])",
+            "legendFormat": "Collaborative"
+          },
+          {
+            "expr": "rate(recommendations_generated_total{algorithm=\"trending\"}[5m])",
+            "legendFormat": "Trending"
+          }
+        ]
+      },
+      {
+        "id": 20,
+        "type": "graph",
+        "title": "User Interactions Tracked",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 44},
+        "targets": [
+          {
+            "expr": "rate(user_interactions_tracked_total{interaction_type=\"view\"}[5m])",
+            "legendFormat": "Views"
+          },
+          {
+            "expr": "rate(user_interactions_tracked_total{interaction_type=\"download\"}[5m])",
+            "legendFormat": "Downloads"
+          },
+          {
+            "expr": "rate(user_interactions_tracked_total{interaction_type=\"share\"}[5m])",
+            "legendFormat": "Shares"
+          },
+          {
+            "expr": "rate(user_interactions_tracked_total{interaction_type=\"favorite\"}[5m])",
+            "legendFormat": "Favorites"
+          }
+        ]
+      }
+    ]
+  }
+}

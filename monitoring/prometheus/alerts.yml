@@ -1,0 +1,306 @@
+groups:
+  - name: edge_storage_alerts
+    interval: 30s
+    rules:
+      # =========================================
+      # System Health Alerts
+      # =========================================
+      - alert: HighErrorRate
+        expr: |
+          (sum(rate(storage_errors_total[5m])) / sum(rate(http_requests_total[5m]))) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }}% (threshold: 5%)"
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High API latency detected"
+          description: "P95 latency is {{ $value }}s (threshold: 0.5s)"
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.job }} is down"
+
+      # =========================================
+      # Resource Alerts
+      # =========================================
+      - alert: HighCPUUsage
+        expr: storage_cpu_usage_percent > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}% (threshold: 80%)"
+
+      - alert: HighMemoryUsage
+        expr: (storage_memory_usage_bytes / 1024 / 1024 / 1024) > 7
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}GB (threshold: 7GB)"
+
+      - alert: LowDiskSpace
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/app/storage"} / node_filesystem_size_bytes{mountpoint="/app/storage"}) * 100 < 15
+        for: 10m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "Low disk space"
+          description: "Only {{ $value }}% disk space remaining"
+
+      # =========================================
+      # Database Alerts
+      # =========================================
+      - alert: HighDatabaseConnections
+        expr: storage_db_connections_active > 45
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High database connection count"
+          description: "{{ $value }} active connections (pool size: 50)"
+
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95, rate(pg_stat_statements_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Slow database queries detected"
+          description: "P95 query time is {{ $value }}s"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: storage_db_connections_active >= 50
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool exhausted"
+          description: "All {{ $value }} connections in use"
+
+      # =========================================
+      # Cache Alerts
+      # =========================================
+      - alert: LowCacheHitRate
+        expr: |
+          (rate(keyspace_hits[5m]) / (rate(keyspace_hits[5m]) + rate(keyspace_misses[5m]))) * 100 < 60
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value }}% (threshold: 60%)"
+
+      - alert: RedisMemoryHigh
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis using {{ $value }}% of max memory"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis server is not responding"
+
+      # =========================================
+      # Upload/Download Alerts
+      # =========================================
+      - alert: HighUploadFailureRate
+        expr: |
+          (sum(rate(storage_upload_completed_total{status="failed"}[5m])) / sum(rate(storage_upload_initiated_total[5m]))) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: uploads
+        annotations:
+          summary: "High upload failure rate"
+          description: "{{ $value }}% of uploads failing (threshold: 10%)"
+
+      - alert: SlowUploads
+        expr: |
+          histogram_quantile(0.95, rate(storage_upload_duration_seconds_bucket[5m])) > 300
+        for: 10m
+        labels:
+          severity: warning
+          component: uploads
+        annotations:
+          summary: "Slow upload performance"
+          description: "P95 upload time is {{ $value }}s (threshold: 300s)"
+
+      # =========================================
+      # ML Features Alerts
+      # =========================================
+      - alert: QuotaPredictionWorkerErrors
+        expr: increase(quota_prediction_worker_errors_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: ml
+        annotations:
+          summary: "Quota prediction worker errors"
+          description: "{{ $value }} errors in the last hour"
+
+      - alert: StorageOptimizationWorkerErrors
+        expr: increase(storage_optimization_worker_errors_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: ml
+        annotations:
+          summary: "Storage optimization worker errors"
+          description: "{{ $value }} errors in the last hour"
+
+      - alert: LowQuotaPredictionCacheHitRate
+        expr: |
+          (rate(quota_prediction_cache_hits_total[5m]) / (rate(quota_prediction_cache_hits_total[5m]) + rate(quota_prediction_cache_misses_total[5m]))) * 100 < 70
+        for: 15m
+        labels:
+          severity: info
+          component: ml
+        annotations:
+          summary: "Low quota prediction cache hit rate"
+          description: "Cache hit rate is {{ $value }}% (expected: >70%)"
+
+      # =========================================
+      # Security Alerts
+      # =========================================
+      - alert: RateLimitExceeded
+        expr: increase(http_requests_total{status="429"}[5m]) > 100
+        for: 2m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High rate limit violations"
+          description: "{{ $value }} rate limit violations in 5 minutes"
+
+      - alert: AuthenticationFailures
+        expr: increase(storage_errors_total{error_type="authentication"}[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value }} auth failures in 5 minutes"
+
+      - alert: SuspiciousActivity
+        expr: increase(audit_logs_total{severity="critical"}[5m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Suspicious activity detected"
+          description: "{{ $value }} critical security events in 5 minutes"
+
+      # =========================================
+      # Performance Degradation Alerts
+      # =========================================
+      - alert: PerformanceDegradation
+        expr: |
+          (
+            histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) /
+            histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[1h] offset 24h))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "Performance degradation detected"
+          description: "P95 latency is {{ $value }}x slower than 24h ago"
+
+      - alert: CachePerformanceDegraded
+        expr: |
+          (
+            rate(keyspace_hits[5m]) + rate(keyspace_misses[5m])
+          ) /
+          (
+            rate(keyspace_hits[1h] offset 24h) + rate(keyspace_misses[1h] offset 24h)
+          ) > 1.5
+        for: 10m
+        labels:
+          severity: info
+          component: performance
+        annotations:
+          summary: "Cache load increased"
+          description: "Cache operations {{ $value }}x higher than usual"
+
+      # =========================================
+      # Capacity Planning Alerts
+      # =========================================
+      - alert: HighRequestVolume
+        expr: sum(rate(http_requests_total[5m])) > 1000
+        for: 5m
+        labels:
+          severity: info
+          component: capacity
+        annotations:
+          summary: "High request volume"
+          description: "{{ $value }} requests/sec (consider scaling)"
+
+      - alert: StorageCapacityLow
+        expr: |
+          sum(storage_used_bytes_total) / (sum(storage_used_bytes_total) + 1000000000000) * 100 > 80
+        for: 1h
+        labels:
+          severity: warning
+          component: capacity
+        annotations:
+          summary: "Storage capacity running low"
+          description: "{{ $value }}% of total storage used"
+
+      # =========================================
+      # SLA Alerts
+      # =========================================
+      - alert: SLAViolation
+        expr: |
+          (
+            sum(rate(http_requests_total{status!~"5.."}[5m])) /
+            sum(rate(http_requests_total[5m]))
+          ) * 100 < 99.9
+        for: 5m
+        labels:
+          severity: critical
+          component: sla
+        annotations:
+          summary: "SLA violation - availability below 99.9%"
+          description: "Availability is {{ $value }}%"
