@@ -1,0 +1,244 @@
+name: Security Vulnerability Scanning
+
+on:
+  # Run on every push to main and develop
+  push:
+    branches: [ main, develop ]
+
+  # Run on pull requests
+  pull_request:
+    branches: [ main, develop ]
+
+  # Run daily at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+
+  # Allow manual triggering
+  workflow_dispatch:
+
+jobs:
+  # Python dependency scanning
+  python-security-scan:
+    name: Python Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd services/storage-service
+          pip install -r requirements.txt
+
+      - name: Run Safety check (known vulnerabilities)
+        run: |
+          pip install safety
+          safety check --json || true
+
+      - name: Run Bandit (security linter)
+        run: |
+          pip install bandit
+          bandit -r services/storage-service/app -f json -o bandit-report.json || true
+
+      - name: Upload Bandit results
+        uses: actions/upload-artifact@v3
+        with:
+          name: bandit-security-report
+          path: bandit-report.json
+
+  # Frontend dependency scanning
+  frontend-security-scan:
+    name: Frontend Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          cd frontend-clean
+          npm ci
+
+      - name: Run npm audit
+        run: |
+          cd frontend-clean
+          npm audit --json > npm-audit-report.json || true
+
+      - name: Upload npm audit results
+        uses: actions/upload-artifact@v3
+        with:
+          name: npm-audit-report
+          path: frontend-clean/npm-audit-report.json
+
+  # Container image scanning
+  docker-security-scan:
+    name: Docker Image Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: |
+          cd services/storage-service
+          docker build -t edge-storage:latest .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: edge-storage:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Code quality and security analysis
+  codeql-analysis:
+    name: CodeQL Security Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      matrix:
+        language: [ 'python', 'javascript' ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+  # Secrets scanning
+  secrets-scan:
+    name: Secrets and Credentials Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Full history for secret scanning
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+
+      - name: Run GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # OWASP Dependency Check
+  owasp-dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'edge-cloud-storage'
+          path: '.'
+          format: 'ALL'
+
+      - name: Upload OWASP results
+        uses: actions/upload-artifact@v3
+        with:
+          name: owasp-dependency-check-report
+          path: reports/
+
+  # License compliance check
+  license-check:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-licenses
+        run: pip install pip-licenses
+
+      - name: Check Python licenses
+        run: |
+          cd services/storage-service
+          pip install -r requirements.txt
+          pip-licenses --format=json > python-licenses.json
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v3
+        with:
+          name: license-compliance-report
+          path: services/storage-service/python-licenses.json
+
+  # Security summary and notification
+  security-summary:
+    name: Security Scan Summary
+    runs-on: ubuntu-latest
+    needs: [python-security-scan, frontend-security-scan, docker-security-scan, secrets-scan, owasp-dependency-check]
+    if: always()
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Generate summary
+        run: |
+          echo "# Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Scans Completed:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Python Dependency Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Frontend Dependency Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Docker Image Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Secrets Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ OWASP Dependency Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Review the artifacts for detailed reports." >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on Slack (if configured)
+        if: failure()
+        run: |
+          echo "Security scan failed! Check GitHub Actions for details."
+          # Add Slack notification here if needed
+          # curl -X POST -H 'Content-type: application/json' \
+          # --data '{"text":"Security scan failed!"}' \
+          # ${{ secrets.SLACK_WEBHOOK_URL }}

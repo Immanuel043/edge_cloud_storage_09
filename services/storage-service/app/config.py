@@ -104,6 +104,17 @@ class Settings:
     ML_CPU_THREADS: int = int(os.getenv("ML_CPU_THREADS", 32))  # 16C/32T
     ML_BATCH_SIZE: int = int(os.getenv("ML_BATCH_SIZE", 100))  # Batch processing size
 
+    # OAuth Configuration
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")
+    GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
+    MICROSOFT_CLIENT_ID: str = os.getenv("MICROSOFT_CLIENT_ID", "")
+    MICROSOFT_CLIENT_SECRET: str = os.getenv("MICROSOFT_CLIENT_SECRET", "")
+
+    # OAuth URLs
+    API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
     @property
     def is_production(self) -> bool:

@@ -7,6 +7,7 @@ from ..services.auth import auth_service
 from ..models.database import User, Folder
 from ..models.schemas import Token, UserResponse, ThemeUpdate
 from ..config import settings
+from ..utils.rate_limiter import limiter, RateLimitConfig
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
@@ -18,16 +19,17 @@ COOKIE_HTTPONLY = True  # Prevent JavaScript access (XSS protection)
 COOKIE_SAMESITE = "lax"  # CSRF protection
 
 @router.post("/register", response_model=Token)
+@limiter.limit(RateLimitConfig.AUTH_REGISTER)
 async def register(
+    request: Request,
     response: Response,
     email: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
     user_type: str = Form("individual"),
     db: AsyncSession = Depends(get_db),
-    request: Request = None,
 ):
-    """Register a new user - SECURITY FIX: Sets HTTP-only cookie"""
+    """Register a new user - SECURITY FIX: Sets HTTP-only cookie + rate limiting"""
     # Check if user exists
     result = await db.execute(
         select(User).filter((User.email == email) | (User.username == username))
@@ -88,14 +90,15 @@ async def register(
     }
 
 @router.post("/login", response_model=Token)
+@limiter.limit(RateLimitConfig.AUTH_LOGIN)
 async def login(
+    request: Request,
     response: Response,
     email: str = Form(...),
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
-    request: Request = None,
 ):
-    """Login user - SECURITY FIX: Sets HTTP-only cookie"""
+    """Login user - SECURITY: HTTP-only cookie + rate limiting (5/min, 20/hour)"""
     result = await db.execute(select(User).filter(User.email == email))
     user = result.scalar_one_or_none()
 

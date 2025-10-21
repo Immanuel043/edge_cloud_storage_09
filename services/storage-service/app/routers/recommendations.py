@@ -10,7 +10,7 @@ API endpoints for content-based recommendations:
 - Get recommendation summary
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_
 from typing import List, Optional
@@ -20,6 +20,7 @@ from uuid import UUID
 
 from ..dependencies import get_db, get_current_user
 from ..models.database import User, Object, Recommendation, UserInteraction
+from ..utils.rate_limiter import user_limiter, RateLimitConfig
 from ..models.schemas import (
     RecommendationResponse,
     SimilarFileResponse,
@@ -43,7 +44,9 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/", response_model=List[RecommendationResponse])
+@user_limiter.limit(RateLimitConfig.ML_PREDICTION)
 async def get_recommendations(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     file_id: Optional[str] = Query(None, description="Context file ID"),

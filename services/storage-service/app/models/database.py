@@ -1034,3 +1034,368 @@ class RecommendationFeedback(Base):
         Index('idx_rec_feedback_user_id', 'user_id'),
         Index('idx_rec_feedback_type', 'feedback_type'),
     )
+
+
+class Favorite(Base):
+    """User favorites/starred files for quick access"""
+    __tablename__ = 'favorites'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+
+    # Optional metadata
+    notes = Column(Text, nullable=True)  # User notes about why they favorited
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship('User', backref='favorites')
+    file = relationship('Object', backref='favorited_by')
+
+    __table_args__ = (
+        Index('idx_favorites_user_id', 'user_id'),
+        Index('idx_favorites_file_id', 'file_id'),
+        Index('idx_favorites_created_at', 'created_at'),
+        UniqueConstraint('user_id', 'file_id', name='uq_user_file_favorite'),
+    )
+
+
+class OAuthAccount(Base):
+    """OAuth account linked to user for social login"""
+    __tablename__ = 'oauth_accounts'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    provider = Column(String(50), nullable=False)  # 'google', 'github', 'microsoft'
+    provider_user_id = Column(String(255), nullable=False)  # OAuth provider's user ID
+
+    # OAuth tokens
+    access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Profile data from OAuth provider
+    profile_data = Column(JSON, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship('User', backref='oauth_accounts')
+
+    __table_args__ = (
+        Index('idx_oauth_provider_user', 'provider', 'provider_user_id'),
+        UniqueConstraint('provider', 'provider_user_id', name='uq_oauth_provider_user'),
+    )
+
+# ===== Encryption Key Management Models =====
+
+class EncryptionKeyVersion(Base):
+    """
+    Track encryption key versions for key rotation
+    
+    Stores metadata about each master key version:
+    - When it was created
+    - When it became active
+    - When it was rotated/deprecated
+    - Current status
+    """
+    __tablename__ = "encryption_key_versions"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    version = Column(Integer, unique=True, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active")  # active, deprecated, retired
+    
+    # Key metadata (not the actual key!)
+    key_algorithm = Column(String(50), default="AES-256-GCM")
+    key_source = Column(String(100))  # "generated", "hsm", "kms", etc.
+    key_purpose = Column(String(50), default="data_encryption")
+    
+    # Lifecycle timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    activated_at = Column(DateTime(timezone=True))
+    deprecated_at = Column(DateTime(timezone=True))
+    retired_at = Column(DateTime(timezone=True))
+    
+    # Rotation info
+    rotated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    rotation_reason = Column(Text)
+    predecessor_version = Column(Integer)  # Previous key version
+    
+    # Usage statistics
+    objects_encrypted = Column(BigInteger, default=0)  # Number of objects encrypted with this key
+    last_used_at = Column(DateTime(timezone=True))
+    
+    # Metadata
+    metadata = Column(JSONB)
+    
+    __table_args__ = (
+        Index('idx_key_version_status', 'version', 'status'),
+    )
+
+
+class KeyRotationHistory(Base):
+    """
+    Audit log for key rotation events
+    
+    Records every key rotation operation for compliance and auditing.
+    """
+    __tablename__ = "key_rotation_history"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Rotation details
+    old_key_version = Column(Integer, nullable=False)
+    new_key_version = Column(Integer, nullable=False)
+    rotation_type = Column(String(50), nullable=False)  # "scheduled", "emergency", "compromise"
+    
+    # Who triggered it
+    initiated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    initiated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Completion status
+    status = Column(String(20), default="in_progress")  # in_progress, completed, failed
+    completed_at = Column(DateTime(timezone=True))
+    
+    # Re-encryption statistics
+    objects_to_reencrypt = Column(BigInteger, default=0)
+    objects_reencrypted = Column(BigInteger, default=0)
+    reencryption_progress = Column(Float, default=0.0)
+    
+    # Error tracking
+    errors_encountered = Column(Integer, default=0)
+    error_details = Column(JSONB)
+    
+    # Metadata
+    reason = Column(Text)
+    metadata = Column(JSONB)
+    
+    __table_args__ = (
+        Index('idx_rotation_status', 'status'),
+        Index('idx_rotation_date', 'initiated_at'),
+    )
+
+
+class DataReencryptionQueue(Base):
+    """
+    Queue for objects that need re-encryption after key rotation
+    
+    Used to track progress of re-encrypting data with new keys.
+    """
+    __tablename__ = "data_reencryption_queue"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # What needs to be re-encrypted
+    object_id = Column(UUID(as_uuid=True), ForeignKey("objects.id", ondelete="CASCADE"))
+    object_type = Column(String(50), default="file")  # file, backup, snapshot, etc.
+    
+    # Encryption details
+    current_key_version = Column(Integer, nullable=False)
+    target_key_version = Column(Integer, nullable=False)
+    
+    # Associated rotation
+    rotation_id = Column(UUID(as_uuid=True), ForeignKey("key_rotation_history.id"))
+    
+    # Processing status
+    status = Column(String(20), default="pending")  # pending, in_progress, completed, failed
+    priority = Column(Integer, default=5)  # 1-10, higher = more urgent
+    
+    # Timestamps
+    queued_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    
+    # Error handling
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    last_error = Column(Text)
+    error_metadata = Column(JSONB)
+    
+    # Metadata
+    metadata = Column(JSONB)
+    
+    __table_args__ = (
+        Index('idx_reencrypt_status', 'status'),
+        Index('idx_reencrypt_priority', 'priority', 'queued_at'),
+        Index('idx_reencrypt_rotation', 'rotation_id'),
+    )
+
+# ===== Enhanced Audit Logging Models =====
+
+class AuditLog(Base):
+    """
+    Enhanced audit log for security and compliance
+    
+    Stores comprehensive audit trail with tamper detection.
+    Separate from ActivityLog for compliance requirements.
+    """
+    __tablename__ = "audit_logs"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Event identification
+    event_type = Column(String(100), nullable=False, index=True)
+    event_category = Column(String(50), index=True)  # authentication, data_access, etc.
+    event_hash = Column(String(64), nullable=False)  # SHA-256 for tamper detection
+    
+    # Actor (who performed the action)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    actor_email = Column(String(255))  # Denormalized for audit purposes
+    actor_type = Column(String(50))  # user, admin, system, api_key
+    
+    # Resource (what was affected)
+    resource_type = Column(String(100))  # file, user, setting, key, etc.
+    resource_id = Column(String(255), index=True)
+    resource_name = Column(String(500))  # Human-readable resource name
+    
+    # Action and result
+    action = Column(String(100), index=True)
+    result = Column(String(20), nullable=False)  # success, failure, denied
+    result_message = Column(Text)
+    
+    # Severity and impact
+    severity = Column(String(20), default="info")  # debug, info, warning, error, critical
+    impact_level = Column(String(20))  # low, medium, high, critical
+    
+    # Request context
+    ip_address = Column(String(45))  # IPv4 or IPv6
+    user_agent = Column(Text)
+    request_id = Column(String(100), index=True)
+    session_id = Column(String(100), index=True)
+    request_method = Column(String(10))  # GET, POST, etc.
+    request_path = Column(String(1000))
+    
+    # Geolocation (optional)
+    country_code = Column(String(2))
+    region = Column(String(100))
+    city = Column(String(100))
+    
+    # Timing
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    duration_ms = Column(Integer)  # How long the action took
+    
+    # Additional data
+    details = Column(JSONB)  # Detailed event data
+    metadata = Column(JSONB)  # Extra metadata
+    
+    # Compliance flags
+    is_compliance_relevant = Column(Boolean, default=False)  # GDPR, SOC2, etc.
+    compliance_tags = Column(JSONB)  # ["gdpr_article_15", "soc2_cc6"]
+    
+    # Chain linking for tamper detection
+    previous_event_hash = Column(String(64))  # Hash of previous event
+    sequence_number = Column(BigInteger)  # Sequential number
+    
+    # Retention
+    retention_until = Column(DateTime(timezone=True))  # When to delete/archive
+    is_archived = Column(Boolean, default=False)
+    
+    __table_args__ = (
+        Index('idx_audit_user_time', 'user_id', 'timestamp'),
+        Index('idx_audit_resource', 'resource_type', 'resource_id'),
+        Index('idx_audit_severity_time', 'severity', 'timestamp'),
+        Index('idx_audit_category_time', 'event_category', 'timestamp'),
+        Index('idx_audit_compliance', 'is_compliance_relevant', 'timestamp'),
+    )
+
+
+class SecurityAlert(Base):
+    """
+    Security alerts generated from audit log analysis
+    
+    Tracks suspicious activities and security incidents.
+    """
+    __tablename__ = "security_alerts"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Alert details
+    alert_type = Column(String(100), nullable=False)  # brute_force, data_exfiltration, etc.
+    severity = Column(String(20), nullable=False)  # low, medium, high, critical
+    status = Column(String(20), default="open")  # open, investigating, resolved, false_positive
+    
+    # What triggered it
+    trigger_event_id = Column(UUID(as_uuid=True))
+    trigger_pattern = Column(String(200))  # What pattern matched
+    
+    # Who/what
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    ip_address = Column(String(45))
+    
+    # Details
+    title = Column(String(500), nullable=False)
+    description = Column(Text)
+    evidence = Column(JSONB)  # Related events, patterns, etc.
+    risk_score = Column(Float)  # 0.0 - 10.0
+    
+    # Timing
+    first_seen = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen = Column(DateTime(timezone=True))
+    detected_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Response
+    assigned_to_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    investigated_at = Column(DateTime(timezone=True))
+    resolved_at = Column(DateTime(timezone=True))
+    resolution = Column(Text)
+    
+    # Actions taken
+    actions_taken = Column(JSONB)  # [{action: "user_suspended", timestamp: ...}]
+    
+    # Metadata
+    metadata = Column(JSONB)
+    
+    __table_args__ = (
+        Index('idx_alert_status_severity', 'status', 'severity'),
+        Index('idx_alert_user', 'user_id'),
+        Index('idx_alert_detected', 'detected_at'),
+    )
+
+
+class ComplianceReport(Base):
+    """
+    Generated compliance reports for auditors
+    
+    Stores compliance reports (GDPR, SOC 2, ISO 27001, etc.)
+    """
+    __tablename__ = "compliance_reports"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Report details
+    report_type = Column(String(50), nullable=False)  # gdpr, soc2, iso27001, hipaa
+    report_period_start = Column(DateTime(timezone=True), nullable=False)
+    report_period_end = Column(DateTime(timezone=True), nullable=False)
+    
+    # Generation
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    generated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    
+    # Status
+    status = Column(String(20), default="draft")  # draft, finalized, submitted, approved
+    
+    # Content
+    summary = Column(JSONB)  # Summary statistics
+    findings = Column(JSONB)  # List of findings
+    recommendations = Column(JSONB)  # Recommendations
+    event_count = Column(Integer)
+    
+    # Compliance metrics
+    compliance_score = Column(Float)  # 0.0 - 100.0
+    issues_found = Column(Integer, default=0)
+    issues_resolved = Column(Integer, default=0)
+    
+    # File storage
+    report_file_path = Column(String(1000))  # Path to PDF/CSV export
+    
+    # Metadata
+    metadata = Column(JSONB)
+    
+    __table_args__ = (
+        Index('idx_report_type_period', 'report_type', 'report_period_start'),
+        Index('idx_report_generated', 'generated_at'),
+    )

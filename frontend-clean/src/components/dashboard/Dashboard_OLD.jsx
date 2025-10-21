@@ -1,16 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Upload, X, CheckCircle, AlertCircle, Cloud, HardDrive,
-  Share2, Download, Trash2, FolderPlus, Folder, Sun, Moon,
-  User, LogOut, Home, Search, Settings, ChevronRight, Grid,
+import { 
+  Upload, File, X, CheckCircle, AlertCircle, Cloud, HardDrive, 
+  Share2, Download, Trash2, FolderPlus, Folder, Sun, Moon, 
+  User, LogOut, Home, Search, Settings, ChevronRight, Grid, 
   List, Filter, Eye, Copy, Wifi, WifiOff, Check, Info,
   Image, FileText, Video, Music, Archive, Code, Clock,
   Zap
 } from 'lucide-react';
-import Sidebar from './Sidebar';
-import RecentsView from './RecentsView';
-import FavoritesView from './FavoritesView';
-import AnalyticsView from './AnalyticsView';
 import DeduplicationPanel from './DeduplicationPanel';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -35,11 +31,11 @@ import { storageService } from '../../services/storageService';
 export default function Dashboard() {
   const { darkMode, toggleTheme } = useTheme();
   const { user, logout, token, isAuthenticated, loading: authLoading } = useAuth();
-  const {
-    files,
-    folders,
-    currentFolder,
-    storageStats,
+  const { 
+    files, 
+    folders, 
+    currentFolder, 
+    storageStats, 
     isOnline,
     selectedFiles,
     uploadFile,
@@ -55,8 +51,6 @@ export default function Dashboard() {
     refreshFiles
   } = useStorage();
 
-  const [activeView, setActiveView] = useState('cloud-drive');
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [viewMode, setViewMode] = useState('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [uploads, setUploads] = useState({});
@@ -79,7 +73,7 @@ export default function Dashboard() {
   const [dedupStats, setDedupStats] = useState(null);
   const [dedupLoading, setDedupLoading] = useState(false);
   const [searchResults, setSearchResults] = useState(null);
-
+  
 
   useEffect(() => {
     // Don't attempt to load if auth is still loading or not authenticated
@@ -106,10 +100,6 @@ export default function Dashboard() {
       e.preventDefault();
       selectAll();
     },
-    'ctrl+1': () => setActiveView('cloud-drive'),
-    'ctrl+2': () => setActiveView('recents'),
-    'ctrl+3': () => setActiveView('dedup'),
-    'ctrl+4': () => setActiveView('favorites'),
     'delete': () => {
       if (selectedFiles.size > 0) {
         handleBulkDelete();
@@ -170,7 +160,7 @@ export default function Dashboard() {
   const handleFileUpload = async (file) => {
     const uploadId = crypto.randomUUID();
     const startTime = Date.now();
-
+    
     try {
       setUploads(prev => ({
         ...prev,
@@ -219,7 +209,7 @@ export default function Dashboard() {
       }, 3000);
 
       refreshFiles();
-
+      
     } catch (error) {
       if (error.name === 'AbortError') {
         setUploads(prev => ({
@@ -260,7 +250,7 @@ export default function Dashboard() {
 
   const handleVersionRestore = async () => {
     // Reload files after restore
-    await refreshFiles();
+    await fetchFiles();
   };
 
   const handleBulkDelete = async () => {
@@ -293,7 +283,7 @@ export default function Dashboard() {
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-
+    
     const files = Array.from(e.dataTransfer.files);
     files.forEach(handleFileUpload);
   };
@@ -324,7 +314,7 @@ export default function Dashboard() {
       const fileDate = new Date(file.created_at);
       const now = new Date();
       const dayDiff = (now - fileDate) / (1000 * 60 * 60 * 24);
-
+      
       if (filters.date === 'today' && dayDiff > 1) return false;
       if (filters.date === 'week' && dayDiff > 7) return false;
       if (filters.date === 'month' && dayDiff > 30) return false;
@@ -333,193 +323,52 @@ export default function Dashboard() {
     return true;
   });
 
-  // Render main content based on active view
-  const renderMainContent = () => {
-    switch (activeView) {
-      case 'recents':
-        return (
-          <RecentsView
-            viewMode={viewMode}
-            darkMode={darkMode}
-            selectedFiles={selectedFiles}
-            onFileClick={selectFile}
-            onFilePreview={setPreviewFile}
-            onFileDownload={downloadFile}
-            onFileShare={handleShare}
-            onFileDelete={deleteFile}
-            onVersionHistory={handleVersionHistory}
-          />
-        );
-
-      case 'favorites':
-        return (
-          <FavoritesView
-            viewMode={viewMode}
-            darkMode={darkMode}
-            selectedFiles={selectedFiles}
-            onFileClick={selectFile}
-            onFilePreview={setPreviewFile}
-            onFileDownload={downloadFile}
-            onFileShare={handleShare}
-            onFileDelete={deleteFile}
-            onVersionHistory={handleVersionHistory}
-          />
-        );
-
-      case 'dedup':
-        return (
-          <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-            <DeduplicationPanel
-              darkMode={darkMode}
-              onOptimizeFile={handleOptimizeFile}
-              stats={dedupStats}
-              loading={dedupLoading}
-              onRefresh={loadDedupStats}
-            />
-          </div>
-        );
-
-      case 'analytics':
-        return (
-          <AnalyticsView
-            darkMode={darkMode}
-            storageStats={storageStats}
-          />
-        );
-
-      case 'settings':
-        return (
-          <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-            <h1 className={`text-2xl font-bold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Settings
-            </h1>
-            <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
-              Settings panel - Coming soon
-            </p>
-          </div>
-        );
-
-      case 'cloud-drive':
-      default:
-        return (
-          <div
-            className={`rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} ${isDragging ? 'ring-2 ring-blue-500' : ''
-              }`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            {isDragging && (
-              <div className="p-8 text-center border-2 border-dashed border-blue-500 m-4 rounded-lg">
-                <Upload className="mx-auto mb-2 text-blue-500" size={48} />
-                <p className="text-blue-500">Drop files here to upload</p>
-              </div>
-            )}
-
-            {!isDragging && (
-              <div className="p-4">
-                {/* Search Results */}
-                {searchResults ? (
-                  <SearchResults
-                    results={searchResults}
-                    onClose={() => setSearchResults(null)}
-                    onFileClick={setPreviewFile}
-                    onFolderClick={navigateToFolder}
-                    darkMode={darkMode}
-                  />
-                ) : (
-                  <>
-                    {/* Breadcrumb */}
-                    <div className="flex items-center gap-2 mb-4 text-sm">
-                      <button
-                        onClick={() => navigateToFolder(null)}
-                        className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
-                      >
-                        Home
-                      </button>
-                      {currentFolder && (
-                        <>
-                          <ChevronRight size={16} className="text-gray-400" />
-                          <span className={darkMode ? 'text-white' : 'text-gray-900'}>
-                            Current Folder
-                          </span>
-                        </>
-                      )}
-                    </div>
-
-                    {/* Files and Folders */}
-                    {viewMode === 'grid' ? (
-                      <FileGrid
-                        folders={folders}
-                        files={filteredFiles}
-                        selectedFiles={selectedFiles}
-                        onFolderClick={navigateToFolder}
-                        onFileClick={selectFile}
-                        onFilePreview={setPreviewFile}
-                        onFileDownload={downloadFile}
-                        onFileShare={handleShare}
-                        onFileDelete={deleteFile}
-                        onVersionHistory={handleVersionHistory}
-                        darkMode={darkMode}
-                      />
-                    ) : (
-                      <FileList
-                        folders={folders}
-                        files={filteredFiles}
-                        selectedFiles={selectedFiles}
-                        onFolderClick={navigateToFolder}
-                        onFileClick={selectFile}
-                        onFilePreview={setPreviewFile}
-                        onFileDownload={downloadFile}
-                        onFileShare={handleShare}
-                        onFileDelete={deleteFile}
-                        onVersionHistory={handleVersionHistory}
-                        darkMode={darkMode}
-                      />
-                    )}
-
-                    {files.length === 0 && folders.length === 0 && (
-                      <div className="text-center py-12">
-                        <Upload className="mx-auto mb-3 text-gray-400" size={48} />
-                        <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
-                          No files or folders yet. Upload some files or create a folder to get started!
-                        </p>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        );
-    }
-  };
-
   return (
     <div className={`min-h-screen ${darkMode ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
-      {/* Sidebar */}
-      <Sidebar
-        activeView={activeView}
-        onViewChange={setActiveView}
-        darkMode={darkMode}
-        storageStats={storageStats}
-        isMobileOpen={isMobileSidebarOpen}
-        onMobileToggle={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-      />
+      {/* Header */}
+      <header className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b`}>
+        <div className="max-w-7xl mx-auto px-4 py-4">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <h1 className={`text-xl font-bold flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <Cloud size={24} /> Edge Cloud Storage
+              </h1>
+              <nav className="flex gap-2">
+                <button
 
-      {/* Main Content Area (with left margin for sidebar) */}
-      <div className="lg:ml-64 min-h-screen">
-        {/* Header */}
-        <header className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b sticky top-0 z-30`}>
-          <div className="px-4 py-4">
-            <div className="flex justify-end items-center gap-3">
-              <div className="flex-1 max-w-2xl">
+                  onClick={() => {
+                    navigateToFolder(null);
+                    setShowDedupPanel(false); // Close dedup panel when going home
+                  }}
+                  className={`px-3 py-1 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                  title="Home"
+                >
+                  <Home size={18} />
+                  </button>
+                  <button
+                  onClick={() => setShowDedupPanel(!showDedupPanel)}
+                  className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} ${showDedupPanel ? 'ring-2 ring-indigo-500' : ''}`}
+                  title="Deduplication Analytics"
+                >
+                <Zap size={20} className={showDedupPanel ? 'text-indigo-500' : ''} />
+                {dedupLoading && (
+                    <span className="ml-1 text-xs">Loading...</span>
+                  )}
+                </button>
+              </nav>
+              
+              {/* Add other required indicators */}
+              
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <div className="w-96">
                 <SearchBar
                   onSearch={setSearchResults}
                   darkMode={darkMode}
                 />
               </div>
-
+              
               <button
                 onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
                 className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
@@ -527,7 +376,7 @@ export default function Dashboard() {
               >
                 {viewMode === 'grid' ? <List size={20} /> : <Grid size={20} />}
               </button>
-
+              
               <button
                 onClick={toggleTheme}
                 className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700 text-yellow-400' : 'bg-gray-100'}`}
@@ -535,7 +384,7 @@ export default function Dashboard() {
               >
                 {darkMode ? <Sun size={20} /> : <Moon size={20} />}
               </button>
-
+              
               <button
                 onClick={() => setShowShortcuts(true)}
                 className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
@@ -543,7 +392,7 @@ export default function Dashboard() {
               >
                 <Info size={20} />
               </button>
-
+              
               <div className="flex items-center gap-2">
                 <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
                   {user?.username}
@@ -558,110 +407,214 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-        </header>
+        </div>
+      </header>
 
-        {/* Main Content */}
-        <div className="px-4 py-6">
-          {/* Storage Stats - only show in cloud-drive view */}
-          {activeView === 'cloud-drive' && storageStats && (
-            <StorageStats stats={storageStats} darkMode={darkMode} />
-          )}
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* Storage Stats */}
+        {storageStats && <StorageStats stats={storageStats} darkMode={darkMode} />}
 
-          {/* Filter Panel */}
-          {showFilters && activeView === 'cloud-drive' && (
-            <FilterPanel
-              filters={filters}
-              setFilters={setFilters}
+        {/* Deduplication Panel - Add this */}
+        {showDedupPanel && isAuthenticated && (
+          <div className="mb-6">
+            <DeduplicationPanel
               darkMode={darkMode}
+              onOptimizeFile={handleOptimizeFile}
+              stats={dedupStats}
+              loading={dedupLoading}
+              onRefresh={loadDedupStats}
+            />
+          </div>
+        )}
+        {/* Show loading or error state*/}
+        {showDedupPanel && !isAuthenticated && (
+          <div className="mb-6 p-4 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded">
+            Authentication required to view deduplication stats
+          </div>
+        )}
+
+        {/* Filter Panel */}
+        {showFilters && (
+          <FilterPanel 
+            filters={filters} 
+            setFilters={setFilters}
+            darkMode={darkMode}
+          />
+        )}
+
+        {/* Action Bar */}
+        <div className="flex gap-3 mb-6">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            title="Upload files (Ctrl+U)"
+          >
+            <Upload size={20} />
+            Upload Files
+          </button>
+          <button
+            onClick={handleCreateFolder}
+            className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+            title="New folder (Ctrl+N)"
+          >
+            <FolderPlus size={20} />
+            New Folder
+          </button>
+          
+          {/* Bulk Actions */}
+          {selectedFiles.size > 0 && (
+            <BulkActions
+              selectedCount={selectedFiles.size}
+              onDownload={handleBulkDownload}
+              onDelete={handleBulkDelete}
+              onClear={clearSelection}
             />
           )}
+          
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            onChange={(e) => Array.from(e.target.files).forEach(handleFileUpload)}
+            className="hidden"
+          />
+        </div>
 
-          {/* Action Bar - only show in cloud-drive view */}
-          {activeView === 'cloud-drive' && (
-            <div className="flex gap-3 mb-6">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                title="Upload files (Ctrl+U)"
-              >
-                <Upload size={20} />
-                Upload Files
-              </button>
-              <button
-                onClick={handleCreateFolder}
-                className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-                title="New folder (Ctrl+N)"
-              >
-                <FolderPlus size={20} />
-                New Folder
-              </button>
+        {/* Upload Progress */}
+        {Object.keys(uploads).length > 0 && (
+          <UploadProgress 
+            uploads={uploads}
+            onCancel={cancelUpload}
+            darkMode={darkMode}
+          />
+        )}
 
-              {/* Bulk Actions */}
-              {selectedFiles.size > 0 && (
-                <BulkActions
-                  selectedCount={selectedFiles.size}
-                  onDownload={handleBulkDownload}
-                  onDelete={handleBulkDelete}
-                  onClear={clearSelection}
+        {/* File Browser */}
+        <div
+          className={`rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} ${
+            isDragging ? 'ring-2 ring-blue-500' : ''
+          }`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDragging && (
+            <div className="p-8 text-center border-2 border-dashed border-blue-500 m-4 rounded-lg">
+              <Upload className="mx-auto mb-2 text-blue-500" size={48} />
+              <p className="text-blue-500">Drop files here to upload</p>
+            </div>
+          )}
+          
+          {!isDragging && (
+            <div className="p-4">
+              {/* Search Results */}
+              {searchResults ? (
+                <SearchResults
+                  results={searchResults}
+                  onClose={() => setSearchResults(null)}
+                  onFileClick={setPreviewFile}
+                  onFolderClick={navigateToFolder}
+                  darkMode={darkMode}
+                />
+              ) : (
+                <>
+                  {/* Breadcrumb */}
+                  <div className="flex items-center gap-2 mb-4 text-sm">
+                    <button
+                      onClick={() => navigateToFolder(null)}
+                      className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                    >
+                      Home
+                    </button>
+                    {currentFolder && (
+                      <>
+                        <ChevronRight size={16} className="text-gray-400" />
+                        <span className={darkMode ? 'text-white' : 'text-gray-900'}>
+                          Current Folder
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Files and Folders */}
+                  {viewMode === 'grid' ? (
+                <FileGrid
+                  folders={folders}
+                  files={filteredFiles}
+                  selectedFiles={selectedFiles}
+                  onFolderClick={navigateToFolder}
+                  onFileClick={selectFile}
+                  onFilePreview={setPreviewFile}
+                  onFileDownload={downloadFile}
+                  onFileShare={handleShare}
+                  onFileDelete={deleteFile}
+                  onVersionHistory={handleVersionHistory}
+                  darkMode={darkMode}
+                />
+              ) : (
+                <FileList
+                  folders={folders}
+                  files={filteredFiles}
+                  selectedFiles={selectedFiles}
+                  onFolderClick={navigateToFolder}
+                  onFileClick={selectFile}
+                  onFilePreview={setPreviewFile}
+                  onFileDownload={downloadFile}
+                  onFileShare={handleShare}
+                  onFileDelete={deleteFile}
+                  onVersionHistory={handleVersionHistory}
+                  darkMode={darkMode}
                 />
               )}
 
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                onChange={(e) => Array.from(e.target.files).forEach(handleFileUpload)}
-                className="hidden"
-              />
+                  {files.length === 0 && folders.length === 0 && (
+                    <div className="text-center py-12">
+                      <Upload className="mx-auto mb-3 text-gray-400" size={48} />
+                      <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
+                        No files or folders yet. Upload some files or create a folder to get started!
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
-
-          {/* Upload Progress */}
-          {Object.keys(uploads).length > 0 && (
-            <UploadProgress
-              uploads={uploads}
-              onCancel={cancelUpload}
-              darkMode={darkMode}
-            />
-          )}
-
-          {/* Main Content View */}
-          {renderMainContent()}
         </div>
+
+        {/* Modals */}
+        {shareFile && (
+          <ShareOptionsModal
+            file={shareFile}
+            onClose={() => setShareFile(null)}
+            darkMode={darkMode}
+          />
+        )}
+        
+        {previewFile && (
+          <FilePreview
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+            darkMode={darkMode}
+          />
+        )}
+        
+        {showShortcuts && (
+          <KeyboardShortcuts
+            onClose={() => setShowShortcuts(false)}
+            darkMode={darkMode}
+          />
+        )}
+
+        {versionFile && (
+          <VersionHistory
+            file={versionFile}
+            onClose={() => setVersionFile(null)}
+            onRestore={handleVersionRestore}
+            darkMode={darkMode}
+          />
+        )}
       </div>
-
-      {/* Modals */}
-      {shareFile && (
-        <ShareOptionsModal
-          file={shareFile}
-          onClose={() => setShareFile(null)}
-          darkMode={darkMode}
-        />
-      )}
-
-      {previewFile && (
-        <FilePreview
-          file={previewFile}
-          onClose={() => setPreviewFile(null)}
-          darkMode={darkMode}
-        />
-      )}
-
-      {showShortcuts && (
-        <KeyboardShortcuts
-          onClose={() => setShowShortcuts(false)}
-          darkMode={darkMode}
-        />
-      )}
-
-      {versionFile && (
-        <VersionHistory
-          file={versionFile}
-          onClose={() => setVersionFile(null)}
-          onRestore={handleVersionRestore}
-          darkMode={darkMode}
-        />
-      )}
     </div>
   );
 }

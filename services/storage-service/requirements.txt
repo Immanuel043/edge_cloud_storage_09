@@ -175,3 +175,5 @@ sentencepiece==0.1.99  # Required by some transformers models
 #   - Add Tesseract to PATH
 #
 # =============================================================================
+python-jose==3.3.0
+slowapi==0.1.9

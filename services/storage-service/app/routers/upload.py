@@ -21,6 +21,7 @@ from ..models.database import User, Object
 from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
 from ..config import settings
+from ..utils.rate_limiter import user_limiter, RateLimitConfig
 from aiokafka import AIOKafkaProducer
 import aiofiles
 from ..utils.cache import cached
@@ -155,11 +156,12 @@ def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int
     return encrypted_chunk, original_hash
 
 @router.post("/init", response_model=UploadInitResponse)
+@user_limiter.limit(RateLimitConfig.FILE_UPLOAD)
 async def init_upload(
+    request: Request,
     file_name: str,
     file_size: int,
     folder_id: Optional[str] = None,
-    request: Request = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -233,9 +235,11 @@ async def init_upload(
     )
 
 @router.post("/chunk/{upload_id}")
+@user_limiter.limit(RateLimitConfig.FILE_UPLOAD)
 async def upload_chunk(
     upload_id: str,
     chunk_index: int,
+    request: Request,
     chunk: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -307,8 +311,10 @@ async def upload_chunk(
     }
 
 @router.post("/direct/{upload_id}")
+@user_limiter.limit(RateLimitConfig.FILE_UPLOAD)
 async def upload_direct(
     upload_id: str,
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

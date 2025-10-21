@@ -40,11 +40,16 @@ class FileResponse(BaseModel):
     name: str
     size: int
     mime_type: Optional[str]
-    folder_id: Optional[str]
-    storage_tier: str
-    backup_status: str
+    folder_id: Optional[str] = None
+    storage_tier: str = 'hot'
+    backup_status: str = 'none'
     created_at: datetime
-    last_accessed: datetime
+    last_accessed: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    tier: Optional[str] = None  # Alias for storage_tier
+    path: Optional[str] = None
+    is_favorite: Optional[bool] = False
+    favorited_at: Optional[datetime] = None
 
 # Folder Schemas
 class FolderCreate(BaseModel):

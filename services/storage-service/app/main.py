@@ -13,7 +13,7 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations
+from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations, favorites, oauth, gdpr, audit
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
@@ -156,6 +156,14 @@ try:
 except Exception as e:
     print(f"Failed to instrument metrics: {e}")
 
+# Add rate limiting
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from .utils.rate_limiter import limiter, rate_limit_exceeded_handler as custom_rate_limit_handler
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
+
 # Add HTTPS redirect if enabled
 if settings.ENABLE_HTTPS:
     app.add_middleware(HTTPSRedirectMiddleware)
@@ -171,6 +179,15 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Add Security Headers Middleware
+try:
+    from .middleware.security_headers import SecurityHeadersMiddleware, CORSSecurityMiddleware
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(CORSSecurityMiddleware)
+    print("Security headers middleware enabled")
+except Exception as e:
+    print(f"Failed to enable security headers middleware: {e}")
 
 # Add Performance Monitoring Middleware
 try:
@@ -203,6 +220,10 @@ app.include_router(quota_analytics.router)
 app.include_router(storage_optimization.router)
 app.include_router(auto_organization.router)
 app.include_router(recommendations.router)
+app.include_router(favorites.router)
+app.include_router(oauth.router)
+app.include_router(gdpr.router)
+app.include_router(audit.router)
 
 
 # Helper functions

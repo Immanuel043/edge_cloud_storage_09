@@ -727,13 +727,98 @@ async runGarbageCollection(token) {
     method: 'POST',
     credentials: 'include'  // Send HTTP-only cookie
   });
-  
+
   if (!response.ok) {
     console.error('Failed to run GC:', response.status);
     throw new Error('Failed to run garbage collection');
   }
-  
+
   return await response.json();
+}
+
+// Recents - Get recently accessed files
+async getRecentFiles(days = 30) {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/recents?days=${days}`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    // If endpoint doesn't exist yet, return mock data for frontend development
+    console.warn('Recents endpoint not available, using mock data');
+    return this.getMockRecentFiles();
+  }
+
+  return await response.json();
+}
+
+// Favorites - Get favorited files
+async getFavorites() {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/favorites`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    // If endpoint doesn't exist yet, return empty array
+    console.warn('Favorites endpoint not available, using mock data');
+    return [];
+  }
+
+  return await response.json();
+}
+
+// Toggle favorite status of a file
+async toggleFavorite(fileId) {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/${fileId}/favorite`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to toggle favorite');
+  }
+
+  return await response.json();
+}
+
+// Mock data for development (until backend endpoints are ready)
+getMockRecentFiles() {
+  const now = new Date();
+  const mockFiles = [];
+
+  for (let i = 0; i < 20; i++) {
+    const daysAgo = Math.floor(Math.random() * 30);
+    const date = new Date(now);
+    date.setDate(date.getDate() - daysAgo);
+
+    mockFiles.push({
+      id: `mock-${i}`,
+      name: `Document_${i + 1}.pdf`,
+      size: Math.floor(Math.random() * 10000000),
+      mime_type: 'application/pdf',
+      created_at: date.toISOString(),
+      last_accessed: date.toISOString(),
+      tier: ['hot', 'warm', 'cold'][Math.floor(Math.random() * 3)],
+    });
+  }
+
+  return mockFiles;
 }
 
 

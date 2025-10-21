@@ -15,6 +15,7 @@ from ..models.database import User, Object, ActivityLog
 from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
+from ..utils.rate_limiter import user_limiter, RateLimitConfig
 from pydantic import BaseModel
 import re
 import base64
@@ -32,7 +33,9 @@ class BulkDeleteRequest(BaseModel):
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
 @router.get("", response_model=List[FileResponse])
+@user_limiter.limit(RateLimitConfig.FILE_LIST)
 async def list_files(
+    request: Request,
     folder_id: Optional[str] = None,
     limit: int = 100,  # Default 100 files per page
     offset: int = 0,  # Starting position
@@ -227,6 +230,7 @@ async def stream_chunked_range(
 
 @router.get("/{file_id}/download")
 @router.head("/{file_id}/download")
+@user_limiter.limit(RateLimitConfig.FILE_DOWNLOAD)
 async def download_file(
     file_id: str,
     request: Request,
@@ -593,11 +597,12 @@ async def get_file_preview(
 
 
 @router.delete("/{file_id}")
+@user_limiter.limit(RateLimitConfig.FILE_DELETE)
 async def delete_file(
     file_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    request: Request = None,
 ):
     """Delete file with cascade handling"""
     redis_client = await get_redis()
@@ -713,11 +718,12 @@ async def delete_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/bulk-delete")
+@user_limiter.limit(RateLimitConfig.FILE_DELETE)
 async def bulk_delete_files(
+    request: Request,
     request_data: BulkDeleteRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    request: Request = None,
 ):
     """Delete multiple files with cascade handling - OPTIMIZED"""
     file_ids = request_data.file_ids
