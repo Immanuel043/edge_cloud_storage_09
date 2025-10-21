@@ -1,242 +1,259 @@
-# services/storage-service/app/services/performance_optimizer.py
-
 """
 Performance Optimization Service
 
-Provides tools for database query optimization, caching, and performance monitoring.
+Provides comprehensive performance monitoring, caching, and optimization
+capabilities for the Edge Cloud Storage platform.
 
 Features:
-- Query performance analysis
-- Automatic index recommendations
-- Slow query detection
-- Query result caching
+- Query performance monitoring
+- Redis-based query result caching
+- Database index recommendations
+- Slow query detection and alerting
 - Performance metrics collection
 """
 
-import logging
-import time
-import asyncio
-from typing import Optional, Dict, List, Any, Callable
-from datetime import datetime, timedelta
-from functools import wraps
 import hashlib
 import json
+import time
+from datetime import datetime, timedelta
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from uuid import UUID
 
+import redis.asyncio as redis
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text, select
-from sqlalchemy.engine import Row
 
-from ..database import get_redis
-
-logger = logging.getLogger(__name__)
+from ..core.config import settings
 
 
 class QueryPerformanceMonitor:
-    """Monitor database query performance"""
+    """Monitor database query performance and detect slow queries."""
 
     def __init__(self):
-        self.slow_queries = []
-        self.query_stats = {}
+        self.slow_queries: List[Dict] = []
+        self.query_stats: Dict[str, Dict] = {}
+        self.slow_query_threshold_ms = 100  # 100ms threshold
 
-    async def log_query(self, query: str, duration_ms: float, params: Optional[Dict] = None):
-        """Log a query execution"""
-        query_hash = hashlib.md5(query.encode()).hexdigest()[:12]
+    async def log_query(
+        self,
+        query: str,
+        duration_ms: float,
+        params: Optional[Dict] = None,
+        user_id: Optional[UUID] = None
+    ):
+        """Log query execution and detect slow queries."""
 
-        # Update statistics
-        if query_hash not in self.query_stats:
-            self.query_stats[query_hash] = {
-                "query": query[:200],  # First 200 chars
+        # Normalize query for grouping (remove parameter values)
+        normalized_query = self._normalize_query(query)
+
+        # Update query statistics
+        if normalized_query not in self.query_stats:
+            self.query_stats[normalized_query] = {
                 "count": 0,
-                "total_time": 0,
-                "min_time": float('inf'),
-                "max_time": 0,
-                "avg_time": 0
+                "total_duration_ms": 0,
+                "min_duration_ms": float('inf'),
+                "max_duration_ms": 0,
+                "avg_duration_ms": 0
             }
 
-        stats = self.query_stats[query_hash]
+        stats = self.query_stats[normalized_query]
         stats["count"] += 1
-        stats["total_time"] += duration_ms
-        stats["min_time"] = min(stats["min_time"], duration_ms)
-        stats["max_time"] = max(stats["max_time"], duration_ms)
-        stats["avg_time"] = stats["total_time"] / stats["count"]
+        stats["total_duration_ms"] += duration_ms
+        stats["min_duration_ms"] = min(stats["min_duration_ms"], duration_ms)
+        stats["max_duration_ms"] = max(stats["max_duration_ms"], duration_ms)
+        stats["avg_duration_ms"] = stats["total_duration_ms"] / stats["count"]
 
-        # Log slow queries
-        if duration_ms > 100:  # Slower than 100ms
-            self.slow_queries.append({
+        # Detect slow queries
+        if duration_ms > self.slow_query_threshold_ms:
+            slow_query_entry = {
                 "query": query,
+                "normalized_query": normalized_query,
                 "duration_ms": duration_ms,
                 "timestamp": datetime.utcnow().isoformat(),
-                "params": params
-            })
+                "params": params,
+                "user_id": str(user_id) if user_id else None
+            }
+            self.slow_queries.append(slow_query_entry)
 
-            logger.warning(
-                f"Slow query detected ({duration_ms:.2f}ms): {query[:100]}..."
-            )
+            # Keep only last 1000 slow queries
+            if len(self.slow_queries) > 1000:
+                self.slow_queries = self.slow_queries[-1000:]
 
-    def get_slow_queries(self, limit: int = 20) -> List[Dict]:
-        """Get slowest queries"""
-        return sorted(
-            self.slow_queries,
-            key=lambda x: x["duration_ms"],
-            reverse=True
-        )[:limit]
+    def _normalize_query(self, query: str) -> str:
+        """Normalize query by removing parameter values for grouping."""
+        # Simple normalization: replace common patterns
+        import re
+        normalized = re.sub(r"= '[^']*'", "= ?", query)
+        normalized = re.sub(r"= \d+", "= ?", normalized)
+        normalized = re.sub(r"IN \([^)]+\)", "IN (?)", normalized)
+        return normalized
 
-    def get_query_statistics(self) -> Dict:
-        """Get overall query statistics"""
-        if not self.query_stats:
-            return {}
+    def get_slow_queries(self, limit: int = 100) -> List[Dict]:
+        """Get recent slow queries."""
+        return self.slow_queries[-limit:]
 
-        sorted_stats = sorted(
-            self.query_stats.values(),
-            key=lambda x: x["total_time"],
-            reverse=True
-        )
+    def get_query_stats(self, top_n: int = 50) -> List[Dict]:
+        """Get top N queries by total execution time."""
+        stats_list = [
+            {
+                "query": query,
+                **stats
+            }
+            for query, stats in self.query_stats.items()
+        ]
 
-        return {
-            "total_queries": sum(s["count"] for s in self.query_stats.values()),
-            "unique_queries": len(self.query_stats),
-            "total_time_ms": sum(s["total_time"] for s in self.query_stats.values()),
-            "slowest_queries": sorted_stats[:10]
-        }
+        # Sort by total duration (descending)
+        stats_list.sort(key=lambda x: x["total_duration_ms"], reverse=True)
+        return stats_list[:top_n]
 
-
-# Global monitor instance
-query_monitor = QueryPerformanceMonitor()
-
-
-def monitor_query(func):
-    """Decorator to monitor query performance"""
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        start_time = time.time()
-        try:
-            result = await func(*args, **kwargs)
-            duration_ms = (time.time() - start_time) * 1000
-
-            # Try to extract query from args/kwargs
-            query = "unknown"
-            if len(args) > 1 and hasattr(args[1], 'statement'):
-                query = str(args[1].statement)
-
-            await query_monitor.log_query(query, duration_ms)
-
-            return result
-        except Exception as e:
-            duration_ms = (time.time() - start_time) * 1000
-            logger.error(f"Query failed after {duration_ms:.2f}ms: {e}")
-            raise
-    return wrapper
+    def reset_stats(self):
+        """Reset all query statistics."""
+        self.slow_queries.clear()
+        self.query_stats.clear()
 
 
 class QueryCache:
-    """
-    Query result caching with Redis
+    """Redis-based query result caching."""
 
-    Caches database query results to reduce database load.
-    """
+    def __init__(self):
+        self.redis_client: Optional[redis.Redis] = None
+        self.default_ttl = 300  # 5 minutes default TTL
 
-    def __init__(self, default_ttl: int = 300):
-        """
-        Initialize query cache
+    async def connect(self):
+        """Connect to Redis."""
+        if not self.redis_client:
+            self.redis_client = await redis.from_url(
+                settings.REDIS_URL,
+                encoding="utf-8",
+                decode_responses=False
+            )
 
-        Args:
-            default_ttl: Default TTL in seconds (5 minutes)
-        """
-        self.default_ttl = default_ttl
-        self.cache_hits = 0
-        self.cache_misses = 0
-
-    def _generate_cache_key(self, prefix: str, *args, **kwargs) -> str:
-        """Generate cache key from function arguments"""
-        # Create deterministic string from args/kwargs
-        key_data = {
-            "prefix": prefix,
-            "args": str(args),
-            "kwargs": sorted(kwargs.items())
-        }
-        key_string = json.dumps(key_data, sort_keys=True)
-        key_hash = hashlib.md5(key_string.encode()).hexdigest()
-
-        return f"qcache:{prefix}:{key_hash}"
+    async def disconnect(self):
+        """Disconnect from Redis."""
+        if self.redis_client:
+            await self.redis_client.close()
+            self.redis_client = None
 
     async def get(self, key: str) -> Optional[Any]:
-        """Get cached value"""
-        redis = await get_redis()
+        """Get cached value."""
+        await self.connect()
         try:
-            value = await redis.get(key)
+            value = await self.redis_client.get(key)
             if value:
-                self.cache_hits += 1
                 return json.loads(value)
-            else:
-                self.cache_misses += 1
-                return None
+            return None
         except Exception as e:
-            logger.error(f"Cache get error: {e}")
+            print(f"Cache get error: {e}")
             return None
 
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
-        """Set cached value"""
-        redis = await get_redis()
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[int] = None
+    ):
+        """Set cached value with TTL."""
+        await self.connect()
         try:
             ttl = ttl or self.default_ttl
-            await redis.setex(
-                key,
-                ttl,
-                json.dumps(value, default=str)  # default=str for datetime, UUID, etc.
-            )
+            serialized = json.dumps(value, default=str)
+            await self.redis_client.setex(key, ttl, serialized)
         except Exception as e:
-            logger.error(f"Cache set error: {e}")
+            print(f"Cache set error: {e}")
 
     async def delete(self, key: str):
-        """Delete cached value"""
-        redis = await get_redis()
+        """Delete cached value."""
+        await self.connect()
         try:
-            await redis.delete(key)
+            await self.redis_client.delete(key)
         except Exception as e:
-            logger.error(f"Cache delete error: {e}")
+            print(f"Cache delete error: {e}")
 
-    async def invalidate_pattern(self, pattern: str):
-        """Invalidate all keys matching pattern"""
-        redis = await get_redis()
+    async def delete_pattern(self, pattern: str):
+        """Delete all keys matching pattern."""
+        await self.connect()
         try:
-            keys = await redis.keys(pattern)
-            if keys:
-                await redis.delete(*keys)
-                logger.info(f"Invalidated {len(keys)} cache keys matching {pattern}")
+            cursor = 0
+            while True:
+                cursor, keys = await self.redis_client.scan(
+                    cursor=cursor,
+                    match=pattern,
+                    count=100
+                )
+                if keys:
+                    await self.redis_client.delete(*keys)
+                if cursor == 0:
+                    break
         except Exception as e:
-            logger.error(f"Cache invalidate error: {e}")
+            print(f"Cache delete pattern error: {e}")
 
-    def get_cache_stats(self) -> Dict:
-        """Get cache statistics"""
-        total = self.cache_hits + self.cache_misses
-        hit_rate = (self.cache_hits / total * 100) if total > 0 else 0
+    async def get_stats(self) -> Dict:
+        """Get cache statistics."""
+        await self.connect()
+        try:
+            info = await self.redis_client.info("stats")
+            return {
+                "total_commands_processed": info.get("total_commands_processed", 0),
+                "keyspace_hits": info.get("keyspace_hits", 0),
+                "keyspace_misses": info.get("keyspace_misses", 0),
+                "hit_rate": self._calculate_hit_rate(
+                    info.get("keyspace_hits", 0),
+                    info.get("keyspace_misses", 0)
+                ),
+                "connected_clients": info.get("connected_clients", 0),
+                "used_memory_human": (await self.redis_client.info("memory")).get("used_memory_human", "0"),
+            }
+        except Exception as e:
+            print(f"Cache stats error: {e}")
+            return {}
 
-        return {
-            "cache_hits": self.cache_hits,
-            "cache_misses": self.cache_misses,
-            "total_requests": total,
-            "hit_rate_percent": round(hit_rate, 2)
-        }
+    def _calculate_hit_rate(self, hits: int, misses: int) -> float:
+        """Calculate cache hit rate percentage."""
+        total = hits + misses
+        if total == 0:
+            return 0.0
+        return (hits / total) * 100
+
+    def _generate_cache_key(self, prefix: str, *args, **kwargs) -> str:
+        """Generate cache key from function arguments."""
+        # Create a stable hash from arguments
+        arg_str = json.dumps({
+            "args": [str(arg) for arg in args],
+            "kwargs": {k: str(v) for k, v in sorted(kwargs.items())}
+        }, sort_keys=True)
+
+        arg_hash = hashlib.md5(arg_str.encode()).hexdigest()[:16]
+        return f"query_cache:{prefix}:{arg_hash}"
 
 
-# Global cache instance
+# Global instances
+query_monitor = QueryPerformanceMonitor()
 query_cache = QueryCache()
 
 
+def monitor_query(func: Callable) -> Callable:
+    """Decorator to monitor query performance."""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Log query performance
+        await query_monitor.log_query(
+            query=func.__name__,
+            duration_ms=duration_ms,
+            params={"args": len(args), "kwargs": list(kwargs.keys())}
+        )
+
+        return result
+    return wrapper
+
+
 def cached_query(prefix: str, ttl: Optional[int] = None):
-    """
-    Decorator to cache query results
-
-    Args:
-        prefix: Cache key prefix
-        ttl: Time to live in seconds
-
-    Example:
-        @cached_query("user_files", ttl=300)
-        async def get_user_files(db, user_id):
-            ...
-    """
-    def decorator(func: Callable):
+    """Decorator to cache query results."""
+    def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(*args, **kwargs):
             # Generate cache key
@@ -245,14 +262,12 @@ def cached_query(prefix: str, ttl: Optional[int] = None):
             # Try to get from cache
             cached_result = await query_cache.get(cache_key)
             if cached_result is not None:
-                logger.debug(f"Cache HIT: {cache_key}")
                 return cached_result
 
-            # Cache miss - execute query
-            logger.debug(f"Cache MISS: {cache_key}")
+            # Execute query
             result = await func(*args, **kwargs)
 
-            # Store in cache
+            # Cache result
             await query_cache.set(cache_key, result, ttl)
 
             return result
@@ -261,105 +276,127 @@ def cached_query(prefix: str, ttl: Optional[int] = None):
 
 
 class IndexRecommender:
-    """Analyze queries and recommend indexes"""
+    """Analyze queries and recommend database indexes."""
 
-    def __init__(self):
-        self.analyzed_queries = []
+    async def get_missing_indexes(self, db: AsyncSession) -> List[Dict]:
+        """Analyze database and recommend missing indexes."""
 
-    async def analyze_query(self, db: AsyncSession, query: str) -> Dict:
-        """
-        Analyze a query and check if it needs indexes
-
-        Returns query execution plan and recommendations
-        """
-        try:
-            # Get query execution plan
-            explain_query = f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}"
-            result = await db.execute(text(explain_query))
-            plan = result.scalar()
-
-            # Parse plan to find sequential scans
-            recommendations = []
-
-            if "Seq Scan" in str(plan):
-                recommendations.append({
-                    "type": "index",
-                    "reason": "Sequential scan detected - consider adding index",
-                    "query": query[:200]
-                })
-
-            return {
-                "query": query,
-                "execution_plan": plan,
-                "recommendations": recommendations
-            }
-
-        except Exception as e:
-            logger.error(f"Query analysis failed: {e}")
-            return {
-                "query": query,
-                "error": str(e)
-            }
-
-    async def get_missing_indexes(self, db: AsyncSession) -> List[str]:
-        """
-        Analyze database and suggest missing indexes
-
-        Returns list of CREATE INDEX statements
-        """
         recommendations = []
 
-        # Common patterns that need indexes
-        index_suggestions = [
-            # User-related queries
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_objects_user_created ON objects(user_id, created_at DESC)",
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_objects_user_size ON objects(user_id, file_size DESC)",
+        # Check files table
+        files_indexes = await self._check_table_indexes(db, "files")
+        recommendations.extend(files_indexes)
 
-            # File search
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_objects_filename_trgm ON objects USING gin(file_name gin_trgm_ops)",
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_objects_mime_type ON objects(mime_type)",
+        # Check folders table
+        folders_indexes = await self._check_table_indexes(db, "folders")
+        recommendations.extend(folders_indexes)
 
-            # Activity logs
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_activity_user_time ON activity_logs(user_id, timestamp DESC)",
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_activity_action_time ON activity_logs(action, timestamp DESC)",
+        # Check users table
+        users_indexes = await self._check_table_indexes(db, "users")
+        recommendations.extend(users_indexes)
 
-            # Audit logs
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_user_category ON audit_logs(user_id, event_category, timestamp DESC)",
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_resource ON audit_logs(resource_type, resource_id, timestamp DESC)",
-
-            # Favorites
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_favorites_user_created ON favorites(user_id, created_at DESC)",
-
-            # Share links
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_share_links_token ON share_links(share_token)",
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_share_links_expires ON share_links(expires_at) WHERE expires_at IS NOT NULL"
-        ]
-
-        # Check which indexes already exist
-        existing_indexes_query = """
-            SELECT indexname
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-        """
-
-        result = await db.execute(text(existing_indexes_query))
-        existing_indexes = {row[0] for row in result.fetchall()}
-
-        # Filter out existing indexes
-        for suggestion in index_suggestions:
-            index_name = suggestion.split("IF NOT EXISTS")[1].split("ON")[0].strip()
-            if index_name not in existing_indexes:
-                recommendations.append(suggestion)
+        # Check audit_logs table
+        audit_indexes = await self._check_table_indexes(db, "audit_logs")
+        recommendations.extend(audit_indexes)
 
         return recommendations
 
+    async def _check_table_indexes(
+        self,
+        db: AsyncSession,
+        table_name: str
+    ) -> List[Dict]:
+        """Check for missing indexes on a specific table."""
+
+        recommendations = []
+
+        # Get existing indexes
+        result = await db.execute(text(f"""
+            SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE tablename = '{table_name}'
+        """))
+        existing_indexes = {row[0]: row[1] for row in result}
+
+        # Define recommended indexes per table
+        recommended_indexes = self._get_recommended_indexes(table_name)
+
+        for index_name, index_def in recommended_indexes.items():
+            if index_name not in existing_indexes:
+                recommendations.append({
+                    "table": table_name,
+                    "index_name": index_name,
+                    "index_definition": index_def,
+                    "reason": self._get_index_reason(table_name, index_name)
+                })
+
+        return recommendations
+
+    def _get_recommended_indexes(self, table_name: str) -> Dict[str, str]:
+        """Get recommended indexes for a table."""
+
+        indexes = {
+            "files": {
+                "idx_files_owner_deleted": "CREATE INDEX idx_files_owner_deleted ON files(owner_id) WHERE deleted_at IS NULL",
+                "idx_files_folder_deleted": "CREATE INDEX idx_files_folder_deleted ON files(folder_id) WHERE deleted_at IS NULL",
+                "idx_files_created_at": "CREATE INDEX idx_files_created_at ON files(created_at DESC)",
+                "idx_files_size": "CREATE INDEX idx_files_size ON files(size)",
+                "idx_files_file_type": "CREATE INDEX idx_files_file_type ON files(file_type)",
+                "idx_files_name_trgm": "CREATE INDEX idx_files_name_trgm ON files USING gin(name gin_trgm_ops)",
+            },
+            "folders": {
+                "idx_folders_owner_deleted": "CREATE INDEX idx_folders_owner_deleted ON folders(owner_id) WHERE deleted_at IS NULL",
+                "idx_folders_parent_deleted": "CREATE INDEX idx_folders_parent_deleted ON folders(parent_id) WHERE deleted_at IS NULL",
+                "idx_folders_path": "CREATE INDEX idx_folders_path ON folders(path)",
+                "idx_folders_name_trgm": "CREATE INDEX idx_folders_name_trgm ON folders USING gin(name gin_trgm_ops)",
+            },
+            "users": {
+                "idx_users_email_lower": "CREATE INDEX idx_users_email_lower ON users(LOWER(email))",
+                "idx_users_created_at": "CREATE INDEX idx_users_created_at ON users(created_at DESC)",
+            },
+            "audit_logs": {
+                "idx_audit_user_timestamp": "CREATE INDEX idx_audit_user_timestamp ON audit_logs(user_id, timestamp DESC)",
+                "idx_audit_event_type": "CREATE INDEX idx_audit_event_type ON audit_logs(event_type)",
+                "idx_audit_timestamp": "CREATE INDEX idx_audit_timestamp ON audit_logs(timestamp DESC)",
+                "idx_audit_resource": "CREATE INDEX idx_audit_resource ON audit_logs(resource_type, resource_id)",
+            },
+            "share_links": {
+                "idx_share_links_token": "CREATE UNIQUE INDEX idx_share_links_token ON share_links(token)",
+                "idx_share_links_file_id": "CREATE INDEX idx_share_links_file_id ON share_links(file_id)",
+            },
+        }
+
+        return indexes.get(table_name, {})
+
+    def _get_index_reason(self, table_name: str, index_name: str) -> str:
+        """Get the reason for recommending an index."""
+
+        reasons = {
+            "idx_files_owner_deleted": "Optimize queries filtering by owner and non-deleted files",
+            "idx_files_folder_deleted": "Optimize queries filtering by folder and non-deleted files",
+            "idx_files_created_at": "Optimize sorting by creation date",
+            "idx_files_size": "Optimize sorting/filtering by file size",
+            "idx_files_file_type": "Optimize filtering by file type",
+            "idx_files_name_trgm": "Enable fast full-text search on file names",
+            "idx_folders_owner_deleted": "Optimize queries filtering by owner and non-deleted folders",
+            "idx_folders_parent_deleted": "Optimize queries filtering by parent and non-deleted folders",
+            "idx_folders_path": "Optimize path-based lookups",
+            "idx_folders_name_trgm": "Enable fast full-text search on folder names",
+            "idx_users_email_lower": "Optimize case-insensitive email lookups",
+            "idx_users_created_at": "Optimize sorting by user creation date",
+            "idx_audit_user_timestamp": "Optimize user activity queries",
+            "idx_audit_event_type": "Optimize filtering by event type",
+            "idx_audit_timestamp": "Optimize time-based queries",
+            "idx_audit_resource": "Optimize resource-specific audit queries",
+            "idx_share_links_token": "Fast token-based share link lookups",
+            "idx_share_links_file_id": "Optimize file-based share link queries",
+        }
+
+        return reasons.get(index_name, "Improve query performance")
+
 
 class PerformanceOptimizer:
-    """
-    Main performance optimization service
-
-    Combines query monitoring, caching, and index recommendations.
-    """
+    """Main performance optimization service."""
 
     def __init__(self):
         self.query_monitor = query_monitor
@@ -367,95 +404,151 @@ class PerformanceOptimizer:
         self.index_recommender = IndexRecommender()
 
     async def get_performance_report(self, db: AsyncSession) -> Dict:
-        """Generate comprehensive performance report"""
-        # Query statistics
-        query_stats = self.query_monitor.get_query_statistics()
+        """Generate comprehensive performance report."""
 
-        # Cache statistics
-        cache_stats = self.query_cache.get_cache_stats()
+        # Get query statistics
+        query_stats = self.query_monitor.get_query_stats(top_n=20)
+        slow_queries = self.query_monitor.get_slow_queries(limit=50)
 
-        # Index recommendations
+        # Get cache statistics
+        cache_stats = await self.query_cache.get_stats()
+
+        # Get index recommendations
         index_recommendations = await self.index_recommender.get_missing_indexes(db)
 
-        # Slow queries
-        slow_queries = self.query_monitor.get_slow_queries(limit=10)
+        # Get database statistics
+        db_stats = await self._get_database_stats(db)
 
         return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "query_statistics": query_stats,
-            "cache_statistics": cache_stats,
+            "generated_at": datetime.utcnow().isoformat(),
+            "summary": {
+                "total_queries_monitored": sum(s["count"] for s in query_stats),
+                "slow_queries_detected": len(slow_queries),
+                "cache_hit_rate": cache_stats.get("hit_rate", 0),
+                "missing_indexes": len(index_recommendations),
+                "database_size": db_stats.get("database_size", "unknown"),
+            },
+            "top_queries": query_stats,
             "slow_queries": slow_queries,
+            "cache_stats": cache_stats,
             "index_recommendations": index_recommendations,
-            "performance_summary": {
-                "total_queries": query_stats.get("total_queries", 0),
-                "cache_hit_rate": cache_stats["hit_rate_percent"],
-                "slow_query_count": len(slow_queries),
-                "recommended_indexes": len(index_recommendations)
-            }
+            "database_stats": db_stats,
         }
 
-    async def optimize_table(self, db: AsyncSession, table_name: str):
-        """
-        Optimize a specific table
+    async def _get_database_stats(self, db: AsyncSession) -> Dict:
+        """Get database statistics."""
 
-        Runs VACUUM ANALYZE to update statistics and reclaim space
-        """
         try:
-            await db.execute(text(f"VACUUM ANALYZE {table_name}"))
-            logger.info(f"Optimized table: {table_name}")
+            # Database size
+            result = await db.execute(text("""
+                SELECT pg_size_pretty(pg_database_size(current_database())) as size
+            """))
+            db_size = result.scalar()
+
+            # Table sizes
+            result = await db.execute(text("""
+                SELECT
+                    schemaname,
+                    tablename,
+                    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+                    pg_total_relation_size(schemaname||'.'||tablename) AS bytes
+                FROM pg_tables
+                WHERE schemaname = 'public'
+                ORDER BY bytes DESC
+                LIMIT 10
+            """))
+            tables = [
+                {
+                    "schema": row[0],
+                    "table": row[1],
+                    "size": row[2],
+                    "bytes": row[3]
+                }
+                for row in result
+            ]
+
+            # Connection count
+            result = await db.execute(text("""
+                SELECT count(*) FROM pg_stat_activity
+            """))
+            connection_count = result.scalar()
+
+            return {
+                "database_size": db_size,
+                "largest_tables": tables,
+                "active_connections": connection_count,
+            }
         except Exception as e:
-            logger.error(f"Failed to optimize table {table_name}: {e}")
+            print(f"Error getting database stats: {e}")
+            return {}
 
     async def create_recommended_indexes(
         self,
         db: AsyncSession,
         execute: bool = False
     ) -> Dict:
-        """
-        Create recommended indexes
+        """Create recommended indexes."""
 
-        Args:
-            db: Database session
-            execute: If True, actually create indexes. If False, just return statements.
-
-        Returns:
-            Dict with index creation results
-        """
         recommendations = await self.index_recommender.get_missing_indexes(db)
 
+        results = {
+            "total_recommendations": len(recommendations),
+            "created": [],
+            "failed": [],
+            "skipped": []
+        }
+
         if not execute:
-            return {
-                "mode": "dry_run",
-                "index_count": len(recommendations),
-                "statements": recommendations
-            }
+            results["skipped"] = recommendations
+            results["message"] = "Dry run - set execute=True to create indexes"
+            return results
 
-        # Execute index creation
-        created = []
-        failed = []
+        # Enable pg_trgm extension for trigram indexes
+        try:
+            await db.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            await db.commit()
+        except Exception as e:
+            print(f"Warning: Could not create pg_trgm extension: {e}")
 
-        for statement in recommendations:
+        for recommendation in recommendations:
             try:
-                await db.execute(text(statement))
+                await db.execute(text(recommendation["index_definition"]))
                 await db.commit()
-                created.append(statement)
-                logger.info(f"Created index: {statement}")
+                results["created"].append(recommendation)
             except Exception as e:
-                failed.append({
-                    "statement": statement,
+                await db.rollback()
+                results["failed"].append({
+                    **recommendation,
                     "error": str(e)
                 })
-                logger.error(f"Failed to create index: {e}")
 
+        return results
+
+    async def clear_cache(self, pattern: str = "*") -> Dict:
+        """Clear cache entries matching pattern."""
+
+        try:
+            await self.query_cache.delete_pattern(f"query_cache:{pattern}")
+            return {
+                "success": True,
+                "pattern": pattern,
+                "message": f"Cleared cache entries matching: {pattern}"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "pattern": pattern,
+                "error": str(e)
+            }
+
+    def reset_query_stats(self):
+        """Reset query performance statistics."""
+        self.query_monitor.reset_stats()
         return {
-            "mode": "execute",
-            "total_recommendations": len(recommendations),
-            "created": len(created),
-            "failed": len(failed),
-            "created_statements": created,
-            "failed_statements": failed
+            "success": True,
+            "message": "Query statistics reset"
         }
 
 
-# Global optimizer instance
+# Global performance optimizer instance
 performance_optimizer = PerformanceOptimizer()

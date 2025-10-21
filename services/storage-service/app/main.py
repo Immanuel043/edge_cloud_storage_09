@@ -13,7 +13,7 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations, favorites, oauth, gdpr, audit
+from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations, favorites, oauth, gdpr, audit, performance
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
@@ -224,6 +224,7 @@ app.include_router(favorites.router)
 app.include_router(oauth.router)
 app.include_router(gdpr.router)
 app.include_router(audit.router)
+app.include_router(performance.router)
 
 
 # Helper functions
