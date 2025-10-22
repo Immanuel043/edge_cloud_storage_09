@@ -56,6 +56,7 @@ class Object(Base):
     backup_status = Column(String(20), default="pending")
     backup_location = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_accessed = Column(DateTime, default=datetime.utcnow)
     storage_type = Column(String(30), default="chunked")
     storage_key = Column(Text)

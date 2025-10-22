@@ -68,7 +68,7 @@ async def get_recent_files(
             updated_at=file.updated_at,
             last_accessed=file.last_accessed,
             tier=file.storage_tier,
-            path=file.path or '/',
+            path=file.object_path or '/',
             is_favorite=await _is_favorite(db, current_user.id, file.id)
         )
         for file in files
@@ -108,7 +108,7 @@ async def get_favorites(
             updated_at=file.updated_at,
             last_accessed=file.last_accessed,
             tier=file.storage_tier,
-            path=file.path or '/',
+            path=file.object_path or '/',
             is_favorite=True,
             favorited_at=favorited_at
         )

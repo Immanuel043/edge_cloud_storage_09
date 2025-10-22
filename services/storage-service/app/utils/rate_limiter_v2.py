@@ -62,7 +62,7 @@ class RateLimitConfig:
     OAUTH_CALLBACK = {"times": 20, "minutes": 1}
 
 
-def get_user_identifier(request: Request) -> str:
+async def get_user_identifier(request: Request) -> str:
     """
     Extract user identifier for rate limiting.
 

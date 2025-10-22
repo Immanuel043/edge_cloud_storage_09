@@ -741,7 +741,7 @@ async def download_file(
             for i in range(0, len(file_data), chunk_size):
                 yield file_data[i:i+chunk_size]
         
-        else:  # chunked
+        else:  # chunked, content_addressed, deduplicated_reference
             # Stream chunks sequentially
             chunk_info = file_obj.chunk_info
             upload_id = chunk_info.get("upload_id", str(file_obj.id))
@@ -894,13 +894,13 @@ async def run_security_scans(
             if storage_strategy == "inline":
                 # Decrypt inline data
                 encrypted_data = base64.b64decode(file_obj.storage_key)
-                file_data = encryption_service.decrypt(encrypted_data, file_obj.encryption_key)
+                file_data = encryption_service.decrypt_data(encrypted_data, file_obj.encryption_key)
             elif storage_strategy == "single":
                 # Read from file
                 if file_obj.object_path and os.path.exists(file_obj.object_path):
                     async with aiofiles.open(file_obj.object_path, 'rb') as f:
                         encrypted_data = await f.read()
-                    file_data = encryption_service.decrypt(encrypted_data, file_obj.encryption_key)
+                    file_data = encryption_service.decrypt_data(encrypted_data, file_obj.encryption_key)
             elif storage_strategy == "chunked":
                 # For chunked files, reassemble chunks
                 # Skip scanning very large chunked files to avoid memory issues

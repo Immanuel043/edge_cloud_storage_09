@@ -73,20 +73,28 @@ async def get_storage_stats(
         type_distribution[storage_type] = {"count": count, "size": size}
     
     # Optionally update the user's storage_used field for caching
-    if abs(current_user.storage_used - total_used) > 1024:  # Only update if difference > 1KB
+    current_storage_used = current_user.storage_used or 0
+    if abs(current_storage_used - total_used) > 1024:  # Only update if difference > 1KB
         current_user.storage_used = total_used
         await db.commit()
     
+    # Ensure quota and used are not None
+    quota = current_user.storage_quota or 0
+    used = int(total_used) if total_used else 0
+    available = max(0, quota - used)
+
+    # Calculate percentage safely
+    if quota > 0:
+        percentage_used = round((used / quota) * 100, 2)
+    else:
+        percentage_used = 0.0
+
     return StorageStats(
-        quota=current_user.storage_quota,
-        used=total_used,
-        available=max(0, current_user.storage_quota - total_used),
-        percentage_used=(
-            (total_used / current_user.storage_quota * 100)
-            if current_user.storage_quota > 0
-            else 0
-        ),
-        total_files=total_files,
+        quota=quota,
+        used=used,
+        available=available,
+        percentage_used=percentage_used,
+        total_files=int(total_files) if total_files else 0,
         distribution=distribution,
         type_distribution=type_distribution
     )
@@ -324,13 +332,17 @@ async def get_user_profile(
     current_user: User = Depends(get_current_user),
 ):
     """Get current user profile"""
+    # Ensure storage values are never None
+    storage_quota = current_user.storage_quota or 107374182400  # Default 100GB
+    storage_used = current_user.storage_used or 0
+
     return {
         "id": str(current_user.id),
         "email": current_user.email,
         "username": current_user.username,
         "user_type": current_user.user_type,
-        "storage_quota": current_user.storage_quota,
-        "storage_used": current_user.storage_used,
+        "storage_quota": storage_quota,
+        "storage_used": storage_used,
         "theme": current_user.theme_preference,
         "created_at": current_user.created_at.isoformat(),
     }

@@ -11,7 +11,7 @@ from datetime import datetime
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
-from ..models.database import User, Object, ActivityLog
+from ..models.database import User, Object, ActivityLog, Favorite
 from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
@@ -84,6 +84,18 @@ async def list_files(
     result = await db.execute(query)
     files = result.scalars().all()
 
+    # Get all file IDs for favorite check
+    file_ids = [f.id for f in files]
+
+    # Batch query for favorites
+    favorites_result = await db.execute(
+        select(Favorite.file_id).filter(
+            Favorite.user_id == current_user.id,
+            Favorite.file_id.in_(file_ids)
+        )
+    )
+    favorite_file_ids = set(favorites_result.scalars().all())
+
     return [
         FileResponse(
             id=str(f.id),
@@ -95,6 +107,9 @@ async def list_files(
             backup_status=f.backup_status,
             created_at=f.created_at,
             last_accessed=f.last_accessed,
+            updated_at=f.updated_at,
+            path=f.object_path,
+            is_favorite=(f.id in favorite_file_ids),
         )
         for f in files
     ]
@@ -405,8 +420,15 @@ async def download_file(
                 media_type=mime_type
             )
     
-    # CHUNKED STORAGE
-    elif file_obj.storage_type == "chunked":
+    # CHUNKED STORAGE (includes content_addressed and deduplicated_reference from deduplication)
+    elif file_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
+        # Validate that chunk_info exists
+        if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="File deduplication is incomplete. Please re-upload the file."
+            )
+
         if parsed_range:
             start, end = parsed_range
             content_length = end - start + 1

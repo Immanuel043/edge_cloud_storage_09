@@ -182,7 +182,7 @@ class StorageAnalyzerService:
         accessed_once_size = 0
 
         for file in files:
-            access_count = file.access_count or 0
+            access_count = getattr(file, 'access_count', 0) or 0
             total_accesses += access_count
 
             if access_count == 0:
@@ -248,7 +248,7 @@ class StorageAnalyzerService:
 
         for file in files:
             # Skip if already compressed
-            if file.is_compressed:
+            if getattr(file, 'is_compressed', False):
                 continue
 
             # Check if mime type is compressible
@@ -302,12 +302,12 @@ class StorageAnalyzerService:
                 continue
 
             # Check if not accessed recently
-            last_accessed = file.last_accessed_at or file.created_at
+            last_accessed = file.last_accessed or file.created_at
             if not last_accessed or last_accessed >= threshold_date:
                 continue
 
             # Check access count
-            if (file.access_count or 0) > 5:
+            if (getattr(file, 'access_count', 0) or 0) > 5:
                 continue  # Frequently accessed, keep in warm/cache
 
             # Check size (only migrate larger files)
@@ -338,12 +338,13 @@ class StorageAnalyzerService:
         # Group files by hash
         hash_groups = {}
         for file in files:
-            if not file.file_hash:
+            content_hash = file.content_hash
+            if not content_hash:
                 continue
 
-            if file.file_hash not in hash_groups:
-                hash_groups[file.file_hash] = []
-            hash_groups[file.file_hash].append(file)
+            if content_hash not in hash_groups:
+                hash_groups[content_hash] = []
+            hash_groups[content_hash].append(file)
 
         # Count duplicates
         duplicate_files = 0
@@ -382,13 +383,13 @@ class StorageAnalyzerService:
                     Object.user_id == user_id,
                     Object.storage_tier.in_(['cache', 'warm']),
                     or_(
-                        Object.last_accessed_at < threshold_date,
+                        Object.last_accessed < threshold_date,
                         and_(
-                            Object.last_accessed_at.is_(None),
+                            Object.last_accessed.is_(None),
                             Object.created_at < threshold_date
                         )
                     ),
-                    Object.access_count <= 5,
+                    # Object.access_count <= 5,  # Commented out - access_count not in Object model
                     Object.file_size >= 1024 * 1024  # 1MB
                 )
             )
@@ -416,7 +417,7 @@ class StorageAnalyzerService:
             .where(
                 and_(
                     Object.user_id == user_id,
-                    Object.is_compressed == False,
+                    # Object.is_compressed == False,  # Commented out - is_compressed not in Object model
                     or_(*mime_filters)
                 )
             )
