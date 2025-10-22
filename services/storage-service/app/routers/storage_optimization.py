@@ -8,7 +8,7 @@ API endpoints for storage optimization:
 - Get optimization summary
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from typing import List, Optional
@@ -17,9 +17,8 @@ import logging
 
 from ..dependencies import get_db, get_current_user
 from ..models.database import (
-    User, StorageAnalysis, OptimizationSuggestion, OptimizationAction
-)
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+    User, StorageAnalysis, OptimizationSuggestion, OptimizationAction)
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..models.schemas import (
     StorageAnalysisResponse,
     OptimizationSuggestionResponse,
@@ -37,8 +36,7 @@ router = APIRouter(prefix="/api/v1/storage/optimization", tags=["storage-optimiz
 logger = logging.getLogger(__name__)
 
 
-@router.get("/analysis", response_model=StorageAnalysisResponse)
-@user_limiter.limit(RateLimitConfig.ML_ANALYSIS)
+@router.get("/analysis", response_model=StorageAnalysisResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_ANALYSIS))])
 async def get_storage_analysis(
     request: Request,
     current_user: User = Depends(get_current_user),

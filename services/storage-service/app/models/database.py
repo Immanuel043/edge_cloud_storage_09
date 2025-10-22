@@ -365,55 +365,6 @@ class DLPScanLog(Base):
     )
 
 
-class AuditLog(Base):
-    """Comprehensive audit logging for all user actions"""
-    __tablename__ = 'audit_logs'
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
-
-    # Action details
-    action = Column(String(100), nullable=False)  # e.g., 'file.upload', 'file.delete', 'user.login'
-    resource_type = Column(String(50), nullable=True)  # 'file', 'folder', 'user', 'share'
-    resource_id = Column(UUID(as_uuid=True), nullable=True)  # ID of affected resource
-    resource_name = Column(String(500), nullable=True)  # Name for easy reference
-
-    # Request context
-    ip_address = Column(String(45), nullable=True)  # IPv4 or IPv6
-    user_agent = Column(Text, nullable=True)
-    request_method = Column(String(10), nullable=True)  # GET, POST, PUT, DELETE
-    request_path = Column(String(500), nullable=True)
-
-    # Result
-    status = Column(String(20), nullable=False)  # 'success', 'failure', 'blocked'
-    status_code = Column(Integer, nullable=True)  # HTTP status code
-    error_message = Column(Text, nullable=True)
-
-    # Additional context data (JSON)
-    context_data = Column(Text, nullable=True)  # JSON: extra context like file size, permissions, etc.
-
-    # Timestamp
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    # Security flags
-    is_suspicious = Column(Boolean, default=False)  # Flag suspicious activity
-    risk_level = Column(String(20), default='low')  # 'low', 'medium', 'high', 'critical'
-
-    # Relationships
-    user = relationship('User', backref='audit_logs')
-
-    __table_args__ = (
-        Index('idx_audit_user_id', 'user_id'),
-        Index('idx_audit_action', 'action'),
-        Index('idx_audit_resource_type', 'resource_type'),
-        Index('idx_audit_resource_id', 'resource_id'),
-        Index('idx_audit_created_at', 'created_at'),
-        Index('idx_audit_status', 'status'),
-        Index('idx_audit_is_suspicious', 'is_suspicious'),
-        Index('idx_audit_ip_address', 'ip_address'),
-    )
-
-
 class URLUploadJob(Base):
     """URL upload job tracking for server-side downloads"""
     __tablename__ = 'url_upload_jobs'
@@ -1128,9 +1079,9 @@ class EncryptionKeyVersion(Base):
     # Usage statistics
     objects_encrypted = Column(BigInteger, default=0)  # Number of objects encrypted with this key
     last_used_at = Column(DateTime(timezone=True))
-    
+
     # Metadata
-    metadata = Column(JSONB)
+    key_metadata = Column(JSONB)
     
     __table_args__ = (
         Index('idx_key_version_status', 'version', 'status'),
@@ -1171,7 +1122,7 @@ class KeyRotationHistory(Base):
     
     # Metadata
     reason = Column(Text)
-    metadata = Column(JSONB)
+    rotation_metadata = Column(JSONB)
     
     __table_args__ = (
         Index('idx_rotation_status', 'status'),
@@ -1214,9 +1165,9 @@ class DataReencryptionQueue(Base):
     max_retries = Column(Integer, default=3)
     last_error = Column(Text)
     error_metadata = Column(JSONB)
-    
+
     # Metadata
-    metadata = Column(JSONB)
+    queue_metadata = Column(JSONB)
     
     __table_args__ = (
         Index('idx_reencrypt_status', 'status'),
@@ -1280,7 +1231,7 @@ class AuditLog(Base):
     
     # Additional data
     details = Column(JSONB)  # Detailed event data
-    metadata = Column(JSONB)  # Extra metadata
+    audit_metadata = Column(JSONB)  # Extra metadata
     
     # Compliance flags
     is_compliance_relevant = Column(Boolean, default=False)  # GDPR, SOC2, etc.
@@ -1345,9 +1296,9 @@ class SecurityAlert(Base):
     
     # Actions taken
     actions_taken = Column(JSONB)  # [{action: "user_suspended", timestamp: ...}]
-    
+
     # Metadata
-    metadata = Column(JSONB)
+    alert_metadata = Column(JSONB)
     
     __table_args__ = (
         Index('idx_alert_status_severity', 'status', 'severity'),
@@ -1391,9 +1342,9 @@ class ComplianceReport(Base):
     
     # File storage
     report_file_path = Column(String(1000))  # Path to PDF/CSV export
-    
+
     # Metadata
-    metadata = Column(JSONB)
+    report_metadata = Column(JSONB)
     
     __table_args__ = (
         Index('idx_report_type_period', 'report_type', 'report_period_start'),

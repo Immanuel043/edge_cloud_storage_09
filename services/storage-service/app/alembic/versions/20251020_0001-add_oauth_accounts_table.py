@@ -1,7 +1,7 @@
 """add_oauth_accounts_table
 
-Revision ID: oauth_accounts_001
-Revises: favorites_001
+Revision ID: 20251020_0001
+Revises: 20251020_0000
 Create Date: 2025-10-20
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = 'oauth_accounts_001'
-down_revision = 'favorites_001'
+revision = '20251020_0001'
+down_revision = '20251020_0000'
 branch_labels = None
 depends_on = None
 

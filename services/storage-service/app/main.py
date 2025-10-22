@@ -35,6 +35,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Redis connection failed: {e}")
 
+    # Initialize FastAPILimiter for rate limiting
+    try:
+        from fastapi_limiter import FastAPILimiter
+        from redis.asyncio import Redis as AsyncRedis
+
+        redis_client = await AsyncRedis.from_url(
+            settings.REDIS_URL,
+            encoding="utf-8",
+            decode_responses=True
+        )
+        await FastAPILimiter.init(redis_client)
+        print("FastAPILimiter initialized with Redis backend")
+    except Exception as e:
+        print(f"Failed to initialize FastAPILimiter: {e}")
+
     # Create storage directories
     try:
         await create_storage_directories()
@@ -91,7 +106,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down Edge Storage Service...")
-    
+
+    # Close FastAPILimiter
+    try:
+        from fastapi_limiter import FastAPILimiter
+        await FastAPILimiter.close()
+        print("FastAPILimiter closed")
+    except Exception as e:
+        print(f"Error closing FastAPILimiter: {e}")
+
     # Stop background services
     try:
         await background_dedup_service.stop()

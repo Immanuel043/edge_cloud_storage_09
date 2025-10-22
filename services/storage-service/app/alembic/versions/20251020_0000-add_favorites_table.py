@@ -1,7 +1,7 @@
 """add_favorites_table
 
-Revision ID: favorites_001
-Revises: content_recommendations_001
+Revision ID: 20251020_0000
+Revises: 20251018_0200b
 Create Date: 2025-10-20
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = 'favorites_001'
-down_revision = 'content_recommendations_001'
+revision = '20251020_0000'
+down_revision = '20251018_0200b'
 branch_labels = None
 depends_on = None
 

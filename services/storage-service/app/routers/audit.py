@@ -18,7 +18,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, func
@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from ..dependencies import get_db, get_current_user
 from ..models.database import User, AuditLog, SecurityAlert, ComplianceReport
 from ..services.audit_logging_service import audit_service, AuditEventType, AuditSeverity
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 import io
 import json
 import csv
@@ -76,8 +76,7 @@ class ComplianceReportRequest(BaseModel):
 
 # ===== Endpoints =====
 
-@router.post("/logs/query")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.post("/logs/query", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def query_audit_logs(
     request: Request,
     query: AuditLogQuery,
@@ -159,8 +158,7 @@ async def query_audit_logs(
     }
 
 
-@router.get("/logs/recent")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/logs/recent", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_recent_audit_logs(
     request: Request,
     limit: int = Query(50, ge=1, le=100),
@@ -197,8 +195,7 @@ async def get_recent_audit_logs(
     }
 
 
-@router.get("/logs/stats")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/logs/stats", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_audit_statistics(
     request: Request,
     days: int = Query(30, ge=1, le=365),
@@ -266,8 +263,7 @@ async def get_audit_statistics(
     }
 
 
-@router.post("/logs/export")
-@user_limiter.limit(RateLimitConfig.API_HEAVY)
+@router.post("/logs/export", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
 async def export_audit_logs(
     request: Request,
     query: AuditLogQuery,
@@ -379,8 +375,7 @@ async def export_audit_logs(
         )
 
 
-@router.get("/security/alerts")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/security/alerts", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_security_alerts(
     request: Request,
     status: Optional[str] = Query(None, regex="^(open|investigating|resolved|false_positive)$"),
@@ -433,8 +428,7 @@ async def get_security_alerts(
     }
 
 
-@router.post("/compliance/report")
-@user_limiter.limit(RateLimitConfig.API_HEAVY)
+@router.post("/compliance/report", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
 async def generate_compliance_report(
     request: Request,
     report_request: ComplianceReportRequest,
@@ -493,8 +487,7 @@ async def generate_compliance_report(
     }
 
 
-@router.get("/compliance/reports")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/compliance/reports", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def list_compliance_reports(
     request: Request,
     limit: int = Query(20, ge=1, le=100),

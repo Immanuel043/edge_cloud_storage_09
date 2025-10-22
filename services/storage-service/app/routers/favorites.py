@@ -1,6 +1,6 @@
 # services/storage-service/app/routers/favorites.py
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 from typing import List
@@ -9,13 +9,12 @@ from datetime import datetime, timedelta
 from ..dependencies import get_db, get_current_user
 from ..models.database import User, Object, Favorite
 from ..models.schemas import FileResponse
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 
 router = APIRouter(prefix="/api/v1", tags=["favorites"])
 
 
-@router.get("/files/recents", response_model=List[FileResponse])
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/files/recents", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_recent_files(
     request: Request,
     days: int = 30,
@@ -76,8 +75,7 @@ async def get_recent_files(
     ]
 
 
-@router.get("/files/favorites", response_model=List[FileResponse])
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/files/favorites", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_favorites(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -118,8 +116,7 @@ async def get_favorites(
     ]
 
 
-@router.post("/files/{file_id}/favorite")
-@user_limiter.limit(RateLimitConfig.API_WRITE)
+@router.post("/files/{file_id}/favorite", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
 async def toggle_favorite(
     file_id: str,
     request: Request,
@@ -184,8 +181,7 @@ async def toggle_favorite(
         }
 
 
-@router.delete("/files/{file_id}/favorite")
-@user_limiter.limit(RateLimitConfig.API_WRITE)
+@router.delete("/files/{file_id}/favorite", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
 async def remove_favorite(
     file_id: str,
     request: Request,

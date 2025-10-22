@@ -1,6 +1,6 @@
 # services/storage-service/app/routers/upload.py
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -21,7 +21,7 @@ from ..models.database import User, Object
 from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
 from ..config import settings
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from aiokafka import AIOKafkaProducer
 import aiofiles
 from ..utils.cache import cached
@@ -155,8 +155,7 @@ def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int
     
     return encrypted_chunk, original_hash
 
-@router.post("/init", response_model=UploadInitResponse)
-@user_limiter.limit(RateLimitConfig.FILE_UPLOAD)
+@router.post("/init", response_model=UploadInitResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def init_upload(
     request: Request,
     file_name: str,
@@ -234,8 +233,7 @@ async def init_upload(
         direct_upload=storage_strategy != "chunked"
     )
 
-@router.post("/chunk/{upload_id}")
-@user_limiter.limit(RateLimitConfig.FILE_UPLOAD)
+@router.post("/chunk/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def upload_chunk(
     upload_id: str,
     chunk_index: int,
@@ -310,8 +308,7 @@ async def upload_chunk(
         "compressed": use_compression,
     }
 
-@router.post("/direct/{upload_id}")
-@user_limiter.limit(RateLimitConfig.FILE_UPLOAD)
+@router.post("/direct/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def upload_direct(
     upload_id: str,
     request: Request,

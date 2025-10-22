@@ -114,7 +114,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
 
         # 9. Remove server header - Don't leak server information
-        response.headers.pop("Server", None)
+        if "Server" in response.headers:
+            del response.headers["Server"]
 
         # 10. Cache-Control for API responses (prevent caching sensitive data)
         if request.url.path.startswith("/api/"):

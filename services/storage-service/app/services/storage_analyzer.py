@@ -18,7 +18,7 @@ from uuid import UUID
 import time
 
 from ..models.database import (
-    User, Object, StorageAnalysis, ObjectVersion
+    User, Object, StorageAnalysis, FileVersion
 )
 
 logger = logging.getLogger(__name__)

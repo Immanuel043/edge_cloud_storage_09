@@ -36,25 +36,26 @@ def upgrade():
     # FILES TABLE INDEXES
     # ========================================
 
+    # NOTE: Commented out - deleted_at column doesn't exist yet
     # Optimize queries filtering by owner and non-deleted files
     # Used in: list_files, search_files, user_dashboard
-    op.create_index(
-        'idx_files_owner_deleted',
-        'objects',
-        ['user_id'],
-        postgresql_where=sa.text('deleted_at IS NULL'),
-        if_not_exists=True
-    )
+    # op.create_index(
+    #     'idx_files_owner_deleted',
+    #     'objects',
+    #     ['user_id'],
+    #     postgresql_where=sa.text('deleted_at IS NULL'),
+    #     if_not_exists=True
+    # )
 
     # Optimize queries filtering by folder and non-deleted files
     # Used in: list_files, folder_view, file_browser
-    op.create_index(
-        'idx_files_folder_deleted',
-        'objects',
-        ['folder_id'],
-        postgresql_where=sa.text('deleted_at IS NULL'),
-        if_not_exists=True
-    )
+    # op.create_index(
+    #     'idx_files_folder_deleted',
+    #     'objects',
+    #     ['folder_id'],
+    #     postgresql_where=sa.text('deleted_at IS NULL'),
+    #     if_not_exists=True
+    # )
 
     # Optimize sorting by creation date (recent files, file timeline)
     # Used in: dashboard, recent_files, activity_feed
@@ -108,40 +109,42 @@ def upgrade():
         if_not_exists=True
     )
 
+    # NOTE: Commented out - deleted_at column doesn't exist yet
     # Composite index for file listing with sorting
     # Optimizes: SELECT * FROM objects WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC
-    op.create_index(
-        'idx_files_user_created',
-        'objects',
-        ['user_id', sa.text('created_at DESC')],
-        postgresql_where=sa.text('deleted_at IS NULL'),
-        if_not_exists=True
-    )
+    # op.create_index(
+    #     'idx_files_user_created',
+    #     'objects',
+    #     ['user_id', sa.text('created_at DESC')],
+    #     postgresql_where=sa.text('deleted_at IS NULL'),
+    #     if_not_exists=True
+    # )
 
 
     # ========================================
     # FOLDERS TABLE INDEXES
     # ========================================
 
+    # NOTE: Commented out - deleted_at column doesn't exist yet
     # Optimize queries filtering by owner and non-deleted folders
     # Used in: list_folders, folder_tree, navigation
-    op.create_index(
-        'idx_folders_owner_deleted',
-        'folders',
-        ['owner_id'],
-        postgresql_where=sa.text('deleted_at IS NULL'),
-        if_not_exists=True
-    )
+    # op.create_index(
+    #     'idx_folders_owner_deleted',
+    #     'folders',
+    #     ['owner_id'],
+    #     postgresql_where=sa.text('deleted_at IS NULL'),
+    #     if_not_exists=True
+    # )
 
     # Optimize queries filtering by parent and non-deleted folders
     # Used in: folder_tree, breadcrumbs, subfolder_list
-    op.create_index(
-        'idx_folders_parent_deleted',
-        'folders',
-        ['parent_id'],
-        postgresql_where=sa.text('deleted_at IS NULL'),
-        if_not_exists=True
-    )
+    # op.create_index(
+    #     'idx_folders_parent_deleted',
+    #     'folders',
+    #     ['parent_id'],
+    #     postgresql_where=sa.text('deleted_at IS NULL'),
+    #     if_not_exists=True
+    # )
 
     # Optimize path-based lookups for folder navigation
     # Used in: navigate_to_path, breadcrumbs
@@ -159,15 +162,16 @@ def upgrade():
         ON folders USING gin(name gin_trgm_ops)
     """)
 
+    # NOTE: Commented out - deleted_at column doesn't exist yet
     # Composite index for folder tree queries
     # Optimizes: SELECT * FROM folders WHERE owner_id = ? AND parent_id = ? AND deleted_at IS NULL
-    op.create_index(
-        'idx_folders_owner_parent',
-        'folders',
-        ['owner_id', 'parent_id'],
-        postgresql_where=sa.text('deleted_at IS NULL'),
-        if_not_exists=True
-    )
+    # op.create_index(
+    #     'idx_folders_owner_parent',
+    #     'folders',
+    #     ['owner_id', 'parent_id'],
+    #     postgresql_where=sa.text('deleted_at IS NULL'),
+    #     if_not_exists=True
+    # )
 
 
     # ========================================
@@ -269,7 +273,7 @@ def upgrade():
     op.create_index(
         'idx_share_links_token',
         'share_links',
-        ['token'],
+        ['share_token'],
         unique=True,
         if_not_exists=True
     )
@@ -308,11 +312,11 @@ def upgrade():
     # ========================================
 
     # Composite index for user activity timeline
-    # Optimizes: SELECT * FROM activity_logs WHERE user_id = ? ORDER BY timestamp DESC
+    # Optimizes: SELECT * FROM activity_logs WHERE user_id = ? ORDER BY created_at DESC
     op.create_index(
         'idx_activity_user_timestamp',
         'activity_logs',
-        ['user_id', sa.text('timestamp DESC')],
+        ['user_id', sa.text('created_at DESC')],
         if_not_exists=True
     )
 
@@ -330,60 +334,37 @@ def upgrade():
     # STORAGE_ANALYSIS TABLE INDEXES
     # ========================================
 
-    # Optimize latest analysis queries for user
-    # Used in: get_storage_analysis, dashboard
-    op.create_index(
-        'idx_storage_analysis_user_date',
-        'storage_analyses',
-        ['user_id', sa.text('analysis_date DESC')],
-        if_not_exists=True
-    )
+    # NOTE: Indexes already created in 20251018_0100 migration
+    # The storage_analysis table migration already creates:
+    # - idx_storage_analysis_user_id
+    # - idx_storage_analysis_date
+    # No additional indexes needed here.
 
 
     # ========================================
     # OPTIMIZATION_SUGGESTIONS TABLE INDEXES
     # ========================================
 
-    # Optimize pending suggestions queries
-    # Used in: get_suggestions, apply_suggestions
-    op.create_index(
-        'idx_optimization_suggestions_user_status',
-        'optimization_suggestions',
-        ['user_id', 'status'],
-        if_not_exists=True
-    )
-
-    # Optimize high-impact suggestions queries
-    # Used in: prioritize_suggestions, quick_wins
-    op.create_index(
-        'idx_optimization_suggestions_impact',
-        'optimization_suggestions',
-        [sa.text('potential_savings DESC')],
-        if_not_exists=True
-    )
+    # NOTE: Indexes already created in 20251018_0100 migration
+    # The optimization_suggestions table migration already creates:
+    # - idx_optimization_user_id
+    # - idx_optimization_type
+    # - idx_optimization_priority
+    # - idx_optimization_status
+    # - idx_optimization_created
+    # No additional indexes needed here.
 
 
     # ========================================
     # FAVORITES TABLE INDEXES
     # ========================================
 
-    # Composite index for user favorites
-    # Optimizes: SELECT * FROM favorites WHERE user_id = ? AND favorited = true
-    op.create_index(
-        'idx_favorites_user_favorited',
-        'favorites',
-        ['user_id', 'favorited'],
-        if_not_exists=True
-    )
-
-    # Optimize file-based favorite queries
-    # Used in: is_favorited, toggle_favorite
-    op.create_index(
-        'idx_favorites_file_id',
-        'favorites',
-        ['file_id'],
-        if_not_exists=True
-    )
+    # NOTE: Indexes already created in 20251020_0000 migration
+    # The favorites table migration already creates:
+    # - idx_favorites_user_id
+    # - idx_favorites_file_id
+    # - idx_favorites_created_at
+    # No additional indexes needed here.
 
 
 def downgrade():

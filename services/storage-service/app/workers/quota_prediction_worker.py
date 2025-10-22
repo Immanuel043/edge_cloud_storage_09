@@ -19,7 +19,7 @@ from ..models.database import (
     User, Object, StorageUsageHistory, QuotaPrediction, QuotaAlert
 )
 from ..services.quota_predictor import quota_predictor
-from ..database import get_db_session, get_redis
+from ..database import async_session, get_redis
 from ..monitoring.metrics import metrics_collector
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class QuotaPredictionWorker:
             try:
                 logger.info("Starting quota prediction worker cycle")
 
-                async for db in get_db_session():
+                async with async_session() as db:
                     try:
                         # Step 1: Record usage history
                         await self._record_usage_history(db)
@@ -326,7 +326,7 @@ class QuotaPredictionWorker:
         """
         logger.info("Running quota prediction worker once")
 
-        async for db in get_db_session():
+        async with async_session() as db:
             try:
                 await self._record_usage_history(db)
                 await self._generate_predictions(db)
@@ -337,8 +337,6 @@ class QuotaPredictionWorker:
                 logger.error(f"Error in quota prediction worker run: {e}", exc_info=True)
                 await db.rollback()
                 raise
-            finally:
-                break
 
 
 # Singleton instance

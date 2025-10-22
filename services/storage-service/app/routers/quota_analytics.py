@@ -8,7 +8,7 @@ API endpoints for ML-based quota prediction and analytics:
 - Trigger prediction updates
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from typing import List, Optional
@@ -17,7 +17,7 @@ import logging
 
 from ..dependencies import get_db, get_current_user
 from ..models.database import User, QuotaPrediction, QuotaAlert, StorageUsageHistory
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..models.schemas import (
     QuotaPredictionResponse,
     QuotaAlertResponse,
@@ -33,8 +33,7 @@ router = APIRouter(prefix="/api/v1/quota", tags=["quota-analytics"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("/prediction", response_model=QuotaPredictionResponse)
-@user_limiter.limit(RateLimitConfig.ML_PREDICTION)
+@router.get("/prediction", response_model=QuotaPredictionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_PREDICTION))])
 async def get_quota_prediction(
     request: Request,
     current_user: User = Depends(get_current_user),

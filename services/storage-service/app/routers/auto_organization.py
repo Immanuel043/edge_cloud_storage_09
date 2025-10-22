@@ -9,7 +9,7 @@ API endpoints for ML-based file organization:
 - Get organization preview
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from typing import List, Optional
@@ -18,9 +18,8 @@ import logging
 
 from ..dependencies import get_db, get_current_user
 from ..models.database import (
-    User, OrganizationCluster, OrganizationRule, OrganizationSession
-)
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+    User, OrganizationCluster, OrganizationRule, OrganizationSession)
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..models.schemas import (
     OrganizationClusterResponse,
     OrganizationRuleResponse,
@@ -38,8 +37,7 @@ router = APIRouter(prefix="/api/v1/organization", tags=["auto-organization"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/start", response_model=OrganizationSessionResponse)
-@user_limiter.limit(RateLimitConfig.ML_ANALYSIS)
+@router.post("/start", response_model=OrganizationSessionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_ANALYSIS))])
 async def start_organization(
     http_request: Request,
     request: StartOrganizationRequest,

@@ -11,17 +11,20 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 # Initialize rate limiter with Redis storage
+# NOTE: headers_enabled=False to avoid needing response parameter in endpoints
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=settings.REDIS_URL,
     default_limits=["1000/day", "100/hour"],
-    headers_enabled=True
+    headers_enabled=False  # Disabled to work without response parameter
 )
 
 
-async def get_user_id_from_request(request: Request) -> str:
+def get_user_id_from_request(request: Request) -> str:
     """
     Extract user ID from JWT token for user-based rate limiting
+
+    NOTE: This must be synchronous for slowapi compatibility
 
     Args:
         request: FastAPI request object
@@ -41,10 +44,11 @@ async def get_user_id_from_request(request: Request) -> str:
 
 
 # User-based limiter (for authenticated requests)
+# NOTE: headers_enabled=False to avoid needing response parameter in endpoints
 user_limiter = Limiter(
     key_func=get_user_id_from_request,
     storage_uri=settings.REDIS_URL,
-    headers_enabled=True
+    headers_enabled=False  # Disabled to work without response parameter
 )
 
 

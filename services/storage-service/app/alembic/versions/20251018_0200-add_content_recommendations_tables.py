@@ -18,8 +18,8 @@ from uuid import uuid4
 
 
 # revision identifiers, used by Alembic.
-revision = 'content_recommendations_001'
-down_revision = 'storage_optimization_001'
+revision = '20251018_0200b'
+down_revision = '20251018_0200a'
 branch_labels = None
 depends_on = None
 

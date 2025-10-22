@@ -15,7 +15,7 @@ from ..models.database import User, Object, ActivityLog
 from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from pydantic import BaseModel
 import re
 import base64
@@ -32,8 +32,7 @@ class BulkDeleteRequest(BaseModel):
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
-@router.get("", response_model=List[FileResponse])
-@user_limiter.limit(RateLimitConfig.FILE_LIST)
+@router.get("", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
 async def list_files(
     request: Request,
     folder_id: Optional[str] = None,
@@ -229,8 +228,7 @@ async def stream_chunked_range(
         current_pos += chunk_size
 
 @router.get("/{file_id}/download")
-@router.head("/{file_id}/download")
-@user_limiter.limit(RateLimitConfig.FILE_DOWNLOAD)
+@router.head("/{file_id}/download", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DOWNLOAD))])
 async def download_file(
     file_id: str,
     request: Request,
@@ -596,8 +594,7 @@ async def get_file_preview(
 
 
 
-@router.delete("/{file_id}")
-@user_limiter.limit(RateLimitConfig.FILE_DELETE)
+@router.delete("/{file_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
 async def delete_file(
     file_id: str,
     request: Request,
@@ -717,8 +714,7 @@ async def delete_file(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/bulk-delete")
-@user_limiter.limit(RateLimitConfig.FILE_DELETE)
+@router.post("/bulk-delete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
 async def bulk_delete_files(
     request: Request,
     request_data: BulkDeleteRequest,

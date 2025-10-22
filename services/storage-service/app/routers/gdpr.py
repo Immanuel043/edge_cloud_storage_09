@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from ..dependencies import get_db, get_current_user
 from ..models.database import User, Object, ActivityLog, Folder, ShareLink, Favorite
 from ..services.encryption import encryption_service
-from ..utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 
 router = APIRouter(prefix="/api/v1/gdpr", tags=["gdpr-compliance"])
 logger = logging.getLogger(__name__)
@@ -84,8 +84,7 @@ class DataPortabilityRequest(BaseModel):
 
 # ===== Endpoints =====
 
-@router.get("/export/data")
-@user_limiter.limit(RateLimitConfig.API_HEAVY)
+@router.get("/export/data", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
 async def export_user_data(
     request: Request,
     include_files: bool = True,
@@ -250,8 +249,7 @@ async def export_user_data(
     return export_data
 
 
-@router.post("/export/download", response_class=StreamingResponse)
-@user_limiter.limit(RateLimitConfig.API_HEAVY)
+@router.post("/export/download", response_class=StreamingResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
 async def download_user_data_archive(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -328,8 +326,7 @@ Note: File content is encrypted. Use the provided decryption keys to access.
     )
 
 
-@router.post("/delete/account", response_model=AccountDeletionResponse)
-@user_limiter.limit(RateLimitConfig.API_WRITE)
+@router.post("/delete/account", response_model=AccountDeletionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
 async def delete_user_account(
     request: Request,
     deletion_request: AccountDeletionRequest,
@@ -457,8 +454,7 @@ async def delete_user_account(
     )
 
 
-@router.get("/rectification/profile")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/rectification/profile", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_profile_for_rectification(
     request: Request,
     current_user: User = Depends(get_current_user)
@@ -479,8 +475,7 @@ async def get_profile_for_rectification(
     }
 
 
-@router.get("/compliance/report")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/compliance/report", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_gdpr_compliance_report(
     request: Request,
     current_user: User = Depends(get_current_user),

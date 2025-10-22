@@ -1,14 +1,14 @@
 """
 Search API Router - Full-Text Search with Elasticsearch
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from typing import Optional, List
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.search_service import search_service
 from app.models.database import User
 from app.dependencies import get_current_user, get_db
-from app.utils.rate_limiter import user_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,7 @@ class SearchRequest(BaseModel):
     page: int = 1
     fuzzy: bool = True
 
-@router.post("/")
-@user_limiter.limit(RateLimitConfig.SEARCH)
+@router.post("/", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.SEARCH))])
 async def search_files_and_folders(
     http_request: Request,
     request: SearchRequest,
@@ -71,8 +70,7 @@ async def search_files_and_folders(
         logger.error(f"Search failed: {e}")
         raise HTTPException(status_code=500, detail="Search failed")
 
-@router.get("/autocomplete")
-@user_limiter.limit(RateLimitConfig.SEARCH)
+@router.get("/autocomplete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.SEARCH))])
 async def autocomplete_search(
     request: Request,
     q: str = Query(..., min_length=2, description="Search query (min 2 characters)"),

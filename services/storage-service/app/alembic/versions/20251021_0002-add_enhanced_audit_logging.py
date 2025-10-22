@@ -1,7 +1,7 @@
 """add enhanced audit logging tables
 
-Revision ID: audit_logging_001
-Revises: encryption_key_mgmt_001
+Revision ID: 20251021_0002
+Revises: 20251021_0001
 Create Date: 2025-10-21 16:00:00.000000
 
 """
@@ -10,13 +10,16 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = 'audit_logging_001'
-down_revision = 'encryption_key_mgmt_001'
+revision = '20251021_0002'
+down_revision = '20251021_0001'
 branch_labels = None
 depends_on = None
 
 
 def upgrade():
+    # Drop old audit_logs table if it exists
+    op.execute('DROP TABLE IF EXISTS audit_logs CASCADE')
+
     # Create audit_logs table
     op.create_table(
         'audit_logs',

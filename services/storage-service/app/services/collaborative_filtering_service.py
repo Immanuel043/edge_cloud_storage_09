@@ -69,9 +69,9 @@ class CollaborativeFilteringService:
         user_id: UUID,
         file_id: UUID,
         interaction_type: str,
+        db: AsyncSession,
         total_time_spent: Optional[int] = None,
-        metadata: Optional[Dict] = None,
-        db: AsyncSession
+        metadata: Optional[Dict] = None
     ) -> Dict:
         """
         Track user interaction with a file

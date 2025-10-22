@@ -1,5 +1,6 @@
 # services/storage-service/app/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, Form, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..dependencies import get_db, log_activity
@@ -7,7 +8,7 @@ from ..services.auth import auth_service
 from ..models.database import User, Folder
 from ..models.schemas import Token, UserResponse, ThemeUpdate
 from ..config import settings
-from ..utils.rate_limiter import limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import auth_login_limiter, auth_register_limiter
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
@@ -18,11 +19,9 @@ COOKIE_SECURE = settings.is_production  # HTTPS only in production
 COOKIE_HTTPONLY = True  # Prevent JavaScript access (XSS protection)
 COOKIE_SAMESITE = "lax"  # CSRF protection
 
-@router.post("/register", response_model=Token)
-@limiter.limit(RateLimitConfig.AUTH_REGISTER)
+@router.post("/register", response_model=Token, dependencies=[Depends(auth_register_limiter())])
 async def register(
     request: Request,
-    response: Response,
     email: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
@@ -63,19 +62,8 @@ async def register(
     # Create token
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 
-    # SECURITY FIX: Set HTTP-only cookie (prevents XSS token theft)
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=access_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=COOKIE_HTTPONLY,
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
-        path="/"
-    )
-
     # Still return token in response for backward compatibility (optional)
-    return {
+    response_data = {
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
@@ -89,11 +77,23 @@ async def register(
         },
     }
 
-@router.post("/login", response_model=Token)
-@limiter.limit(RateLimitConfig.AUTH_LOGIN)
+    # SECURITY FIX: Set HTTP-only cookie (prevents XSS token theft)
+    response = JSONResponse(content=response_data)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=access_token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=COOKIE_HTTPONLY,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/"
+    )
+
+    return response
+
+@router.post("/login", response_model=Token, dependencies=[Depends(auth_login_limiter())])
 async def login(
     request: Request,
-    response: Response,
     email: str = Form(...),
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
@@ -112,18 +112,7 @@ async def login(
 
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 
-    # SECURITY FIX: Set HTTP-only cookie (prevents XSS token theft)
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=access_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=COOKIE_HTTPONLY,
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
-        path="/"
-    )
-
-    return {
+    response_data = {
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
@@ -137,11 +126,26 @@ async def login(
         },
     }
 
+    # SECURITY FIX: Set HTTP-only cookie (prevents XSS token theft)
+    response = JSONResponse(content=response_data)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=access_token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=COOKIE_HTTPONLY,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/"
+    )
+
+    return response
+
 
 @router.post("/logout")
-async def logout(response: Response, request: Request = None):
+async def logout(request: Request = None):
     """Logout user - SECURITY FIX: Clears HTTP-only cookie"""
     # Clear the HTTP-only cookie
+    response = JSONResponse(content={"message": "Logged out successfully"})
     response.delete_cookie(
         key=COOKIE_NAME,
         path="/",
@@ -150,5 +154,5 @@ async def logout(response: Response, request: Request = None):
         samesite=COOKIE_SAMESITE
     )
 
-    return {"message": "Logged out successfully"}
+    return response
 

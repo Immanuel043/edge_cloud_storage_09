@@ -46,6 +46,7 @@ PyJWT==2.9.0
 python-jose[cryptography]==3.3.0
 passlib==1.7.4
 bcrypt==4.0.1
+authlib==1.2.1
 
 # -----------------------------------------------------------------------------
 # Message Queue
@@ -76,6 +77,7 @@ clickhouse-driver==0.2.6
 # HTTP Client
 # -----------------------------------------------------------------------------
 requests==2.31.0
+httpx==0.25.2
 
 # -----------------------------------------------------------------------------
 # File Preview & Processing
@@ -176,4 +178,9 @@ sentencepiece==0.1.99  # Required by some transformers models
 #
 # =============================================================================
 python-jose==3.3.0
-slowapi==0.1.9
+
+# -----------------------------------------------------------------------------
+# Rate Limiting
+# -----------------------------------------------------------------------------
+fastapi-limiter==0.1.6  # Production-grade rate limiting with Redis + Lua
+slowapi==0.1.9  # Keep temporarily for gradual migration

@@ -17,8 +17,8 @@ from uuid import uuid4
 
 
 # revision identifiers, used by Alembic.
-revision = 'storage_optimization_001'
-down_revision = 'ml_quota_prediction_001'
+revision = '20251018_0100'
+down_revision = '20251018_0000'
 branch_labels = None
 depends_on = None
 

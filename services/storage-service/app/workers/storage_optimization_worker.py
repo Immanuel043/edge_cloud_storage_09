@@ -18,7 +18,7 @@ from uuid import uuid4
 from ..models.database import User, StorageAnalysis, OptimizationSuggestion
 from ..services.storage_analyzer import storage_analyzer
 from ..services.storage_optimizer import storage_optimizer
-from ..database import get_db_session
+from ..database import async_session
 from ..monitoring.metrics import metrics_collector
 from ..config import settings
 
@@ -67,7 +67,7 @@ class StorageOptimizationWorker:
             try:
                 logger.info("Starting storage optimization worker cycle")
 
-                async for db in get_db_session():
+                async with async_session() as db:
                     try:
                         # Analyze storage and generate suggestions
                         await self._analyze_all_users(db)

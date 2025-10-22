@@ -11,15 +11,15 @@ Provides endpoints for monitoring and optimizing system performance:
 
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.auth import get_current_admin_user
-from ..core.database import get_db
+from ..database import get_db
+from ..dependencies import get_current_user
 from ..models.database import User
 from ..services.performance_optimizer import performance_optimizer
-from ..utils.rate_limiter import RateLimitConfig, user_limiter
+from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 
 router = APIRouter(
     prefix="/api/v1/performance",
@@ -109,11 +109,10 @@ class ResetStatsResponse(BaseModel):
 
 # Endpoints
 
-@router.get("/report", response_model=PerformanceReportResponse)
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/report", response_model=PerformanceReportResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_performance_report(
     request: Request,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -133,12 +132,11 @@ async def get_performance_report(
     return report
 
 
-@router.get("/queries/stats", response_model=QueryStatsResponse)
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/queries/stats", response_model=QueryStatsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_query_stats(
     request: Request,
     top_n: int = Query(50, ge=1, le=500, description="Number of top queries to return"),
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get query performance statistics.
@@ -159,12 +157,11 @@ async def get_query_stats(
     }
 
 
-@router.get("/queries/slow", response_model=SlowQueriesResponse)
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/queries/slow", response_model=SlowQueriesResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_slow_queries(
     request: Request,
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of slow queries to return"),
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get detected slow queries.
@@ -182,11 +179,10 @@ async def get_slow_queries(
     }
 
 
-@router.post("/queries/reset", response_model=ResetStatsResponse)
-@user_limiter.limit(RateLimitConfig.API_WRITE)
+@router.post("/queries/reset", response_model=ResetStatsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
 async def reset_query_stats(
     request: Request,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Reset query performance statistics.
@@ -201,11 +197,10 @@ async def reset_query_stats(
     return result
 
 
-@router.get("/cache/stats", response_model=CacheStatsResponse)
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/cache/stats", response_model=CacheStatsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_cache_stats(
     request: Request,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get cache statistics.
@@ -231,12 +226,11 @@ async def get_cache_stats(
     }
 
 
-@router.post("/cache/clear", response_model=ClearCacheResponse)
-@user_limiter.limit(RateLimitConfig.API_WRITE)
+@router.post("/cache/clear", response_model=ClearCacheResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
 async def clear_cache(
     request: Request,
     clear_request: ClearCacheRequest,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Clear cache entries.
@@ -255,11 +249,10 @@ async def clear_cache(
     return result
 
 
-@router.get("/indexes/recommendations", response_model=IndexRecommendationsResponse)
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/indexes/recommendations", response_model=IndexRecommendationsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def get_index_recommendations(
     request: Request,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -279,12 +272,11 @@ async def get_index_recommendations(
     }
 
 
-@router.post("/indexes/create", response_model=CreateIndexesResponse)
-@user_limiter.limit(RateLimitConfig.API_WRITE)
+@router.post("/indexes/create", response_model=CreateIndexesResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
 async def create_recommended_indexes(
     request: Request,
     create_request: CreateIndexesRequest,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -308,11 +300,10 @@ async def create_recommended_indexes(
     return result
 
 
-@router.get("/health")
-@user_limiter.limit(RateLimitConfig.API_READ)
+@router.get("/health", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def performance_health_check(
     request: Request,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Performance monitoring health check.

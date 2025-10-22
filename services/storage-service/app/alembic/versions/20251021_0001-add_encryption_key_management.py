@@ -1,7 +1,7 @@
 """add encryption key management tables
 
-Revision ID: encryption_key_mgmt_001
-Revises: oauth_accounts_001
+Revision ID: 20251021_0001
+Revises: 20251020_0001
 Create Date: 2025-10-21 14:00:00.000000
 
 """
@@ -11,8 +11,8 @@ from sqlalchemy.dialects import postgresql
 from datetime import datetime
 
 # revision identifiers, used by Alembic.
-revision = 'encryption_key_mgmt_001'
-down_revision = 'oauth_accounts_001'
+revision = '20251021_0001'
+down_revision = '20251020_0001'
 branch_labels = None
 depends_on = None
 
