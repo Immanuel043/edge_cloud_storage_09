@@ -175,72 +175,161 @@ async def stream_full_file_disk(path: str, block_size: int = 1024 * 1024):
             yield chunk
 
 async def stream_chunked_range(
-    file_obj, 
-    start: int, 
-    end: int, 
-    file_key, 
+    file_obj,
+    start: int,
+    end: int,
+    file_key,
     encryption_service,
     block_size: int = 1024 * 1024
 ) -> AsyncGenerator[bytes, None]:
-    """Stream byte range from chunked storage."""
+    """Stream byte range from chunked or content-addressed storage."""
     chunk_info = file_obj.chunk_info or {}
-    
-    # Get chunk metadata
-    upload_id = chunk_info.get("upload_id", str(file_obj.id))
-    total_chunks = chunk_info.get("count", 0)
-    chunk_paths = chunk_info.get("paths", {})
-    
-    if total_chunks == 0:
-        raise HTTPException(status_code=500, detail="No chunks found")
-    
-    # Determine chunk size (from first chunk or estimate)
-    estimated_chunk_size = file_obj.file_size // total_chunks if total_chunks > 1 else file_obj.file_size
-    
-    # Track position in file
-    current_pos = 0
-    
-    for chunk_idx in range(total_chunks):
-        # Get chunk path
-        chunk_path = chunk_paths.get(str(chunk_idx))
-        if not chunk_path:
-            shard = upload_id[:2] if len(upload_id) >= 2 else "00"
-            chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{chunk_idx}.enc"
-        
-        if not os.path.exists(chunk_path):
-            raise HTTPException(status_code=404, detail=f"Chunk {chunk_idx} missing")
-        
-        # Read and decrypt chunk
-        async with aiofiles.open(chunk_path, "rb") as f:
-            encrypted_chunk = await f.read()
-        
-        decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_idx)
-        
-        # Handle compression
-        was_compressed = chunk_info.get("compressed", False)
-        if was_compressed:
-            from ..utils.compression import compressor
-            decrypted_chunk = compressor.decompress(decrypted_chunk)
-        
-        chunk_size = len(decrypted_chunk)
-        chunk_end = current_pos + chunk_size - 1
-        
-        # Check if this chunk is in range
-        if chunk_end < start:
+
+    # Check if this is content-addressed storage (from deduplication)
+    if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+        # Content-addressed storage - reconstruct from blocks
+        blocks = chunk_info['blocks']
+        stored_blocks = chunk_info['stored_blocks']
+        is_convergent = chunk_info.get('convergent_encryption', False)
+
+        # Create a map of block hashes to stored paths
+        block_map = {b['hash']: b for b in stored_blocks}
+
+        current_pos = 0
+
+        for block in blocks:
+            block_hash = block['hash']
+            block_size = block['size']
+            block_end = current_pos + block_size - 1
+
+            # Check if this block is in range
+            if block_end < start:
+                current_pos += block_size
+                continue
+
+            if current_pos > end:
+                break
+
+            # Get the stored block path
+            stored_block = block_map.get(block_hash)
+            if not stored_block:
+                raise HTTPException(status_code=500, detail=f"Block {block_hash[:8]} not found")
+
+            block_path = stored_block['path']
+
+            if not os.path.exists(block_path):
+                raise HTTPException(status_code=404, detail=f"Block file missing: {block_hash[:8]}")
+
+            # Read encrypted block
+            async with aiofiles.open(block_path, "rb") as f:
+                encrypted_data = await f.read()
+
+            # Decrypt block
+            if is_convergent:
+                # Convergent encryption - key is derived from plaintext content
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                from cryptography.hazmat.backends import default_backend
+                import hashlib
+                import hmac
+
+                # Extract nonce (12 bytes), tag (16 bytes), and ciphertext
+                nonce = encrypted_data[:12]
+                tag = encrypted_data[12:28]
+                ciphertext = encrypted_data[28:]
+
+                # For convergent encryption, we need to derive the key from the plaintext
+                # But we don't have plaintext yet - we need to use the block hash
+                # The block hash is the SHA256 of the plaintext, which was used to derive the key
+
+                # Reconstruct block key using the same method as encryption
+                user_id = str(file_obj.user_id)
+
+                # The key derivation uses the plaintext hash (which is block_hash)
+                # Convert block_hash (hex string) to bytes for key derivation
+                content_hash_bytes = bytes.fromhex(block_hash)
+
+                # User-specific salt (same as encryption)
+                salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
+
+                # Derive the key using PBKDF2 (same as encryption)
+                block_key = hashlib.pbkdf2_hmac('sha256', content_hash_bytes, salt, 100000, dklen=32)
+
+                # Decrypt using AES-GCM
+                cipher = Cipher(
+                    algorithms.AES(block_key),
+                    modes.GCM(nonce, tag),
+                    backend=default_backend()
+                )
+                decryptor = cipher.decryptor()
+                decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
+            else:
+                # Standard file-key encryption
+                decrypted_block = encryption_service.decrypt_data(encrypted_data, file_key)
+
+            # Calculate slice to yield
+            slice_start = max(0, start - current_pos)
+            slice_end = min(block_size, end - current_pos + 1)
+
+            # Yield the relevant portion
+            if slice_start < slice_end:
+                yield decrypted_block[slice_start:slice_end]
+
+            current_pos += block_size
+
+    else:
+        # Traditional chunked storage
+        upload_id = chunk_info.get("upload_id", str(file_obj.id))
+        total_chunks = chunk_info.get("count", 0)
+        chunk_paths = chunk_info.get("paths", {})
+
+        if total_chunks == 0:
+            raise HTTPException(status_code=500, detail="No chunks found")
+
+        # Track position in file
+        current_pos = 0
+
+        for chunk_idx in range(total_chunks):
+            # Get chunk path
+            chunk_path = chunk_paths.get(str(chunk_idx))
+            if not chunk_path:
+                shard = upload_id[:2] if len(upload_id) >= 2 else "00"
+                chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{chunk_idx}.enc"
+
+            if not os.path.exists(chunk_path):
+                raise HTTPException(status_code=404, detail=f"Chunk {chunk_idx} missing")
+
+            # Read and decrypt chunk
+            async with aiofiles.open(chunk_path, "rb") as f:
+                encrypted_chunk = await f.read()
+
+            decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_idx)
+
+            # Handle compression
+            was_compressed = chunk_info.get("compressed", False)
+            if was_compressed:
+                from ..utils.compression import compressor
+                decrypted_chunk = compressor.decompress(decrypted_chunk)
+
+            chunk_size = len(decrypted_chunk)
+            chunk_end = current_pos + chunk_size - 1
+
+            # Check if this chunk is in range
+            if chunk_end < start:
+                current_pos += chunk_size
+                continue
+
+            if current_pos > end:
+                break
+
+            # Calculate slice to yield
+            slice_start = max(0, start - current_pos)
+            slice_end = min(chunk_size, end - current_pos + 1)
+
+            # Yield the relevant portion
+            if slice_start < slice_end:
+                yield decrypted_chunk[slice_start:slice_end]
+
             current_pos += chunk_size
-            continue
-        
-        if current_pos > end:
-            break
-        
-        # Calculate slice to yield
-        slice_start = max(0, start - current_pos)
-        slice_end = min(chunk_size, end - current_pos + 1)
-        
-        # Yield the relevant portion
-        if slice_start < slice_end:
-            yield decrypted_chunk[slice_start:slice_end]
-        
-        current_pos += chunk_size
 
 @router.get("/{file_id}/download")
 @router.head("/{file_id}/download", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DOWNLOAD))])

@@ -148,7 +148,7 @@ class BackgroundDeduplicationService:
                     print(f"Could not read file data for {file_id}")
                     return
                 
-                # Perform deduplication
+                # Perform deduplication - pass existing object to update in-place
                 dedup_result = await enhanced_dedup_service.store_deduplicated_file(
                     file_data=file_data,
                     file_name=session["name"],
@@ -158,9 +158,10 @@ class BackgroundDeduplicationService:
                         'mime_type': mimetypes.guess_type(session["name"])[0],
                         'folder_id': session.get("folder")
                     },
-                    encrypt=True
+                    encrypt=True,
+                    existing_object=file_obj  # Pass existing object to update in-place
                 )
-                
+
                 # Update storage usage
                 if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
                     actual_saved = dedup_result.get('saved_size', 0)
@@ -168,16 +169,8 @@ class BackgroundDeduplicationService:
                     if dedup_result['status'] == 'full_duplicate':
                         actual_saved = session["size"]
 
-                    # Clean up old file object (if it was replaced by deduplicated version)
-                    # The new deduplicated file was already created by enhanced_dedup_service
-                    # We just need to remove the old non-deduplicated Object entry
-                    from sqlalchemy import text, delete
-
-                    # Only delete if this was a conversion from single/chunked to deduplicated
-                    if file_obj.storage_type in ['single', 'chunked']:
-                        await db.execute(
-                            delete(Object).where(Object.id == file_id)
-                        )
+                    # No need to delete old object - it was updated in-place
+                    # This preserves the file_id so downloads continue to work
 
                     # Update user storage
                     user_result = await db.execute(

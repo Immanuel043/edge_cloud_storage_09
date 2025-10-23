@@ -29,9 +29,11 @@ export default function Sidebar({
   const [aiExpanded, setAiExpanded] = useState(true);
 
   const formatBytes = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
+    // Handle null, undefined, or invalid values
+    if (bytes === null || bytes === undefined || isNaN(bytes)) return '0 B';
+    if (bytes === 0) return '0 B';
     const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
@@ -242,7 +244,7 @@ export default function Sidebar({
                 />
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                {storageStats.usage_percentage?.toFixed(1)}% used
+                {(storageStats.usage_percentage || 0).toFixed(1)}% used
               </div>
             </div>
           </div>

@@ -205,6 +205,10 @@ services:
       CLAMAV_PORT: 3310
       STORAGE_ROOT: /app/storage
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
+      # Database initialization mode
+      USE_FRESH_DB_INIT: ${USE_FRESH_DB_INIT:-false}
+      FORCE_RECREATE: ${FORCE_RECREATE:-false}
+      SKIP_SEED: ${SKIP_SEED:-false}
       # CRITICAL: Reduce chunk size for memory management
       CHUNK_SIZE: 33554432          # 32MB chunks instead of 64MB
       MAX_FILE_SIZE: 21474836480    # 20GB

@@ -43,18 +43,24 @@ RUN mkdir -p /app/storage/{cache,warm,cold,temp,backup} && \
         mkdir -p /app/storage/$dir/objects; \
     done
 
-# Create entrypoint script
+# Create entrypoint script with support for fresh DB init
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
 echo "Waiting for database to be ready..."\n\
 while ! nc -z ${DB_HOST:-postgres} ${DB_PORT:-5432}; do\n\
-sleep 1\n\
+  sleep 1\n\
 done\n\
 echo "Database is ready!"\n\
 \n\
-echo "Running database migrations..."\n\
-alembic upgrade head\n\
+# Check if we should use fresh DB init or migrations\n\
+if [ "${USE_FRESH_DB_INIT:-false}" = "true" ]; then\n\
+  echo "🚀 Initializing database from scratch (fresh install)..."\n\
+  python -m app.scripts.init_database\n\
+else\n\
+  echo "Running database migrations..."\n\
+  alembic upgrade head\n\
+fi\n\
 \n\
 echo "Starting application..."\n\
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000\n' > /entrypoint.sh

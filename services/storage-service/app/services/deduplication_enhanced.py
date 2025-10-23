@@ -222,7 +222,8 @@ class EnhancedDeduplicationService:
         user_id: str,
         db: AsyncSession,
         metadata: Optional[Dict] = None,
-        encrypt: bool = True
+        encrypt: bool = True,
+        existing_object: Optional[Object] = None
     ) -> Dict:
         """
         Enhanced file storage with pre-encryption deduplication.
@@ -248,28 +249,49 @@ class EnhancedDeduplicationService:
             if existing_file:
                 # Full file duplicate found
                 print(f"🎯 Full duplicate found! File hash: {file_hash[:16]}...")
-                
-                new_file = Object(
-                    file_name=file_name,
-                    user_id=user_id,
-                    content_hash=file_hash,
-                    file_size=dedup_result['total_size'],
-                    storage_type='deduplicated_reference',
-                    dedup_info={
+
+                # Update existing object if provided, otherwise create new
+                if existing_object:
+                    existing_object.content_hash = file_hash
+                    existing_object.file_size = dedup_result['total_size']
+                    existing_object.storage_type = 'deduplicated_reference'
+                    existing_object.dedup_info = {
                         'reference_file_id': str(existing_file.id),
                         'is_full_duplicate': True,
                         'saved_size': dedup_result['total_size']
-                    },
-                    mime_type=metadata.get('mime_type') if metadata else None,
-                    folder_id=metadata.get('folder_id') if metadata else None,
-                    # Reference the same encryption key
-                    encryption_key=existing_file.encryption_key
-                )
-                db.add(new_file)
-                await db.commit()
-                
+                    }
+                    existing_object.encryption_key = existing_file.encryption_key
+                    if metadata:
+                        if metadata.get('mime_type'):
+                            existing_object.mime_type = metadata.get('mime_type')
+                        if metadata.get('folder_id'):
+                            existing_object.folder_id = metadata.get('folder_id')
+
+                    await db.commit()
+                    result_file = existing_object
+                else:
+                    new_file = Object(
+                        file_name=file_name,
+                        user_id=user_id,
+                        content_hash=file_hash,
+                        file_size=dedup_result['total_size'],
+                        storage_type='deduplicated_reference',
+                        dedup_info={
+                            'reference_file_id': str(existing_file.id),
+                            'is_full_duplicate': True,
+                            'saved_size': dedup_result['total_size']
+                        },
+                        mime_type=metadata.get('mime_type') if metadata else None,
+                        folder_id=metadata.get('folder_id') if metadata else None,
+                        # Reference the same encryption key
+                        encryption_key=existing_file.encryption_key
+                    )
+                    db.add(new_file)
+                    await db.commit()
+                    result_file = new_file
+
                 return {
-                    'file_id': str(new_file.id),
+                    'file_id': str(result_file.id),
                     'status': 'full_duplicate',
                     'saved_size': dedup_result['total_size'],
                     'dedup_ratio': 100.0,
@@ -347,52 +369,82 @@ class EnhancedDeduplicationService:
                     'offset': new_block['offset']
                 })
             
-            # Create file object with dedup info
-            new_file = Object(
-                file_name=file_name,
-                user_id=user_id,
-                content_hash=file_hash,
-                file_size=dedup_result['total_size'],
-                storage_type='content_addressed',
-                chunk_info={
+            # Update existing object if provided, otherwise create new
+            if existing_object:
+                # Update in-place to preserve file_id
+                existing_object.content_hash = file_hash
+                existing_object.file_size = dedup_result['total_size']
+                existing_object.storage_type = 'content_addressed'
+                existing_object.chunk_info = {
                     'blocks': dedup_result['blocks'],
                     'stored_blocks': stored_blocks,
                     'version': 2,
-                    'convergent_encryption': encrypt  # Mark as using convergent encryption
-                },
-                dedup_info={
+                    'convergent_encryption': encrypt
+                }
+                existing_object.dedup_info = {
                     'saved_size': dedup_result['saved_size'],
                     'dedup_ratio': dedup_result['dedup_ratio'],
                     'unique_blocks': len(dedup_result['new_blocks']),
                     'duplicate_blocks': len(dedup_result['duplicate_blocks'])
-                },
-                mime_type=metadata.get('mime_type') if metadata else None,
-                folder_id=metadata.get('folder_id') if metadata else None,
-                encryption_key=encrypted_master_key  # Store master key for metadata
-            )
-            db.add(new_file)
-            await db.flush()
+                }
+                existing_object.encryption_key = encrypted_master_key
+                if metadata:
+                    if metadata.get('mime_type'):
+                        existing_object.mime_type = metadata.get('mime_type')
+                    if metadata.get('folder_id'):
+                        existing_object.folder_id = metadata.get('folder_id')
+
+                await db.flush()
+                result_file = existing_object
+            else:
+                # Create new file object with dedup info
+                new_file = Object(
+                    file_name=file_name,
+                    user_id=user_id,
+                    content_hash=file_hash,
+                    file_size=dedup_result['total_size'],
+                    storage_type='content_addressed',
+                    chunk_info={
+                        'blocks': dedup_result['blocks'],
+                        'stored_blocks': stored_blocks,
+                        'version': 2,
+                        'convergent_encryption': encrypt  # Mark as using convergent encryption
+                    },
+                    dedup_info={
+                        'saved_size': dedup_result['saved_size'],
+                        'dedup_ratio': dedup_result['dedup_ratio'],
+                        'unique_blocks': len(dedup_result['new_blocks']),
+                        'duplicate_blocks': len(dedup_result['duplicate_blocks'])
+                    },
+                    mime_type=metadata.get('mime_type') if metadata else None,
+                    folder_id=metadata.get('folder_id') if metadata else None,
+                    encryption_key=encrypted_master_key  # Store master key for metadata
+                )
+                db.add(new_file)
+                await db.flush()
+                result_file = new_file
+
             # Create ContentBlock entries for new blocks only
             for block in dedup_result['blocks']:
                 if not block['is_duplicate']:
                     content_block = ContentBlock(
                         block_hash=block['hash'],
-                        file_id=new_file.id,
+                        file_id=result_file.id,
                         block_size=block['size'],
                         block_offset=block['offset'],
                         reference_count=1
                     )
                     db.add(content_block)
-            
+
             await db.commit()
-            
+
             print(f"✅ File stored with deduplication:")
             print(f"   - Unique blocks: {len(dedup_result['new_blocks'])}")
             print(f"   - Duplicate blocks: {len(dedup_result['duplicate_blocks'])}")
             print(f"   - Saved: {dedup_result['saved_size']/1024/1024:.1f}MB ({dedup_result['dedup_ratio']:.1f}%)")
-            
+
             return {
-                'file_id': str(new_file.id),
+                'file_id': str(result_file.id),
                 'status': 'stored_with_dedup',
                 'saved_size': dedup_result['saved_size'],
                 'dedup_ratio': dedup_result['dedup_ratio'],

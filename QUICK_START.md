@@ -1,175 +1,115 @@
-# Quick Start Guide - Production Nginx Setup
+# ⚡ Quick Start Guide
 
-## ✅ What's New - Production-Grade Nginx
+## 🚀 Fresh Production Deploy (3 Minutes)
 
-Your nginx has been upgraded with enterprise security and performance features!
-
-### New Features Added:
-
-1. **🛡️ Rate Limiting** - Protects against DDoS and abuse
-   - Auth endpoints: 5 req/s (brute force protection)
-   - Uploads: 10 req/s
-   - Downloads: 50 req/s
-   - General API: 100 req/s
-
-2. **🔒 Security Headers** - Industry-standard protection
-   - X-Frame-Options, CSP, HSTS (when HTTPS enabled)
-   - XSS Protection, MIME sniffing prevention
-   - Referrer Policy, Permissions Policy
-
-3. **📊 Advanced Logging** - Detailed performance metrics
-   - Request timing, upstream performance
-   - JSON format support for log aggregators
-
-4. **🚀 Performance** - Optimized for production
-   - Gzip compression (6x smaller responses)
-   - Static asset caching (1 year)
-   - Connection keep-alive (1000 req/conn)
-
-5. **🔐 SSL/TLS Ready** - Modern encryption
-   - TLS 1.2 & 1.3 support
-   - Let's Encrypt integration
-   - Self-signed certs for dev
-
-## 🏃 Start Services
-
-### Option 1: Start Everything
 ```bash
-cd infrastructure
-docker-compose up -d
+# 1. Navigate to project
+cd /Users/immanraj/edge-cloud-storage-final-mvp/infrastructure
+
+# 2. Create environment file
+cp .env.production.example .env
+
+# 3. Edit secrets (REQUIRED!)
+nano .env
+# Change: DB_PASSWORD, SECRET_KEY, SESSION_SECRET
+
+# 4. Enable fresh database init
+echo "USE_FRESH_DB_INIT=true" >> .env
+
+# 5. Start everything
+docker compose up -d
+
+# 6. Verify
+curl http://localhost:8001/api/v1/health
 ```
 
-### Option 2: Start Specific Services
-```bash
-# Start core services first
-docker-compose up -d postgres redis elasticsearch
+**Done!** Access at http://localhost:3000
 
-# Wait 30 seconds, then start app services
-docker-compose up -d storage-service chunk-processor web-service nginx
+---
+
+## 🔑 Required Changes in .env
+
+```bash
+# Generate these (REQUIRED)
+SECRET_KEY=$(openssl rand -hex 32)
+SESSION_SECRET=$(openssl rand -hex 32)
+DB_PASSWORD="YourStrongPassword123!"
+
+# Update in .env
+nano .env
 ```
 
-## 🧪 Test the Setup
+---
 
-### 1. Check nginx is running:
+## 📋 Essential Commands
+
+### View Logs
 ```bash
-docker ps | grep nginx
+docker compose logs -f storage-service
 ```
 
-### 2. Test health endpoint:
+### Restart After Code Changes
 ```bash
-curl http://localhost/health
-# Expected: "healthy"
+docker compose build storage-service
+docker compose restart storage-service
 ```
 
-### 3. Check access logs:
+### Check Status
 ```bash
-docker exec edge-nginx tail -f /var/log/nginx/access.log
+docker compose ps
 ```
 
-### 4. Test rate limiting (optional):
+### Backup Database
 ```bash
-# This should trigger 429 errors after burst:
-for i in {1..20}; do curl -I http://localhost/api/v1/auth/login 2>&1 | grep "HTTP"; done
+docker exec edge-postgres pg_dump -U edge_admin edge_cloud > backup.sql
 ```
 
-## 📱 Access Your App
+---
 
-- **Web UI**: http://localhost
-- **API**: http://localhost/api/v1/
-- **Health Check**: http://localhost/health
+## 🆘 Troubleshooting
 
-## 🔐 Enable HTTPS (Optional)
-
-### For Development (Self-Signed):
+### Service Won't Start
 ```bash
-cd infrastructure
-./scripts/setup-ssl.sh
-# Select option 1
-# Follow prompts
+docker logs edge-storage-service
 ```
 
-### For Production (Let's Encrypt):
+### Reset Database (⚠️ Deletes Data)
 ```bash
-cd infrastructure
-./scripts/setup-ssl.sh
-# Select option 2
-# Enter your domain and email
-# Update nginx.conf with your domain (line 281)
-# Uncomment HTTPS server block (lines 279-305)
-docker-compose restart nginx
+docker compose down
+docker volume rm infrastructure_postgres_data
+docker compose up -d
 ```
 
-## 📊 Monitor Performance
-
-### View Rate Limiting Activity:
+### Fix File Deletion Errors
 ```bash
-docker exec edge-nginx grep " 429 " /var/log/nginx/access.log
+# Both url_upload_jobs and file_similarities tables are now fixed!
+# Just restart if you see schema errors
+docker compose restart storage-service
 ```
 
-### Check Request Timing:
-```bash
-docker exec edge-nginx tail -f /var/log/nginx/access.log | grep "rt="
-```
+---
 
-### Test nginx Config:
-```bash
-docker exec edge-nginx nginx -t
-```
+## 📚 Full Documentation
 
-## 🛠️ Troubleshooting
+- **Production Setup**: `docs/PRODUCTION_DATABASE_SETUP.md`
+- **Deployment Guide**: `PRODUCTION_DEPLOYMENT.md`
+- **Environment Variables**: `infrastructure/.env.production.example`
 
-### Service won't start:
-```bash
-docker-compose logs [service-name]
-```
+---
 
-### Nginx configuration error:
-```bash
-docker exec edge-nginx nginx -t
-```
+## ✅ What's Working Now
 
-### Rate limited (429 error):
-Increase limits in `nginx.conf` lines 43-46 or whitelist your IP
+✅ **Database**: Fresh initialization (no migrations)
+✅ **File Upload**: Multi-chunk, resumable uploads
+✅ **File Download**: Range support, streaming
+✅ **File Deletion**: Fixed schema issues
+✅ **Deduplication**: Background content-addressed storage
+✅ **Storage Tiers**: Hot (NVMe) → Cold (HDD) automatic tiering
+✅ **Security**: Virus scanning, encryption, DLP
+✅ **ML Features**: Quota prediction, optimization
 
-### Upload fails (413 error):
-Check `client_max_body_size` in nginx.conf - already set to unlimited for uploads
+---
 
-## 📚 Documentation
+**Your Production Environment is Ready!** 🎉
 
-- **Full nginx setup**: `/docs/NGINX_PRODUCTION_SETUP.md`
-- **Production checklist**: `/docs/PRODUCTION_READY_CHECKLIST.md`
-- **Security features**: `/docs/SECURITY_FEATURES.md`
-- **SSL setup script**: `./infrastructure/scripts/setup-ssl.sh`
-
-## 🎯 Next Steps
-
-1. ✅ Start services: `docker-compose up -d`
-2. ✅ Test health: `curl http://localhost/health`
-3. ✅ Access UI: http://localhost
-4. 🔐 (Optional) Set up SSL for production
-5. 📊 Monitor logs for rate limiting activity
-6. 🚀 Deploy!
-
-## 🔥 Production Deployment Checklist
-
-When deploying to production:
-
-- [ ] Generate Let's Encrypt SSL certificate
-- [ ] Update nginx.conf `server_name` with your domain
-- [ ] Uncomment HTTPS server block in nginx.conf
-- [ ] Enable HTTP → HTTPS redirect
-- [ ] Test SSL: https://www.ssllabs.com/ssltest/
-- [ ] Test headers: https://securityheaders.com/
-- [ ] Set up log rotation
-- [ ] Configure monitoring/alerts
-- [ ] Test rate limiting behavior
-
-## 💡 Tips
-
-- **Rate limits are active** - Monitor 429 errors in logs
-- **Logs are detailed** - Shows request timing and performance
-- **SSL is ready** - Just run setup-ssl.sh when needed
-- **Security headers work** - Test at securityheaders.com
-- **Caching is enabled** - Static files cached for 1 year
-
-Your nginx is now **production-ready**! 🚀
+Hardware: AMD Ryzen 9 7950X | 128GB RAM | 59TB Total Storage
