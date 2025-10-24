@@ -16,7 +16,8 @@ import {
   Lightbulb,
   HardDrive,
   Menu,
-  X
+  X,
+  Trash2
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -57,6 +58,12 @@ export default function Sidebar({
       label: 'Shared with me',
       icon: Users,
       description: 'Files shared by others',
+    },
+    {
+      id: 'trash',
+      label: 'Trash',
+      icon: Trash2,
+      description: 'Deleted files (30 days)',
     },
     {
       id: 'dedup',

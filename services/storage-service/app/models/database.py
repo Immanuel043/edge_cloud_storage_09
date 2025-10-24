@@ -65,12 +65,15 @@ class Object(Base):
     version_count = Column(Integer, default=1)
     versioning_enabled = Column(Boolean, default=True)
     dedup_info = Column(JSON, nullable=True)
+    is_deleted = Column(Boolean, default=False)  # Soft delete for trash functionality
+    deleted_at = Column(DateTime, nullable=True)  # Timestamp when file was moved to trash
 
     # Performance indexes
     __table_args__ = (
         Index('idx_user_storage_type', 'user_id', 'storage_type'),
         Index('idx_content_hash', 'content_hash'),
         Index('idx_user_id', 'user_id'),
+        Index('idx_is_deleted_deleted_at', 'is_deleted', 'deleted_at'),  # For trash queries
     )
 
 class ActivityLog(Base):

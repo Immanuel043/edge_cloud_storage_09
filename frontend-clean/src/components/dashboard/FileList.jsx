@@ -28,11 +28,11 @@ export default function FileList({
       <div className={`grid grid-cols-12 gap-4 px-4 py-3 text-xs font-semibold uppercase tracking-wider border-b ${
         darkMode ? 'text-gray-400 border-gray-700' : 'text-gray-500 border-gray-200'
       }`}>
-        <div className="col-span-1"></div>
+        <div className="col-span-1 text-center">★</div>
         <div className="col-span-5">Name</div>
         <div className="col-span-2">Size</div>
-        <div className="col-span-2">Modified</div>
-        <div className="col-span-1 text-center">Favorite</div>
+        <div className="col-span-2">Last Opened</div>
+        <div className="col-span-1"></div>
         <div className="col-span-1 text-center">Actions</div>
       </div>
 
@@ -74,32 +74,48 @@ export default function FileList({
       {files.map(file => (
         <div
           key={file.id}
-          onClick={() => onFilePreview(file)}
+          data-file-card="true"
+          onClick={() => {
+            // Single click selects file
+            onFileClick(file.id);
+          }}
+          onDoubleClick={(e) => {
+            // Double click opens preview
+            e.stopPropagation();
+            onFilePreview(file);
+          }}
           className={`group grid grid-cols-12 gap-4 px-4 py-2.5 transition-all border-b cursor-pointer ${
             darkMode
               ? 'hover:bg-gray-800/40 border-gray-800'
               : 'hover:bg-gray-50/80 border-gray-100'
           } ${selectedFiles.has(file.id) ? darkMode ? 'bg-blue-900/20 border-blue-800' : 'bg-blue-50/60 border-blue-200' : ''}`}
         >
-          <div className="col-span-1 flex items-center gap-3">
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                onFileClick(file.id);
-              }}
-              className={`w-5 h-5 rounded border-2 flex items-center justify-center cursor-pointer flex-shrink-0 transition-all ${
-                selectedFiles.has(file.id)
-                  ? 'bg-blue-500 border-blue-500 scale-110'
-                  : darkMode
-                    ? 'border-gray-500 hover:border-gray-400'
-                    : 'border-gray-300 hover:border-gray-400'
-              }`}
-              title="Select file"
-            >
-              {selectedFiles.has(file.id) && <Check size={14} className="text-white" />}
-            </div>
+          <div className="col-span-1 flex items-center justify-center">
+            {onToggleFavorite && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavorite(file.id);
+                }}
+                className={`p-1 rounded transition-all ${
+                  darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
+                }`}
+                title={file.is_favorite ? "Remove from favorites" : "Add to favorites"}
+              >
+                <Star
+                  size={18}
+                  className={`transition-all ${
+                    file.is_favorite
+                      ? 'fill-yellow-500 text-yellow-500'
+                      : darkMode
+                        ? 'text-gray-500 hover:text-yellow-500'
+                        : 'text-gray-400 hover:text-yellow-500'
+                  }`}
+                />
+              </button>
+            )}
           </div>
-          <div className={`col-span-5 font-medium flex items-center gap-3 ${
+          <div className={`col-span-5 font-medium flex items-center gap-3 file-name-area ${
             darkMode ? 'text-white' : 'text-gray-900'
           }`}>
             <FileThumbnail
@@ -109,36 +125,14 @@ export default function FileList({
             />
             <span className="truncate">{sanitizeInput(file.name)}</span>
           </div>
-          <div className={`col-span-2 flex items-center text-xs ${
-            darkMode ? 'text-gray-500' : 'text-gray-500'
+          <div className={`col-span-2 flex items-center text-sm ${
+            darkMode ? 'text-gray-400' : 'text-gray-600'
           }`}>{formatBytes(file.size)}</div>
-          <div className={`col-span-2 flex items-center text-xs ${
-            darkMode ? 'text-gray-500' : 'text-gray-500'
-          }`}>{formatDate(file.created_at)}</div>
+          <div className={`col-span-2 flex items-center text-sm ${
+            darkMode ? 'text-gray-400' : 'text-gray-600'
+          }`}>{formatDate(file.last_accessed || file.created_at)}</div>
           <div className="col-span-1 flex justify-center items-center">
-            {onToggleFavorite && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFavorite(file.id);
-                }}
-                className={`p-1.5 rounded-lg transition-all ${
-                  darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
-                }`}
-                title={file.is_favorite ? "Remove from favorites" : "Add to favorites"}
-              >
-                <Star
-                  size={16}
-                  className={`transition-all ${
-                    file.is_favorite
-                      ? 'fill-yellow-500 text-yellow-500'
-                      : darkMode
-                        ? 'text-gray-400 hover:text-yellow-500'
-                        : 'text-gray-500 hover:text-yellow-500'
-                  }`}
-                />
-              </button>
-            )}
+            {/* Spacer for alignment */}
           </div>
           <div className="col-span-1 flex justify-center items-center relative">
             <div className="relative">
@@ -149,9 +143,9 @@ export default function FileList({
                 }}
                 onMouseEnter={() => setHoveredMenuId(file.id)}
                 onMouseLeave={() => setHoveredMenuId(null)}
-                className={`p-1.5 rounded-lg transition-all ${
+                className={`p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
                   darkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-200 text-gray-700'
-                } ${openMenuId === file.id ? 'bg-gray-700' : ''}`}
+                } ${openMenuId === file.id ? 'bg-gray-700 opacity-100' : ''}`}
               >
                 <MoreVertical size={16} />
               </button>

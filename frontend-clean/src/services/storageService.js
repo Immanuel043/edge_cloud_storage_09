@@ -853,6 +853,82 @@ async getFileActivity(fileId, limit = 50) {
   return await response.json();
 }
 
+// Trash/Bin functionality
+async getTrash() {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/trash`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch trash');
+  }
+
+  return await response.json();
+}
+
+async restoreFromTrash(fileId) {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/trash/${fileId}/restore`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Failed to restore file');
+  }
+
+  return await response.json();
+}
+
+async permanentDelete(fileId) {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/trash/${fileId}/permanent`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Failed to permanently delete file');
+  }
+
+  return await response.json();
+}
+
+async emptyTrash() {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/trash/empty`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Failed to empty trash');
+  }
+
+  return await response.json();
+}
+
 // Mock data for development (until backend endpoints are ready)
 getMockRecentFiles() {
   const now = new Date();

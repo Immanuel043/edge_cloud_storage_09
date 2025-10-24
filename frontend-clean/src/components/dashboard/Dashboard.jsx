@@ -11,6 +11,7 @@ import Sidebar from './Sidebar';
 import RecentsView from './RecentsView';
 import FavoritesView from './FavoritesView';
 import SharedWithMeView from './SharedWithMeView';
+import TrashView from './TrashView';
 import AnalyticsView from './AnalyticsView';
 import DeduplicationPanel from './DeduplicationPanel';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -429,6 +430,23 @@ export default function Dashboard() {
           />
         );
 
+      case 'trash':
+        return (
+          <TrashView
+            viewMode={viewMode}
+            darkMode={darkMode}
+            selectedFiles={selectedFiles}
+            onFileClick={selectFile}
+            onFilePreview={setPreviewFile}
+            onFileDownload={downloadFile}
+            onFileShare={handleShare}
+            onVersionHistory={handleVersionHistory}
+            onToggleFavorite={handleToggleFavorite}
+            onFileInfo={setFileInfo}
+            onRefresh={refreshFiles}
+          />
+        );
+
       case 'dedup':
         return (
           <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
@@ -630,7 +648,15 @@ export default function Dashboard() {
         </header>
 
         {/* Main Content */}
-        <div className="px-4 py-6">
+        <div
+          className="px-4 py-6"
+          onClick={(e) => {
+            // Click on empty space (not on file cards) deselects all files
+            if (e.target === e.currentTarget || !e.target.closest('[data-file-card]')) {
+              clearSelection();
+            }
+          }}
+        >
           {/* Storage Stats - only show in cloud-drive view */}
           {activeView === 'cloud-drive' && storageStats && (
             <StorageStats stats={storageStats} darkMode={darkMode} />

@@ -58,8 +58,8 @@ async def list_files(
     # Validate and cap limit
     limit = min(limit, 500)  # Max 500 files per request
 
-    # Build base query
-    query = select(Object).filter(Object.user_id == current_user.id)
+    # Build base query - exclude deleted files
+    query = select(Object).filter(Object.user_id == current_user.id, Object.is_deleted == False)
 
     # Filter by folder
     if folder_id:
@@ -880,20 +880,156 @@ async def delete_file(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete file with cascade handling"""
-    redis_client = await get_redis()
-    
+    """Soft delete file - moves file to trash"""
     result = await db.execute(
-        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == False)
     )
     file_obj = result.scalar_one_or_none()
-    
+
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
+    try:
+        # Soft delete - mark as deleted and set timestamp
+        file_obj.is_deleted = True
+        file_obj.deleted_at = datetime.utcnow()
+        file_name = file_obj.file_name
+
+        # Log activity
+        activity = ActivityLog(
+            user_id=current_user.id,
+            action="file_moved_to_trash",
+            object_id=file_id,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            meta_data={"file_name": file_name}
+        )
+        db.add(activity)
+
+        await db.commit()
+
+        return {"status": "success", "message": "File moved to trash", "file_name": file_name}
+
+    except Exception as e:
+        await db.rollback()
+        print(f"Delete error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/trash", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
+async def list_trash(
+    request: Request,
+    limit: int = 100,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List files in trash (soft-deleted files)"""
+    # Query for deleted files
+    query = select(Object).filter(
+        Object.user_id == current_user.id,
+        Object.is_deleted == True
+    ).order_by(Object.deleted_at.desc()).limit(min(limit, 500)).offset(offset)
+
+    result = await db.execute(query)
+    files = result.scalars().all()
+
+    # Get all file IDs for favorite check
+    file_ids = [f.id for f in files]
+
+    # Batch query for favorites
+    favorites_result = await db.execute(
+        select(Favorite.file_id).filter(
+            Favorite.user_id == current_user.id,
+            Favorite.file_id.in_(file_ids)
+        )
+    )
+    favorite_file_ids = set(favorites_result.scalars().all())
+
+    return [
+        FileResponse(
+            id=str(f.id),
+            name=f.file_name,
+            size=f.file_size,
+            mime_type=f.mime_type,
+            folder_id=str(f.folder_id) if f.folder_id else None,
+            storage_tier=f.storage_tier,
+            backup_status=f.backup_status,
+            created_at=f.created_at,
+            last_accessed=f.last_accessed,
+            updated_at=f.updated_at,
+            path=f.object_path,
+            is_favorite=(f.id in favorite_file_ids),
+        )
+        for f in files
+    ]
+
+
+@router.post("/trash/{file_id}/restore", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
+async def restore_from_trash(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a file from trash"""
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == True)
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found in trash")
+
+    try:
+        # Restore file
+        file_obj.is_deleted = False
+        file_obj.deleted_at = None
+        file_name = file_obj.file_name
+
+        # Log activity
+        activity = ActivityLog(
+            user_id=current_user.id,
+            action="file_restored_from_trash",
+            object_id=file_id,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            meta_data={"file_name": file_name}
+        )
+        db.add(activity)
+
+        await db.commit()
+
+        return {"status": "success", "message": "File restored from trash", "file_name": file_name}
+
+    except Exception as e:
+        await db.rollback()
+        print(f"Restore error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/trash/{file_id}/permanent", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+async def permanent_delete(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a file from trash - cannot be recovered"""
+    redis_client = await get_redis()
+
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == True)
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found in trash")
+
     try:
         # Handle content_blocks with proper reference counting
-        # First, get all blocks for this file
         blocks_result = await db.execute(
             text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
             {"file_id": file_id}
@@ -901,7 +1037,6 @@ async def delete_file(
         file_blocks = blocks_result.fetchall()
 
         for block in file_blocks:
-            # Decrement reference count for each block
             await db.execute(
                 text("""
                     UPDATE content_blocks
@@ -921,7 +1056,7 @@ async def delete_file(
             text("DELETE FROM content_blocks WHERE file_id = :file_id"),
             {"file_id": file_id}
         )
-        
+
         # Handle different storage types
         if file_obj.storage_type == "inline":
             if file_obj.storage_key:
@@ -929,142 +1064,93 @@ async def delete_file(
                     await redis_client.delete(file_obj.storage_key)
                 except Exception as e:
                     print(f"Failed to delete from Redis: {e}")
-        
+
         elif file_obj.storage_type == "single":
             if file_obj.object_path and os.path.exists(file_obj.object_path):
                 try:
                     os.remove(file_obj.object_path)
                 except Exception as e:
                     print(f"Failed to delete file: {e}")
-        
+
         else:  # chunked
             if file_obj.chunk_info:
-                # Handle chunk cleanup for chunked files
                 chunk_info = file_obj.chunk_info
                 upload_id = chunk_info.get("upload_id", str(file_obj.id))
                 chunk_count = chunk_info.get("count", 0)
                 chunk_paths = chunk_info.get("paths", {})
-                
+
                 for i in range(chunk_count):
                     chunk_path = chunk_paths.get(str(i))
                     if not chunk_path:
                         shard = upload_id[:2] if len(upload_id) >= 2 else "00"
                         chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-                    
+
                     if os.path.exists(chunk_path):
                         try:
                             os.remove(chunk_path)
                             print(f"Deleted chunk: {chunk_path}")
                         except Exception as e:
                             print(f"Failed to delete chunk {chunk_path}: {e}")
-        
+
         # Update user storage
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
 
-        # Store file metadata before deletion (object will be detached after delete)
+        # Store file metadata before deletion
         file_name = file_obj.file_name
-        storage_type = file_obj.storage_type
         freed_space = file_obj.file_size
 
-        # Delete the file object
+        # Permanently delete the file object
         await db.delete(file_obj)
 
-        # Log activity BEFORE commit (using stored metadata)
+        # Log activity
         activity = ActivityLog(
             user_id=current_user.id,
-            action="file_deleted",
+            action="file_permanently_deleted",
             object_id=file_id,
             ip_address=request.client.host if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
-            meta_data={"file_name": file_name, "storage_type": storage_type}
+            meta_data={"file_name": file_name}
         )
         db.add(activity)
 
-        # Single commit for both file deletion and activity log
         await db.commit()
 
-        return {"status": "success", "freed_space": freed_space}
-        
+        return {"status": "success", "freed_space": freed_space, "message": "File permanently deleted"}
+
     except Exception as e:
         await db.rollback()
-        print(f"Delete error: {e}")
+        print(f"Permanent delete error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/bulk-delete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
-async def bulk_delete_files(
+
+@router.post("/trash/empty", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+async def empty_trash(
     request: Request,
-    request_data: BulkDeleteRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete multiple files with cascade handling - OPTIMIZED"""
-    file_ids = request_data.file_ids
-
-    if not file_ids:
-        return {"deleted": 0, "freed_space": 0, "deleted_files": [], "failed_files": []}
-
+    """Empty entire trash - permanently delete all files in trash"""
     redis_client = await get_redis()
+
+    # Get all deleted files for current user
+    result = await db.execute(
+        select(Object).filter(Object.user_id == current_user.id, Object.is_deleted == True)
+    )
+    files = result.scalars().all()
+
+    if not files:
+        return {"status": "success", "deleted": 0, "freed_space": 0, "message": "Trash is already empty"}
+
     deleted_count = 0
     freed_space = 0
-    deleted_files = []
-    failed_files = []
 
     try:
-        # OPTIMIZATION 1: Batch fetch all files at once
-        result = await db.execute(
-            select(Object).filter(
-                Object.id.in_(file_ids),
-                Object.user_id == current_user.id
-            )
-        )
-        files = result.scalars().all()
-
-        if not files:
-            return {"deleted": 0, "freed_space": 0, "deleted_files": [], "failed_files": file_ids}
-
-        # Track found vs missing files
-        found_ids = {str(f.id) for f in files}
-        failed_files = [fid for fid in file_ids if fid not in found_ids]
-
-        # OPTIMIZATION 2: Batch handle content blocks with single optimized CTE query
-        file_ids_tuple = tuple(str(f.id) for f in files)
-
-        # Single CTE query to update references and clean up blocks
-        await db.execute(
-            text("""
-                WITH blocks_to_update AS (
-                    -- Find all blocks associated with files being deleted
-                    SELECT DISTINCT block_hash
-                    FROM content_blocks
-                    WHERE file_id = ANY(:file_ids)
-                ),
-                updated_blocks AS (
-                    -- Decrement reference count for affected blocks
-                    UPDATE content_blocks
-                    SET reference_count = reference_count - 1
-                    WHERE block_hash IN (SELECT block_hash FROM blocks_to_update)
-                    RETURNING id, reference_count
-                ),
-                deleted_associations AS (
-                    -- Delete file-block associations for deleted files
-                    DELETE FROM content_blocks
-                    WHERE file_id = ANY(:file_ids)
-                    RETURNING id
-                )
-                -- Clean up blocks with zero references in same transaction
-                DELETE FROM content_blocks
-                WHERE reference_count <= 0
-            """),
-            {"file_ids": file_ids_tuple}
-        )
-
-        # OPTIMIZATION 4: Delete physical files (can be done async in production)
         for file_obj in files:
             try:
-                # Handle different storage types
+                # Handle storage cleanup
                 if file_obj.storage_type == "inline":
                     if file_obj.storage_key:
                         try:
@@ -1086,7 +1172,6 @@ async def bulk_delete_files(
                         chunk_count = chunk_info.get("count", 0)
                         chunk_paths = chunk_info.get("paths", {})
 
-                        # Delete chunks
                         for i in range(chunk_count):
                             chunk_path = chunk_paths.get(str(i))
                             if not chunk_path:
@@ -1101,13 +1186,11 @@ async def bulk_delete_files(
 
                 freed_space += file_obj.file_size
                 deleted_count += 1
-                deleted_files.append(str(file_obj.id))
 
             except Exception as e:
                 print(f"Failed to cleanup file {file_obj.id}: {e}")
-                # Continue with database deletion even if file cleanup fails
 
-        # OPTIMIZATION 5: Batch delete database records
+        # Batch delete database records
         for file_obj in files:
             await db.delete(file_obj)
 
@@ -1115,22 +1198,88 @@ async def bulk_delete_files(
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - freed_space)
 
+        # Log activity
+        activity = ActivityLog(
+            user_id=current_user.id,
+            action="trash_emptied",
+            object_id=None,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            meta_data={"deleted_count": deleted_count, "freed_space": freed_space}
+        )
+        db.add(activity)
+
+        await db.commit()
+
+        return {"status": "success", "deleted": deleted_count, "freed_space": freed_space, "message": f"Emptied trash: {deleted_count} files permanently deleted"}
+
+    except Exception as e:
+        await db.rollback()
+        print(f"Empty trash error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bulk-delete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+async def bulk_delete_files(
+    request: Request,
+    request_data: BulkDeleteRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft delete multiple files - move files to trash"""
+    file_ids = request_data.file_ids
+
+    if not file_ids:
+        return {"deleted": 0, "deleted_files": [], "failed_files": []}
+
+    deleted_count = 0
+    deleted_files = []
+    failed_files = []
+
+    try:
+        # Batch fetch all files at once (exclude already deleted)
+        result = await db.execute(
+            select(Object).filter(
+                Object.id.in_(file_ids),
+                Object.user_id == current_user.id,
+                Object.is_deleted == False
+            )
+        )
+        files = result.scalars().all()
+
+        if not files:
+            return {"deleted": 0, "deleted_files": [], "failed_files": file_ids}
+
+        # Track found vs missing files
+        found_ids = {str(f.id) for f in files}
+        failed_files = [fid for fid in file_ids if fid not in found_ids]
+
+        # Soft delete all files
+        now = datetime.utcnow()
+        for file_obj in files:
+            file_obj.is_deleted = True
+            file_obj.deleted_at = now
+            deleted_count += 1
+            deleted_files.append(str(file_obj.id))
+
         # Commit all changes once
         await db.commit()
 
-        # Log activity (async in new transaction)
+        # Log activity
         if deleted_count > 0:
             await log_activity(
-                db, current_user.id, "bulk_delete", None,
-                {"deleted_count": deleted_count, "freed_space": freed_space},
+                db, current_user.id, "bulk_moved_to_trash", None,
+                {"deleted_count": deleted_count},
                 request
             )
 
         return {
             "deleted": deleted_count,
-            "freed_space": freed_space,
             "deleted_files": deleted_files,
-            "failed_files": failed_files
+            "failed_files": failed_files,
+            "message": f"{deleted_count} files moved to trash"
         }
 
     except Exception as e:

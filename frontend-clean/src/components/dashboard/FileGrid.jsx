@@ -57,53 +57,42 @@ export default function FileGrid({
       {files.map(file => (
         <div
           key={file.id}
-          onClick={() => onFilePreview(file)}
+          data-file-card="true"
+          onClick={() => {
+            // Single click selects file
+            onFileClick(file.id);
+          }}
+          onDoubleClick={(e) => {
+            // Double click opens preview
+            e.stopPropagation();
+            onFilePreview(file);
+          }}
           className={`p-5 rounded-xl relative group transition-all border cursor-pointer ${
             darkMode
               ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
               : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'
           } ${selectedFiles.has(file.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg`}
         >
-          {/* Selection checkbox */}
-          <div
-            className="absolute top-3 left-3 z-10"
-            onClick={(e) => {
-              e.stopPropagation();
-              onFileClick(file.id);
-            }}
-          >
-            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center cursor-pointer transition-all ${
-              selectedFiles.has(file.id)
-                ? 'bg-blue-500 border-blue-500 scale-110'
-                : darkMode
-                  ? 'border-gray-500 hover:border-gray-400'
-                  : 'border-gray-300 hover:border-gray-400'
-            }`}
-            title="Select file">
-              {selectedFiles.has(file.id) && <Check size={14} className="text-white" />}
-            </div>
-          </div>
-
-          {/* Favorite star */}
+          {/* Favorite star - Always visible, top-left */}
           {onToggleFavorite && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleFavorite(file.id);
               }}
-              className={`absolute top-3 right-12 z-10 p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
+              className={`absolute top-3 left-3 z-10 p-1.5 rounded-lg transition-all ${
                 darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
               }`}
               title={file.is_favorite ? "Remove from favorites" : "Add to favorites"}
             >
               <Star
-                size={16}
+                size={18}
                 className={`transition-all ${
                   file.is_favorite
                     ? 'fill-yellow-500 text-yellow-500'
                     : darkMode
-                      ? 'text-gray-400 hover:text-yellow-500'
-                      : 'text-gray-500 hover:text-yellow-500'
+                      ? 'text-gray-500 hover:text-yellow-500'
+                      : 'text-gray-400 hover:text-yellow-500'
                 }`}
               />
             </button>
@@ -248,25 +237,27 @@ export default function FileGrid({
             </div>
           </div>
 
-          <div className="flex flex-col items-center mt-4">
-            <div className="w-full aspect-square flex items-center justify-center mb-4">
+          <div className="flex flex-col items-center mt-4 file-preview-area">
+            <div className="w-full aspect-square flex items-center justify-center mb-3">
               <FileThumbnail
                 file={file}
                 size="large"
                 darkMode={darkMode}
               />
             </div>
-            <p className={`text-sm text-center font-medium truncate w-full px-2 ${
-              darkMode ? 'text-white' : 'text-gray-900'
-            }`} title={file.name}>
-              {sanitizeInput(file.name)}
-            </p>
-            <div className={`flex items-center gap-1.5 mt-1.5 text-xs ${
-              darkMode ? 'text-gray-500' : 'text-gray-400'
-            }`}>
-              <span>{formatBytes(file.size)}</span>
-              <span>•</span>
-              <span>{formatDate(file.created_at)}</span>
+            <div className="w-full px-1 text-center">
+              <p className={`text-sm font-medium line-clamp-2 leading-tight mb-1 ${
+                darkMode ? 'text-white' : 'text-gray-900'
+              }`} title={file.name}>
+                {sanitizeInput(file.name)}
+              </p>
+              <div className={`flex items-center justify-center gap-1.5 text-xs ${
+                darkMode ? 'text-gray-500' : 'text-gray-500'
+              }`}>
+                <span className="font-normal">{formatBytes(file.size)}</span>
+                <span>•</span>
+                <span className="font-normal">{formatDate(file.last_accessed || file.created_at)}</span>
+              </div>
             </div>
           </div>
         </div>
