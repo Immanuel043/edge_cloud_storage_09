@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical } from 'lucide-react';
+import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
@@ -14,6 +14,9 @@ export default function FileGrid({
   onFileShare,
   onFileDelete,
   onVersionHistory,
+  onToggleFavorite,
+  onRename,
+  onFileInfo,
   darkMode
 }) {
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -54,7 +57,8 @@ export default function FileGrid({
       {files.map(file => (
         <div
           key={file.id}
-          className={`p-5 rounded-xl relative group transition-all border ${
+          onClick={() => onFilePreview(file)}
+          className={`p-5 rounded-xl relative group transition-all border cursor-pointer ${
             darkMode
               ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
               : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'
@@ -79,6 +83,31 @@ export default function FileGrid({
               {selectedFiles.has(file.id) && <Check size={14} className="text-white" />}
             </div>
           </div>
+
+          {/* Favorite star */}
+          {onToggleFavorite && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleFavorite(file.id);
+              }}
+              className={`absolute top-3 right-12 z-10 p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
+                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
+              }`}
+              title={file.is_favorite ? "Remove from favorites" : "Add to favorites"}
+            >
+              <Star
+                size={16}
+                className={`transition-all ${
+                  file.is_favorite
+                    ? 'fill-yellow-500 text-yellow-500'
+                    : darkMode
+                      ? 'text-gray-400 hover:text-yellow-500'
+                      : 'text-gray-500 hover:text-yellow-500'
+                }`}
+              />
+            </button>
+          )}
 
           {/* Menu */}
           <div className="absolute top-3 right-3">
@@ -155,6 +184,21 @@ export default function FileGrid({
                         <Share2 size={16} className="text-purple-500" />
                         <span className="font-medium">Share</span>
                       </button>
+                      {onRename && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRename(file);
+                            setOpenMenuId(null);
+                          }}
+                          className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
+                            darkMode ? 'hover:bg-gray-700 text-gray-200' : 'hover:bg-gray-50 text-gray-700'
+                          }`}
+                        >
+                          <Edit2 size={16} className="text-amber-500" />
+                          <span className="font-medium">Rename</span>
+                        </button>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -168,6 +212,21 @@ export default function FileGrid({
                         <Clock size={16} className="text-orange-500" />
                         <span className="font-medium">Version History</span>
                       </button>
+                      {onFileInfo && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onFileInfo(file);
+                            setOpenMenuId(null);
+                          }}
+                          className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
+                            darkMode ? 'hover:bg-gray-700 text-gray-200' : 'hover:bg-gray-50 text-gray-700'
+                          }`}
+                        >
+                          <Info size={16} className="text-cyan-500" />
+                          <span className="font-medium">File information</span>
+                        </button>
+                      )}
                       <div className={`my-1 h-px ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
                       <button
                         onClick={(e) => {

@@ -580,6 +580,21 @@ class StorageService {
     return await response.json();
   }
 
+  async renameFile(token, fileId, newName) {
+    await rateLimiter.checkLimit();
+    const response = await fetch(`${API_URL}/files/${fileId}/rename`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ name: sanitizeInput(newName) })
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to rename file');
+    }
+    return await response.json();
+  }
+
   async createFolder(token, name, parentId) {
     await rateLimiter.checkLimit();
     const response = await fetch(`${API_URL}/folders`, {
@@ -792,6 +807,47 @@ async toggleFavorite(fileId) {
 
   if (!response.ok) {
     throw new Error('Failed to toggle favorite');
+  }
+
+  return await response.json();
+}
+
+// Shared with me - Get files shared by others
+async getSharedWithMe() {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/shared-with-me`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    // If endpoint doesn't exist yet, return empty array
+    console.warn('Shared with me endpoint not available yet');
+    return [];
+  }
+
+  return await response.json();
+}
+
+// Get activity history for a specific file
+async getFileActivity(fileId, limit = 50) {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/files/${fileId}/activity?limit=${limit}`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    console.warn('File activity endpoint not available yet');
+    return [];
   }
 
   return await response.json();

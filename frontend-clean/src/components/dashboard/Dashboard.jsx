@@ -10,6 +10,7 @@ import {
 import Sidebar from './Sidebar';
 import RecentsView from './RecentsView';
 import FavoritesView from './FavoritesView';
+import SharedWithMeView from './SharedWithMeView';
 import AnalyticsView from './AnalyticsView';
 import DeduplicationPanel from './DeduplicationPanel';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -22,6 +23,8 @@ import UploadProgress from './UploadProgress';
 import FilePreview from './FilePreview';
 import ShareOptionsModal from './ShareOptionsModal';
 import VersionHistory from './VersionHistory';
+import RenameModal from './RenameModal';
+import FileInfoPanel from './FileInfoPanel';
 import FilterPanel from './FilterPanel';
 import KeyboardShortcuts from './KeyboardShortcuts';
 import BulkActions from './BulkActions';
@@ -64,6 +67,8 @@ export default function Dashboard() {
   const [shareFile, setShareFile] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const [versionFile, setVersionFile] = useState(null);
+  const [renameFile, setRenameFile] = useState(null);
+  const [fileInfo, setFileInfo] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [filters, setFilters] = useState({
@@ -79,6 +84,8 @@ export default function Dashboard() {
   const [dedupStats, setDedupStats] = useState(null);
   const [dedupLoading, setDedupLoading] = useState(false);
   const [searchResults, setSearchResults] = useState(null);
+  const [showUploadCompleteToast, setShowUploadCompleteToast] = useState(false);
+  const [completedUploadCount, setCompletedUploadCount] = useState(0);
 
 
   useEffect(() => {
@@ -96,6 +103,23 @@ export default function Dashboard() {
       loadDedupStats();
     }
   }, [isAuthenticated, authLoading, showDedupPanel]);
+
+  // Watch for upload completion to show toast
+  useEffect(() => {
+    const uploadValues = Object.values(uploads);
+    const allCompleted = uploadValues.length > 0 &&
+                         uploadValues.every(u => u.status === 'completed');
+
+    if (allCompleted) {
+      setCompletedUploadCount(uploadValues.length);
+      setShowUploadCompleteToast(true);
+
+      // Auto-hide toast after 5 seconds
+      setTimeout(() => {
+        setShowUploadCompleteToast(false);
+      }, 5000);
+    }
+  }, [uploads]);
 
   // Setup keyboard shortcuts
   useKeyboardShortcuts({
@@ -263,6 +287,28 @@ export default function Dashboard() {
     await refreshFiles();
   };
 
+  const handleToggleFavorite = async (fileId) => {
+    try {
+      await storageService.toggleFavorite(fileId);
+      // Refresh files to update favorite status
+      await refreshFiles();
+    } catch (error) {
+      console.error('Failed to toggle favorite:', error);
+      alert('Failed to update favorite status');
+    }
+  };
+
+  const handleRenameFile = async (fileId, newName) => {
+    try {
+      await storageService.renameFile(null, fileId, newName);
+      // Refresh files to show updated name
+      await refreshFiles();
+    } catch (error) {
+      console.error('Failed to rename file:', error);
+      throw error; // Re-throw to show error in modal
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (window.confirm(`Are you sure you want to delete ${selectedFiles.size} files?`)) {
       await bulkDelete(Array.from(selectedFiles));
@@ -366,6 +412,23 @@ export default function Dashboard() {
           />
         );
 
+      case 'shared-with-me':
+        return (
+          <SharedWithMeView
+            viewMode={viewMode}
+            darkMode={darkMode}
+            selectedFiles={selectedFiles}
+            onFileClick={selectFile}
+            onFilePreview={setPreviewFile}
+            onFileDownload={downloadFile}
+            onFileShare={handleShare}
+            onFileDelete={deleteFile}
+            onVersionHistory={handleVersionHistory}
+            onToggleFavorite={handleToggleFavorite}
+            onRename={setRenameFile}
+          />
+        );
+
       case 'dedup':
         return (
           <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
@@ -460,6 +523,9 @@ export default function Dashboard() {
                         onFileShare={handleShare}
                         onFileDelete={deleteFile}
                         onVersionHistory={handleVersionHistory}
+                        onToggleFavorite={handleToggleFavorite}
+                        onRename={setRenameFile}
+                        onFileInfo={setFileInfo}
                         darkMode={darkMode}
                       />
                     ) : (
@@ -474,6 +540,9 @@ export default function Dashboard() {
                         onFileShare={handleShare}
                         onFileDelete={deleteFile}
                         onVersionHistory={handleVersionHistory}
+                        onToggleFavorite={handleToggleFavorite}
+                        onRename={setRenameFile}
+                        onFileInfo={setFileInfo}
                         darkMode={darkMode}
                       />
                     )}
@@ -661,6 +730,55 @@ export default function Dashboard() {
           onRestore={handleVersionRestore}
           darkMode={darkMode}
         />
+      )}
+
+      {renameFile && (
+        <RenameModal
+          file={renameFile}
+          onClose={() => setRenameFile(null)}
+          onRename={handleRenameFile}
+          darkMode={darkMode}
+        />
+      )}
+
+      {fileInfo && (
+        <FileInfoPanel
+          file={fileInfo}
+          onClose={() => setFileInfo(null)}
+          onRename={setRenameFile}
+          darkMode={darkMode}
+        />
+      )}
+
+      {/* Upload Complete Toast */}
+      {showUploadCompleteToast && (
+        <div className="fixed top-4 right-4 z-50 animate-slide-in">
+          <div className={`flex items-center gap-3 px-6 py-4 rounded-xl shadow-2xl border ${
+            darkMode
+              ? 'bg-gray-800 border-gray-700'
+              : 'bg-white border-gray-200'
+          }`}>
+            <div className="flex-shrink-0">
+              <CheckCircle size={24} className="text-green-500" />
+            </div>
+            <div className="flex-1">
+              <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Upload Done!
+              </p>
+              <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                {completedUploadCount} {completedUploadCount === 1 ? 'file' : 'files'} uploaded successfully
+              </p>
+            </div>
+            <button
+              onClick={() => setShowUploadCompleteToast(false)}
+              className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
+                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+              }`}
+            >
+              <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

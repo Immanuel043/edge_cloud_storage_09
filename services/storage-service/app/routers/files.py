@@ -29,6 +29,9 @@ NGINX_STORAGE_BASE = "/app/storage"  # must match nginx alias path
 class BulkDeleteRequest(BaseModel):
     file_ids: List[str]
 
+class RenameRequest(BaseModel):
+    name: str
+
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
@@ -703,6 +706,171 @@ async def get_file_preview(
                 print(f"Warning: Failed to cleanup temp file {temp_file_path}: {e}")
 
 
+@router.patch("/{file_id}/rename", response_model=FileResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
+async def rename_file(
+    file_id: str,
+    rename_request: RenameRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Rename a file
+
+    - **file_id**: UUID of the file to rename
+    - **name**: New file name
+    """
+    try:
+        # Validate file name
+        new_name = rename_request.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="File name cannot be empty")
+
+        if len(new_name) > 255:
+            raise HTTPException(status_code=400, detail="File name too long (max 255 characters)")
+
+        # Check for invalid characters
+        invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+        if any(char in new_name for char in invalid_chars):
+            raise HTTPException(
+                status_code=400,
+                detail=f"File name contains invalid characters: {', '.join(invalid_chars)}"
+            )
+
+        # Get file and verify ownership
+        result = await db.execute(
+            select(Object).where(
+                Object.id == file_id,
+                Object.user_id == current_user.id
+            )
+        )
+        file_obj = result.scalar_one_or_none()
+
+        if not file_obj:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Store old name for activity log
+        old_name = file_obj.file_name
+
+        # Check if name is actually different
+        if old_name == new_name:
+            raise HTTPException(status_code=400, detail="New name is the same as current name")
+
+        # Check for duplicate name in same folder
+        duplicate_check = await db.execute(
+            select(Object).where(
+                Object.user_id == current_user.id,
+                Object.folder_id == file_obj.folder_id,
+                Object.file_name == new_name,
+                Object.id != file_id
+            )
+        )
+        if duplicate_check.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="A file with this name already exists in the same location")
+
+        # Update file name and updated_at timestamp
+        file_obj.file_name = new_name
+        file_obj.updated_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(file_obj)
+
+        # Log activity
+        await log_activity(
+            db,
+            current_user.id,
+            "file_renamed",
+            str(file_id),
+            {"old_name": old_name, "new_name": new_name},
+            request
+        )
+
+        # Return updated file details
+        return FileResponse(
+            id=str(file_obj.id),
+            name=file_obj.file_name,
+            size=file_obj.file_size,
+            mime_type=file_obj.mime_type,
+            folder_id=str(file_obj.folder_id) if file_obj.folder_id else None,
+            storage_tier=file_obj.storage_tier,
+            backup_status=file_obj.backup_status,
+            created_at=file_obj.created_at,
+            last_accessed=file_obj.last_accessed,
+            updated_at=file_obj.updated_at,
+            path=None,  # Can be computed if needed
+            is_favorite=False  # Will be set by query if needed
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        print(f"Rename error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to rename file: {str(e)}")
+
+
+@router.get("/{file_id}/activity", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
+async def get_file_activity(
+    file_id: str,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get activity history for a specific file
+
+    - **file_id**: UUID of the file
+    - **limit**: Maximum number of activity records to return (default 50)
+    """
+    try:
+        # First verify file exists and user has access
+        result = await db.execute(
+            select(Object).where(
+                Object.id == file_id,
+                Object.user_id == current_user.id
+            )
+        )
+        file_obj = result.scalar_one_or_none()
+
+        if not file_obj:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Get activity logs for this file
+        activity_result = await db.execute(
+            select(ActivityLog)
+            .where(
+                ActivityLog.object_id == file_id,
+                ActivityLog.user_id == current_user.id
+            )
+            .order_by(ActivityLog.created_at.desc())
+            .limit(limit)
+        )
+
+        activities = activity_result.scalars().all()
+
+        # Return activity list
+        return [
+            {
+                "id": str(activity.id),
+                "action": activity.action,
+                "object_id": str(activity.object_id) if activity.object_id else None,
+                "ip_address": activity.ip_address,
+                "user_agent": activity.user_agent,
+                "metadata": activity.meta_data,
+                "created_at": activity.created_at,
+            }
+            for activity in activities
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Get file activity error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to get file activity: {str(e)}")
 
 
 @router.delete("/{file_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])

@@ -4,6 +4,7 @@ import {
   Clock,
   Zap,
   Star,
+  Users,
   Brain,
   BarChart3,
   Settings,
@@ -50,6 +51,12 @@ export default function Sidebar({
       label: 'Recents',
       icon: Clock,
       description: 'Recently accessed',
+    },
+    {
+      id: 'shared-with-me',
+      label: 'Shared with me',
+      icon: Users,
+      description: 'Files shared by others',
     },
     {
       id: 'dedup',

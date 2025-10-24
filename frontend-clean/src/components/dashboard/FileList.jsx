@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical } from 'lucide-react';
+import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
@@ -14,6 +14,9 @@ export default function FileList({
   onFileShare,
   onFileDelete,
   onVersionHistory,
+  onToggleFavorite,
+  onRename,
+  onFileInfo,
   darkMode
 }) {
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -26,9 +29,10 @@ export default function FileList({
         darkMode ? 'text-gray-400 border-gray-700' : 'text-gray-500 border-gray-200'
       }`}>
         <div className="col-span-1"></div>
-        <div className="col-span-6">Name</div>
+        <div className="col-span-5">Name</div>
         <div className="col-span-2">Size</div>
         <div className="col-span-2">Modified</div>
+        <div className="col-span-1 text-center">Favorite</div>
         <div className="col-span-1 text-center">Actions</div>
       </div>
 
@@ -50,7 +54,7 @@ export default function FileList({
               <Folder className="text-blue-500" size={16} />
             </div>
           </div>
-          <div className={`col-span-6 font-medium flex items-center ${
+          <div className={`col-span-5 font-medium flex items-center ${
             darkMode ? 'text-white' : 'text-gray-900'
           }`}>
             {sanitizeInput(folder.name)}
@@ -62,6 +66,7 @@ export default function FileList({
             darkMode ? 'text-gray-500' : 'text-gray-400'
           }`}>{formatDate(folder.created_at)}</div>
           <div className="col-span-1"></div>
+          <div className="col-span-1"></div>
         </div>
       ))}
 
@@ -69,7 +74,8 @@ export default function FileList({
       {files.map(file => (
         <div
           key={file.id}
-          className={`group grid grid-cols-12 gap-4 px-4 py-2.5 transition-all border-b ${
+          onClick={() => onFilePreview(file)}
+          className={`group grid grid-cols-12 gap-4 px-4 py-2.5 transition-all border-b cursor-pointer ${
             darkMode
               ? 'hover:bg-gray-800/40 border-gray-800'
               : 'hover:bg-gray-50/80 border-gray-100'
@@ -93,7 +99,7 @@ export default function FileList({
               {selectedFiles.has(file.id) && <Check size={14} className="text-white" />}
             </div>
           </div>
-          <div className={`col-span-6 font-medium flex items-center gap-3 ${
+          <div className={`col-span-5 font-medium flex items-center gap-3 ${
             darkMode ? 'text-white' : 'text-gray-900'
           }`}>
             <FileThumbnail
@@ -109,6 +115,31 @@ export default function FileList({
           <div className={`col-span-2 flex items-center text-xs ${
             darkMode ? 'text-gray-500' : 'text-gray-500'
           }`}>{formatDate(file.created_at)}</div>
+          <div className="col-span-1 flex justify-center items-center">
+            {onToggleFavorite && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavorite(file.id);
+                }}
+                className={`p-1.5 rounded-lg transition-all ${
+                  darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
+                }`}
+                title={file.is_favorite ? "Remove from favorites" : "Add to favorites"}
+              >
+                <Star
+                  size={16}
+                  className={`transition-all ${
+                    file.is_favorite
+                      ? 'fill-yellow-500 text-yellow-500'
+                      : darkMode
+                        ? 'text-gray-400 hover:text-yellow-500'
+                        : 'text-gray-500 hover:text-yellow-500'
+                  }`}
+                />
+              </button>
+            )}
+          </div>
           <div className="col-span-1 flex justify-center items-center relative">
             <div className="relative">
               <button
@@ -184,6 +215,21 @@ export default function FileList({
                       <Share2 size={16} className="text-purple-500" />
                       <span className="font-medium">Share</span>
                     </button>
+                    {onRename && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRename(file);
+                          setOpenMenuId(null);
+                        }}
+                        className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
+                          darkMode ? 'hover:bg-gray-700 text-gray-200' : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <Edit2 size={16} className="text-amber-500" />
+                        <span className="font-medium">Rename</span>
+                      </button>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -197,6 +243,21 @@ export default function FileList({
                       <Clock size={16} className="text-orange-500" />
                       <span className="font-medium">Version History</span>
                     </button>
+                    {onFileInfo && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onFileInfo(file);
+                          setOpenMenuId(null);
+                        }}
+                        className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
+                          darkMode ? 'hover:bg-gray-700 text-gray-200' : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <Info size={16} className="text-cyan-500" />
+                        <span className="font-medium">File information</span>
+                      </button>
+                    )}
                     <div className={`my-1 h-px ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
                     <button
                       onClick={(e) => {
