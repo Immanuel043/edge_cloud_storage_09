@@ -9,7 +9,11 @@ services:
       POSTGRES_DB: edge_cloud
       POSTGRES_USER: edge_admin
       POSTGRES_PASSWORD: secure_password
-    command: postgres -c max_connections=200
+    command: >
+      postgres
+      -c max_connections=200
+      -c max_locks_per_transaction=256
+      -c shared_buffers=256MB
     ports:
       - "5432:5432"
     volumes:

@@ -162,6 +162,21 @@ class BackgroundDeduplicationService:
                     existing_object=file_obj  # Pass existing object to update in-place
                 )
 
+                # If dedup was skipped (file too large), just keep the original storage
+                if dedup_result is None:
+                    print(f"Deduplication skipped for {session['name']} - file too large, keeping original storage")
+                    await redis_client.setex(
+                        f"dedup:job:{file_id}",
+                        7200,
+                        json.dumps({
+                            "status": "skipped",
+                            "reason": "file_too_large",
+                            "completed_at": datetime.utcnow().isoformat()
+                        })
+                    )
+                    self.active_jobs.pop(file_id, None)
+                    return
+
                 # Update storage usage
                 if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
                     actual_saved = dedup_result.get('saved_size', 0)

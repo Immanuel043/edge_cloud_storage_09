@@ -565,21 +565,48 @@ async def get_file_preview(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Generate file preview/thumbnail for all supported file types
+    Generate file preview/thumbnail for all supported file types with Redis caching
 
     Supports:
     - Images (JPG, PNG, GIF, WebP, etc.)
     - PDFs (first page thumbnail)
-    - Videos (frame extraction)
+    - Videos (frame extraction - optimized with ffmpeg)
     - Documents (DOCX, TXT, code files)
     - Placeholders for audio, archives, etc.
 
     Size options: small (150x150), medium (400x400), large (800x800)
+
+    Features:
+    - Redis caching for fast repeated access (7-30 day TTL)
+    - Optimized video processing with ffmpeg
+    - Async generation to avoid blocking
     """
     from ..services.preview_generator import preview_generator
     import base64
     import aiofiles
     import tempfile
+    from ..database import get_redis
+
+    # Get Redis client
+    redis = await get_redis()
+
+    # Check cache first
+    cache_key = f"preview:{file_id}:{size}"
+    cached_preview = await redis.get(cache_key)
+
+    if cached_preview:
+        logger.info(f"✅ Preview cache HIT for {file_id} (size: {size})")
+        # Cached preview is stored as raw bytes
+        return Response(
+            content=cached_preview,
+            media_type='image/jpeg',
+            headers={
+                "Cache-Control": "public, max-age=2592000",  # 30 days
+                "X-Cache": "HIT"
+            }
+        )
+
+    logger.info(f"❌ Preview cache MISS for {file_id} (size: {size}) - generating...")
 
     result = await db.execute(
         select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
@@ -688,12 +715,21 @@ async def get_file_preview(
             file_name=file_obj.file_name
         )
 
-        # Step 3: Return preview
+        # Step 3: Cache the generated preview in Redis
+        # TTL: 7 days for videos (large, expensive to generate), 30 days for images/docs
+        is_video = file_obj.mime_type and file_obj.mime_type.startswith('video/')
+        cache_ttl = 604800 if is_video else 2592000  # 7 days vs 30 days
+
+        await redis.setex(cache_key, cache_ttl, preview_bytes)
+        logger.info(f"📦 Cached preview for {file_id} (size: {size}, TTL: {cache_ttl}s)")
+
+        # Step 4: Return preview
         return Response(
             content=preview_bytes,
             media_type=content_type,
             headers={
-                "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                "Cache-Control": f"public, max-age={cache_ttl}",
+                "X-Cache": "MISS"
             }
         )
 

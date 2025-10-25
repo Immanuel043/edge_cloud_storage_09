@@ -14,6 +14,7 @@ import json
 import xxhash  # For faster non-cryptographic hashing
 from collections import defaultdict
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +36,18 @@ class EnhancedDeduplicationService:
         self.max_block_size = 8 * 1024 * 1024   # 8MB max
         self.cas_path = getattr(settings, 'CAS_PATH', '/app/storage/cas')
         self.enable_cross_user_dedup = getattr(settings, 'CROSS_USER_DEDUP', False)
-        
+
         # Rabin fingerprinting parameters for CDC
         self.window_size = 48
         self.prime = 3
         self.modulus = (1 << 13) - 1  # For average 4MB chunks
-        
+
+        # Size limits for deduplication
+        self.max_dedup_size = 1024 * 1024 * 1024  # 1GB - skip dedup for larger files
+
+        # Thread pool for parallel hashing
+        self.hash_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hash_worker")
+
         # Bloom filter for quick duplicate detection (optional)
         self._init_bloom_filter()
         
@@ -61,7 +68,24 @@ class EnhancedDeduplicationService:
     def calculate_weak_hash(self, data: bytes) -> str:
         """Calculate fast weak hash for initial duplicate detection"""
         return xxhash.xxh64(data).hexdigest()
-    
+
+    async def calculate_hashes_parallel(self, chunks: List[bytes]) -> List[str]:
+        """
+        Calculate SHA-256 hashes for multiple chunks in parallel using thread pool.
+        This significantly speeds up hashing for large files with many chunks.
+        """
+        loop = asyncio.get_event_loop()
+
+        # Create hash tasks for all chunks
+        hash_tasks = [
+            loop.run_in_executor(self.hash_executor, self.calculate_block_hash, chunk)
+            for chunk in chunks
+        ]
+
+        # Wait for all hashes to complete in parallel
+        hashes = await asyncio.gather(*hash_tasks)
+        return hashes
+
     def find_chunk_boundaries(self, data: bytes) -> List[int]:
         """
         Content-defined chunking using rolling hash.
@@ -105,20 +129,43 @@ class EnhancedDeduplicationService:
         """
         Perform deduplication before encryption for better dedup ratios.
         This finds duplicate blocks across all users if enabled.
+
+        Uses parallel hashing for improved performance on large files.
         """
+        total_size = len(file_data)
+
+        # Check size limit - skip dedup for very large files (>1GB)
+        if total_size > self.max_dedup_size:
+            logger.warning(
+                f"File {file_name} ({total_size/1024/1024:.1f}MB) exceeds dedup limit "
+                f"({self.max_dedup_size/1024/1024:.1f}MB) - skipping deduplication"
+            )
+            return None  # Signal to caller to use regular storage
+
         blocks = []
         boundaries = self.find_chunk_boundaries(file_data)
-        
-        total_size = len(file_data)
+
+        # Extract all chunks first
+        chunks = []
+        start = 0
+        for boundary in boundaries:
+            chunk = file_data[start:boundary]
+            chunks.append(chunk)
+            start = boundary
+
+        # Calculate hashes in parallel for better performance
+        logger.info(f"Calculating hashes for {len(chunks)} chunks in parallel...")
+        block_hashes = await self.calculate_hashes_parallel(chunks)
+
         deduplicated_size = 0
         saved_size = 0
         new_blocks = []
         duplicate_blocks = []
-        
+
+        # Process each chunk with its pre-calculated hash
         start = 0
-        for boundary in boundaries:
-            block = file_data[start:boundary]
-            block_hash = self.calculate_block_hash(block)
+        for i, (boundary, block_hash) in enumerate(zip(boundaries, block_hashes)):
+            block = chunks[i]
             
             # Quick check with bloom filter
             is_potential_duplicate = False
@@ -227,12 +274,19 @@ class EnhancedDeduplicationService:
     ) -> Dict:
         """
         Enhanced file storage with pre-encryption deduplication.
+
+        Returns None if file exceeds size limits and should use regular storage.
         """
         try:
             # Perform deduplication analysis
             dedup_result = await self.deduplicate_before_encryption(
                 file_data, file_name, user_id, db
             )
+
+            # If dedup was skipped due to size limits, return None
+            if dedup_result is None:
+                logger.info(f"Skipping deduplication for {file_name} - using regular storage")
+                return None
             
             # Calculate file-level hash
             file_hash = self.calculate_block_hash(file_data)

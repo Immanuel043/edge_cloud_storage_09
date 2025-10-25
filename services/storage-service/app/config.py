@@ -13,7 +13,7 @@ class Settings:
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY") or secrets.token_urlsafe(32)
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 120))  # 2 hours (was 30 min)
     ENABLE_HTTPS: bool = os.getenv("ENABLE_HTTPS", "false").lower() == "true"
     
     # Database

@@ -28,6 +28,15 @@ except ImportError:
     HAS_VIDEO_SUPPORT = False
     logger.warning("OpenCV not installed - video previews disabled")
 
+# Check for ffmpeg (faster video processing)
+try:
+    import subprocess
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=2)
+    HAS_FFMPEG = result.returncode == 0
+except Exception:
+    HAS_FFMPEG = False
+    logger.warning("ffmpeg not found - falling back to OpenCV for video previews")
+
 try:
     from docx import Document  # python-docx
     HAS_DOCX_SUPPORT = True
@@ -189,7 +198,95 @@ class PreviewGenerator:
         file_path: str,
         size: Tuple[int, int]
     ) -> Tuple[bytes, str]:
-        """Extract thumbnail from video (frame at 10% duration)"""
+        """
+        Extract thumbnail from video (frame at 10% duration)
+
+        Uses ffmpeg if available (much faster), falls back to OpenCV
+        """
+        # Try ffmpeg first (10-50x faster than OpenCV)
+        if HAS_FFMPEG:
+            try:
+                return await self._generate_video_preview_ffmpeg(file_path, size)
+            except Exception as e:
+                logger.warning(f"ffmpeg preview failed, falling back to OpenCV: {e}")
+
+        # Fallback to OpenCV
+        return await self._generate_video_preview_opencv(file_path, size)
+
+    async def _generate_video_preview_ffmpeg(
+        self,
+        file_path: str,
+        size: Tuple[int, int]
+    ) -> Tuple[bytes, str]:
+        """Fast video frame extraction using ffmpeg"""
+
+        def _extract_frame_ffmpeg():
+            import subprocess
+
+            # Create temp output file
+            output_path = tempfile.mktemp(suffix='.jpg')
+
+            try:
+                # Extract frame at 5 seconds (most videos have content by then)
+                # -ss 5: seek to 5 seconds
+                # -i: input file
+                # -frames:v 1: extract 1 frame
+                # -q:v 2: high quality (1-31, lower is better)
+                cmd = [
+                    'ffmpeg',
+                    '-ss', '5',           # Seek to 5 seconds
+                    '-i', file_path,       # Input file
+                    '-frames:v', '1',      # Extract 1 frame
+                    '-q:v', '2',           # High quality
+                    '-f', 'image2',        # Format
+                    '-y',                  # Overwrite output
+                    output_path
+                ]
+
+                # Run ffmpeg with timeout
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=30,
+                    check=False
+                )
+
+                # If failed, try at start of video
+                if result.returncode != 0:
+                    cmd[2] = '0.1'  # Try at 0.1 seconds instead
+                    result = subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+
+                # Read extracted frame
+                with Image.open(output_path) as img:
+                    # Convert to RGB if needed
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+
+                    # Resize maintaining aspect ratio
+                    img.thumbnail(size, Image.Resampling.LANCZOS)
+
+                    # Save to bytes
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='JPEG', quality=85, optimize=True)
+                    return buffer.getvalue()
+
+            finally:
+                # Cleanup temp file
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except:
+                        pass
+
+        thumbnail_bytes = await asyncio.to_thread(_extract_frame_ffmpeg)
+        return thumbnail_bytes, 'image/jpeg'
+
+    async def _generate_video_preview_opencv(
+        self,
+        file_path: str,
+        size: Tuple[int, int]
+    ) -> Tuple[bytes, str]:
+        """Extract thumbnail from video using OpenCV (fallback)"""
 
         def _extract_frame():
             # Try multiple times to read different frames
