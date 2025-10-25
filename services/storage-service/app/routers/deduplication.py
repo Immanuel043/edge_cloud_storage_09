@@ -11,6 +11,7 @@ import logging
 from ..dependencies import get_db, get_current_user
 from ..models.database import User, Object
 from ..services.deduplication_enhanced import enhanced_dedup_service
+from ..services.dedup_queue import smart_dedup_queue
 
 # Get allowed emails from environment variable
 ALLOWED_GC_EMAILS = os.getenv("ALLOWED_GC_EMAILS", "").split(",")
@@ -250,3 +251,251 @@ async def run_garbage_collection(
     )
     
     return {"status": "gc_initiated", "authorized_user": current_user.email}
+
+
+@router.get("/analytics/detailed")
+async def get_detailed_analytics(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Enhanced analytics with classification breakdown
+
+    Returns:
+    - Classification statistics (skip/inline/async counts)
+    - Skip reason breakdown (compressed, encrypted, etc.)
+    - Top duplicate blocks
+    - Storage efficiency metrics
+    """
+
+    # Get classification breakdown from dedup_info JSON field
+    classification_stats = await db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'skip') as skipped,
+            COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'inline') as inline,
+            COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'async') as async,
+            COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' IS NULL) as unclassified,
+            SUM(file_size) FILTER (WHERE dedup_info->>'classification_mode' = 'skip') as skipped_bytes
+        FROM objects
+        WHERE user_id = :user_id
+    """), {"user_id": str(current_user.id)})
+
+    class_stats = classification_stats.first()
+
+    # Get skip reason breakdown
+    skip_reasons = await db.execute(text("""
+        SELECT
+            dedup_info->>'classification_reason' as reason,
+            COUNT(*) as count,
+            SUM(file_size) as total_bytes
+        FROM objects
+        WHERE user_id = :user_id
+        AND dedup_info->>'classification_mode' = 'skip'
+        GROUP BY dedup_info->>'classification_reason'
+        ORDER BY count DESC
+        LIMIT 10
+    """), {"user_id": str(current_user.id)})
+
+    # Get top duplicate blocks
+    top_duplicates = await db.execute(text("""
+        SELECT
+            cb.block_hash,
+            cb.block_size,
+            cb.reference_count,
+            cb.block_size * (cb.reference_count - 1) as bytes_saved
+        FROM content_blocks cb
+        JOIN objects o ON cb.file_id = o.id
+        WHERE o.user_id = :user_id
+        AND cb.reference_count > 1
+        ORDER BY bytes_saved DESC
+        LIMIT 10
+    """), {"user_id": str(current_user.id)})
+
+    return {
+        "classification": {
+            "skipped": class_stats.skipped or 0,
+            "inline": class_stats.inline or 0,
+            "async": class_stats.async or 0,
+            "unclassified": class_stats.unclassified or 0,
+            "skipped_bytes": class_stats.skipped_bytes or 0
+        },
+        "skip_reasons": [
+            {
+                "reason": row.reason,
+                "count": row.count,
+                "total_bytes": row.total_bytes
+            }
+            for row in skip_reasons
+        ],
+        "top_duplicates": [
+            {
+                "hash": row.block_hash[:12] + "...",
+                "size": row.block_size,
+                "references": row.reference_count,
+                "bytes_saved": row.bytes_saved
+            }
+            for row in top_duplicates
+        ]
+    }
+
+
+@router.get("/analytics/efficiency")
+async def get_efficiency_breakdown(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Efficiency metrics by file type and size band
+
+    Shows which file types benefit most from deduplication
+    """
+
+    # Get dedup efficiency by extension
+    by_extension = await db.execute(text("""
+        WITH file_extensions AS (
+            SELECT
+                LOWER(substring(file_name from '\\.([^.]+)$')) as ext,
+                file_size,
+                (dedup_info->>'saved_size')::bigint as saved_size
+            FROM objects
+            WHERE user_id = :user_id
+            AND storage_type IN ('content_addressed', 'deduplicated_reference')
+            AND dedup_info->>'saved_size' IS NOT NULL
+        )
+        SELECT
+            ext,
+            COUNT(*) as file_count,
+            SUM(file_size) as total_logical,
+            SUM(saved_size) as total_saved,
+            ROUND(AVG(saved_size::numeric / NULLIF(file_size, 0) * 100), 2) as avg_dedup_ratio
+        FROM file_extensions
+        WHERE ext IS NOT NULL
+        GROUP BY ext
+        HAVING COUNT(*) >= 2  -- At least 2 files
+        ORDER BY total_saved DESC
+        LIMIT 15
+    """), {"user_id": str(current_user.id)})
+
+    # Get dedup efficiency by size band
+    by_size = await db.execute(text("""
+        WITH size_bands AS (
+            SELECT
+                CASE
+                    WHEN file_size < 10485760 THEN '0-10MB'
+                    WHEN file_size < 104857600 THEN '10-100MB'
+                    WHEN file_size < 1073741824 THEN '100MB-1GB'
+                    ELSE '1GB+'
+                END as size_band,
+                file_size,
+                (dedup_info->>'saved_size')::bigint as saved_size
+            FROM objects
+            WHERE user_id = :user_id
+            AND storage_type IN ('content_addressed', 'deduplicated_reference')
+            AND dedup_info->>'saved_size' IS NOT NULL
+        )
+        SELECT
+            size_band,
+            COUNT(*) as file_count,
+            SUM(file_size) as total_logical,
+            SUM(saved_size) as total_saved,
+            ROUND(AVG(saved_size::numeric / NULLIF(file_size, 0) * 100), 2) as avg_dedup_ratio
+        FROM size_bands
+        GROUP BY size_band
+        ORDER BY
+            CASE size_band
+                WHEN '0-10MB' THEN 1
+                WHEN '10-100MB' THEN 2
+                WHEN '100MB-1GB' THEN 3
+                ELSE 4
+            END
+    """), {"user_id": str(current_user.id)})
+
+    return {
+        "by_extension": [
+            {
+                "extension": row.ext,
+                "file_count": row.file_count,
+                "total_logical": row.total_logical,
+                "total_saved": row.total_saved,
+                "avg_dedup_ratio": float(row.avg_dedup_ratio or 0)
+            }
+            for row in by_extension
+        ],
+        "by_size_band": [
+            {
+                "size_band": row.size_band,
+                "file_count": row.file_count,
+                "total_logical": row.total_logical,
+                "total_saved": row.total_saved,
+                "avg_dedup_ratio": float(row.avg_dedup_ratio or 0)
+            }
+            for row in by_size
+        ]
+    }
+
+
+@router.get("/queue/status")
+async def get_queue_status(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get smart queue status
+
+    Returns:
+    - Queue size by priority
+    - Active jobs count
+    - Circuit breaker health
+    - User-specific job count
+    """
+
+    # Get overall queue status
+    queue_status = await smart_dedup_queue.get_status()
+
+    # Get user-specific status
+    user_status = smart_dedup_queue.get_user_status(str(current_user.id))
+
+    return {
+        "queue": queue_status,
+        "user": user_status,
+        "recommendations": _get_recommendations(queue_status, user_status)
+    }
+
+
+def _get_recommendations(queue_status: Dict, user_status: Dict) -> list:
+    """Generate smart recommendations based on queue status"""
+    recommendations = []
+
+    # Check circuit breaker
+    if queue_status["circuit_breaker"]["state"] == "OPEN":
+        recommendations.append({
+            "type": "warning",
+            "message": "System overloaded - uploads may be delayed",
+            "action": "Wait a few minutes before uploading large files"
+        })
+
+    # Check user quota
+    if user_status["jobs_in_queue"] >= user_status["max_allowed"] * 0.8:
+        recommendations.append({
+            "type": "info",
+            "message": f"You have {user_status['jobs_in_queue']} files in queue",
+            "action": f"Maximum {user_status['max_allowed']} files allowed per user"
+        })
+
+    # Check queue congestion
+    total_queue = queue_status["queue_size"]
+    max_queue = queue_status["capacity"]["max_queue_size"]
+
+    if total_queue >= max_queue * 0.8:
+        recommendations.append({
+            "type": "warning",
+            "message": "Deduplication queue is congested",
+            "action": "Consider uploading smaller files or waiting for queue to clear"
+        })
+    elif total_queue < max_queue * 0.2:
+        recommendations.append({
+            "type": "success",
+            "message": "System running smoothly",
+            "action": "Good time to upload large files"
+        })
+
+    return recommendations

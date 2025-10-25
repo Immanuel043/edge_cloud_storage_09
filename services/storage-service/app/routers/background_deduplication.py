@@ -2,6 +2,8 @@
 """
 Background Deduplication Service
 Processes uploaded files asynchronously without blocking upload completion
+
+Uses SmartDeduplicationQueue for priority-based processing with backpressure.
 """
 
 import asyncio
@@ -16,8 +18,12 @@ import os
 from ..models.database import Object, User
 from ..services.encryption import encryption_service
 from ..services.deduplication_enhanced import enhanced_dedup_service
+from ..services.dedup_queue import smart_dedup_queue
 from ..database import get_db, get_redis
 import mimetypes
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BackgroundDeduplicationService:
@@ -25,31 +31,23 @@ class BackgroundDeduplicationService:
 
     def __init__(self, max_concurrent_dedups: int = 2):
         self.max_concurrent = max_concurrent_dedups
-        self.semaphore = asyncio.Semaphore(max_concurrent_dedups)
-        self.active_jobs = {}
-        self.queue = asyncio.Queue()
-        self.worker_task = None
         self.gc_task = None
 
     async def start(self):
-        """Start background worker and garbage collection"""
-        if not self.worker_task or self.worker_task.done():
-            self.worker_task = asyncio.create_task(self._worker())
-            print("Background deduplication worker started")
+        """Start smart queue and garbage collection"""
+        # Start smart queue (replaces old worker)
+        await smart_dedup_queue.start()
+        logger.info("Smart deduplication queue started")
 
         if not self.gc_task or self.gc_task.done():
             self.gc_task = asyncio.create_task(self._garbage_collector())
-            print("Garbage collection worker started")
+            logger.info("Garbage collection worker started")
 
     async def stop(self):
-        """Stop background worker gracefully"""
-        if self.worker_task and not self.worker_task.done():
-            self.worker_task.cancel()
-            try:
-                await self.worker_task
-            except asyncio.CancelledError:
-                pass
-            print("Background deduplication worker stopped")
+        """Stop background workers gracefully"""
+        # Stop smart queue
+        await smart_dedup_queue.stop()
+        logger.info("Smart deduplication queue stopped")
 
         if self.gc_task and not self.gc_task.done():
             self.gc_task.cancel()
@@ -57,16 +55,26 @@ class BackgroundDeduplicationService:
                 await self.gc_task
             except asyncio.CancelledError:
                 pass
-            print("Garbage collection worker stopped")
+            logger.info("Garbage collection worker stopped")
     
     async def enqueue_for_dedup(
         self,
         file_id: str,
         upload_id: str,
         user_id: str,
-        session_data: Dict
+        session_data: Dict,
+        priority: int = 2
     ):
-        """Add file to deduplication queue"""
+        """
+        Add file to smart deduplication queue with priority
+
+        Args:
+            file_id: File UUID
+            upload_id: Upload session ID
+            user_id: User ID
+            session_data: Upload session metadata
+            priority: 1=high, 2=medium, 3=low (from classification)
+        """
         job = {
             "file_id": file_id,
             "upload_id": upload_id,
@@ -74,42 +82,49 @@ class BackgroundDeduplicationService:
             "session": session_data,
             "enqueued_at": datetime.utcnow().isoformat()
         }
-        
-        await self.queue.put(job)
-        self.active_jobs[file_id] = "queued"
-        
-        print(f"Queued for deduplication: {session_data['name']} (file_id: {file_id})")
-        
-        redis_client = await get_redis()
-        await redis_client.setex(
-            f"dedup:job:{file_id}",
-            7200,
-            json.dumps({
-                "status": "queued",
-                "enqueued_at": job["enqueued_at"]
-            })
-        )
-    
-    async def _worker(self):
-        """Background worker that processes dedup queue"""
-        print("Background deduplication worker running...")
-        
-        while True:
-            try:
-                job = await self.queue.get()
-                
-                async with self.semaphore:
-                    await self._process_dedup_job(job)
-                
-                self.queue.task_done()
-                
-            except asyncio.CancelledError:
-                print("Worker cancelled")
-                break
-            except Exception as e:
-                print(f"Worker error: {e}")
-                await asyncio.sleep(1)
-    
+
+        # Enqueue with priority and backpressure checks
+        result = await smart_dedup_queue.enqueue(job, priority=priority, user_id=user_id)
+
+        if result["success"]:
+            logger.info(
+                f"📋 Queued for deduplication: {session_data['name']} "
+                f"(priority={priority}, position={result['queue_position']})"
+            )
+
+            # Store status in Redis
+            redis_client = await get_redis()
+            await redis_client.setex(
+                f"dedup:job:{file_id}",
+                7200,
+                json.dumps({
+                    "status": "queued",
+                    "priority": priority,
+                    "queue_position": result["queue_position"],
+                    "estimated_wait": result["estimated_wait"],
+                    "enqueued_at": job["enqueued_at"]
+                })
+            )
+        else:
+            logger.warning(
+                f"⚠️ Failed to enqueue {session_data['name']}: {result['reason']}"
+            )
+
+            # Store rejection in Redis
+            redis_client = await get_redis()
+            await redis_client.setex(
+                f"dedup:job:{file_id}",
+                7200,
+                json.dumps({
+                    "status": "rejected",
+                    "reason": result["reason"],
+                    "message": result["message"],
+                    "rejected_at": datetime.utcnow().isoformat()
+                })
+            )
+
+        return result
+
     async def _process_dedup_job(self, job: Dict):
         """Process a single deduplication job"""
         file_id = job["file_id"]

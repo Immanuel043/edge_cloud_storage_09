@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from ..services.deduplication_enhanced import enhanced_dedup_service
 from .background_deduplication import background_dedup_service
+from ..services.dedup_classifier import dedup_classifier
 from ..services.search_service import search_service
 from ..services.virus_scanner import get_virus_scanner
 from ..services.dlp_service import get_dlp_service
@@ -600,20 +601,72 @@ async def complete_upload(
 
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
-    # ============ BACKGROUND DEDUPLICATION ============
-    # Queue for background deduplication if file > 10MB
-    enable_dedup = session["size"] > 10 * 1024 * 1024 and storage_strategy in ["single", "chunked"]
+    # ============ SMART DEDUPLICATION CLASSIFICATION ============
+    # Classify file to determine optimal dedup strategy
+    file_classification = None
+    enable_dedup = False
+
+    if storage_strategy in ["single", "chunked"] and session["size"] > 1_048_576:  # > 1MB
+        try:
+            # Get file path for classification
+            file_path = session.get("storage_path") if storage_strategy == "single" else None
+
+            # If chunked, we can't classify yet (no single file)
+            # For now, only classify single files
+            if file_path and os.path.exists(file_path):
+                file_classification = await dedup_classifier.classify_file(
+                    file_path=file_path,
+                    file_size=session["size"],
+                    filename=session["name"]
+                )
+
+                logger.info(
+                    f"📊 Classification: {session['name']} → "
+                    f"mode={file_classification.dedup_mode}, "
+                    f"reason={file_classification.reason}, "
+                    f"strategy={file_classification.chunk_strategy}"
+                )
+
+                # Store classification metadata in dedup_info
+                file_obj.dedup_info = {
+                    "classification_mode": file_classification.dedup_mode,
+                    "classification_reason": file_classification.reason,
+                    "classification_priority": file_classification.priority,
+                    "chunk_strategy": file_classification.chunk_strategy,
+                    "classified_at": datetime.utcnow().isoformat()
+                }
+                await db.commit()
+
+                # Enable dedup only if not skipped
+                enable_dedup = file_classification.dedup_mode in ['inline', 'async']
+            else:
+                # Fallback to old logic for chunked files
+                enable_dedup = session["size"] > 10 * 1024 * 1024
+
+        except Exception as e:
+            logger.error(f"Classification failed for {session['name']}: {e}")
+            # Fallback to old logic
+            enable_dedup = session["size"] > 10 * 1024 * 1024
 
     if enable_dedup:
-        print(f"📋 Queuing {session['name']} for background deduplication")
+        priority = file_classification.priority if file_classification else 2
+        print(
+            f"📋 Queuing {session['name']} for background deduplication "
+            f"(priority={priority}, reason={file_classification.reason if file_classification else 'size-based'})"
+        )
         # Queue job without awaiting - fire and forget
         asyncio.create_task(
             background_dedup_service.enqueue_for_dedup(
                 file_id=str(file_id),
                 upload_id=upload_id,
                 user_id=str(current_user.id),
-                session_data=session
+                session_data=session,
+                priority=priority  # Pass priority from classification
             )
+        )
+    elif file_classification and file_classification.dedup_mode == 'skip':
+        logger.info(
+            f"⏭️  Skipping dedup for {session['name']}: {file_classification.reason}"
         )
 
     # ============ SECURITY SCANNING (BACKGROUND) ============

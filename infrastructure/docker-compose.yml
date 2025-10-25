@@ -12,8 +12,14 @@ services:
     command: >
       postgres
       -c max_connections=200
-      -c max_locks_per_transaction=256
-      -c shared_buffers=256MB
+      -c max_locks_per_transaction=512
+      -c shared_buffers=512MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=1GB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c max_wal_size=2GB
     ports:
       - "5432:5432"
     volumes:
@@ -28,9 +34,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
         reservations:
-          memory: 512M
+          memory: 1G
 
   # Redis Cache & Session Store
   redis:

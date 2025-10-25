@@ -10,6 +10,7 @@ import aiofiles
 from ..models.database import Object, ContentBlock, User
 from ..config import settings
 from ..services.encryption import encryption_service
+from ..services.dedup_db_batch import batch_writer
 import json
 import xxhash  # For faster non-cryptographic hashing
 from collections import defaultdict
@@ -162,33 +163,45 @@ class EnhancedDeduplicationService:
         new_blocks = []
         duplicate_blocks = []
 
+        # Collect all block hashes for batch lookup
+        block_hash_to_chunk = {}
+        for i, block_hash in enumerate(block_hashes):
+            block_hash_to_chunk[block_hash] = {
+                'index': i,
+                'data': chunks[i],
+                'boundary': boundaries[i]
+            }
+
+        # Batch lookup existing blocks
+        query = select(ContentBlock).where(ContentBlock.block_hash.in_(block_hashes))
+        if not self.enable_cross_user_dedup:
+            # Limit to user's own blocks
+            query = query.join(Object).where(Object.user_id == user_id)
+
+        result = await db.execute(query)
+        existing_blocks = result.scalars().all()
+
+        # Create hash map of existing blocks
+        existing_block_map = {}
+        for existing_block in existing_blocks:
+            # Keep first (oldest) block for each hash
+            if existing_block.block_hash not in existing_block_map:
+                existing_block_map[existing_block.block_hash] = existing_block
+
         # Process each chunk with its pre-calculated hash
         start = 0
+        duplicate_block_ids = []  # Collect IDs for batch reference count update
+
         for i, (boundary, block_hash) in enumerate(zip(boundaries, block_hashes)):
             block = chunks[i]
-            
+
             # Quick check with bloom filter
             is_potential_duplicate = False
             if self.bloom_enabled and block_hash in self.bloom_filter:
                 is_potential_duplicate = True
-            
-            # Database check for existing block with advisory lock to prevent race conditions
-            # Use PostgreSQL advisory lock for this block hash
-            from sqlalchemy import text
-            lock_id = int(hashlib.sha256(block_hash.encode()).hexdigest()[:8], 16) % 2147483647
-            await db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
 
-            query = select(ContentBlock).where(ContentBlock.block_hash == block_hash)
-            if not self.enable_cross_user_dedup:
-                # Limit to user's own blocks
-                query = query.join(Object).where(Object.user_id == user_id)
+            existing_block = existing_block_map.get(block_hash)
 
-            # Order by created_at to get the oldest block first
-            query = query.order_by(ContentBlock.created_at.asc())
-
-            result = await db.execute(query)
-            existing_block = result.scalars().first()  # Use .first() instead of .scalar_one_or_none()
-            
             if existing_block:
                 # Duplicate found
                 duplicate_blocks.append({
@@ -198,13 +211,7 @@ class EnhancedDeduplicationService:
                     'existing_block_id': str(existing_block.id)
                 })
                 saved_size += len(block)
-                
-                # Increment reference count
-                await db.execute(
-                    update(ContentBlock)
-                    .where(ContentBlock.id == existing_block.id)
-                    .values(reference_count=ContentBlock.reference_count + 1)
-                )
+                duplicate_block_ids.append(existing_block.id)
             else:
                 # New unique block
                 new_blocks.append({
@@ -214,19 +221,31 @@ class EnhancedDeduplicationService:
                     'data': block  # Keep for storage
                 })
                 deduplicated_size += len(block)
-                
+
                 # Add to bloom filter
                 if self.bloom_enabled:
                     self.bloom_filter.add(block_hash)
-            
+
             blocks.append({
                 'hash': block_hash,
                 'size': len(block),
                 'offset': start,
                 'is_duplicate': existing_block is not None
             })
-            
+
             start = boundary
+
+        # Batch increment reference counts for all duplicate blocks
+        if duplicate_block_ids:
+            from sqlalchemy import text
+            await db.execute(
+                text("""
+                    UPDATE content_blocks
+                    SET reference_count = reference_count + 1
+                    WHERE id = ANY(:ids)
+                """),
+                {"ids": duplicate_block_ids}
+            )
         
         return {
             'blocks': blocks,
@@ -478,17 +497,30 @@ class EnhancedDeduplicationService:
                 await db.flush()
                 result_file = new_file
 
-            # Create ContentBlock entries for new blocks only
+            # Create ContentBlock entries using batched writer for new blocks only
+            new_chunk_data = []
             for block in dedup_result['blocks']:
                 if not block['is_duplicate']:
-                    content_block = ContentBlock(
-                        block_hash=block['hash'],
-                        file_id=result_file.id,
-                        block_size=block['size'],
-                        block_offset=block['offset'],
-                        reference_count=1
+                    new_chunk_data.append({
+                        'hash': block['hash'],
+                        'size': block['size'],
+                        'offset': block['offset']
+                    })
+
+            # Use batched writer to prevent lock exhaustion
+            if new_chunk_data:
+                logger.info(f"Storing {len(new_chunk_data)} new chunks using batched writer...")
+                try:
+                    stored_count = await batch_writer.store_chunks_safe(
+                        chunks=new_chunk_data,
+                        file_id=str(result_file.id),
+                        db=db,
+                        timeout_seconds=300  # 5 minute timeout
                     )
-                    db.add(content_block)
+                    logger.info(f"✅ Successfully stored {stored_count} chunks")
+                except Exception as e:
+                    logger.error(f"Batch chunk storage failed: {e}")
+                    raise
 
             await db.commit()
 
