@@ -310,23 +310,20 @@ async def health_check():
         health_status["checks"]["redis"] = f"unhealthy: {str(e)}"
         health_status["status"] = "degraded"
 
-    # Background services check
-    health_status["checks"]["background_dedup"] = (
-        "running" if background_dedup_service.worker_task and
-        not background_dedup_service.worker_task.done() else "stopped"
-    )
-    health_status["checks"]["cold_storage_tiering"] = (
-        "running" if cold_storage_service.worker_task and
-        not cold_storage_service.worker_task.done() else "stopped"
-    )
-    health_status["checks"]["quota_prediction"] = (
-        "running" if quota_prediction_worker.worker_task and
-        not quota_prediction_worker.worker_task.done() else "stopped"
-    )
-    health_status["checks"]["storage_optimization"] = (
-        "running" if storage_optimization_worker.worker_task and
-        not storage_optimization_worker.worker_task.done() else "stopped"
-    )
+    # Background services check (safely check for worker_task attribute)
+    def check_worker_status(service, service_name):
+        try:
+            worker_task = getattr(service, 'worker_task', None)
+            if worker_task and not worker_task.done():
+                return "running"
+            return "stopped"
+        except Exception:
+            return "unknown"
+
+    health_status["checks"]["background_dedup"] = check_worker_status(background_dedup_service, "background_dedup")
+    health_status["checks"]["cold_storage_tiering"] = check_worker_status(cold_storage_service, "cold_storage")
+    health_status["checks"]["quota_prediction"] = check_worker_status(quota_prediction_worker, "quota_prediction")
+    health_status["checks"]["storage_optimization"] = check_worker_status(storage_optimization_worker, "storage_optimization")
 
     # Storage directories check
     storage_status = {}
