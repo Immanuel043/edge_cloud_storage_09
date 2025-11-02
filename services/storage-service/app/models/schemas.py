@@ -1,6 +1,6 @@
 # services/storage-service/app/models/schemas.py
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -157,10 +157,8 @@ class ZKUploadInitRequest(BaseModel):
     file_key_iv: str  # Base64-encoded initialization vector
     encryption_algorithm: str = "AES-256-GCM"
 
-    class Config:
-        from pydantic import validator
-
-    @validator('encrypted_file_key', 'file_key_iv')
+    @field_validator('encrypted_file_key', 'file_key_iv')
+    @classmethod
     def validate_base64(cls, v):
         """Validate base64 encoding"""
         if not v:
@@ -172,7 +170,8 @@ class ZKUploadInitRequest(BaseModel):
         except Exception:
             raise ValueError('Invalid base64 encoding')
 
-    @validator('file_size')
+    @field_validator('file_size')
+    @classmethod
     def validate_file_size(cls, v):
         """Validate file size (max 10GB)"""
         MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
@@ -182,7 +181,8 @@ class ZKUploadInitRequest(BaseModel):
             raise ValueError(f'File size exceeds maximum allowed size of {MAX_FILE_SIZE} bytes')
         return v
 
-    @validator('file_name')
+    @field_validator('file_name')
+    @classmethod
     def validate_filename(cls, v):
         """Validate filename"""
         if not v or not v.strip():
