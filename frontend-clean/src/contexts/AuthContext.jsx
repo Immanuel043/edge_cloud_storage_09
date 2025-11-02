@@ -3,6 +3,19 @@
 import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import { authService } from '../services/authService';
 import { websocketService } from '../services/websocketService';
+import * as zkAuthService from '../services/zkAuthService';
+import {
+  generateZKRegistrationData,
+  unlockZKSession,
+  lockZKSession,
+  isZKSessionUnlocked,
+  getPasswordHashForLogin,
+  generateRecoveryPhraseData,
+  verifyRecoveryPhrase as verifyRecoveryPhraseZK,
+  recoverMasterKeyFromPhrase,
+  getRecoveryPhraseHash,
+} from '../services/zkEncryptionService';
+import { ZK_FEATURES, ZK_STORAGE } from '../config/constants';
 
 const AuthContext = createContext();
 
@@ -19,6 +32,17 @@ export const AuthProvider = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState(null);
+
+  // Zero-Knowledge Encryption State
+  const [zkEnabled, setZkEnabled] = useState(false);
+  const [zkSessionUnlocked, setZkSessionUnlocked] = useState(false);
+  const [zkRecoveryEnabled, setZkRecoveryEnabled] = useState(false);
+  const [zkData, setZkData] = useState(null); // KDF params, encrypted master key, etc.
+
+  // Session timeout state
+  const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const lastActivityRef = useRef(Date.now());
+  const inactivityTimerRef = useRef(null);
 
   // Keep unsubscribe functions here so we can remove listeners cleanly
   const wsUnsubscribersRef = useRef([]);
@@ -118,6 +142,54 @@ export const AuthProvider = ({ children }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Session timeout auto-lock (30 minutes of inactivity)
+  useEffect(() => {
+    if (!zkEnabled || !zkSessionUnlocked) {
+      // Clear timer if ZK is not enabled or session is already locked
+      if (inactivityTimerRef.current) {
+        clearInterval(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+      return;
+    }
+
+    const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+
+    // Update last activity on user interaction
+    const updateActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+
+    // Activity event listeners
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach(event => {
+      window.addEventListener(event, updateActivity, { passive: true });
+    });
+
+    // Check for inactivity every minute
+    inactivityTimerRef.current = setInterval(() => {
+      const now = Date.now();
+      const timeSinceActivity = now - lastActivityRef.current;
+
+      if (timeSinceActivity >= SESSION_TIMEOUT && zkSessionUnlocked) {
+        console.log('Session auto-locked due to inactivity');
+        lockSession();
+        setShowUnlockModal(true);
+      }
+    }, 60 * 1000); // Check every minute
+
+    // Cleanup
+    return () => {
+      events.forEach(event => {
+        window.removeEventListener(event, updateActivity);
+      });
+      if (inactivityTimerRef.current) {
+        clearInterval(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+    };
+  }, [zkEnabled, zkSessionUnlocked]);
+
   const loadUserData = async (authToken) => {
     try {
       const userData = await authService.getProfile(authToken);
@@ -185,19 +257,325 @@ export const AuthProvider = ({ children }) => {
       console.error('Logout error:', error);
     }
 
+    // Clear ZK session if enabled
+    if (zkEnabled) {
+      lockZKSession();
+      setZkSessionUnlocked(false);
+      setZkData(null);
+    }
+
     setToken(null);
     setIsAuthenticated(false);
     setUser(null);
+    setZkEnabled(false);
+    setZkRecoveryEnabled(false);
+  };
+
+  // ==================== Zero-Knowledge Encryption Methods ====================
+
+  /**
+   * Register a new user with Zero-Knowledge Encryption
+   * @param {string} email - User email
+   * @param {string} password - User password (never sent to server)
+   * @param {string} username - Username
+   * @param {string} userType - User type
+   * @returns {Promise<Object>} Registration result
+   */
+  const registerZK = async (email, password, username, userType = 'individual') => {
+    // Generate ZK registration data (client-side encryption)
+    const zkRegData = generateZKRegistrationData(password);
+
+    // Send encrypted data to backend
+    const data = await zkAuthService.registerZK({
+      email,
+      username,
+      passwordHash: zkRegData.passwordHash,
+      encryptedMasterKey: zkRegData.encryptedMasterKey,
+      kdfSalt: zkRegData.kdfSalt,
+      kdfAlgorithm: zkRegData.kdfAlgorithm,
+      kdfIterations: zkRegData.kdfIterations,
+    });
+
+    // Set user data and auth state
+    setUser(data.user || { id: data.user_id, email, username });
+    setIsAuthenticated(true);
+    setZkEnabled(true);
+    setZkSessionUnlocked(true);
+
+    // Store ZK data for session
+    setZkData({
+      kdfSalt: zkRegData.kdfSalt,
+      kdfIterations: zkRegData.kdfIterations,
+      encryptedMasterKey: zkRegData.encryptedMasterKey,
+      masterKeyIV: zkRegData.masterKeyIV,
+    });
+
+    // Store ZK preferences in localStorage (non-sensitive data only)
+    localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
+    localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
+
+    // Connect WebSocket after successful registration
+    try {
+      await websocketService.connect(null);
+      setupWebSocketListeners();
+    } catch (error) {
+      console.error('Failed to connect WebSocket after ZK registration:', error);
+    }
+
+    return data;
+  };
+
+  /**
+   * Login with Zero-Knowledge Encryption
+   * @param {string} email - User email
+   * @param {string} password - User password (never sent to server)
+   * @returns {Promise<Object>} Login result
+   */
+  const loginZK = async (email, password) => {
+    // First, get KDF params from backend
+    const kdfParams = await zkAuthService.getKDFParams(email);
+
+    if (!kdfParams) {
+      throw new Error('User not found or ZK not enabled for this account');
+    }
+
+    // Derive password hash client-side
+    const passwordHash = getPasswordHashForLogin(
+      password,
+      kdfParams.kdf_salt,
+      kdfParams.kdf_iterations
+    );
+
+    // Login with hashed password
+    const data = await zkAuthService.loginZK(email, passwordHash);
+
+    // Unlock ZK session with the encrypted master key from backend
+    const unlocked = unlockZKSession(password, {
+      kdfSalt: kdfParams.kdf_salt,
+      encryptedMasterKey: data.encrypted_master_key,
+      kdfIterations: kdfParams.kdf_iterations,
+      masterKeyIV: kdfParams.kdf_iv || data.kdf_iv,
+    });
+
+    if (!unlocked) {
+      throw new Error('Failed to unlock encryption session');
+    }
+
+    // Set user data and auth state
+    setUser(data.user || { id: data.user_id, email });
+    setIsAuthenticated(true);
+    setZkEnabled(true);
+    setZkSessionUnlocked(true);
+
+    // Store ZK data for session
+    setZkData({
+      kdfSalt: kdfParams.kdf_salt,
+      kdfIterations: kdfParams.kdf_iterations,
+      encryptedMasterKey: data.encrypted_master_key,
+      masterKeyIV: kdfParams.kdf_iv || data.kdf_iv,
+    });
+
+    // Check if recovery is enabled
+    if (data.recovery_enabled) {
+      setZkRecoveryEnabled(true);
+      localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
+    }
+
+    // Store ZK preferences in localStorage
+    localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
+    localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
+
+    // Connect WebSocket after successful login
+    try {
+      await websocketService.connect(null);
+      setupWebSocketListeners();
+    } catch (error) {
+      console.error('Failed to connect WebSocket after ZK login:', error);
+    }
+
+    return data;
+  };
+
+  /**
+   * Unlock ZK session (e.g., after session timeout)
+   * @param {string} password - User password
+   * @returns {boolean} True if unlock successful
+   */
+  const unlockSession = async (password) => {
+    if (!zkData) {
+      throw new Error('No ZK data available. Please log in again.');
+    }
+
+    const unlocked = unlockZKSession(password, zkData);
+
+    if (unlocked) {
+      setZkSessionUnlocked(true);
+      setShowUnlockModal(false);
+      lastActivityRef.current = Date.now(); // Reset activity timer
+      return true;
+    }
+
+    return false;
+  };
+
+  /**
+   * Lock ZK session (manual lock or auto-lock on timeout)
+   */
+  const lockSession = () => {
+    lockZKSession();
+    setZkSessionUnlocked(false);
+  };
+
+  /**
+   * Setup recovery phrase for account recovery
+   * @returns {Promise<Object>} { recoveryPhrase, success }
+   */
+  const setupRecoveryPhrase = async () => {
+    if (!zkSessionUnlocked) {
+      throw new Error('Session must be unlocked to setup recovery phrase');
+    }
+
+    // Generate recovery phrase and encrypt master key with it
+    const recoveryData = generateRecoveryPhraseData();
+
+    // Send encrypted data to backend
+    await zkAuthService.enableRecoveryPhrase(
+      recoveryData.recoveryEncryptedMasterKey,
+      recoveryData.recoveryPhraseHash
+    );
+
+    setZkRecoveryEnabled(true);
+    localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
+
+    // Return recovery phrase to show to user (ONLY SHOWN ONCE)
+    return {
+      recoveryPhrase: recoveryData.recoveryPhrase,
+      success: true,
+    };
+  };
+
+  /**
+   * Verify recovery phrase
+   * @param {string} recoveryPhrase - Recovery phrase to verify
+   * @returns {Promise<boolean>} True if valid
+   */
+  const verifyRecoveryPhrase = async (recoveryPhrase) => {
+    // Client-side validation first
+    if (!verifyRecoveryPhraseZK(recoveryPhrase)) {
+      return false;
+    }
+
+    // Backend verification
+    try {
+      const result = await zkAuthService.verifyRecoveryPhrase(recoveryPhrase);
+      return result.valid || false;
+    } catch (error) {
+      console.error('Recovery phrase verification failed:', error);
+      return false;
+    }
+  };
+
+  /**
+   * Recover account using recovery phrase
+   * @param {string} email - User email
+   * @param {string} recoveryPhrase - Recovery phrase
+   * @returns {Promise<Object>} Recovery result
+   */
+  const recoverAccount = async (email, recoveryPhrase) => {
+    // Validate recovery phrase format
+    if (!verifyRecoveryPhraseZK(recoveryPhrase)) {
+      throw new Error('Invalid recovery phrase format');
+    }
+
+    // Call backend to get encrypted master key
+    const data = await zkAuthService.recoverAccount(email, recoveryPhrase);
+
+    // Recover master key from recovery phrase
+    const recovered = recoverMasterKeyFromPhrase(
+      recoveryPhrase,
+      data.recovery_encrypted_master_key,
+      data.recovery_iv || data.kdf_iv
+    );
+
+    if (!recovered) {
+      throw new Error('Failed to recover account. Invalid recovery phrase.');
+    }
+
+    // Set user data and auth state
+    setUser(data.user || { id: data.user_id, email });
+    setIsAuthenticated(true);
+    setZkEnabled(true);
+    setZkSessionUnlocked(true);
+    setZkRecoveryEnabled(true);
+
+    // Store ZK data for session
+    setZkData({
+      kdfSalt: data.kdf_salt,
+      kdfIterations: data.kdf_iterations,
+      encryptedMasterKey: data.encrypted_master_key || data.recovery_encrypted_master_key,
+      masterKeyIV: data.kdf_iv || data.recovery_iv,
+    });
+
+    // Store ZK preferences
+    localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
+    localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
+    localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
+
+    // Connect WebSocket
+    try {
+      await websocketService.connect(null);
+      setupWebSocketListeners();
+    } catch (error) {
+      console.error('Failed to connect WebSocket after recovery:', error);
+    }
+
+    return data;
+  };
+
+  /**
+   * Check ZK status for current user
+   * @returns {Promise<Object>} ZK status
+   */
+  const checkZKStatus = async () => {
+    try {
+      const status = await zkAuthService.getZKStatus();
+
+      setZkEnabled(status.zk_enabled || false);
+      setZkRecoveryEnabled(status.recovery_enabled || false);
+
+      return status;
+    } catch (error) {
+      console.error('Failed to check ZK status:', error);
+      return null;
+    }
   };
 
   const value = {
+    // Standard Auth
     user,
     isAuthenticated,
     loading,
     token,
     login,
     register,
-    logout
+    logout,
+
+    // Zero-Knowledge Encryption
+    zkEnabled,
+    zkSessionUnlocked,
+    zkRecoveryEnabled,
+    registerZK,
+    loginZK,
+    unlockSession,
+    lockSession,
+    setupRecoveryPhrase,
+    verifyRecoveryPhrase,
+    recoverAccount,
+    checkZKStatus,
+
+    // Session Management
+    showUnlockModal,
+    setShowUnlockModal,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -31,6 +31,9 @@ import KeyboardShortcuts from './KeyboardShortcuts';
 import BulkActions from './BulkActions';
 import SearchBar from './SearchBar';
 import SearchResults from './SearchResults';
+import SessionUnlockModal from '../auth/SessionUnlockModal';
+import DownloadProgress from './DownloadProgress';
+import FileCorruptionModal from './FileCorruptionModal';
 import { formatBytes, formatDate, getFileIcon, getFileType } from '../../utils/helpers';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../services/storageService';
@@ -38,7 +41,7 @@ import { storageService } from '../../services/storageService';
 
 export default function Dashboard() {
   const { darkMode, toggleTheme } = useTheme();
-  const { user, logout, token, isAuthenticated, loading: authLoading } = useAuth();
+  const { user, logout, token, isAuthenticated, loading: authLoading, showUnlockModal, unlockSession, zkEnabled, zkSessionUnlocked, lockSession } = useAuth();
   const {
     files,
     folders,
@@ -87,6 +90,9 @@ export default function Dashboard() {
   const [searchResults, setSearchResults] = useState(null);
   const [showUploadCompleteToast, setShowUploadCompleteToast] = useState(false);
   const [completedUploadCount, setCompletedUploadCount] = useState(0);
+  const [downloads, setDownloads] = useState({});
+  const [pendingDownload, setPendingDownload] = useState(null); // Store download info for retry after unlock
+  const [corruptionError, setCorruptionError] = useState(null); // Store corruption error details
 
 
   useEffect(() => {
@@ -202,11 +208,14 @@ export default function Dashboard() {
         [uploadId]: {
           name: file.name,
           size: file.size,
+          totalSize: file.size,
+          bytesUploaded: 0,
           progress: 0,
           status: 'uploading',
           chunksUploaded: 0,
           totalChunks: 0,
-          startTime
+          startTime,
+          zkEnabled: zkEnabled && zkSessionUnlocked // Track if ZK encryption is active
         }
       }));
 
@@ -221,6 +230,7 @@ export default function Dashboard() {
             progress: progressData.progress,
             chunksUploaded: progressData.chunksUploaded,
             totalChunks: progressData.totalChunks,
+            bytesUploaded: progressData.bytesUploaded || (progressData.chunksUploaded * (file.size / progressData.totalChunks)),
             elapsedTime: Date.now() - startTime
           }
         }));
@@ -317,12 +327,152 @@ export default function Dashboard() {
     }
   };
 
+  // Handle file download with progress tracking
+  const handleFileDownload = async (fileId, fileName) => {
+    const downloadId = crypto.randomUUID();
+    const file = files.find(f => f.id === fileId);
+
+    try {
+      setDownloads(prev => ({
+        ...prev,
+        [downloadId]: {
+          fileId,
+          fileName,
+          status: 'downloading',
+          progress: 0,
+          downloadProgress: 0,
+          decryptProgress: 0,
+          currentStage: 'downloading',
+          currentChunk: 0,
+          totalChunks: 1,
+          bytesDownloaded: 0,
+          totalBytes: file?.size || 0,
+          isZK: file?.is_encrypted || false
+        }
+      }));
+
+      await downloadFile(fileId, fileName, (progressData) => {
+        setDownloads(prev => ({
+          ...prev,
+          [downloadId]: {
+            ...prev[downloadId],
+            ...progressData,
+            status: 'downloading'
+          }
+        }));
+      });
+
+      // Mark as completed
+      setDownloads(prev => ({
+        ...prev,
+        [downloadId]: {
+          ...prev[downloadId],
+          status: 'completed',
+          progress: 100,
+          downloadProgress: 100,
+          decryptProgress: file?.is_encrypted ? 100 : 0
+        }
+      }));
+
+      // Remove from downloads after 3 seconds
+      setTimeout(() => {
+        setDownloads(prev => {
+          const newDownloads = { ...prev };
+          delete newDownloads[downloadId];
+          return newDownloads;
+        });
+      }, 3000);
+
+    } catch (error) {
+      console.error('Download failed:', error);
+
+      // Check if error is due to locked session
+      if (error.message && (error.message.includes('locked') || error.message.includes('unlock'))) {
+        console.log('[Download] Session locked - storing pending download for retry');
+
+        // Store download info for retry after unlock
+        setPendingDownload({ fileId, fileName });
+
+        // Remove download from progress (will be retried after unlock)
+        setDownloads(prev => {
+          const newDownloads = { ...prev };
+          delete newDownloads[downloadId];
+          return newDownloads;
+        });
+
+        // The SessionUnlockModal will be shown automatically by AuthContext
+        // We'll retry the download in the modal's onClose handler
+        return;
+      }
+
+      // Check if error is due to file corruption
+      if (error.message && (
+        error.message.includes('corruption') ||
+        error.message.includes('corrupted') ||
+        error.message.includes('tampered')
+      )) {
+        console.error('[Download] File corruption detected');
+
+        // Store corruption error details for modal
+        setCorruptionError({
+          fileName,
+          errorMessage: error.message
+        });
+
+        // Remove download from progress
+        setDownloads(prev => {
+          const newDownloads = { ...prev };
+          delete newDownloads[downloadId];
+          return newDownloads;
+        });
+
+        // Modal will be shown automatically via corruptionError state
+        return;
+      }
+
+      // For other errors, show error state
+      setDownloads(prev => ({
+        ...prev,
+        [downloadId]: {
+          ...prev[downloadId],
+          status: 'error',
+          error: error.message
+        }
+      }));
+
+      // Remove error after 5 seconds
+      setTimeout(() => {
+        setDownloads(prev => {
+          const newDownloads = { ...prev };
+          delete newDownloads[downloadId];
+          return newDownloads;
+        });
+      }, 5000);
+    }
+  };
+
   const handleBulkDownload = async () => {
     for (const fileId of selectedFiles) {
       const file = files.find(f => f.id === fileId);
       if (file) {
-        await downloadFile(fileId, file.name);
+        await handleFileDownload(fileId, file.name);
       }
+    }
+  };
+
+  // Handle session unlock modal close - retry pending download if any
+  const handleSessionUnlockClose = async () => {
+    if (pendingDownload && zkSessionUnlocked) {
+      console.log('[Download] Session unlocked - retrying download:', pendingDownload.fileName);
+
+      // Retry the download
+      const { fileId, fileName } = pendingDownload;
+      setPendingDownload(null);
+
+      // Small delay to allow UI to update
+      setTimeout(() => {
+        handleFileDownload(fileId, fileName);
+      }, 500);
     }
   };
 
@@ -391,7 +541,7 @@ export default function Dashboard() {
             selectedFiles={selectedFiles}
             onFileClick={selectFile}
             onFilePreview={setPreviewFile}
-            onFileDownload={downloadFile}
+            onFileDownload={handleFileDownload}
             onFileShare={handleShare}
             onFileDelete={deleteFile}
             onVersionHistory={handleVersionHistory}
@@ -406,7 +556,7 @@ export default function Dashboard() {
             selectedFiles={selectedFiles}
             onFileClick={selectFile}
             onFilePreview={setPreviewFile}
-            onFileDownload={downloadFile}
+            onFileDownload={handleFileDownload}
             onFileShare={handleShare}
             onFileDelete={deleteFile}
             onVersionHistory={handleVersionHistory}
@@ -421,7 +571,7 @@ export default function Dashboard() {
             selectedFiles={selectedFiles}
             onFileClick={selectFile}
             onFilePreview={setPreviewFile}
-            onFileDownload={downloadFile}
+            onFileDownload={handleFileDownload}
             onFileShare={handleShare}
             onFileDelete={deleteFile}
             onVersionHistory={handleVersionHistory}
@@ -438,7 +588,7 @@ export default function Dashboard() {
             selectedFiles={selectedFiles}
             onFileClick={selectFile}
             onFilePreview={setPreviewFile}
-            onFileDownload={downloadFile}
+            onFileDownload={handleFileDownload}
             onFileShare={handleShare}
             onVersionHistory={handleVersionHistory}
             onToggleFavorite={handleToggleFavorite}
@@ -537,7 +687,7 @@ export default function Dashboard() {
                         onFolderClick={navigateToFolder}
                         onFileClick={selectFile}
                         onFilePreview={setPreviewFile}
-                        onFileDownload={downloadFile}
+                        onFileDownload={handleFileDownload}
                         onFileShare={handleShare}
                         onFileDelete={deleteFile}
                         onVersionHistory={handleVersionHistory}
@@ -554,7 +704,7 @@ export default function Dashboard() {
                         onFolderClick={navigateToFolder}
                         onFileClick={selectFile}
                         onFilePreview={setPreviewFile}
-                        onFileDownload={downloadFile}
+                        onFileDownload={handleFileDownload}
                         onFileShare={handleShare}
                         onFileDelete={deleteFile}
                         onVersionHistory={handleVersionHistory}
@@ -630,6 +780,21 @@ export default function Dashboard() {
               >
                 <Info size={20} />
               </button>
+
+              {/* ZK Lock Button - only show when ZK is enabled and unlocked */}
+              {zkEnabled && zkSessionUnlocked && (
+                <button
+                  onClick={() => {
+                    if (window.confirm('Lock your encryption session? You\'ll need your password to unlock it again.')) {
+                      lockSession();
+                    }
+                  }}
+                  className={`p-2 rounded-lg ${darkMode ? 'bg-yellow-900/50 hover:bg-yellow-900/70 text-yellow-400' : 'bg-yellow-100 hover:bg-yellow-200 text-yellow-700'} transition-all`}
+                  title="Lock encryption session"
+                >
+                  <Lock size={20} />
+                </button>
+              )}
 
               <div className="flex items-center gap-2">
                 <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
@@ -720,6 +885,14 @@ export default function Dashboard() {
             />
           )}
 
+          {/* Download Progress */}
+          {Object.keys(downloads).length > 0 && (
+            <DownloadProgress
+              downloads={downloads}
+              darkMode={darkMode}
+            />
+          )}
+
           {/* Main Content View */}
           {renderMainContent()}
         </div>
@@ -772,6 +945,25 @@ export default function Dashboard() {
           file={fileInfo}
           onClose={() => setFileInfo(null)}
           onRename={setRenameFile}
+          darkMode={darkMode}
+        />
+      )}
+
+      {/* Session Unlock Modal (ZK Encryption) */}
+      {showUnlockModal && (
+        <SessionUnlockModal
+          isOpen={showUnlockModal}
+          onClose={handleSessionUnlockClose}
+        />
+      )}
+
+      {/* File Corruption Modal */}
+      {corruptionError && (
+        <FileCorruptionModal
+          isOpen={!!corruptionError}
+          onClose={() => setCorruptionError(null)}
+          fileName={corruptionError.fileName}
+          errorMessage={corruptionError.errorMessage}
           darkMode={darkMode}
         />
       )}

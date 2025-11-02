@@ -2,9 +2,9 @@
 
 from sqlalchemy import (
     Column, String, Integer, DateTime, Boolean,
-    ForeignKey, JSON, BigInteger, Text, UniqueConstraint, Index, Float
+    ForeignKey, JSON, BigInteger, Text, UniqueConstraint, Index, Float, LargeBinary
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, BYTEA
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -17,7 +17,7 @@ Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False)
     username = Column(String(100), unique=True, nullable=False)
@@ -28,6 +28,16 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     theme_preference = Column(String(10), default="light")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Zero-Knowledge Encryption fields (added for dual-mode support)
+    zk_enabled = Column(Boolean, default=False)
+    encrypted_master_key = Column(Text, nullable=True)
+    kdf_salt = Column(BYTEA, nullable=True)
+    kdf_algorithm = Column(String(20), default='pbkdf2', nullable=True)
+    kdf_iterations = Column(Integer, default=600000, nullable=True)
+    recovery_phrase_enabled = Column(Boolean, default=False)
+    recovery_encrypted_master_key = Column(Text, nullable=True)
+    recovery_phrase_hash = Column(String(64), nullable=True)
 
 class Folder(Base):
     __tablename__ = "folders"
@@ -41,7 +51,7 @@ class Folder(Base):
 
 class Object(Base):
     __tablename__ = "objects"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     folder_id = Column(UUID(as_uuid=True), ForeignKey("folders.id"), nullable=True)
@@ -67,6 +77,16 @@ class Object(Base):
     dedup_info = Column(JSON, nullable=True)
     is_deleted = Column(Boolean, default=False)  # Soft delete for trash functionality
     deleted_at = Column(DateTime, nullable=True)  # Timestamp when file was moved to trash
+
+    # Zero-Knowledge Encryption fields (for client-side encrypted files)
+    is_encrypted = Column(Boolean, default=False)  # True if client-side encrypted
+    encrypted_file_key = Column(Text, nullable=True)  # File key encrypted with user's master key
+    file_key_iv = Column(String(255), nullable=True)  # IV used for file key encryption
+    encryption_algorithm = Column(String(50), default="AES-256-GCM", nullable=True)
+    upload_status = Column(String(20), default="completed", nullable=True)  # pending, uploading, completed, failed
+    upload_id = Column(String(255), nullable=True)  # Upload session ID
+    uploaded_at = Column(DateTime, nullable=True)  # Timestamp when upload completed
+    file_hash = Column(String(128), nullable=True)  # Hash of encrypted file (client-computed)
 
     # Performance indexes
     __table_args__ = (

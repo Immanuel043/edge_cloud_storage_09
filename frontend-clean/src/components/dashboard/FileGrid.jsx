@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info } from 'lucide-react';
+import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info, Lock, Shield } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
@@ -246,11 +246,21 @@ export default function FileGrid({
               />
             </div>
             <div className="w-full px-1 text-center">
-              <p className={`text-sm font-medium line-clamp-2 leading-tight mb-1 ${
-                darkMode ? 'text-white' : 'text-gray-900'
-              }`} title={file.name}>
-                {sanitizeInput(file.name)}
-              </p>
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <p className={`text-sm font-medium line-clamp-2 leading-tight ${
+                  darkMode ? 'text-white' : 'text-gray-900'
+                }`} title={file.name}>
+                  {sanitizeInput(file.name)}
+                </p>
+                {file.is_encrypted && (
+                  <span
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                    title="Zero-Knowledge Encrypted - Server cannot decrypt this file"
+                  >
+                    <Lock className="w-3 h-3" />
+                  </span>
+                )}
+              </div>
               <div className={`flex items-center justify-center gap-1.5 text-xs ${
                 darkMode ? 'text-gray-500' : 'text-gray-500'
               }`}>

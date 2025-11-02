@@ -234,6 +234,159 @@ async def init_upload(
         direct_upload=storage_strategy != "chunked"
     )
 
+
+@router.post("/init/zk", response_model=UploadInitResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
+async def init_zk_upload(
+    request: Request,
+    file_name: str,
+    file_size: int,
+    encrypted_file_key: str,
+    file_key_iv: str,
+    encryption_algorithm: str = "AES-256-GCM",
+    mime_type: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Initialize Zero-Knowledge upload
+
+    This endpoint is for ZK-enabled users who encrypt files client-side.
+    The server will NOT re-encrypt the chunks - they're already encrypted.
+
+    Args:
+        file_name: Original filename
+        file_size: Total file size (before client encryption)
+        encrypted_file_key: Base64-encoded file key encrypted with master key
+        file_key_iv: Base64-encoded IV used for file key encryption
+        encryption_algorithm: Encryption algorithm used (default: AES-256-GCM)
+        mime_type: MIME type of the original file
+        folder_id: Optional parent folder ID
+
+    Returns:
+        UploadInitResponse with zk_mode metadata
+    """
+    # Input validation
+    if not file_name or not file_name.strip():
+        raise HTTPException(400, "file_name cannot be empty")
+    if file_size is None or file_size <= 0:
+        raise HTTPException(400, "file_size must be greater than 0")
+    if not encrypted_file_key or not file_key_iv:
+        raise HTTPException(400, "encrypted_file_key and file_key_iv are required for ZK uploads")
+
+    # Validate base64 encoding
+    try:
+        base64.b64decode(encrypted_file_key)
+        base64.b64decode(file_key_iv)
+    except Exception as e:
+        logger.error(f"Invalid base64 encoding in ZK upload: {e}")
+        raise HTTPException(400, "Invalid base64 encoding for encrypted_file_key or file_key_iv")
+
+    # Security: Validate filename (no path traversal)
+    file_name = file_name.strip()
+    if '..' in file_name or '/' in file_name or '\\' in file_name:
+        raise HTTPException(400, "Invalid filename - path traversal not allowed")
+    if len(file_name) > 255:
+        raise HTTPException(400, "Filename too long (max 255 characters)")
+
+    # Size limits (10GB max)
+    MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(413, f"File size exceeds maximum allowed size of {MAX_FILE_SIZE} bytes")
+
+    redis_client = await get_redis()
+
+    # Check storage quota
+    storage_info = await get_user_storage_info_fast(str(current_user.id), db, redis_client)
+    if storage_info['used'] + file_size > storage_info['quota']:
+        logger.warning(
+            f"ZK upload quota exceeded",
+            extra={
+                "user_id": str(current_user.id),
+                "current_usage": storage_info['used'],
+                "quota": storage_info['quota'],
+                "requested_size": file_size
+            }
+        )
+        raise HTTPException(status_code=413, detail="Storage quota exceeded")
+
+    # Determine storage strategy (same as standard upload)
+    if file_size < INLINE_THRESHOLD:
+        storage_strategy = "inline"
+        total_chunks = 0
+    elif file_size < SINGLE_OBJECT_THRESHOLD:
+        storage_strategy = "single"
+        total_chunks = 0
+    else:
+        storage_strategy = "chunked"
+        total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+    upload_id = str(uuid.uuid4())
+
+    # ZK Mode: Do NOT generate file_key - client already did
+    # Store the encrypted file key from client instead
+    session_data = {
+        "id": upload_id,
+        "user": str(current_user.id),
+        "name": file_name,
+        "size": file_size,
+        "folder": folder_id,
+        "strategy": storage_strategy,
+        "chunks": total_chunks,
+        "done": [],
+        "hashes": [],
+        "chunk_paths": {},
+
+        # ZK-specific metadata
+        "zk_mode": True,  # Flag to skip server-side encryption
+        "encrypted_file_key": encrypted_file_key,  # Store encrypted file key
+        "file_key_iv": file_key_iv,  # Store IV
+        "encryption_algorithm": encryption_algorithm,
+        "client_encrypted": True,  # Mark as client-encrypted
+
+        # Metadata
+        "mime_type": mime_type,
+        "compress": False,  # Never compress ZK files (already encrypted)
+        "start": datetime.utcnow().isoformat(),
+    }
+
+    # Store session in Redis
+    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
+
+    # Structured logging
+    logger.info(
+        "ZK upload initialized",
+        extra={
+            "event": "zk_upload_init",
+            "user_id": str(current_user.id),
+            "upload_id": upload_id,
+            "filename": file_name,
+            "file_size": file_size,
+            "storage_strategy": storage_strategy,
+            "total_chunks": total_chunks,
+            "encryption_algorithm": encryption_algorithm,
+            "mime_type": mime_type
+        }
+    )
+
+    # Metrics
+    upload_initiated.labels(
+        user_type=getattr(current_user, 'user_type', 'standard'),
+        storage_strategy=f"zk_{storage_strategy}"  # Tag as ZK upload
+    ).inc()
+    active_uploads.inc()
+
+    print(f"🔐 ZK Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Client encrypted")
+
+    return UploadInitResponse(
+        upload_id=upload_id,
+        storage_strategy=storage_strategy,
+        chunk_size=CHUNK_SIZE if storage_strategy == "chunked" else 0,
+        total_chunks=total_chunks,
+        direct_upload=storage_strategy != "chunked"
+    )
+
+
 @router.post("/chunk/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def upload_chunk(
     upload_id: str,
@@ -272,22 +425,46 @@ async def upload_chunk(
     
     # Read chunk data
     chunk_data = await chunk.read()
-    
-    # Get encryption key
-    file_key = encryption_service.decrypt_key(session["key"])
-    
-    # Process in thread pool (encryption + optional compression)
-    loop = asyncio.get_event_loop()
-    use_compression = session.get("compress", False)
-    
-    encrypted_chunk, chunk_hash = await loop.run_in_executor(
-        executor,
-        partial(process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression)
-    )
-    
-    # Write encrypted data asynchronously with larger buffer
-    async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
-        await f.write(encrypted_chunk)
+
+    # Check if this is a ZK (Zero-Knowledge) upload
+    is_zk_mode = session.get("zk_mode", False)
+
+    if is_zk_mode:
+        # ZK Mode: Chunk is ALREADY encrypted by client
+        # Just store it directly, no server-side encryption
+        encrypted_chunk = chunk_data
+        chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+
+        logger.debug(
+            f"ZK chunk uploaded (no server encryption)",
+            extra={
+                "upload_id": upload_id,
+                "chunk_index": chunk_index,
+                "chunk_size": len(chunk_data),
+                "zk_mode": True
+            }
+        )
+
+        # Write encrypted data directly (no re-encryption)
+        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+            await f.write(encrypted_chunk)
+    else:
+        # Standard Mode: Server-side encryption (existing flow)
+        # Get encryption key
+        file_key = encryption_service.decrypt_key(session["key"])
+
+        # Process in thread pool (encryption + optional compression)
+        loop = asyncio.get_event_loop()
+        use_compression = session.get("compress", False)
+
+        encrypted_chunk, chunk_hash = await loop.run_in_executor(
+            executor,
+            partial(process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression)
+        )
+
+        # Write encrypted data asynchronously with larger buffer
+        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+            await f.write(encrypted_chunk)
     
     # Update session
     session["done"].append(chunk_index)
@@ -300,13 +477,14 @@ async def upload_chunk(
     )
     
     progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
-    
+
     return {
         "status": "success",
         "chunk_index": chunk_index,
         "progress": round(progress, 1),
         "encrypted": True,
-        "compressed": use_compression,
+        "compressed": session.get("compress", False) if not is_zk_mode else False,
+        "zk_mode": is_zk_mode,  # Indicate if this is a ZK upload
     }
 
 @router.post("/direct/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
@@ -507,8 +685,36 @@ async def complete_upload(
     
     
     file_id = uuid.uuid4()
-    mime_type = mimetypes.guess_type(session["name"])[0]
-    
+    mime_type = session.get("mime_type") or mimetypes.guess_type(session["name"])[0]
+
+    # Check if this is a ZK upload
+    is_zk_mode = session.get("zk_mode", False)
+
+    # Prepare ZK-specific fields if applicable
+    zk_fields = {}
+    if is_zk_mode:
+        zk_fields = {
+            "is_encrypted": True,
+            "encrypted_file_key": session.get("encrypted_file_key"),
+            "file_key_iv": session.get("file_key_iv"),
+            "encryption_algorithm": session.get("encryption_algorithm", "AES-256-GCM"),
+            "uploaded_at": datetime.utcnow(),
+            "upload_id": upload_id,
+        }
+        logger.info(
+            "ZK upload completed",
+            extra={
+                "event": "zk_upload_complete",
+                "user_id": str(current_user.id),
+                "upload_id": upload_id,
+                "file_id": str(file_id),
+                "filename": session["name"],
+                "file_size": session["size"],
+                "storage_strategy": storage_strategy,
+                "encryption_algorithm": session.get("encryption_algorithm")
+            }
+        )
+
     # Create database record based on storage type
     if storage_strategy == "inline":
         file_obj = Object(
@@ -521,9 +727,10 @@ async def complete_upload(
             storage_type="inline",
             storage_key=session.get("encrypted_data", ""),
             content_hash=session.get("hash", ""),
-            encryption_key=session["key"],
+            encryption_key=session.get("key") if not is_zk_mode else None,
             storage_tier="cache",
-            file_metadata={"compressed": session.get("compress", False)}
+            file_metadata={"compressed": session.get("compress", False)},
+            **zk_fields  # Add ZK fields if applicable
         )
     
     elif storage_strategy == "single":
@@ -537,14 +744,15 @@ async def complete_upload(
             storage_type="single",
             object_path=session.get("storage_path", ""),
             content_hash=session.get("hash", ""),
-            encryption_key=session["key"],
+            encryption_key=session.get("key") if not is_zk_mode else None,
             storage_tier="cache",
-            file_metadata={"compressed": session.get("compress", False)}
+            file_metadata={"compressed": session.get("compress", False)},
+            **zk_fields  # Add ZK fields if applicable
         )
     
     else:  # chunked
         combined_hash = hashlib.sha256("".join(session["hashes"]).encode()).hexdigest()
-        
+
         file_obj = Object(
             id=file_id,
             user_id=current_user.id,
@@ -554,15 +762,17 @@ async def complete_upload(
             mime_type=mime_type,
             storage_type="chunked",
             content_hash=combined_hash,
-            encryption_key=session["key"],
+            encryption_key=session.get("key") if not is_zk_mode else None,
             chunk_info={
                 "chunks": session["hashes"],
                 "count": session["chunks"],
                 "paths": session.get("chunk_paths", {}),
                 "upload_id": upload_id,
-                "compressed": session.get("compress", False)
+                "compressed": session.get("compress", False),
+                "zk_mode": is_zk_mode  # Mark chunks as ZK-encrypted
             },
             storage_tier="cache",
+            **zk_fields  # Add ZK fields if applicable
         )
     
     # Save to database with proper error handling

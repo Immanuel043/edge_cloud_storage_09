@@ -1,0 +1,48 @@
+# Zero-Knowledge Encryption Service - Dependencies
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy[asyncio]==2.0.23
+asyncpg==0.29.0
+alembic==1.12.1
+
+# Redis
+redis==5.0.1
+hiredis==2.2.3
+
+# Authentication & Security
+pyjwt==2.8.0
+bcrypt==4.1.1
+cryptography==41.0.7
+pycryptodome==3.19.0
+
+# FIDO2/WebAuthn for Hardware Keys
+fido2==1.1.2
+webauthn==1.11.1
+
+# BIP39 for Recovery Phrases
+mnemonic==0.20
+
+# HTTP Client
+httpx==0.25.1
+aiofiles==23.2.1
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Monitoring & Logging
+structlog==23.2.0
+prometheus-client==0.19.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-httpx==0.27.0
+email-validator==2.1.0

@@ -4,14 +4,24 @@ import { Sun, Moon, Cloud, Shield, Zap, Database, Lock, Upload, Download, Eye, C
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { validateEmail, validatePassword, sanitizeInput } from '../../utils/security';
+import RecoveryPhraseSetup from './RecoveryPhraseSetup';
+import RecoveryPhraseConfirm from './RecoveryPhraseConfirm';
+import RecoveryModal from './RecoveryModal';
 
 export default function AuthPage() {
   const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
-  const { login, register } = useAuth();
+  const { login, register, loginZK, registerZK, setupRecoveryPhrase } = useAuth();
   const [authMode, setAuthMode] = useState('login');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [enableZK, setEnableZK] = useState(false);
+  const [showRecovery, setShowRecovery] = useState(false);
+
+  // Recovery phrase flow state
+  const [recoveryPhrase, setRecoveryPhrase] = useState('');
+  const [showRecoverySetup, setShowRecoverySetup] = useState(false);
+  const [showRecoveryConfirm, setShowRecoveryConfirm] = useState(false);
 
   const [formData, setFormData] = useState({
     email: '',
@@ -43,20 +53,88 @@ export default function AuthPage() {
 
     try {
       if (authMode === 'login') {
-        await login(formData.email, formData.password);
+        // Use ZK login if enabled for this email (will be determined by backend)
+        // Try ZK first, fallback to standard if not ZK-enabled account
+        if (enableZK) {
+          await loginZK(formData.email, formData.password);
+        } else {
+          await login(formData.email, formData.password);
+        }
+        navigate('/');
       } else {
-        await register(
-          formData.email,
-          formData.password,
-          formData.username,
-          formData.userType
-        );
+        // Registration: use ZK if checkbox is checked
+        if (enableZK) {
+          await registerZK(
+            formData.email,
+            formData.password,
+            formData.username,
+            formData.userType
+          );
+          // For ZK registration, show recovery phrase setup
+          setLoading(false);
+          await handleRecoveryPhraseSetup();
+        } else {
+          await register(
+            formData.email,
+            formData.password,
+            formData.username,
+            formData.userType
+          );
+          navigate('/');
+        }
       }
-      navigate('/');
     } catch (err) {
-      setError(authMode === 'login' ? 'Invalid credentials' : 'Registration failed');
+      const errorMessage = err.message || (authMode === 'login' ? 'Invalid credentials' : 'Registration failed');
+      setError(errorMessage);
       setLoading(false);
     }
+  };
+
+  const handleRecoveryPhraseSetup = async () => {
+    try {
+      const result = await setupRecoveryPhrase();
+      if (result.success) {
+        setRecoveryPhrase(result.recoveryPhrase);
+        setShowRecoverySetup(true);
+      }
+    } catch (err) {
+      console.error('Failed to setup recovery phrase:', err);
+      // Still navigate even if recovery setup fails
+      navigate('/');
+    }
+  };
+
+  const handleRecoverySetupConfirm = () => {
+    setShowRecoverySetup(false);
+    setShowRecoveryConfirm(true);
+  };
+
+  const handleRecoverySetupSkip = () => {
+    setShowRecoverySetup(false);
+    setRecoveryPhrase('');
+    navigate('/');
+  };
+
+  const handleRecoveryConfirmComplete = () => {
+    setShowRecoveryConfirm(false);
+    setRecoveryPhrase(''); // Clear from memory
+    navigate('/');
+  };
+
+  const handleRecoveryConfirmCancel = () => {
+    setShowRecoveryConfirm(false);
+    setShowRecoverySetup(true); // Go back to setup screen
+  };
+
+  const handleRecoveryComplete = async ({ email, newPassword }) => {
+    // After recovery, pre-fill the email and password
+    setFormData(prev => ({
+      ...prev,
+      email,
+      password: newPassword
+    }));
+    setShowRecovery(false);
+    setEnableZK(true); // Enable ZK mode for login
   };
 
   const handleInputChange = (e) => {
@@ -293,7 +371,58 @@ export default function AuthPage() {
                           : 'bg-gray-50 border border-gray-300 focus:bg-white'
                       } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
                     />
+                    {authMode === 'login' && (
+                      <div className="mt-2 flex justify-between items-center">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={enableZK}
+                            onChange={(e) => setEnableZK(e.target.checked)}
+                            disabled={loading}
+                            className="rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                          />
+                          <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Zero-Knowledge Mode
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setShowRecovery(true)}
+                          className={`text-sm ${darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'} transition-colors`}
+                        >
+                          Forgot password?
+                        </button>
+                      </div>
+                    )}
                   </div>
+
+                  {authMode === 'register' && (
+                    <div className={`p-4 rounded-xl border-2 ${enableZK ? (darkMode ? 'bg-blue-900/20 border-blue-500/40' : 'bg-blue-50 border-blue-300') : (darkMode ? 'bg-gray-800/50 border-gray-700' : 'bg-gray-50 border-gray-200')}`}>
+                      <label className="flex items-start gap-3 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={enableZK}
+                          onChange={(e) => setEnableZK(e.target.checked)}
+                          disabled={loading}
+                          className="mt-1 rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <Shield className={enableZK ? 'text-blue-500' : 'text-gray-400'} size={16} />
+                            <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                              Enable Zero-Knowledge Encryption
+                            </span>
+                            <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full">
+                              RECOMMENDED
+                            </span>
+                          </div>
+                          <p className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Your files are encrypted with keys only you control. We cannot access your data, even if we wanted to. {enableZK && 'You\'ll receive a 24-word recovery phrase - save it safely!'}
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+                  )}
 
                   {authMode === 'register' && (
                     <div>
@@ -528,6 +657,33 @@ export default function AuthPage() {
           animation-delay: 4s;
         }
       `}</style>
+
+      {/* Recovery Phrase Setup Modal */}
+      {showRecoverySetup && (
+        <RecoveryPhraseSetup
+          recoveryPhrase={recoveryPhrase}
+          onConfirm={handleRecoverySetupConfirm}
+          onSkip={handleRecoverySetupSkip}
+        />
+      )}
+
+      {/* Recovery Phrase Confirmation Modal */}
+      {showRecoveryConfirm && (
+        <RecoveryPhraseConfirm
+          recoveryPhrase={recoveryPhrase}
+          onConfirm={handleRecoveryConfirmComplete}
+          onCancel={handleRecoveryConfirmCancel}
+        />
+      )}
+
+      {/* Account Recovery Modal (Forgot Password) */}
+      {showRecovery && (
+        <RecoveryModal
+          isOpen={showRecovery}
+          onClose={() => setShowRecovery(false)}
+          onRecoveryComplete={handleRecoveryComplete}
+        />
+      )}
     </div>
   );
 }

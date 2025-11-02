@@ -259,8 +259,37 @@ export const StorageProvider = ({ children }) => {
   }
 };
 
-  const downloadFile = async (fileId, fileName) => {
-    return await storageService.downloadFile(token, fileId, fileName);
+  const downloadFile = async (fileId, fileName, onProgress) => {
+    // Check if this is a ZK-encrypted file
+    const file = files.find(f => f.id === fileId);
+
+    if (file && file.is_encrypted) {
+      // ZK file - use ZK download with decryption
+      const STREAMING_THRESHOLD = 50 * 1024 * 1024; // 50MB - use streaming for larger files
+
+      if (file.size >= STREAMING_THRESHOLD) {
+        console.log('[Storage] Downloading large ZK-encrypted file with streaming decryption:', fileName);
+        return await storageService.downloadZKFileStreaming(fileId, fileName, {
+          file_size: file.size,
+          encrypted_file_key: file.encrypted_file_key,
+          file_key_iv: file.file_key_iv,
+          mime_type: file.mime_type,
+          chunk_size: 32 * 1024 * 1024  // 32MB chunks
+        }, onProgress);
+      } else {
+        console.log('[Storage] Downloading small ZK-encrypted file (sequential):', fileName);
+        return await storageService.downloadZKFile(fileId, fileName, {
+          file_size: file.size,
+          encrypted_file_key: file.encrypted_file_key,
+          file_key_iv: file.file_key_iv,
+          mime_type: file.mime_type,
+          chunk_size: 32 * 1024 * 1024  // 32MB default
+        }, onProgress);
+      }
+    } else {
+      // Standard file - use regular download
+      return await storageService.downloadFile(token, fileId, fileName, onProgress);
+    }
   };
 
   const deleteFile = async (fileId) => {

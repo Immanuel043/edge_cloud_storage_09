@@ -262,6 +262,63 @@ services:
         soft: 65536
         hard: 65536
 
+  # Zero-Knowledge Encryption Service (FastAPI)
+  zk-encryption-service:
+    build:
+      context: ../services/zk-encryption-service
+      dockerfile: Dockerfile
+    container_name: edge-zk-service
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      STORAGE_SERVICE_URL: http://storage-service:8000
+      STORAGE_PATH: /app/storage
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 120
+      # ZK-specific settings
+      ZK_SERVICE_PORT: 8002
+      RP_ID: ${RP_ID:-localhost}
+      RP_NAME: ${RP_NAME:-EdgeCloud Storage}
+      RP_ORIGIN: ${RP_ORIGIN:-https://localhost}
+      # Security settings
+      PBKDF2_ITERATIONS: 600000
+      MAX_RECOVERY_ATTEMPTS: 5
+      MAX_HARDWARE_KEYS_PER_USER: 5
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_REQUESTS_PER_MINUTE: 60
+      # Logging
+      LOG_LEVEL: INFO
+      DEBUG: ${DEBUG:-false}
+      ENABLE_METRICS: "true"
+      ENABLE_AUDIT_LOGGING: "true"
+    ports:
+      - "8002:8002"
+    volumes:
+      - storage_data:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
   # Web Service (Node.js)
   web-service:
     build:
@@ -276,6 +333,8 @@ services:
       kafka:
         condition: service_healthy
       storage-service:
+        condition: service_healthy
+      zk-encryption-service:
         condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-development}
