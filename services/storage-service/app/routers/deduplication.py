@@ -273,7 +273,7 @@ async def get_detailed_analytics(
         SELECT
             COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'skip') as skipped,
             COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'inline') as inline,
-            COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'async') as async,
+            COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'async') as async_mode,
             COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' IS NULL) as unclassified,
             SUM(file_size) FILTER (WHERE dedup_info->>'classification_mode' = 'skip') as skipped_bytes
         FROM objects
@@ -315,7 +315,7 @@ async def get_detailed_analytics(
         "classification": {
             "skipped": class_stats.skipped or 0,
             "inline": class_stats.inline or 0,
-            "async": class_stats.async or 0,
+            "async": class_stats.async_mode or 0,
             "unclassified": class_stats.unclassified or 0,
             "skipped_bytes": class_stats.skipped_bytes or 0
         },
