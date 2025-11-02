@@ -235,6 +235,8 @@ services:
      - storage_data:/app/storage
       # Add temp directory with size limit
      - /tmp/upload_temp:/tmp/upload_temp
+      # Mount source code for development
+     - ../services/storage-service/app:/app/app
     # Local docker-compose resource limits (works with many compose setups)
     mem_limit: 8g
     cpus: "4.0"
