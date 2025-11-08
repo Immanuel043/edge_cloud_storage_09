@@ -7,7 +7,10 @@ from sqlalchemy import select,text
 from typing import List, Optional
 import os
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
