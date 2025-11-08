@@ -311,6 +311,12 @@ export default function Dashboard() {
 
   const handleFileCopy = async (file) => {
     try {
+      // Check if file is Zero-Knowledge encrypted
+      if (file.is_encrypted) {
+        alert('Copying Zero-Knowledge encrypted files is not currently supported. Please download and re-upload the file manually.');
+        return;
+      }
+
       // Create a copy name by appending " (Copy)" or " (Copy N)"
       let copyName = file.name;
       const lastDotIndex = copyName.lastIndexOf('.');
