@@ -350,7 +350,7 @@ class SmartDeduplicationQueue:
 
         try:
             # Import here to avoid circular dependency
-            from ..services.background_deduplication import background_dedup_service
+            from ..routers.background_deduplication import background_dedup_service
 
             # Delegate to existing background dedup processor
             await background_dedup_service._process_dedup_job(job)
