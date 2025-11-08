@@ -1154,16 +1154,19 @@ async def run_security_scans(
         # Retrieve file data
         file_data = None
         try:
+            # Decrypt the wrapped file key first
+            file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+
             if storage_strategy == "inline":
                 # Decrypt inline data
                 encrypted_data = base64.b64decode(file_obj.storage_key)
-                file_data = encryption_service.decrypt_data(encrypted_data, file_obj.encryption_key)
+                file_data = encryption_service.decrypt_data(encrypted_data, file_key)
             elif storage_strategy == "single":
                 # Read from file
                 if file_obj.object_path and os.path.exists(file_obj.object_path):
                     async with aiofiles.open(file_obj.object_path, 'rb') as f:
                         encrypted_data = await f.read()
-                    file_data = encryption_service.decrypt_data(encrypted_data, file_obj.encryption_key)
+                    file_data = encryption_service.decrypt_data(encrypted_data, file_key)
             elif storage_strategy == "chunked":
                 # For chunked files, reassemble chunks
                 # Skip scanning very large chunked files to avoid memory issues
