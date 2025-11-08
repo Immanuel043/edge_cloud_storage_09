@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info } from 'lucide-react';
+import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info, Copy } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
@@ -17,6 +17,7 @@ export default function FileList({
   onToggleFavorite,
   onRename,
   onFileInfo,
+  onFileCopy,
   darkMode
 }) {
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -145,7 +146,7 @@ export default function FileList({
                 onMouseLeave={() => setHoveredMenuId(null)}
                 className={`p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
                   darkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-200 text-gray-700'
-                } ${openMenuId === file.id ? 'bg-gray-700 opacity-100' : ''}`}
+                } ${openMenuId === file.id ? (darkMode ? 'bg-gray-700' : 'bg-gray-200') + ' opacity-100' : ''}`}
               >
                 <MoreVertical size={16} />
               </button>
@@ -209,6 +210,21 @@ export default function FileList({
                       <Share2 size={16} className="text-purple-500" />
                       <span className="font-medium">Share</span>
                     </button>
+                    {onFileCopy && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onFileCopy(file);
+                          setOpenMenuId(null);
+                        }}
+                        className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
+                          darkMode ? 'hover:bg-gray-700 text-gray-200' : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <Copy size={16} className="text-indigo-500" />
+                        <span className="font-medium">Make a copy</span>
+                      </button>
+                    )}
                     {onRename && (
                       <button
                         onClick={(e) => {

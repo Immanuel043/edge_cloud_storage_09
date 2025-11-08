@@ -309,6 +309,50 @@ export default function Dashboard() {
     }
   };
 
+  const handleFileCopy = async (file) => {
+    try {
+      // Create a copy name by appending " (Copy)" or " (Copy N)"
+      let copyName = file.name;
+      const lastDotIndex = copyName.lastIndexOf('.');
+      const baseName = lastDotIndex > 0 ? copyName.substring(0, lastDotIndex) : copyName;
+      const extension = lastDotIndex > 0 ? copyName.substring(lastDotIndex) : '';
+
+      // Check for existing copies to determine the next number
+      const copyPattern = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(Copy( \\d+)?\\)${extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+      const existingCopies = files.filter(f => copyPattern.test(f.name));
+
+      if (existingCopies.length === 0) {
+        copyName = `${baseName} (Copy)${extension}`;
+      } else {
+        const numbers = existingCopies.map(f => {
+          const match = f.name.match(/\(Copy(?: (\d+))?\)/);
+          return match && match[1] ? parseInt(match[1]) : 1;
+        });
+        const nextNumber = Math.max(...numbers) + 1;
+        copyName = `${baseName} (Copy ${nextNumber})${extension}`;
+      }
+
+      // Download the file blob
+      const response = await fetch(`${storageService.API_URL}/files/${file.id}/download`, {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to download file for copying');
+      }
+
+      const blob = await response.blob();
+      const copiedFile = new File([blob], copyName, { type: file.mime_type || blob.type });
+
+      // Upload the copy
+      await handleFileUpload(copiedFile);
+
+    } catch (error) {
+      console.error('Failed to copy file:', error);
+      alert('Failed to create a copy of the file. Please try again.');
+    }
+  };
+
   const handleRenameFile = async (fileId, newName) => {
     try {
       await storageService.renameFile(null, fileId, newName);
@@ -694,6 +738,7 @@ export default function Dashboard() {
                         onToggleFavorite={handleToggleFavorite}
                         onRename={setRenameFile}
                         onFileInfo={setFileInfo}
+                        onFileCopy={handleFileCopy}
                         darkMode={darkMode}
                       />
                     ) : (
@@ -711,6 +756,7 @@ export default function Dashboard() {
                         onToggleFavorite={handleToggleFavorite}
                         onRename={setRenameFile}
                         onFileInfo={setFileInfo}
+                        onFileCopy={handleFileCopy}
                         darkMode={darkMode}
                       />
                     )}
