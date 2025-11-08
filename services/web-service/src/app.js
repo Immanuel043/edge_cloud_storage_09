@@ -541,11 +541,11 @@ app.post('/api/share/:fileId', async (req, res) => {
     const { fileId } = req.params;
     const { expiresHours, password, maxDownloads } = req.body;
     const userId = req.session.userId;
-    
+
     if (!userId) {
         return res.status(401).json({ error: 'Not authenticated' });
     }
-    
+
     try {
         const response = await axios.post(
             `${config.storageServiceUrl}/api/v1/files/${fileId}/share`,
@@ -560,11 +560,40 @@ app.post('/api/share/:fileId', async (req, res) => {
                 }
             }
         );
-        
+
         res.json(response.data);
     } catch (error) {
         console.error('Share error:', error);
         res.status(500).json({ error: 'Failed to create share link' });
+    }
+});
+
+// Copy file
+app.post('/api/files/:fileId/copy', async (req, res) => {
+    const { fileId } = req.params;
+    const userId = req.session.userId;
+
+    if (!userId) {
+        return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    try {
+        const response = await axios.post(
+            `${config.storageServiceUrl}/api/v1/files/${fileId}/copy`,
+            {},
+            {
+                headers: {
+                    'X-User-Id': userId
+                }
+            }
+        );
+
+        res.json(response.data);
+    } catch (error) {
+        console.error('Copy file error:', error);
+        const status = error.response?.status || 500;
+        const message = error.response?.data?.detail || 'Failed to copy file';
+        res.status(status).json({ error: message });
     }
 });
 

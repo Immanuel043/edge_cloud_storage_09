@@ -40,6 +40,7 @@ from ..services.search_service import search_service
 from ..services.virus_scanner import get_virus_scanner
 from ..services.dlp_service import get_dlp_service
 from ..services.audit_service import get_audit_service
+from ..services.video_optimizer import video_optimizer
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -893,6 +894,19 @@ async def complete_upload(
         )
     )
 
+    # ============ VIDEO OPTIMIZATION (BACKGROUND) ============
+    # Run video faststart optimization for MOV/MP4 files
+    if storage_strategy == "single" and file_obj.object_path:
+        asyncio.create_task(
+            run_video_optimization(
+                file_id=file_id,
+                file_name=session['name'],
+                file_path=file_obj.object_path,
+                mime_type=mime_type,
+                storage_strategy=storage_strategy
+            )
+        )
+
     # Index file in Elasticsearch (fire and forget)
     asyncio.create_task(
         search_service.index_file({
@@ -1297,3 +1311,128 @@ async def run_security_scans(
 
     except Exception as e:
         logger.error(f"Security scanning failed for {file_name}: {e}", exc_info=True)
+
+
+async def run_video_optimization(
+    file_id: uuid.UUID,
+    file_name: str,
+    file_path: str,
+    mime_type: str,
+    storage_strategy: str
+):
+    """
+    Run video optimization in background after file upload
+
+    For MOV/MP4 files, applies faststart optimization to move moov atom
+    to the beginning of the file for better streaming performance.
+
+    Args:
+        file_id: ID of uploaded file
+        file_name: Name of file
+        file_path: Path to video file
+        mime_type: MIME type
+        storage_strategy: Storage strategy used
+    """
+    try:
+        # Only optimize video files
+        if not mime_type or not mime_type.startswith('video/'):
+            return
+
+        # Only optimize MOV and MP4 files (most benefit from faststart)
+        video_formats = ['video/quicktime', 'video/mp4', 'video/x-m4v']
+        if mime_type not in video_formats:
+            logger.debug(f"Skipping video optimization for {mime_type}")
+            return
+
+        # Only optimize single file storage (chunked files would need reassembly)
+        if storage_strategy != "single":
+            logger.debug(f"Skipping video optimization for {storage_strategy} storage")
+            return
+
+        # Verify file exists
+        if not file_path or not os.path.exists(file_path):
+            logger.warning(f"Video file path not found for optimization: {file_name}")
+            return
+
+        logger.info(f"🎬 Starting video optimization for {file_name} ({file_id})")
+
+        # Run optimization
+        result = await video_optimizer.optimize_video_for_streaming(
+            file_path=file_path,
+            replace_original=True
+        )
+
+        # Get new database session to update metadata
+        from ..database import get_async_session
+        async for db in get_async_session():
+            try:
+                # Re-query the file object
+                result_query = await db.execute(
+                    select(Object).where(Object.id == file_id)
+                )
+                file_obj = result_query.scalar_one_or_none()
+
+                if not file_obj:
+                    logger.warning(f"File not found in database for optimization update: {file_id}")
+                    return
+
+                # Update file metadata with optimization status
+                if result['success'] and result['optimized']:
+                    logger.info(f"✅ Video optimized successfully: {file_name}")
+
+                    # Update file metadata in database
+                    metadata = file_obj.file_metadata or {}
+                    metadata.update({
+                        'video_optimized': True,
+                        'faststart_applied': True,
+                        'moov_location': 'start',
+                        'optimization_date': datetime.utcnow().isoformat(),
+                        'original_moov_location': result['metadata'].get('moov_location', 'unknown')
+                    })
+
+                    file_obj.file_metadata = metadata
+
+                    # Commit to database
+                    await db.commit()
+
+                    logger.info(f"🎬 Video optimization completed and metadata updated: {file_name}")
+
+                elif result['success'] and not result['optimized']:
+                    logger.info(f"ℹ️  Video already optimized: {file_name}")
+
+                    # Still update metadata to mark as checked
+                    metadata = file_obj.file_metadata or {}
+                    metadata.update({
+                        'video_optimized': True,
+                        'faststart_applied': False,
+                        'moov_location': result['metadata'].get('moov_location', 'start'),
+                        'optimization_checked': datetime.utcnow().isoformat()
+                    })
+
+                    file_obj.file_metadata = metadata
+                    await db.commit()
+
+                else:
+                    error_msg = result.get('error', 'Unknown error')
+                    logger.error(f"❌ Video optimization failed for {file_name}: {error_msg}")
+
+                    # Mark as failed in metadata
+                    metadata = file_obj.file_metadata or {}
+                    metadata.update({
+                        'video_optimized': False,
+                        'optimization_error': error_msg,
+                        'optimization_attempted': datetime.utcnow().isoformat()
+                    })
+
+                    file_obj.file_metadata = metadata
+                    await db.commit()
+
+                break  # Exit the async for loop after processing
+
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"Failed to update video optimization metadata: {e}")
+                raise
+
+    except Exception as e:
+        logger.error(f"Video optimization failed for {file_name}: {e}", exc_info=True)

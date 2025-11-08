@@ -256,9 +256,20 @@ class PreviewGenerator:
                     check=False
                 )
 
-                # If failed, try at start of video
+                # If failed, check for specific errors
                 if result.returncode != 0 or not os.path.exists(output_path):
-                    logger.debug(f"First attempt failed, trying start of video: {result.stderr}")
+                    stderr_text = result.stderr.decode() if result.stderr else ""
+
+                    # Detect moov atom error (video metadata issue)
+                    if "moov atom not found" in stderr_text.lower():
+                        logger.warning(
+                            f"Video preview failed: moov atom not found. "
+                            f"This usually means the video metadata is at the end of the file. "
+                            f"The preview system should have used head+tail download strategy."
+                        )
+                        raise Exception(f"moov atom not found - video preview requires full metadata")
+
+                    logger.debug(f"First attempt failed, trying start of video: {stderr_text}")
                     cmd[2] = '0.5'  # Try at 0.5 seconds instead
                     result = subprocess.run(cmd, capture_output=True, timeout=10, check=False)
 

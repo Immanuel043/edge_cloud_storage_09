@@ -17,6 +17,7 @@ import aiofiles
 import base64
 import logging
 from typing import Optional, Tuple
+from .video_optimizer import video_optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,76 @@ class PreviewOptimizer:
             return min(self.MAX_DOWNLOAD_DOCUMENT, file_size)
         else:
             return min(self.MAX_DOWNLOAD_DOCUMENT, file_size)
+
+    async def download_with_head_tail(
+        self,
+        file_path: str,
+        file_size: int,
+        encryption_service,
+        file_key: bytes,
+        head_size: int = 10 * 1024 * 1024,  # 10MB
+        tail_size: int = 2 * 1024 * 1024    # 2MB
+    ) -> Tuple[str, bool]:
+        """
+        Download head + tail of file for video preview (MOV files with moov at end)
+
+        This handles the case where video metadata (moov atom) is at the end of the file.
+        We download the first 10MB and last 2MB, then reassemble them.
+
+        Returns: (temp_file_path, is_complete)
+        """
+        # If file is small enough, download completely
+        if file_size <= head_size + tail_size:
+            logger.info(f"File small enough ({file_size/1024/1024:.1f}MB), downloading completely")
+            async with aiofiles.open(file_path, 'rb') as f:
+                encrypted_data = await f.read()
+
+            file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+
+            temp_fd, temp_file_path = tempfile.mkstemp()
+            os.close(temp_fd)
+
+            async with aiofiles.open(temp_file_path, 'wb') as f:
+                await f.write(file_data)
+
+            return temp_file_path, True
+
+        logger.info(
+            f"Using head+tail download strategy: "
+            f"first {head_size/1024/1024:.1f}MB + last {tail_size/1024/1024:.1f}MB "
+            f"(total: {file_size/1024/1024:.1f}MB)"
+        )
+
+        # Read head (first N MB)
+        async with aiofiles.open(file_path, 'rb') as f:
+            encrypted_head = await f.read(head_size)
+
+        # Read tail (last N MB)
+        async with aiofiles.open(file_path, 'rb') as f:
+            # Seek to tail position
+            tail_offset = file_size - tail_size
+            await f.seek(tail_offset)
+            encrypted_tail = await f.read()
+
+        # Decrypt both portions
+        head_data = encryption_service.decrypt_file(encrypted_head, file_key)
+        tail_data = encryption_service.decrypt_file(encrypted_tail, file_key)
+
+        # Create temp file with head + tail
+        temp_fd, temp_file_path = tempfile.mkstemp()
+        os.close(temp_fd)
+
+        async with aiofiles.open(temp_file_path, 'wb') as f:
+            await f.write(head_data)
+            await f.write(tail_data)
+
+        logger.info(
+            f"Head+tail download complete: "
+            f"{len(head_data) + len(tail_data)} bytes written "
+            f"({(len(head_data) + len(tail_data))/1024/1024:.1f}MB)"
+        )
+
+        return temp_file_path, False  # Not complete, but has head+tail
 
     async def download_partial_for_preview(
         self,
@@ -114,6 +185,27 @@ class PreviewOptimizer:
                 if not os.path.exists(file_obj.object_path):
                     raise FileNotFoundError(f"File not found: {file_obj.object_path}")
 
+                # Special handling for large video files that might need head+tail
+                is_video = file_obj.mime_type and file_obj.mime_type.startswith('video/')
+                is_large_video = is_video and file_obj.file_size > 50 * 1024 * 1024  # > 50MB
+
+                # Check if video might have moov at end (MOV files typically do)
+                might_need_tail = False
+                if is_large_video:
+                    file_ext = os.path.splitext(file_obj.file_name)[1].lower()
+                    might_need_tail = file_ext in ['.mov', '.qt']
+
+                if might_need_tail and is_partial:
+                    # Use head+tail strategy for large MOV files
+                    logger.info(f"Large MOV file detected, using head+tail strategy")
+                    return await self.download_with_head_tail(
+                        file_obj.object_path,
+                        file_obj.file_size,
+                        encryption_service,
+                        file_key
+                    )
+
+                # Standard approach for other files
                 # Read file (partial or complete)
                 async with aiofiles.open(file_obj.object_path, 'rb') as f:
                     if is_partial:

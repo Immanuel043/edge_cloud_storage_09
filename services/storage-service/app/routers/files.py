@@ -1262,3 +1262,274 @@ async def bulk_delete_files(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{file_id}/copy", response_model=FileResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
+async def copy_file(
+    file_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Server-side file copy - efficient for large files
+
+    - Creates a duplicate of the file with a new ID
+    - Handles all storage types (inline, single)
+    - Generates smart copy names (Copy, Copy 2, Copy 3, etc.)
+    - Works seamlessly regardless of file size
+    - Does not support Zero-Knowledge encrypted files
+    """
+
+    # Fetch original file
+    result = await db.execute(
+        select(Object).filter(
+            Object.id == file_id,
+            Object.user_id == current_user.id,
+            Object.is_deleted == False
+        )
+    )
+    original_file = result.scalar_one_or_none()
+
+    if not original_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Check if file is Zero-Knowledge encrypted
+    if original_file.is_encrypted:
+        raise HTTPException(
+            status_code=400,
+            detail="Copying Zero-Knowledge encrypted files is not currently supported. Please download and re-upload the file manually."
+        )
+
+    try:
+        # Generate copy name
+        base_name = original_file.file_name
+        last_dot = base_name.rfind('.')
+        if last_dot > 0:
+            name_part = base_name[:last_dot]
+            ext_part = base_name[last_dot:]
+        else:
+            name_part = base_name
+            ext_part = ""
+
+        # Check for existing copies in the same folder
+        query = select(Object).filter(
+            Object.user_id == current_user.id,
+            Object.folder_id == original_file.folder_id,
+            Object.is_deleted == False,
+            Object.file_name.like(f"{name_part} (Copy%)%")
+        )
+        result = await db.execute(query)
+        existing_copies = result.scalars().all()
+
+        # Determine next copy number
+        if not existing_copies:
+            copy_name = f"{name_part} (Copy){ext_part}"
+        else:
+            # Extract numbers from existing copies
+            import re
+            numbers = []
+            for copy in existing_copies:
+                match = re.search(r'\(Copy(?: (\d+))?\)', copy.file_name)
+                if match:
+                    num = match.group(1)
+                    numbers.append(int(num) if num else 1)
+
+            next_num = max(numbers) + 1 if numbers else 2
+            copy_name = f"{name_part} (Copy {next_num}){ext_part}"
+
+        # Generate new encryption key for the copy
+        new_file_key = encryption_service.generate_key()
+        encrypted_new_key = encryption_service.encrypt_key(new_file_key)
+
+        # Handle storage based on type
+        new_storage_key = None
+        new_object_path = None
+
+        if original_file.storage_type == "inline":
+            # For inline storage, copy the encrypted data directly
+            new_storage_key = original_file.storage_key
+
+        elif original_file.storage_type == "single":
+            # For single file storage, copy the file on disk
+            if not original_file.object_path or not os.path.exists(original_file.object_path):
+                raise HTTPException(status_code=404, detail="Original file data not found on disk")
+
+            # Generate new storage path
+            shard = "objects"
+            storage_dir = os.path.join(settings.STORAGE_PATH, shard)
+            os.makedirs(storage_dir, exist_ok=True)
+
+            import uuid
+            new_file_id = uuid.uuid4()
+            new_filename = f"{new_file_id}.enc"
+            new_object_path = os.path.join(storage_dir, new_filename)
+
+            try:
+                # Decrypt original file and re-encrypt with new key
+                original_file_key = encryption_service.decrypt_key(original_file.encryption_key)
+
+                file_size_mb = original_file.file_size / (1024 * 1024)
+                logger.info(f"Copying file {original_file.file_name} ({file_size_mb:.2f} MB)...")
+
+                # Strategy selection based on file size
+                MEMORY_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GB
+
+                if original_file.file_size <= MEMORY_THRESHOLD:
+                    # Small to medium files: load into memory (fastest)
+                    logger.info(f"Using in-memory copy for file size {file_size_mb:.2f} MB")
+
+                    async with aiofiles.open(original_file.object_path, 'rb') as src:
+                        encrypted_data = await src.read()
+
+                    # Decrypt with old key
+                    decrypted_data = encryption_service.decrypt_data(encrypted_data, original_file_key)
+
+                    # Re-encrypt with new key
+                    new_encrypted_data = encryption_service.encrypt_data(decrypted_data, new_file_key)
+
+                    # Write to new path
+                    async with aiofiles.open(new_object_path, 'wb') as dst:
+                        await dst.write(new_encrypted_data)
+
+                    logger.info(f"In-memory copy completed successfully")
+
+                else:
+                    # Large files: use true chunked streaming (constant memory usage)
+                    logger.info(f"Using chunked streaming copy for file size {file_size_mb:.2f} MB")
+
+                    # Use 64 MB chunks (matches system CHUNK_SIZE)
+                    CHUNK_SIZE = 64 * 1024 * 1024  # 64 MB
+                    total_chunks = (original_file.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+                    logger.info(f"Processing {total_chunks} chunks of 64 MB each...")
+
+                    try:
+                        bytes_processed = 0
+                        chunk_index = 0
+
+                        # Open both files simultaneously for streaming
+                        async with aiofiles.open(original_file.object_path, 'rb') as src, \
+                                   aiofiles.open(new_object_path, 'wb') as dst:
+
+                            while True:
+                                # Read one 64 MB encrypted chunk
+                                encrypted_chunk = await src.read(CHUNK_SIZE)
+                                if not encrypted_chunk:
+                                    break  # End of file
+
+                                # Decrypt chunk with old key
+                                decrypted_chunk = encryption_service.decrypt_chunk(
+                                    encrypted_chunk,
+                                    original_file_key,
+                                    chunk_index
+                                )
+
+                                # Re-encrypt chunk with new key
+                                new_encrypted_chunk = encryption_service.encrypt_chunk(
+                                    decrypted_chunk,
+                                    new_file_key,
+                                    chunk_index
+                                )
+
+                                # Write encrypted chunk to new file
+                                await dst.write(new_encrypted_chunk)
+
+                                # Update progress
+                                bytes_processed += len(encrypted_chunk)
+                                chunk_index += 1
+
+                                # Log progress every 10 chunks (~640 MB)
+                                if chunk_index % 10 == 0:
+                                    progress_pct = (bytes_processed / original_file.file_size) * 100
+                                    progress_gb = bytes_processed / (1024 * 1024 * 1024)
+                                    total_gb = original_file.file_size / (1024 * 1024 * 1024)
+                                    logger.info(
+                                        f"Progress: {progress_gb:.2f} GB / {total_gb:.2f} GB "
+                                        f"({progress_pct:.1f}%) - {chunk_index}/{total_chunks} chunks"
+                                    )
+
+                                # Memory automatically cleared when chunk variables go out of scope
+
+                        logger.info(f"Chunked streaming copy completed successfully: {chunk_index} chunks processed")
+
+                    except Exception as chunk_error:
+                        # If chunked copy fails, ensure partial file is cleaned up
+                        logger.error(f"Chunked copy failed at chunk {chunk_index}: {chunk_error}")
+                        raise chunk_error
+
+            except Exception as copy_error:
+                # Clean up destination file if copy failed
+                if os.path.exists(new_object_path):
+                    try:
+                        os.remove(new_object_path)
+                        logger.info(f"Cleaned up failed copy file: {new_object_path}")
+                    except Exception:
+                        pass
+
+                # Re-raise the error
+                raise copy_error
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported storage type: {original_file.storage_type}")
+
+        # Create new Object record
+        new_file = Object(
+            id=new_file_id if original_file.storage_type == "single" else None,
+            user_id=current_user.id,
+            folder_id=original_file.folder_id,
+            file_name=copy_name,
+            file_size=original_file.file_size,
+            mime_type=original_file.mime_type,
+            content_hash=original_file.content_hash,
+            encryption_key=encrypted_new_key,
+            storage_type=original_file.storage_type,
+            storage_key=new_storage_key,
+            object_path=new_object_path,
+            file_metadata=original_file.file_metadata,
+            storage_tier=original_file.storage_tier,
+            versioning_enabled=original_file.versioning_enabled,
+            is_encrypted=False,  # Not ZK encrypted
+            upload_status="completed",
+        )
+
+        db.add(new_file)
+        await db.commit()
+        await db.refresh(new_file)
+
+        # Log activity
+        await log_activity(
+            db, current_user.id, "file_copied", str(new_file.id),
+            {
+                "file_name": copy_name,
+                "original_file_id": str(file_id),
+                "original_file_name": original_file.file_name,
+                "size": original_file.file_size,
+            },
+            request
+        )
+
+        logger.info(f"File copied successfully: {original_file.file_name} -> {copy_name} (size: {original_file.file_size} bytes)")
+
+        # Return file response
+        return FileResponse(
+            id=str(new_file.id),
+            name=new_file.file_name,
+            size=new_file.file_size,
+            mime_type=new_file.mime_type,
+            created_at=new_file.created_at,
+            last_accessed=new_file.last_accessed,
+            storage_tier=new_file.storage_tier,
+            folder_id=str(new_file.folder_id) if new_file.folder_id else None,
+            is_favorite=False,  # New file, not favorited yet
+            is_encrypted=False,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"File copy error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to copy file: {str(e)}")

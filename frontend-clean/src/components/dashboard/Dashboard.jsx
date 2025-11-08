@@ -318,45 +318,32 @@ export default function Dashboard() {
         return;
       }
 
-      // Create a copy name by appending " (Copy)" or " (Copy N)"
-      let copyName = file.name;
-      const lastDotIndex = copyName.lastIndexOf('.');
-      const baseName = lastDotIndex > 0 ? copyName.substring(0, lastDotIndex) : copyName;
-      const extension = lastDotIndex > 0 ? copyName.substring(lastDotIndex) : '';
+      // Show loading state (optional - you can add a loading indicator here)
+      console.log(`Copying file: ${file.name}...`);
 
-      // Check for existing copies to determine the next number
-      const copyPattern = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(Copy( \\d+)?\\)${extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
-      const existingCopies = files.filter(f => copyPattern.test(f.name));
-
-      if (existingCopies.length === 0) {
-        copyName = `${baseName} (Copy)${extension}`;
-      } else {
-        const numbers = existingCopies.map(f => {
-          const match = f.name.match(/\(Copy(?: (\d+))?\)/);
-          return match && match[1] ? parseInt(match[1]) : 1;
-        });
-        const nextNumber = Math.max(...numbers) + 1;
-        copyName = `${baseName} (Copy ${nextNumber})${extension}`;
-      }
-
-      // Download the file blob
-      const response = await fetch(`${API_URL}/files/${file.id}/download`, {
-        credentials: 'include'
+      // Call server-side copy endpoint
+      const response = await fetch(`${API_URL}/files/${file.id}/copy`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json'
+        }
       });
 
       if (!response.ok) {
-        throw new Error('Failed to download file for copying');
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to copy file');
       }
 
-      const blob = await response.blob();
-      const copiedFile = new File([blob], copyName, { type: file.mime_type || blob.type });
+      const copiedFile = await response.json();
+      console.log(`File copied successfully: ${copiedFile.name}`);
 
-      // Upload the copy
-      await handleFileUpload(copiedFile);
+      // Refresh file list to show the new copy
+      await refreshFiles();
 
     } catch (error) {
       console.error('Failed to copy file:', error);
-      alert('Failed to create a copy of the file. Please try again.');
+      alert(`Failed to create a copy of the file: ${error.message}`);
     }
   };
 
