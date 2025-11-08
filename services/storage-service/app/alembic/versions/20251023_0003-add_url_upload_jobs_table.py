@@ -50,12 +50,10 @@ def upgrade():
     """)
 
     # Create indexes for performance
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_user_id ON url_upload_jobs(user_id);
-        CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_file_id ON url_upload_jobs(file_id);
-        CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_status ON url_upload_jobs(status);
-        CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_created_at ON url_upload_jobs(created_at);
-    """)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_user_id ON url_upload_jobs(user_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_file_id ON url_upload_jobs(file_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_status ON url_upload_jobs(status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_created_at ON url_upload_jobs(created_at)")
 
 
 def downgrade():
