@@ -387,7 +387,7 @@ class PreviewGenerator:
         except Exception as e:
             logger.error(f"Video preview failed completely: {e}")
             # Return placeholder instead
-            return await self._generate_placeholder(file_path, size, "Video")
+            return self._generate_placeholder_preview("VIDEO", size, "🎬")
 
     async def _generate_docx_preview(
         self,
