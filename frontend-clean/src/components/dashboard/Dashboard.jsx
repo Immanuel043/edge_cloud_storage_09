@@ -18,6 +18,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
 import StorageStats from './StorageStats';
+import { API_URL } from '../../config/constants';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
 import UploadProgress from './UploadProgress';
@@ -339,7 +340,7 @@ export default function Dashboard() {
       }
 
       // Download the file blob
-      const response = await fetch(`${storageService.API_URL}/files/${file.id}/download`, {
+      const response = await fetch(`${API_URL}/files/${file.id}/download`, {
         credentials: 'include'
       });
 
