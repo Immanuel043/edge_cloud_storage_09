@@ -44,6 +44,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # 5. Referrer-Policy - Control referrer information
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
+        api_base = (getattr(settings, "API_BASE_URL", "") or "").strip()
+        host_header = request.headers.get("host")
+        request_origin = (
+            f"{request.url.scheme}://{host_header}"
+            if host_header
+            else f"{request.url.scheme}://{request.url.netloc}"
+        )
+        if not api_base:
+            api_base = request_origin
+        media_src = ["media-src", "'self'", "blob:", api_base]
+        if request_origin not in media_src:
+            media_src.append(request_origin)
+
         # 6. Content Security Policy - Comprehensive XSS protection
         csp_directives = [
             "default-src 'self'",
@@ -56,9 +69,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # Fonts: Allow self + data URIs + Google Fonts
             "font-src 'self' data: https://fonts.gstatic.com",
             # AJAX/WebSocket: Allow self + API domain
-            f"connect-src 'self' {settings.API_BASE_URL} ws: wss:",
+            f"connect-src 'self' {api_base} {request_origin} ws: wss:",
             # Media: Allow self + blob (for video/audio streaming)
-            "media-src 'self' blob:",
+            " ".join(media_src),
             # Objects: Disallow plugins
             "object-src 'none'",
             # Frames: Disallow framing
@@ -108,10 +121,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"] = ", ".join(permissions)
 
         # 8. Cross-Origin Policies
-        # Prevent cross-origin attacks
+        # Allow media downloads to be embedded cross-origin (used by frontend video tag)
+        is_media_download = (
+            request.url.path.startswith("/api/v1/files/")
+            and "/download" in request.url.path
+        )
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = (
+            "cross-origin" if is_media_download else "same-origin"
+        )
 
         # 9. Remove server header - Don't leak server information
         if "Server" in response.headers:

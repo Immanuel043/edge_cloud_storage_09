@@ -1,6 +1,13 @@
 import React from 'react';
 import { File, Image, FileText, Video, Music, Archive, Code } from 'lucide-react';
 
+export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'tiff'];
+export const VIDEO_EXTENSIONS = ['mp4', 'avi', 'mov', 'mkv', 'webm', 'flv', 'wmv', 'm4v', '3gp'];
+export const DOCUMENT_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf', 'ppt', 'pptx', 'xls', 'xlsx'];
+export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'];
+export const ARCHIVE_EXTENSIONS = ['zip', 'rar', 'tar', 'gz', '7z'];
+export const CODE_EXTENSIONS = ['js', 'jsx', 'ts', 'tsx', 'html', 'css', 'py', 'json', 'xml', 'sql', 'sh', 'rb', 'go', 'rs'];
+
 export const formatBytes = (bytes) => {
   if (!bytes) return '0 B';
   const k = 1024;
@@ -33,19 +40,19 @@ export const formatDuration = (milliseconds) => {
   }
 };
 
-export const getFileType = (fileName) => {
-  const extension = fileName.toLowerCase().split('.').pop();
-  
-  const typeMap = {
-    jpg: 'image', jpeg: 'image', png: 'image', gif: 'image',
-    pdf: 'document', doc: 'document', docx: 'document',
-    mp4: 'video', avi: 'video', mkv: 'video',
-    mp3: 'audio', wav: 'audio',
-    zip: 'archive', rar: 'archive',
-    js: 'code', jsx: 'code', html: 'code', css: 'code'
-  };
-  
-  return typeMap[extension] || 'file';
+export const getFileType = (fileName = '') => {
+  const normalized = fileName.toLowerCase();
+  const parts = normalized.split('.');
+  if (parts.length < 2) return 'file';
+  const extension = parts.pop();
+
+  if (IMAGE_EXTENSIONS.includes(extension)) return 'image';
+  if (VIDEO_EXTENSIONS.includes(extension)) return 'video';
+  if (DOCUMENT_EXTENSIONS.includes(extension)) return 'document';
+  if (AUDIO_EXTENSIONS.includes(extension)) return 'audio';
+  if (ARCHIVE_EXTENSIONS.includes(extension)) return 'archive';
+  if (CODE_EXTENSIONS.includes(extension)) return 'code';
+  return 'file';
 };
 
 export const getFileIcon = (fileName, size = 24) => {

@@ -35,6 +35,11 @@ async def get_current_user(
     # Fallback to Authorization header for backward compatibility
     elif credentials:
         token = credentials.credentials
+    # Final fallback: explicit query token (used for signed download URLs)
+    else:
+        query_token = request.query_params.get("token")
+        if query_token:
+            token = query_token
 
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")

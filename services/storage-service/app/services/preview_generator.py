@@ -57,7 +57,7 @@ class PreviewGenerator:
 
     # Supported file types
     IMAGE_TYPES = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff'}
-    VIDEO_TYPES = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv'}
+    VIDEO_TYPES = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv'}
     DOCUMENT_TYPES = {'.pdf', '.docx', '.doc', '.txt', '.md', '.xlsx', '.xls', '.pptx'}
     AUDIO_TYPES = {'.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'}
     ARCHIVE_TYPES = {'.zip', '.rar', '.tar', '.gz', '.7z'}

@@ -53,6 +53,7 @@ class CircuitBreaker:
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
         self.failure_count = 0
         self.last_check = datetime.utcnow()
+        self.last_health_info: Optional[Dict[str, float]] = None
 
     async def check_health(self) -> Dict:
         """Check system health and update circuit state"""
@@ -62,7 +63,8 @@ class CircuitBreaker:
         if (now - self.last_check).seconds < self.check_interval:
             return {
                 "state": self.state,
-                "healthy": self.state == "CLOSED"
+                "healthy": self.state == "CLOSED",
+                "health_info": self.last_health_info
             }
 
         self.last_check = now
@@ -89,6 +91,7 @@ class CircuitBreaker:
                 "memory_available_gb": round(memory.available / (1024**3), 2),
                 "disk_available_gb": round(disk.free / (1024**3), 2)
             }
+            self.last_health_info = health_info
 
             # Update circuit state
             if is_healthy:
@@ -122,6 +125,7 @@ class CircuitBreaker:
 
         except Exception as e:
             logger.error(f"Health check failed: {e}")
+            self.last_health_info = None
             return {
                 "state": "OPEN",
                 "healthy": False,
@@ -212,13 +216,15 @@ class SmartDeduplicationQueue:
 
         # Check circuit breaker
         health = await self.circuit_breaker.check_health()
+        health_snapshot = health.get("health_info") or {}
         if not health["healthy"]:
             self.stats["total_rejected"] += 1
             return {
                 "success": False,
                 "reason": "circuit_breaker_open",
                 "message": "System overloaded, try again later",
-                "health": health["health_info"]
+                "health": health_snapshot,
+                "state": health.get("state", "UNKNOWN")
             }
 
         # Check total queue size

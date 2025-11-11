@@ -1,25 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileText, Film, FileImage, Music, Archive, File } from 'lucide-react';
 import { API_URL } from '../../config/constants';
+import {
+  IMAGE_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  DOCUMENT_EXTENSIONS,
+  AUDIO_EXTENSIONS,
+  ARCHIVE_EXTENSIONS
+} from '../../utils/helpers';
 
 // File type to icon mapping
 const getFileTypeIcon = (fileName, size = 48) => {
   const ext = fileName.split('.').pop()?.toLowerCase();
   const iconProps = { size, className: 'text-gray-400' };
 
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) {
+  if (IMAGE_EXTENSIONS.includes(ext)) {
     return <FileImage {...iconProps} />;
   }
-  if (['mp4', 'avi', 'mov', 'mkv', 'webm', 'flv'].includes(ext)) {
+  if (VIDEO_EXTENSIONS.includes(ext)) {
     return <Film {...iconProps} />;
   }
-  if (['pdf', 'doc', 'docx', 'txt', 'md'].includes(ext)) {
+  if (DOCUMENT_EXTENSIONS.includes(ext)) {
     return <FileText {...iconProps} />;
   }
-  if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) {
+  if (AUDIO_EXTENSIONS.includes(ext)) {
     return <Music {...iconProps} />;
   }
-  if (['zip', 'rar', 'tar', 'gz', '7z'].includes(ext)) {
+  if (ARCHIVE_EXTENSIONS.includes(ext)) {
     return <Archive {...iconProps} />;
   }
   return <File {...iconProps} />;
@@ -38,18 +45,10 @@ export default function FileThumbnail({
   const imgRef = useRef(null);
   const observerRef = useRef(null);
 
-  // Determine if file type supports preview
-  const supportsPreview = () => {
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    const previewableTypes = [
-      'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp',  // Images
-      'pdf',  // PDFs
-      'mp4', 'avi', 'mov', 'mkv', 'webm',  // Videos
-      'docx', 'txt', 'md',  // Documents
-      'py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'xml', 'sql'  // Code
-    ];
-    return previewableTypes.includes(ext);
-  };
+  const extension = file.name?.split('.').pop()?.toLowerCase() || '';
+  const mimeType = (file.mime_type || '').toLowerCase();
+  const isVideoFile = mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension);
+  const canPreview = file?.allow_preview !== false;
 
   // Lazy loading with Intersection Observer
   useEffect(() => {
@@ -76,7 +75,7 @@ export default function FileThumbnail({
 
   // Load thumbnail when visible
   useEffect(() => {
-    if (!isVisible || !supportsPreview()) {
+    if (!isVisible || !canPreview) {
       setLoading(false);
       return;
     }
@@ -148,10 +147,10 @@ export default function FileThumbnail({
     large: 64
   };
 
-  const containerClass = `${sizeClasses[size]} flex items-center justify-center rounded-lg overflow-hidden ${className}`;
+  const containerClass = `${sizeClasses[size]} relative flex items-center justify-center rounded-lg overflow-hidden ${className}`;
 
   // Show loading state
-  if (loading && supportsPreview()) {
+  if (loading && canPreview) {
     return (
       <div
         ref={imgRef}
@@ -174,6 +173,11 @@ export default function FileThumbnail({
           className="w-full h-full object-cover"
           onError={() => setError(true)}
         />
+        {isVideoFile && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25">
+            <Film size={iconSizes[size] / 1.5} className="text-white drop-shadow-lg" />
+          </div>
+        )}
       </div>
     );
   }

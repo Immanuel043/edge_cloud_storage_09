@@ -597,6 +597,47 @@ app.post('/api/files/:fileId/copy', async (req, res) => {
     }
 });
 
+// File preview proxy
+app.get('/api/files/:fileId/preview', async (req, res) => {
+    const { fileId } = req.params;
+    const { size } = req.query;
+    const userId = req.session.userId;
+
+    if (!userId) {
+        return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    try {
+        const response = await axios.get(
+            `${config.storageServiceUrl}/api/v1/files/${fileId}/preview`,
+            {
+                params: { size },
+                headers: {
+                    'X-User-Id': userId
+                },
+                responseType: 'arraybuffer'
+            }
+        );
+
+        // Forward the image response
+        res.set('Content-Type', response.headers['content-type'] || 'image/jpeg');
+        res.set('Cache-Control', response.headers['cache-control'] || 'public, max-age=2592000');
+        if (response.headers['x-cache']) {
+            res.set('X-Cache', response.headers['x-cache']);
+        }
+        res.send(response.data);
+    } catch (error) {
+        console.error('Preview error:', error.message);
+        const status = error.response?.status || 500;
+
+        if (status === 404) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+
+        res.status(status).json({ error: 'Failed to load preview' });
+    }
+});
+
 // Initialize services on module load
 async function start() {
     try {

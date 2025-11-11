@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Form, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from ..dependencies import get_db, log_activity
+from ..dependencies import get_db, log_activity, get_current_user
 from ..services.auth import auth_service
 from ..models.database import User, Folder
 from ..models.schemas import Token, UserResponse, ThemeUpdate
@@ -156,3 +156,15 @@ async def logout(request: Request = None):
 
     return response
 
+
+@router.get("/session-token")
+async def session_token(current_user: User = Depends(get_current_user)):
+    """
+    Issue a fresh short-lived access token for use in query-authenticated requests
+    (e.g., video streaming where cookies are not forwarded).
+    """
+    access_token = auth_service.create_access_token({
+        "sub": str(current_user.id),
+        "email": current_user.email
+    })
+    return {"access_token": access_token}

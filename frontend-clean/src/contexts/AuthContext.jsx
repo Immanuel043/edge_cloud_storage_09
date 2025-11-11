@@ -112,6 +112,7 @@ export const AuthProvider = ({ children }) => {
         if (!mounted) return;
 
         setIsAuthenticated(true);
+        await refreshSessionToken();
 
         // Connect WebSocket (will use cookie or token from backend response)
         try {
@@ -202,14 +203,28 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const refreshSessionToken = async () => {
+    try {
+      const session = await authService.getSessionToken();
+      if (session?.access_token) {
+        setToken(session.access_token);
+        return session.access_token;
+      }
+    } catch (error) {
+      console.error('Failed to refresh session token:', error);
+    }
+    return null;
+  };
+
   const login = async (email, password) => {
     const data = await authService.login(email, password);
 
-    // SECURITY FIX: Token now stored in HTTP-only cookie by backend
-    // No need to store in localStorage
-    setToken(null); // Not storing token in memory
+    setToken(data?.access_token || null);
     setUser(data.user);
     setIsAuthenticated(true);
+    if (!data?.access_token) {
+      await refreshSessionToken();
+    }
 
     // Connect WebSocket after successful login
     try {
@@ -225,10 +240,12 @@ export const AuthProvider = ({ children }) => {
   const register = async (email, password, username, userType) => {
     const data = await authService.register(email, password, username, userType);
 
-    // SECURITY FIX: Token now stored in HTTP-only cookie by backend
-    setToken(null); // Not storing token in memory
+    setToken(data?.access_token || null);
     setUser(data.user);
     setIsAuthenticated(true);
+    if (!data?.access_token) {
+      await refreshSessionToken();
+    }
 
     // Connect WebSocket after successful registration
     try {
@@ -322,6 +339,8 @@ export const AuthProvider = ({ children }) => {
       console.error('Failed to connect WebSocket after ZK registration:', error);
     }
 
+    await refreshSessionToken();
+
     return data;
   };
 
@@ -392,6 +411,8 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Failed to connect WebSocket after ZK login:', error);
     }
+
+    await refreshSessionToken();
 
     return data;
   };
@@ -528,6 +549,8 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Failed to connect WebSocket after recovery:', error);
     }
+
+    await refreshSessionToken();
 
     return data;
   };

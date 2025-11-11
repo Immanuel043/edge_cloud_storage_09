@@ -99,6 +99,20 @@ class AuthService {
 
     return await response.json();
   }
+
+  async getSessionToken() {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/auth/session-token`, {
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to refresh session token');
+    }
+
+    return await response.json();
+  }
 }
 
 export const authService = new AuthService();

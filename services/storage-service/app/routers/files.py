@@ -345,6 +345,8 @@ async def download_file(
     request: Request,
     range_header: Optional[str] = Header(None, alias="range"),
     accept_encoding: Optional[str] = Header(None, alias="accept-encoding"),
+    inline: bool = False,  # Set to True for streaming video/audio in browser
+    compatible: bool = False,  # Transcode to browser-friendly variant when needed
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -387,12 +389,23 @@ async def download_file(
     total_size = file_obj.file_size or 0
     mime_type = file_obj.mime_type or "application/octet-stream"
     filename = file_obj.file_name.replace('"', '\\"')
-    
+
+    # Determine Content-Disposition (inline for streaming, attachment for download)
+    # Use inline for video/audio when inline=True, or auto-detect for video/audio types
+    is_streamable = mime_type.startswith(('video/', 'audio/'))
+    disposition = "inline" if (inline or is_streamable) else "attachment"
+
+    # Browser compatibility fix: Some browsers have issues with video/quicktime MIME type
+    # Use video/mp4 for MOV files to improve compatibility (most MOV files work with this)
+    display_mime_type = mime_type
+    if mime_type == 'video/quicktime' and file_obj.file_name.lower().endswith(('.mov', '.qt')):
+        display_mime_type = 'video/mp4'  # Better browser support
+
     # Common headers
     base_headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": mime_type,
-        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": display_mime_type,
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "ETag": f'"{file_obj.content_hash[:16]}"' if file_obj.content_hash else None,
     }
@@ -421,6 +434,67 @@ async def download_file(
     
     # Handle different storage types
     
+    # Video compatibility stream (transcoded H.264 MP4)
+    compat_path = None
+    use_compat_stream = False
+    if compatible and mime_type.startswith('video/'):
+        from ..services.video_transcoder import video_transcoder, VideoTranscodeError
+        try:
+            compat_path = await video_transcoder.get_or_create_stream(
+                file_obj=file_obj,
+                encryption_service=encryption_service
+            )
+            if compat_path:
+                use_compat_stream = True
+        except VideoTranscodeError as exc:
+            if exc.status_code == 202:
+                raise HTTPException(
+                    status_code=202,
+                    detail={
+                        "status": "transcoding",
+                        "message": exc.message
+                    }
+                )
+            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+    if use_compat_stream and compat_path:
+        compat_size = os.path.getsize(compat_path)
+        compat_range = await parse_range_header(range_header, compat_size)
+        start, end = compat_range if compat_range else (0, compat_size - 1)
+        status_code = 206 if compat_range else 200
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": "video/mp4",
+            "Content-Disposition": f'inline; filename="{filename.rsplit(".", 1)[0]}.mp4"',
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Video-Transcoded": "true",
+            "Content-Length": str(end - start + 1)
+        }
+        if compat_range:
+            headers["Content-Range"] = f"bytes {start}-{end}/{compat_size}"
+
+        async def _stream_compat_file(path: str, start_byte: int, end_byte: int):
+            chunk_size = download_optimizer.get_optimal_chunk_size(compat_size)
+            async with aiofiles.open(path, 'rb') as f:
+                await f.seek(start_byte)
+                remaining = end_byte - start_byte + 1
+                while remaining > 0:
+                    chunk = await f.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        if request.method == "HEAD":
+            return Response(status_code=status_code, headers=headers, media_type="video/mp4")
+
+        return StreamingResponse(
+            _stream_compat_file(compat_path, start, end),
+            status_code=status_code,
+            headers=headers,
+            media_type="video/mp4"
+        )
+
     # INLINE STORAGE
     if file_obj.storage_type == "inline":
         # Decode and decrypt inline data
@@ -570,6 +644,62 @@ async def download_file(
         raise HTTPException(status_code=500, detail="Unknown storage type")
 
 
+@router.get("/{file_id}/transcode/progress")
+async def get_transcode_progress(
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get transcoding progress for a video file.
+
+    Returns:
+        - status: 'not_started', 'transcoding', 'complete', 'failed'
+        - percent: Progress percentage (0-100)
+        - fps: Current encoding speed (frames per second)
+        - eta_seconds: Estimated time remaining (optional)
+        - started_at: Transcoding start timestamp
+    """
+    from ..services.video_transcoder import video_transcoder
+
+    # Verify file belongs to user
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Check if cached version exists
+    if video_transcoder.is_cached(file_id):
+        return {
+            "status": "complete",
+            "percent": 100,
+            "file_id": file_id
+        }
+
+    # Get current progress
+    progress = video_transcoder.get_progress(file_id)
+
+    if not progress:
+        return {
+            "status": "not_started",
+            "percent": 0,
+            "file_id": file_id
+        }
+
+    return {
+        "status": progress.get("status", "transcoding"),
+        "percent": progress.get("percent", 0),
+        "fps": progress.get("fps", 0),
+        "frame": progress.get("frame", 0),
+        "eta_seconds": progress.get("eta_seconds"),
+        "started_at": progress.get("started_at"),
+        "file_id": file_id
+    }
+
+
 @router.get("/{file_id}/preview")
 async def get_file_preview(
     file_id: str,
@@ -616,7 +746,8 @@ async def get_file_preview(
             media_type='image/jpeg',
             headers={
                 "Cache-Control": "public, max-age=2592000",  # 30 days
-                "X-Cache": "HIT"
+                "X-Cache": "HIT",
+                "X-Preview-Status": "cached"
             }
         )
 
@@ -630,6 +761,46 @@ async def get_file_preview(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
+    size_tuple = preview_generator.SIZES.get(size, preview_generator.SIZES['medium'])
+
+    def _placeholder_meta():
+        mime = (file_obj.mime_type or '').lower() if file_obj.mime_type else ''
+        ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+
+        if mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES:
+            return ('VIDEO', '🎬')
+        if mime.startswith('audio/') or ext in preview_generator.AUDIO_TYPES:
+            return ('AUDIO', '🎵')
+        if 'pdf' in mime or ext == '.pdf':
+            return ('PDF', '📄')
+        if ext in preview_generator.ARCHIVE_TYPES:
+            return ('ARCHIVE', '📦')
+        if ext in preview_generator.DOCUMENT_TYPES:
+            return ('DOC', '📄')
+        return ('FILE', '📄')
+
+    async def _return_placeholder(status: str, reason: Optional[str] = None):
+        label, icon = _placeholder_meta()
+        placeholder_bytes, media_type = preview_generator._generate_placeholder_preview(
+            file_type=label,
+            size=size_tuple,
+            icon=icon
+        )
+        placeholder_cache_ttl = 3600
+        await redis.setex(cache_key, placeholder_cache_ttl, placeholder_bytes)
+        headers = {
+            "Cache-Control": f"public, max-age={placeholder_cache_ttl}",
+            "X-Cache": "MISS",
+            "X-Preview-Status": status
+        }
+        if reason:
+            headers["X-Preview-Reason"] = reason[:120]
+        return Response(
+            content=placeholder_bytes,
+            media_type=media_type,
+            headers=headers
+        )
+
     # Step 1: OPTIMIZED partial download for large files
     # For 400MB video: downloads only 10MB instead of 400MB (98% faster)
     temp_file_path = None
@@ -639,6 +810,18 @@ async def get_file_preview(
             encryption_service=encryption_service
         )
 
+        # If download returned None, it means the file is too large for sync preview
+        if temp_file_path is None:
+            logger.info(
+                f"⏳ Preview queued for background processing: {file_obj.file_name} "
+                f"({file_obj.file_size/1024/1024:.1f}MB) - returning placeholder"
+            )
+
+            return await _return_placeholder(
+                status="queued",
+                reason="partial_download_unavailable"
+            )
+
         if not is_complete:
             logger.info(
                 f"⚡ Using partial download for preview "
@@ -646,12 +829,19 @@ async def get_file_preview(
             )
 
         # Step 2: Generate preview using preview_generator
-        preview_bytes, content_type = await preview_generator.generate_preview(
-            file_path=temp_file_path,
-            mime_type=file_obj.mime_type,
-            size=size,
-            file_name=file_obj.file_name
-        )
+        try:
+            preview_bytes, content_type = await preview_generator.generate_preview(
+                file_path=temp_file_path,
+                mime_type=file_obj.mime_type,
+                size=size,
+                file_name=file_obj.file_name
+            )
+        except Exception as exc:
+            logger.error(f"Preview generation failed for {file_id}: {exc}", exc_info=True)
+            return await _return_placeholder(
+                status="error",
+                reason=str(exc)
+            )
 
         # Step 3: Cache the generated preview in Redis
         # TTL: 7 days for videos (large, expensive to generate), 30 days for images/docs
@@ -667,7 +857,8 @@ async def get_file_preview(
             media_type=content_type,
             headers={
                 "Cache-Control": f"public, max-age={cache_ttl}",
-                "X-Cache": "MISS"
+                "X-Cache": "MISS",
+                "X-Preview-Status": "generated"
             }
         )
 

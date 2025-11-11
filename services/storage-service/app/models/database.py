@@ -886,6 +886,9 @@ class FileSimilarity(Base):
     name_similarity = Column(Float)  # Filename similarity
     type_match = Column(Boolean, default=False)  # Same file type
 
+    # Cache metadata
+    computed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
