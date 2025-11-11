@@ -228,7 +228,19 @@ services:
       # Add memory management settings
       PYTHONMALLOC: malloc
       MALLOC_TRIM_THRESHOLD: 131072   # fixed env var name (no trailing underscore)
-      
+
+      # Video Transcoding Configuration
+      ENABLE_SMART_TRANSCODE: "true"
+      ENABLE_REMUX_OPTIMIZATION: "true"     # Fast copy for H.264+AAC in MOV containers (2-5s vs 8-12min)
+      ENABLE_STREAMING_DECRYPT: "false"  # Feature flag for streaming (default off)
+      TRANSCODE_MAX_DURATION_MINUTES: "30"
+      TRANSCODE_MAX_SIZE_GB: "2"
+      TRANSCODE_TIER1_MAX_SIZE_MB: "100"    # veryfast, CRF 23
+      TRANSCODE_TIER2_MAX_SIZE_MB: "1000"   # fast, CRF 24
+      TRANSCODE_TIER3_PRESET: "ultrafast"   # CRF 25 for >1GB
+      MAX_CONCURRENT_TRANSCODES: "2"
+      TRANSCODE_QUEUE_MAX_SIZE: "5"
+
     ports:
       - "8001:8000"
     volumes:
