@@ -116,6 +116,10 @@ class Settings:
     API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+    # Security Services Configuration
+    VIRUS_SCANNING_ENABLED: bool = os.getenv("VIRUS_SCANNING_ENABLED", "true").lower() == "true"
+    DLP_SCANNING_ENABLED: bool = os.getenv("DLP_SCANNING_ENABLED", "true").lower() == "true"
+
     @property
     def is_production(self) -> bool:
         """Check if running in production mode"""

@@ -203,8 +203,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      clamav:
-        condition: service_healthy
+      # clamav:
+      #   condition: service_healthy  # Disabled for ARM Mac compatibility
     environment:
       DB_HOST: postgres
       DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, ZoomIn, ZoomOut, RotateCw, Download, PlayCircle } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Download } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
 import { VIDEO_EXTENSIONS } from '../../utils/helpers';
@@ -124,14 +124,13 @@ export default function FilePreview({ file, onClose, darkMode }) {
           }
 
           if (data.status === 'not_started') {
-            setStreamReady(false);
-            setPreviewWarning('Preparing browser-compatible copy. Starting transcoding...');
-            scheduleRetry(3000);
-            return;
+            // Don't return - fall through to HEAD request to check if file is already compatible
+            setPreviewWarning('Checking if video needs processing...');
           }
         }
 
         // Fallback: check stream availability with HEAD request
+        // This handles cases where the video doesn't need transcoding (already compatible MP4)
         const headResponse = await fetch(streamUrl, {
           method: 'HEAD'
         });
@@ -388,8 +387,25 @@ export default function FilePreview({ file, onClose, darkMode }) {
                     }}
                   />
                   {!isVideoPlaying && previewUrl && (
-                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity duration-200">
-                      <PlayCircle size={88} className="text-white drop-shadow-2xl" />
+                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gradient-to-b from-black/20 via-black/30 to-black/40 transition-opacity duration-200">
+                      <div className="relative group">
+                        <div className="absolute inset-0 bg-white/20 rounded-full blur-2xl animate-pulse"></div>
+                        <div className="relative bg-white/95 rounded-full p-6 shadow-2xl backdrop-blur-sm transform transition-transform hover:scale-110">
+                          <svg
+                            width="64"
+                            height="64"
+                            viewBox="0 0 64 64"
+                            fill="none"
+                            className="drop-shadow-xl"
+                          >
+                            <path
+                              d="M20 16L48 32L20 48V16Z"
+                              fill="currentColor"
+                              className="text-blue-600"
+                            />
+                          </svg>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

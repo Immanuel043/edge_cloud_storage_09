@@ -174,8 +174,24 @@ export default function FileThumbnail({
           onError={() => setError(true)}
         />
         {isVideoFile && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25">
-            <Film size={iconSizes[size] / 1.5} className="text-white drop-shadow-lg" />
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gradient-to-br from-black/20 via-black/30 to-black/40">
+            <div className="relative">
+              <div className="absolute inset-0 bg-white/10 rounded-full blur-md"></div>
+              <div className="relative bg-white/90 rounded-full p-2 shadow-lg backdrop-blur-sm">
+                <svg
+                  width={iconSizes[size] / 2.5}
+                  height={iconSizes[size] / 2.5}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <path
+                    d="M8 6L16 12L8 18V6Z"
+                    fill="currentColor"
+                    className="text-blue-600"
+                  />
+                </svg>
+              </div>
+            </div>
           </div>
         )}
       </div>
