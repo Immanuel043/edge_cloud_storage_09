@@ -219,17 +219,30 @@ class VideoTranscoder:
             return None
 
         probe_path = None
+        temp_probe_file = None
         try:
-            # For chunked files, download just first chunk (fast path)
+            # For chunked/content-addressed files, pull a small decrypted head via preview_optimizer
             if file_obj.storage_type in ("chunked", "content_addressed"):
-                # Skip probe for chunked - too complex to handle encrypted chunks
-                return None
+                # Use preview_optimizer to handle chunk layout, compression, and proper decrypt (AAD)
+                temp_probe_file, _ = await preview_optimizer.download_partial_for_preview(
+                    file_obj=file_obj,
+                    encryption_service=encryption_service
+                )
+
+                if not temp_probe_file:
+                    return None
+
+                probe_path = temp_probe_file
+                logger.debug(f\"Probing chunked video via preview_optimizer: {file_obj.file_name}\")
 
             # For single files, try probing the file directly
-            if file_obj.storage_type == "single" and file_obj.object_path:
+            elif file_obj.storage_type == "single" and file_obj.object_path:
                 probe_path = file_obj.object_path
             else:
                 # Can't probe inline or complex storage
+                return None
+
+            if not probe_path or not os.path.exists(probe_path):
                 return None
 
             # Run ffprobe (timeout after 5 seconds)
@@ -260,7 +273,7 @@ class VideoTranscoder:
             if not video_stream:
                 return None
 
-            return {
+            probe_result = {
                 'codec_name': video_stream.get('codec_name'),
                 'audio_codec': audio_stream.get('codec_name') if audio_stream else None,
                 'duration': float(format_info.get('duration', 0)),
@@ -269,9 +282,24 @@ class VideoTranscoder:
                 'bitrate': int(format_info.get('bit_rate', 0))
             }
 
+            logger.info(
+                f"🔍 Probed {file_obj.file_name}: "
+                f"{probe_result['codec_name']}/{probe_result['audio_codec']} "
+                f"{probe_result.get('width')}x{probe_result.get('height')}"
+            )
+
+            return probe_result
+
         except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
             logger.debug(f"Probe failed for {file_obj.file_name}, falling back to extension check: {e}")
             return None
+        finally:
+            # Clean up temp probe file
+            if temp_probe_file and os.path.exists(temp_probe_file):
+                try:
+                    os.remove(temp_probe_file)
+                except Exception:
+                    pass
 
     async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
         """Return path to compatible MP4 stream, or None if not needed."""
@@ -607,6 +635,9 @@ class VideoTranscoder:
             })
             logger.info(f"🎬 Transcoding successful, output size: {file_size / (1024*1024):.1f}MB")
 
+            # Auto-generate thumbnails in background (don't block transcoding completion)
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path))
+
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg timeout after 1 hour for {source_path}")
             if process and process.returncode is None:
@@ -737,6 +768,9 @@ class VideoTranscoder:
                 "status": "complete"
             })
             logger.info(f"⚡ Remux successful in {elapsed:.1f}s, output size: {file_size / (1024*1024):.1f}MB")
+
+            # Auto-generate thumbnails in background (don't block remux completion)
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path))
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg remux timeout after 5 minutes for {source_path}")
@@ -888,6 +922,9 @@ class VideoTranscoder:
             })
             logger.info(f"🚰 Streaming transcode successful, output size: {file_size / (1024*1024):.1f}MB")
 
+            # Auto-generate thumbnails in background (don't block transcoding completion)
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path))
+
         except asyncio.TimeoutError:
             logger.error(f"Streaming transcode timeout after 1 hour for {snapshot.file_name}")
             if process and process.returncode is None:
@@ -908,6 +945,44 @@ class VideoTranscoder:
             if process and process.returncode is None:
                 process.kill()
                 await process.wait()
+    async def _generate_thumbnails_for_transcoded(self, file_id: str, transcoded_path: str):
+        """
+        Auto-generate thumbnails from transcoded MP4 and cache in Redis.
+
+        This ensures thumbnails are ready immediately when users view the file,
+        avoiding authentication issues and improving UX.
+        """
+        try:
+            from .preview_generator import preview_generator
+            from ..database import get_redis
+
+            logger.info(f"📸 Auto-generating thumbnails for transcoded video {file_id}")
+
+            # Generate thumbnails for both sizes
+            for size in ['small', 'large']:
+                try:
+                    preview_bytes, content_type = await preview_generator.generate_preview(
+                        file_path=transcoded_path,
+                        mime_type='video/mp4',
+                        size=size,
+                        file_name=f"{file_id}.mp4"
+                    )
+
+                    # Cache in Redis (7 days TTL for videos)
+                    redis = await get_redis()
+                    cache_key = f"preview:{file_id}:{size}"
+                    await redis.setex(cache_key, 604800, preview_bytes)
+
+                    logger.info(f"✅ Auto-generated {size} thumbnail for {file_id} ({len(preview_bytes)} bytes)")
+
+                except Exception as e:
+                    logger.warning(f"Failed to generate {size} thumbnail for {file_id}: {e}")
+
+            logger.info(f"📸 Thumbnail auto-generation complete for {file_id}")
+
+        except Exception as e:
+            # Don't fail transcoding if thumbnail generation fails
+            logger.warning(f"Thumbnail auto-generation failed for {file_id}: {e}")
 
 
 video_transcoder = VideoTranscoder()
