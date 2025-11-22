@@ -202,9 +202,30 @@ export default function FileThumbnail({
   return (
     <div
       ref={imgRef}
-      className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}
+      className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}
     >
       {getFileTypeIcon(file.name, iconSizes[size])}
+      {isVideoFile && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gradient-to-br from-black/20 via-black/30 to-black/40">
+          <div className="relative">
+            <div className="absolute inset-0 bg-white/10 rounded-full blur-md"></div>
+            <div className="relative bg-white/90 rounded-full p-1.5 shadow-lg backdrop-blur-sm">
+              <svg
+                width={iconSizes[size] / 3}
+                height={iconSizes[size] / 3}
+                viewBox="0 0 24 24"
+                fill="none"
+              >
+                <path
+                  d="M8 6L16 12L8 18V6Z"
+                  fill="currentColor"
+                  className="text-blue-600"
+                />
+              </svg>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -423,16 +423,20 @@ class VideoTranscoder:
                         eta_seconds = None
                         if fps and float(fps) > 0 and total_duration > 0:
                             remaining = total_duration - elapsed
-                            eta_seconds = int(remaining / (elapsed / (now - self._progress[file_id].get('started_at', now))))
+                            eta_seconds = int(remaining / (elapsed / (now - self._progress.get(file_id, {}).get('started_at', now))))
 
-                        self._progress[file_id].update({
-                            "frame": int(frame) if frame else 0,
-                            "fps": float(fps) if fps else 0,
-                            "elapsed": elapsed,
-                            "percent": percent,
-                            "eta_seconds": eta_seconds
-                        })
-                        last_update = now
+                        # Ensure progress dict exists before updating
+                        if file_id in self._progress:
+                            self._progress[file_id].update({
+                                "frame": int(frame) if frame else 0,
+                                "fps": float(fps) if fps else 0,
+                                "elapsed": elapsed,
+                                "percent": percent,
+                                "eta_seconds": eta_seconds,
+                                "status": "transcoding"
+                            })
+                            last_update = now
+                            logger.debug(f"Progress update for {file_id}: {percent:.1f}%, {fps} fps")
 
         except Exception as e:
             logger.warning(f"Progress parsing error for {file_id}: {e}")

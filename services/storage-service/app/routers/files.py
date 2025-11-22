@@ -801,38 +801,56 @@ async def get_file_preview(
             headers=headers
         )
 
-    # Step 1: OPTIMIZED partial download for large files
-    # For 400MB video: downloads only 10MB instead of 400MB (98% faster)
+    # Step 1: For videos, check if transcoded version exists (faster preview generation)
+    # Transcoded MP4s have metadata at the beginning (+faststart), making frame extraction instant
+    from ..services.video_transcoder import video_transcoder
+
+    mime = (file_obj.mime_type or '').lower()
+    ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+    is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
+
     temp_file_path = None
+    use_transcoded = False
+
     try:
-        temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
-            file_obj=file_obj,
-            encryption_service=encryption_service
-        )
+        # For videos, prefer transcoded MP4 if available
+        if is_video and video_transcoder.is_cached(file_id):
+            transcoded_path = os.path.join(video_transcoder.OUTPUT_DIR, f"{file_id}.mp4")
+            if os.path.exists(transcoded_path):
+                logger.info(f"⚡ Using transcoded MP4 for preview generation: {file_obj.file_name}")
+                temp_file_path = transcoded_path
+                use_transcoded = True
 
-        # If download returned None, it means the file is too large for sync preview
-        if temp_file_path is None:
-            logger.info(
-                f"⏳ Preview queued for background processing: {file_obj.file_name} "
-                f"({file_obj.file_size/1024/1024:.1f}MB) - returning placeholder"
+        # If no transcoded version, download original file
+        if not use_transcoded:
+            temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+                file_obj=file_obj,
+                encryption_service=encryption_service
             )
 
-            return await _return_placeholder(
-                status="queued",
-                reason="partial_download_unavailable"
-            )
+            # If download returned None, it means the file is too large for sync preview
+            if temp_file_path is None:
+                logger.info(
+                    f"⏳ Preview queued for background processing: {file_obj.file_name} "
+                    f"({file_obj.file_size/1024/1024:.1f}MB) - returning placeholder"
+                )
 
-        if not is_complete:
-            logger.info(
-                f"⚡ Using partial download for preview "
-                f"(saved {(file_obj.file_size - os.path.getsize(temp_file_path)) / 1024 / 1024:.1f}MB)"
-            )
+                return await _return_placeholder(
+                    status="queued",
+                    reason="partial_download_unavailable"
+                )
+
+            if not is_complete:
+                logger.info(
+                    f"⚡ Using partial download for preview "
+                    f"(saved {(file_obj.file_size - os.path.getsize(temp_file_path)) / 1024 / 1024:.1f}MB)"
+                )
 
         # Step 2: Generate preview using preview_generator
         try:
             preview_bytes, content_type = await preview_generator.generate_preview(
                 file_path=temp_file_path,
-                mime_type=file_obj.mime_type,
+                mime_type='video/mp4' if use_transcoded else file_obj.mime_type,
                 size=size,
                 file_name=file_obj.file_name
             )
@@ -863,8 +881,8 @@ async def get_file_preview(
         )
 
     finally:
-        # Clean up temp file
-        if temp_file_path and os.path.exists(temp_file_path):
+        # Clean up temp file (but NOT the transcoded file - that's permanent cache)
+        if temp_file_path and not use_transcoded and os.path.exists(temp_file_path):
             try:
                 os.remove(temp_file_path)
             except Exception as e:
