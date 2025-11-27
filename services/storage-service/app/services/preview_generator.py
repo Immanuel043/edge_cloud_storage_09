@@ -57,7 +57,7 @@ class PreviewGenerator:
 
     # Supported file types
     IMAGE_TYPES = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff'}
-    VIDEO_TYPES = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv'}
+    VIDEO_TYPES = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp', '.3g2', '.qt', '.f4v', '.ts', '.mts', '.m2ts'}
     DOCUMENT_TYPES = {'.pdf', '.docx', '.doc', '.txt', '.md', '.xlsx', '.xls', '.pptx'}
     AUDIO_TYPES = {'.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'}
     ARCHIVE_TYPES = {'.zip', '.rar', '.tar', '.gz', '.7z'}
@@ -79,22 +79,27 @@ class PreviewGenerator:
         Returns: (preview_bytes, content_type)
         """
         size_tuple = self.SIZES.get(size, self.SIZES['medium'])
-        ext = os.path.splitext(file_name.lower())[1] if file_name else ''
+        # Strip whitespace from filename to handle edge cases like "file.mp4 "
+        # which would cause os.path.splitext to return empty extension
+        clean_file_name = file_name.strip() if file_name else ''
+        ext = os.path.splitext(clean_file_name.lower())[1] if clean_file_name else ''
+        # Ensure mime_type is never None to avoid AttributeError on .startswith()
+        safe_mime_type = (mime_type or '').lower()
 
         try:
             # Image files
-            if ext in self.IMAGE_TYPES or mime_type.startswith('image/'):
+            if ext in self.IMAGE_TYPES or safe_mime_type.startswith('image/'):
                 return await self._generate_image_preview(file_path, size_tuple)
 
             # PDF files
-            elif ext == '.pdf' or mime_type == 'application/pdf':
+            elif ext == '.pdf' or safe_mime_type == 'application/pdf':
                 if HAS_PDF_SUPPORT:
                     return await self._generate_pdf_preview(file_path, size_tuple)
                 else:
                     return self._generate_placeholder_preview('PDF', size_tuple)
 
             # Video files
-            elif ext in self.VIDEO_TYPES or mime_type.startswith('video/'):
+            elif ext in self.VIDEO_TYPES or safe_mime_type.startswith('video/'):
                 if HAS_VIDEO_SUPPORT:
                     return await self._generate_video_preview(file_path, size_tuple)
                 else:
@@ -110,7 +115,7 @@ class PreviewGenerator:
                     return self._generate_placeholder_preview('DOC', size_tuple)
 
             # Audio files
-            elif ext in self.AUDIO_TYPES or mime_type.startswith('audio/'):
+            elif ext in self.AUDIO_TYPES or safe_mime_type.startswith('audio/'):
                 return self._generate_placeholder_preview('AUDIO', size_tuple, '🎵')
 
             # Archive files
@@ -203,14 +208,24 @@ class PreviewGenerator:
 
         Uses ffmpeg if available (much faster), falls back to OpenCV
         """
+        # Log file info for debugging
+        try:
+            file_size = os.path.getsize(file_path)
+            logger.info(f"📹 Generating video preview: {file_path} ({file_size/1024/1024:.2f}MB)")
+        except Exception as e:
+            logger.warning(f"Could not get file size: {e}")
+
         # Try ffmpeg first (10-50x faster than OpenCV)
         if HAS_FFMPEG:
             try:
-                return await self._generate_video_preview_ffmpeg(file_path, size)
+                result = await self._generate_video_preview_ffmpeg(file_path, size)
+                logger.info(f"✅ FFmpeg video preview generated successfully")
+                return result
             except Exception as e:
                 logger.warning(f"ffmpeg preview failed, falling back to OpenCV: {e}")
 
         # Fallback to OpenCV
+        logger.info(f"🔄 Using OpenCV fallback for video preview")
         return await self._generate_video_preview_opencv(file_path, size)
 
     async def _generate_video_preview_ffmpeg(
@@ -275,7 +290,8 @@ class PreviewGenerator:
 
                 # If still failed, try without seeking
                 if result.returncode != 0 or not os.path.exists(output_path):
-                    logger.debug("Second attempt failed, extracting first frame")
+                    stderr_text_2 = result.stderr.decode() if result.stderr else ""
+                    logger.info(f"Second attempt failed (at 0.5s): {stderr_text_2[:200]}. Trying first frame extraction...")
                     cmd = [
                         'ffmpeg',
                         '-i', file_path,
@@ -287,7 +303,14 @@ class PreviewGenerator:
                         '-loglevel', 'error',
                         output_path
                     ]
-                    result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)
+                    result = subprocess.run(cmd, capture_output=True, timeout=10, check=False)
+
+                    # Check if third attempt succeeded
+                    if result.returncode != 0 or not os.path.exists(output_path):
+                        stderr_text_3 = result.stderr.decode() if result.stderr else ""
+                        error_msg = f"FFmpeg failed all attempts. Last error: {stderr_text_3[:300]}"
+                        logger.error(error_msg)
+                        raise Exception(error_msg)
 
                 # Read extracted frame
                 with Image.open(output_path) as img:

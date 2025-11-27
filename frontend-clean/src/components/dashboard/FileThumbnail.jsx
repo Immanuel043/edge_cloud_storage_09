@@ -88,11 +88,14 @@ export default function FileThumbnail({
         setLoading(true);
         setError(false);
 
+        // Add cache-busting for video files to ensure fresh thumbnails
+        const cacheBuster = isVideoFile ? `&_t=${file.updated_at || Date.now()}` : '';
         const response = await fetch(
-          `${API_URL}/files/${file.id}/preview?size=${size}`,
+          `${API_URL}/files/${file.id}/preview?size=${size}${cacheBuster}`,
           {
             credentials: 'include',
-            signal: controller.signal
+            signal: controller.signal,
+            cache: 'no-cache'  // Prevent browser caching stale thumbnails
           }
         );
 

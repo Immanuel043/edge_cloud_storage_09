@@ -706,6 +706,7 @@ async def get_transcode_progress(
 async def get_file_preview(
     file_id: str,
     size: str = 'medium',
+    force_refresh: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -720,6 +721,9 @@ async def get_file_preview(
     - Placeholders for audio, archives, etc.
 
     Size options: small (150x150), medium (400x400), large (800x800)
+
+    Query params:
+    - force_refresh: Set to true to bypass cache and regenerate thumbnail
 
     Features:
     - Redis caching for fast repeated access (7-30 day TTL)
@@ -736,22 +740,28 @@ async def get_file_preview(
     # Get Redis client
     redis = await get_redis()
 
-    # Check cache first
+    # Check cache first (unless force_refresh is requested)
     cache_key = f"preview:{file_id}:{size}"
-    cached_preview = await redis.get(cache_key)
 
-    if cached_preview:
-        logger.info(f"✅ Preview cache HIT for {file_id} (size: {size})")
-        # Cached preview is stored as raw bytes
-        return Response(
-            content=cached_preview,
-            media_type='image/jpeg',
-            headers={
-                "Cache-Control": "public, max-age=2592000",  # 30 days
-                "X-Cache": "HIT",
-                "X-Preview-Status": "cached"
-            }
-        )
+    if force_refresh:
+        # Delete any existing cached preview to force regeneration
+        await redis.delete(cache_key)
+        logger.info(f"🔄 Force refresh requested for {file_id} (size: {size}) - cache cleared")
+    else:
+        cached_preview = await redis.get(cache_key)
+
+        if cached_preview:
+            logger.info(f"✅ Preview cache HIT for {file_id} (size: {size})")
+            # Cached preview is stored as raw bytes
+            return Response(
+                content=cached_preview,
+                media_type='image/jpeg',
+                headers={
+                    "Cache-Control": "public, max-age=2592000",  # 30 days
+                    "X-Cache": "HIT",
+                    "X-Preview-Status": "cached"
+                }
+            )
 
     logger.info(f"❌ Preview cache MISS for {file_id} (size: {size}) - generating...")
 

@@ -165,10 +165,13 @@ class VideoTranscoder:
                 return 'reject'
 
             # Check if codecs are compatible (h264+aac)
-            codec = probe_data.get('codec_name', '').lower()
-            audio_codec = probe_data.get('audio_codec', '').lower()
+            # Handle None values safely - video might not have audio track
+            codec = (probe_data.get('codec_name') or '').lower()
+            audio_codec = (probe_data.get('audio_codec') or '').lower()
 
-            if codec == 'h264' and audio_codec in ('aac', 'mp4a'):
+            # Video-only files (no audio) with h264 are also compatible
+            # Empty string means no audio track detected
+            if codec == 'h264' and audio_codec in ('aac', 'mp4a', ''):
                 # Check if remux optimization is enabled
                 enable_remux = os.getenv("ENABLE_REMUX_OPTIMIZATION", "true").lower() == "true"
 
