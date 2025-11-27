@@ -439,11 +439,13 @@ async def download_file(
     use_compat_stream = False
     if compatible and mime_type.startswith('video/'):
         from ..services.video_transcoder import video_transcoder, VideoTranscodeError
+        logger.info(f"🎬 Compatible stream requested for {file_obj.file_name} ({mime_type})")
         try:
             compat_path = await video_transcoder.get_or_create_stream(
                 file_obj=file_obj,
                 encryption_service=encryption_service
             )
+            logger.info(f"🎬 get_or_create_stream returned: {compat_path}")
             if compat_path:
                 use_compat_stream = True
         except VideoTranscodeError as exc:

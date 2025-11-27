@@ -189,6 +189,12 @@ class VideoTranscoder:
         mime = (file_obj.mime_type or '').lower()
         ext = os.path.splitext(file_obj.file_name or '')[1].lower()
 
+        # If probe failed (probe_data is None) for video files,
+        # transcode for safety since we don't know the codec
+        if probe_data is None and mime.startswith('video/'):
+            logger.info(f"⚠️  Probe failed for {file_obj.file_name} - transcoding for safety")
+            return 'transcode'
+
         if mime in self.INCOMPATIBLE_MIMES or ext in self.INCOMPATIBLE_EXTS:
             return 'transcode'
 
@@ -221,19 +227,42 @@ class VideoTranscoder:
         probe_path = None
         temp_probe_file = None
         try:
-            # For chunked/content-addressed files, pull a small decrypted head via preview_optimizer
+            # For chunked/content-addressed files, decrypt first 2 CONTIGUOUS chunks
+            # (preview_optimizer creates gappy files which don't work for ffprobe)
             if file_obj.storage_type in ("chunked", "content_addressed"):
-                # Use preview_optimizer to handle chunk layout, compression, and proper decrypt (AAD)
-                temp_probe_file, _ = await preview_optimizer.download_partial_for_preview(
-                    file_obj=file_obj,
-                    encryption_service=encryption_service
-                )
-
-                if not temp_probe_file:
+                if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
                     return None
 
+                chunk_paths = file_obj.chunk_info.get('paths', {})
+                if not chunk_paths:
+                    return None
+
+                # Get file encryption key
+                file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+
+                # Decrypt first 4 contiguous chunks (128MB - enough for most MP4 moov atoms)
+                temp_probe_file = f"/tmp/probe_{file_obj.id}.partial"
+                max_chunks = min(4, len(chunk_paths))
+
+                total_bytes = 0
+                with open(temp_probe_file, 'wb') as out:
+                    for i in range(max_chunks):
+                        chunk_path = chunk_paths.get(str(i))
+                        if not chunk_path or not os.path.exists(chunk_path):
+                            logger.warning(f"Chunk {i} not found for {file_obj.file_name}")
+                            continue
+
+                        with open(chunk_path, 'rb') as f:
+                            encrypted_chunk = f.read()
+
+                        # Use chunk-specific decryption with AAD (chunk_index)
+                        decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
+                        out.write(decrypted_chunk)
+                        total_bytes += len(decrypted_chunk)
+                        logger.debug(f"Decrypted chunk {i}: {len(decrypted_chunk)} bytes")
+
                 probe_path = temp_probe_file
-                logger.debug(f\"Probing chunked video via preview_optimizer: {file_obj.file_name}\")
+                logger.info(f"🔍 Probing chunked video with {max_chunks} contiguous chunks: {file_obj.file_name} ({total_bytes} bytes)")
 
             # For single files, try probing the file directly
             elif file_obj.storage_type == "single" and file_obj.object_path:
@@ -246,9 +275,10 @@ class VideoTranscoder:
                 return None
 
             # Run ffprobe (timeout after 5 seconds)
+            # Use -v error to see diagnostic info while keeping JSON output clean
             cmd = [
                 'ffprobe',
-                '-v', 'quiet',
+                '-v', 'error',
                 '-print_format', 'json',
                 '-show_format',
                 '-show_streams',
@@ -263,6 +293,12 @@ class VideoTranscoder:
             )
 
             if result.returncode != 0:
+                logger.warning(f"❌ ffprobe failed for {file_obj.file_name}: returncode={result.returncode}, stderr={result.stderr}, stdout={result.stdout}")
+                return None
+
+            if not result.stdout or result.stdout.strip() == '{}':
+                file_size = os.path.getsize(probe_path) if os.path.exists(probe_path) else 0
+                logger.warning(f"❌ ffprobe returned empty output for {file_obj.file_name} (file size: {file_size} bytes)")
                 return None
 
             data = json.loads(result.stdout)
@@ -271,6 +307,7 @@ class VideoTranscoder:
             format_info = data.get('format', {})
 
             if not video_stream:
+                logger.warning(f"❌ No video stream found in {file_obj.file_name}")
                 return None
 
             probe_result = {
@@ -291,7 +328,7 @@ class VideoTranscoder:
             return probe_result
 
         except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
-            logger.debug(f"Probe failed for {file_obj.file_name}, falling back to extension check: {e}")
+            logger.warning(f"❌ Probe exception for {file_obj.file_name}: {type(e).__name__}: {e}")
             return None
         finally:
             # Clean up temp probe file
@@ -304,14 +341,19 @@ class VideoTranscoder:
     async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
         """Return path to compatible MP4 stream, or None if not needed."""
 
+        logger.info(f"🎬 get_or_create_stream called for {file_obj.file_name}")
+
         # Probe file metadata (with fallback to None if probe fails)
         probe_data = await self._probe_file_metadata(file_obj, encryption_service)
+        logger.info(f"🎬 Probe data: {probe_data}")
 
         # Make transcode decision based on probe data
         decision = self._needs_transcode(file_obj, probe_data)
+        logger.info(f"🎬 Transcode decision: {decision}")
 
         if decision == 'skip':
             # File is already compatible or doesn't need transcoding
+            logger.info(f"✓ Skipping transcode for {file_obj.file_name} - already compatible")
             return None
 
         if decision == 'reject':
@@ -541,6 +583,57 @@ class VideoTranscoder:
                 encryption_service=encryption_service
             )
 
+            # Verify the downloaded temp file is valid before transcoding
+            temp_file_size = os.path.getsize(temp_source) if os.path.exists(temp_source) else 0
+            logger.info(f"🔍 Downloaded temp file: {temp_source} ({temp_file_size / (1024*1024):.1f}MB)")
+
+            # Probe the temp file to verify it's readable by ffmpeg
+            probe_cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                temp_source
+            ]
+            try:
+                probe_result = subprocess.run(
+                    probe_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if probe_result.returncode == 0 and probe_result.stdout:
+                    temp_probe = json.loads(probe_result.stdout)
+                    video_stream = next((s for s in temp_probe.get('streams', []) if s.get('codec_type') == 'video'), {})
+                    audio_stream = next((s for s in temp_probe.get('streams', []) if s.get('codec_type') == 'audio'), {})
+
+                    v_codec = video_stream.get('codec_name', 'unknown')
+                    a_codec = audio_stream.get('codec_name', 'unknown')
+                    duration = temp_probe.get('format', {}).get('duration', 'unknown')
+
+                    logger.info(f"✅ Temp file probe successful: video={v_codec}, audio={a_codec}, duration={duration}s")
+
+                    # If already H.264 + AAC, just remux with faststart (very fast, no re-encoding)
+                    if v_codec == 'h264' and a_codec in ('aac', 'unknown', 'none'):
+                        logger.info(f"⚡ Video already H.264+AAC - using fast remux instead of re-encoding")
+                        await self._remux_with_faststart(temp_source, target_path, file_id)
+                        logger.info(f"🎬 Compatible MP4 ready via remux for {snapshot.file_name}")
+                        return
+
+                else:
+                    logger.error(f"❌ Temp file probe failed: returncode={probe_result.returncode}, stderr={probe_result.stderr[:200]}")
+                    raise VideoTranscodeError(
+                        "Downloaded temp file is not a valid video file",
+                        status_code=500
+                    )
+            except Exception as e:
+                logger.error(f"❌ Exception probing temp file: {e}")
+                raise VideoTranscodeError(
+                    f"Failed to probe downloaded temp file: {e}",
+                    status_code=500
+                )
+
             await self._run_ffmpeg(temp_source, target_path, policy, file_id)
             logger.info(f"🎬 Compatible MP4 ready for file {snapshot.file_name}")
 
@@ -552,6 +645,90 @@ class VideoTranscoder:
                     logger.warning(f"Failed to remove temp video source {temp_source}: {exc}")
             self._inflight.pop(file_id, None)
             self._progress.pop(file_id, None)  # Cleanup progress tracking
+
+    async def _remux_with_faststart(self, source_path: str, target_path: str, file_id: str):
+        """Fast remux without re-encoding when codecs are already compatible."""
+        import time
+
+        # Just copy streams and add faststart flag
+        cmd = [
+            'ffmpeg',
+            '-y',
+            '-i', source_path,
+            '-c', 'copy',  # Copy all streams without re-encoding
+            '-movflags', '+faststart',  # Move moov atom to beginning for streaming
+            target_path
+        ]
+
+        logger.info(f"⚡ Starting ffmpeg remux (copy): {' '.join(cmd)}")
+
+        # Initialize progress tracking
+        self._progress[file_id] = {
+            "percent": 50,
+            "fps": 0,
+            "frame": 0,
+            "status": "remuxing",
+            "started_at": time.time()
+        }
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            # Wait for completion with timeout (remux is usually very fast)
+            returncode = await asyncio.wait_for(
+                process.wait(),
+                timeout=600  # 10 minutes timeout
+            )
+
+            if returncode != 0:
+                stderr = await process.stderr.read()
+                logger.error(
+                    f"ffmpeg remux failed for {source_path}: returncode={returncode}, "
+                    f"stderr={stderr.decode('utf-8', errors='ignore')[:500]}"
+                )
+                # Clean up failed output
+                if os.path.exists(target_path):
+                    try:
+                        os.remove(target_path)
+                    except OSError:
+                        pass
+                raise VideoTranscodeError(
+                    "Failed to remux video file",
+                    status_code=500
+                )
+
+            # Validate output file
+            await self._validate_output(target_path)
+
+            # Update progress to 100%
+            file_size = os.path.getsize(target_path)
+            self._progress[file_id].update({
+                "percent": 100,
+                "status": "complete"
+            })
+            logger.info(f"⚡ Remux successful, output size: {file_size / (1024*1024):.1f}MB")
+
+        except asyncio.TimeoutError:
+            if process:
+                process.kill()
+                await process.wait()
+            logger.error(f"ffmpeg remux timed out for {source_path}")
+            raise VideoTranscodeError(
+                "Video remux operation timed out",
+                status_code=500
+            )
+        except VideoTranscodeError:
+            raise
+        except Exception as exc:
+            logger.error(f"Unexpected error during remux: {exc}")
+            raise VideoTranscodeError(
+                f"Unexpected error during video remux: {exc}",
+                status_code=500
+            )
 
     async def _run_ffmpeg(self, source_path: str, target_path: str,
                          policy: TranscodePolicy, file_id: str):
