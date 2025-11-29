@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, ZoomIn, ZoomOut, RotateCw, Download } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
@@ -23,19 +23,8 @@ export default function FilePreview({ file, onClose, darkMode }) {
   const [loading, setLoading] = useState(true);
   const [fatalError, setFatalError] = useState(null);
   const [previewWarning, setPreviewWarning] = useState(null);
-  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [streamReady, setStreamReady] = useState(!isVideoFile);
   const pollTimerRef = useRef(null);
-
-  const requiresCredentials = (() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      const apiOrigin = new URL(API_URL).origin;
-      return apiOrigin !== window.location.origin;
-    } catch (_) {
-      return false;
-    }
-  })();
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -52,7 +41,6 @@ export default function FilePreview({ file, onClose, darkMode }) {
   useEffect(() => {
     setZoom(1);
     setRotation(0);
-    setIsVideoPlaying(false);
     setPreviewWarning(null);
     setFatalError(null);
     setStreamReady(!isVideoFile);
@@ -174,7 +162,6 @@ export default function FilePreview({ file, onClose, darkMode }) {
     setLoading(true);
     setFatalError(null);
     setPreviewWarning(null);
-    setIsVideoPlaying(false);
 
     const setPreviewFailure = (message, { fatal = false } = {}) => {
       if (fatal || !isVideoFile) {
@@ -233,41 +220,39 @@ export default function FilePreview({ file, onClose, darkMode }) {
     };
     console.error('Video playback error:', errorDetails);
     console.error('Stream URL:', streamUrl);
-    console.error('RequiresCredentials:', requiresCredentials);
-    console.error('API_URL:', `${API_URL}`);
 
-    const isMOV = file.name?.toLowerCase().endsWith('.mov');
-    let errorMessage = 'Unable to stream this video. ';
+    let errorMessage = '';
+    let errorHint = '';
+
     if (videoElement?.error) {
       switch (videoElement.error.code) {
-        case 1:
-          errorMessage += 'Video loading was aborted.';
+        case 1: // MEDIA_ERR_ABORTED
+          errorMessage = 'Playback interrupted';
+          errorHint = 'The video stopped loading unexpectedly. Please refresh and try again.';
           break;
-        case 2:
-          errorMessage += 'A network error occurred while loading the video.';
+        case 2: // MEDIA_ERR_NETWORK
+          errorMessage = 'Connection issue';
+          errorHint = 'Could not load the video due to a network problem. Check your internet connection.';
           break;
-        case 3:
-          errorMessage += isMOV
-            ? 'Your browser cannot decode this MOV file. The video may use unsupported codecs (like HEVC/H.265).'
-            : 'Video codec not supported by your browser.';
+        case 3: // MEDIA_ERR_DECODE
+          errorMessage = 'Preparing your video';
+          errorHint = 'This video needs additional processing. For large files, this may take a few minutes. Please try again shortly.';
           break;
-        case 4:
-          errorMessage += isMOV
-            ? 'MOV file codec not supported in browser. Try viewing in Safari or Chrome, or download the file.'
-            : 'Video format or MIME type not supported.';
+        case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
+          errorMessage = 'Cannot play this video';
+          errorHint = 'This format is not supported for streaming. You can download the file to play it locally.';
           break;
         default:
-          errorMessage += 'An unknown error occurred.';
+          errorMessage = 'Playback unavailable';
+          errorHint = 'Something went wrong. Please try again in a moment.';
       }
+    } else {
+      errorMessage = 'Playback unavailable';
+      errorHint = 'The video could not be loaded. Please try again shortly.';
     }
 
-    if (isMOV && videoElement?.error?.code === 4) {
-      errorMessage += ' MOV files from iPhones often require Safari/QuickTime for playback.';
-    }
-
-    setIsVideoPlaying(false);
     setPreviewWarning(null);
-    setFatalError(errorMessage);
+    setFatalError(`${errorMessage}. ${errorHint}`);
   };
 
   return (
@@ -365,49 +350,8 @@ export default function FilePreview({ file, onClose, darkMode }) {
                   poster={previewUrl || undefined}
                   className="w-full max-h-[80vh] rounded-lg bg-black"
                   src={streamUrl}
-                  onPlay={() => setIsVideoPlaying(true)}
-                    onPause={() => setIsVideoPlaying(false)}
-                    onEnded={() => setIsVideoPlaying(false)}
-                    onError={handleVideoError}
-                    onLoadStart={(e) => console.log('Video load started:', e.target.src)}
-                    onLoadedMetadata={(e) => console.log('Video metadata loaded:', {
-                      duration: e.target.duration,
-                      videoWidth: e.target.videoWidth,
-                      videoHeight: e.target.videoHeight
-                    })}
-                    onLoadedData={(e) => console.log('Video data loaded')}
-                    onCanPlay={(e) => console.log('Video can play')}
-                    onCanPlayThrough={(e) => console.log('Video can play through')}
-                    onProgress={(e) => {
-                      if (e.target.buffered.length > 0) {
-                        const buffered = e.target.buffered.end(0);
-                        const duration = e.target.duration;
-                        console.log(`Video buffering: ${(buffered / duration * 100).toFixed(1)}%`);
-                      }
-                    }}
-                  />
-                  {!isVideoPlaying && previewUrl && (
-                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gradient-to-b from-black/20 via-black/30 to-black/40 transition-opacity duration-200">
-                      <div className="relative group">
-                        <div className="absolute inset-0 bg-white/20 rounded-full blur-2xl animate-pulse"></div>
-                        <div className="relative bg-white/95 rounded-full p-6 shadow-2xl backdrop-blur-sm transform transition-transform hover:scale-110">
-                          <svg
-                            width="64"
-                            height="64"
-                            viewBox="0 0 64 64"
-                            fill="none"
-                            className="drop-shadow-xl"
-                          >
-                            <path
-                              d="M20 16L48 32L20 48V16Z"
-                              fill="currentColor"
-                              className="text-blue-600"
-                            />
-                          </svg>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  onError={handleVideoError}
+                />
                 </div>
                 {previewWarning && (
                   <p className={`mt-4 text-sm ${darkMode ? 'text-amber-300' : 'text-amber-600'}`}>
