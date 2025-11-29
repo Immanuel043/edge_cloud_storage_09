@@ -25,6 +25,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         """Add security headers to response"""
         response: Response = await call_next(request)
 
+        # Check if this is inline content (PDFs, videos for embedding)
+        is_inline_content = (
+            request.url.path.startswith("/api/v1/files/")
+            and "/download" in request.url.path
+            and request.query_params.get("inline") == "true"
+        )
+
         # 1. HSTS - Force HTTPS (only in production)
         if settings.ENABLE_HTTPS or settings.is_production:
             response.headers["Strict-Transport-Security"] = (
@@ -36,7 +43,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
 
         # 3. X-Frame-Options - Prevent clickjacking
-        response.headers["X-Frame-Options"] = "DENY"
+        # Skip X-Frame-Options for inline content (CSP frame-ancestors handles it)
+        # X-Frame-Options doesn't support multiple origins, so we rely on CSP
+        if not is_inline_content:
+            response.headers["X-Frame-Options"] = "DENY"
 
         # 4. X-XSS-Protection - Legacy XSS protection for older browsers
         response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -74,8 +84,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             " ".join(media_src),
             # Objects: Disallow plugins
             "object-src 'none'",
-            # Frames: Disallow framing
-            "frame-ancestors 'none'",
+            # Frames: Allow framing from frontend for inline content, otherwise disallow
+            f"frame-ancestors 'self' {settings.FRONTEND_URL} {request_origin}" if is_inline_content else "frame-ancestors 'none'",
             # Base URI: Restrict to self
             "base-uri 'self'",
             # Form actions: Restrict to self
@@ -90,6 +100,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # 7. Permissions-Policy (Feature-Policy) - Disable unused browser features
         # This prevents malicious iframes from using device APIs
+        # For inline content (PDFs in iframes), allow fullscreen from any origin
+        fullscreen_policy = "fullscreen=(*)" if is_inline_content else "fullscreen=(self)"
         permissions = [
             "accelerometer=()",      # No accelerometer access
             "ambient-light-sensor=()",
@@ -102,7 +114,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "encrypted-media=()",
             "execution-while-not-rendered=()",
             "execution-while-out-of-viewport=()",
-            "fullscreen=(self)",     # Allow fullscreen only from same origin
+            fullscreen_policy,       # Allow fullscreen (relaxed for inline content)
             "geolocation=()",        # No geolocation
             "gyroscope=()",          # No gyroscope
             "magnetometer=()",       # No magnetometer

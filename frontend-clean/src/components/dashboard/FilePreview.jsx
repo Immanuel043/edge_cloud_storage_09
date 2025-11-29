@@ -9,6 +9,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
   const mimeType = (file.mime_type || file.type || '').toLowerCase();
   const extension = file.name?.split('.').pop()?.toLowerCase() || '';
   const isVideoFile = mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension);
+  const isPdfFile = mimeType === 'application/pdf' || extension === 'pdf';
   const applyToken = (url) => {
     if (!token) return url;
     return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
@@ -255,8 +256,17 @@ export default function FilePreview({ file, onClose, darkMode }) {
     setFatalError(`${errorMessage}. ${errorHint}`);
   };
 
+  const handleBackdropClick = (e) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={handleBackdropClick}
+    >
       <div className={`w-full max-w-6xl rounded-2xl shadow-2xl ${darkMode ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-800">
@@ -315,7 +325,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
 
         {/* Content */}
         <div className="flex-1 overflow-auto flex items-center justify-center p-4 min-h-[60vh]">
-          {loading ? (
+          {loading && !isPdfFile ? (
             <div className={darkMode ? 'text-white' : 'text-gray-900'}>Loading preview...</div>
           ) : fatalError ? (
             <div className={`text-center ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -337,6 +347,15 @@ export default function FilePreview({ file, onClose, darkMode }) {
               {!isVideoFile && (
                 <p className="text-sm mt-2">Preview may not be available for this file type</p>
               )}
+            </div>
+          ) : isPdfFile ? (
+            <div className="w-full h-full min-h-[70vh]">
+              <iframe
+                src={applyToken(`${API_URL}/files/${file.id}/download?inline=true`)}
+                className="w-full h-full rounded-lg"
+                style={{ minHeight: '70vh' }}
+                title={file.name}
+              />
             </div>
           ) : isVideoFile ? (
             streamReady ? (
