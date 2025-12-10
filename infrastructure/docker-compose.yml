@@ -229,6 +229,9 @@ services:
       PYTHONMALLOC: malloc
       MALLOC_TRIM_THRESHOLD: 131072   # fixed env var name (no trailing underscore)
 
+      # Frontend URL for CSP headers
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+
       # Video Transcoding Configuration
       ENABLE_SMART_TRANSCODE: "true"
       ENABLE_REMUX_OPTIMIZATION: "true"     # Fast copy for H.264+AAC in MOV containers (2-5s vs 8-12min)
@@ -358,7 +361,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       STORAGE_SERVICE_URL: http://storage-service:8000
       SESSION_SECRET: ${SESSION_SECRET:-your-session-secret-here}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
       KAFKAJS_NO_PARTITIONER_WARNING: 1
     ports:
       - "3001:3001"

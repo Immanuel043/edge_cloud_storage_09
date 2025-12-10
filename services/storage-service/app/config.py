@@ -114,7 +114,7 @@ class Settings:
 
     # OAuth URLs
     API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3001")
 
     # Security Services Configuration
     VIRUS_SCANNING_ENABLED: bool = os.getenv("VIRUS_SCANNING_ENABLED", "true").lower() == "true"
