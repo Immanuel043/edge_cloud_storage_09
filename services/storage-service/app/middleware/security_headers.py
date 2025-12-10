@@ -85,7 +85,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # Objects: Disallow plugins
             "object-src 'none'",
             # Frames: Allow framing from frontend for inline content, otherwise disallow
-            f"frame-ancestors 'self' {settings.FRONTEND_URL} {request_origin}" if is_inline_content else "frame-ancestors 'none'",
+            # Include common dev ports (5173 for Vite, 3000, 3001)
+            f"frame-ancestors 'self' {settings.FRONTEND_URL} {request_origin} http://localhost:5173 http://localhost:3000 http://localhost:3001" if is_inline_content else "frame-ancestors 'none'",
             # Base URI: Restrict to self
             "base-uri 'self'",
             # Form actions: Restrict to self
