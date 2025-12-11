@@ -32,6 +32,7 @@ class BackgroundDeduplicationService:
     def __init__(self, max_concurrent_dedups: int = 2):
         self.max_concurrent = max_concurrent_dedups
         self.gc_task = None
+        self.active_jobs = {}  # Track currently processing jobs
 
     async def start(self):
         """Start smart queue and garbage collection"""

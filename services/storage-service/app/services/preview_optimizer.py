@@ -572,30 +572,66 @@ class PreviewOptimizer:
 
                         else:
                             # Progressive MP4/MOV: Fetch [0...moov_end+guard] contiguously
-                            # Estimate moov end with generous guard
-                            moov_guard = 64 * 1024  # 64KB guard after moov
-                            fetch_end = min(moov_offset + 10 * 1024 * 1024, file_obj.file_size - 1)
+                            #
+                            # IMPORTANT: moov_offset is relative to the GAPPY probe buffer,
+                            # not the actual file! If probe skipped chunks, the buffer offset
+                            # doesn't match the file offset.
+                            #
+                            # If moov is found in the later portion of the probe buffer
+                            # (>70% of probe_bytes), it's likely near the END of the actual file.
+                            # In this case, we must download the ENTIRE file.
 
-                            logger.info(
-                                f"Phase 3 - Fetch: Downloading contiguous range "
-                                f"[0...{fetch_end}] ({fetch_end/1024/1024:.1f}MB) "
-                                f"including moov + guard"
-                            )
+                            moov_near_end_of_probe = moov_offset > (probe_bytes * 0.7)
 
-                            await _fetch_contiguous_range(
-                                start_byte=0,
-                                end_byte=fetch_end,
-                                chunk_paths=chunk_paths,
-                                file_key=file_key,
-                                encryption_service=encryption_service,
-                                output_path=temp_file_path,
-                                upload_id=upload_id,
-                                chunk_size=chunk_size,
-                                was_compressed=was_compressed
-                            )
+                            if moov_near_end_of_probe:
+                                # moov is in the tail portion - must download entire file
+                                # because gappy probe offset doesn't map to actual file offset
+                                logger.info(
+                                    f"Phase 3 - Fetch: moov found late in probe buffer "
+                                    f"(offset {moov_offset/1024/1024:.1f}MB in {probe_bytes/1024/1024:.1f}MB probe), "
+                                    f"downloading FULL file ({file_obj.file_size/1024/1024:.1f}MB)"
+                                )
 
-                            os.unlink(probe_file_path)
-                            return temp_file_path, False  # Partial but contiguous
+                                await _fetch_contiguous_range(
+                                    start_byte=0,
+                                    end_byte=file_obj.file_size - 1,
+                                    chunk_paths=chunk_paths,
+                                    file_key=file_key,
+                                    encryption_service=encryption_service,
+                                    output_path=temp_file_path,
+                                    upload_id=upload_id,
+                                    chunk_size=chunk_size,
+                                    was_compressed=was_compressed
+                                )
+
+                                os.unlink(probe_file_path)
+                                return temp_file_path, True  # Complete file
+
+                            else:
+                                # moov is early in the file - safe to use partial download
+                                moov_guard = 64 * 1024  # 64KB guard after moov
+                                fetch_end = min(moov_offset + 10 * 1024 * 1024, file_obj.file_size - 1)
+
+                                logger.info(
+                                    f"Phase 3 - Fetch: Downloading contiguous range "
+                                    f"[0...{fetch_end}] ({fetch_end/1024/1024:.1f}MB) "
+                                    f"including moov + guard"
+                                )
+
+                                await _fetch_contiguous_range(
+                                    start_byte=0,
+                                    end_byte=fetch_end,
+                                    chunk_paths=chunk_paths,
+                                    file_key=file_key,
+                                    encryption_service=encryption_service,
+                                    output_path=temp_file_path,
+                                    upload_id=upload_id,
+                                    chunk_size=chunk_size,
+                                    was_compressed=was_compressed
+                                )
+
+                                os.unlink(probe_file_path)
+                                return temp_file_path, False  # Partial but contiguous
 
                     except Exception as e:
                         # Cleanup on error
