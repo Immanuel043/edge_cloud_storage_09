@@ -638,6 +638,16 @@ app.get('/api/files/:fileId/preview', async (req, res) => {
     }
 });
 
+// SPA catch-all route - serve index.html for all non-API routes
+// This allows React Router to handle client-side routing (e.g., /share/:token)
+app.get('*', (req, res, next) => {
+    // Skip API routes
+    if (req.path.startsWith('/api/')) {
+        return next();
+    }
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
 // Initialize services on module load
 async function start() {
     try {

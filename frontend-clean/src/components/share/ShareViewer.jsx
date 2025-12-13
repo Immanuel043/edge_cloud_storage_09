@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Download, Lock, AlertCircle, Cloud, FileText, Loader, Eye, Folder, ArrowLeft, Image as ImageIcon, Video, Music, File } from 'lucide-react';
+import { Download, Lock, AlertCircle, Cloud, FileText, Loader, Eye, Folder, ArrowLeft, Image as ImageIcon, Video, Music, File, Play } from 'lucide-react';
 import { API_URL } from '../../config/constants';
-import { formatBytes, getFileIcon } from '../../utils/helpers';
+import { formatBytes, getFileIcon, VIDEO_EXTENSIONS } from '../../utils/helpers';
 
 export default function ShareViewer() {
   const { token } = useParams();
@@ -14,6 +14,45 @@ export default function ShareViewer() {
   const [shareInfo, setShareInfo] = useState(null);
   const [folderContents, setFolderContents] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [streamReady, setStreamReady] = useState(false);
+  const [videoError, setVideoError] = useState(null);
+  const videoRef = useRef(null);
+
+  // Helper functions for media detection
+  const isVideoFile = (info) => {
+    if (!info) return false;
+    const mimeType = (info.mime_type || '').toLowerCase();
+    const extension = info.item_name?.split('.').pop()?.toLowerCase() || '';
+    return mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension);
+  };
+
+  const isAudioFile = (info) => {
+    if (!info) return false;
+    const mimeType = (info.mime_type || '').toLowerCase();
+    return mimeType.startsWith('audio/');
+  };
+
+  const isImageFile = (info) => {
+    if (!info) return false;
+    const mimeType = (info.mime_type || '').toLowerCase();
+    return mimeType.startsWith('image/');
+  };
+
+  const isPdfFile = (info) => {
+    if (!info) return false;
+    const mimeType = (info.mime_type || '').toLowerCase();
+    const extension = info.item_name?.split('.').pop()?.toLowerCase() || '';
+    return mimeType === 'application/pdf' || extension === 'pdf';
+  };
+
+  // Build streaming URL for shared content
+  const getStreamUrl = () => {
+    if (!shareInfo?.file_id) return '';
+    let url = `${API_URL}/share/${token}/stream?inline=true`;
+    if (password) url += `&password=${encodeURIComponent(password)}`;
+    if (isVideoFile(shareInfo)) url += '&compatible=true';
+    return url;
+  };
 
   useEffect(() => {
     loadShareInfo();
@@ -280,15 +319,86 @@ export default function ShareViewer() {
 
             {shareInfo.allow_preview && (
               <div className="border rounded-lg p-4 bg-gray-50">
-                <p className="text-sm text-gray-600 mb-2">Preview:</p>
-                {shareInfo.mime_type?.startsWith('image/') ? (
+                {/* Video Preview */}
+                {isVideoFile(shareInfo) ? (
+                  <div className="relative">
+                    <video
+                      ref={videoRef}
+                      controls
+                      className="w-full max-h-[70vh] rounded-lg bg-black"
+                      src={getStreamUrl()}
+                      preload="metadata"
+                      onError={(e) => {
+                        console.error('Video error:', e);
+                        setVideoError('Unable to play video. The format may not be supported by your browser.');
+                      }}
+                      onLoadedData={() => {
+                        setStreamReady(true);
+                        setVideoError(null);
+                      }}
+                    >
+                      Your browser does not support the video tag.
+                    </video>
+                    {videoError && (
+                      <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                        <p className="text-yellow-700 text-sm">{videoError}</p>
+                        {canDownload && (
+                          <button
+                            onClick={() => handleDownload()}
+                            className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
+                          >
+                            Download to watch locally
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : /* Audio Preview */
+                isAudioFile(shareInfo) ? (
+                  <div className="flex flex-col items-center py-8">
+                    <Music className="text-purple-500 mb-4" size={64} />
+                    <audio
+                      controls
+                      className="w-full max-w-md"
+                      src={getStreamUrl()}
+                      preload="metadata"
+                    >
+                      Your browser does not support the audio tag.
+                    </audio>
+                  </div>
+                ) : /* PDF Preview */
+                isPdfFile(shareInfo) ? (
+                  <div className="w-full h-full min-h-[70vh]">
+                    <iframe
+                      src={getStreamUrl()}
+                      className="w-full h-full rounded-lg border-0"
+                      style={{ minHeight: '70vh' }}
+                      title={shareInfo.item_name}
+                    />
+                  </div>
+                ) : /* Image Preview */
+                isImageFile(shareInfo) ? (
                   <img
-                    src={`${API_URL}/files/${shareInfo.file_id}/preview?size=large`}
+                    src={getStreamUrl()}
                     alt={shareInfo.item_name}
-                    className="max-w-full rounded"
+                    className="max-w-full max-h-[70vh] mx-auto rounded object-contain"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                    }}
                   />
                 ) : (
-                  <p className="text-gray-500 italic">Preview not available for this file type</p>
+                  <div className="text-center py-12">
+                    <File className="mx-auto mb-4 text-gray-400" size={64} />
+                    <p className="text-gray-500 mb-2">Preview not available for this file type</p>
+                    {canDownload && (
+                      <button
+                        onClick={() => handleDownload()}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
+                      >
+                        Download file
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             )}

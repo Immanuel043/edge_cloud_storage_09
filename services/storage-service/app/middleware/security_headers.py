@@ -27,9 +27,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Check if this is inline content (PDFs, videos for embedding)
         is_inline_content = (
-            request.url.path.startswith("/api/v1/files/")
-            and "/download" in request.url.path
-            and request.query_params.get("inline") == "true"
+            (request.url.path.startswith("/api/v1/files/") and "/download" in request.url.path and request.query_params.get("inline") == "true")
+            or (request.url.path.startswith("/api/v1/share/") and "/stream" in request.url.path)
         )
 
         # 1. HSTS - Force HTTPS (only in production)
@@ -136,8 +135,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # 8. Cross-Origin Policies
         # Allow media downloads to be embedded cross-origin (used by frontend video tag)
         is_media_download = (
-            request.url.path.startswith("/api/v1/files/")
-            and "/download" in request.url.path
+            (request.url.path.startswith("/api/v1/files/") and "/download" in request.url.path)
+            or (request.url.path.startswith("/api/v1/share/") and "/stream" in request.url.path)
         )
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"

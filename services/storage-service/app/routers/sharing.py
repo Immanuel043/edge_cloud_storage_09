@@ -3,12 +3,16 @@
 Advanced sharing endpoints - Google Drive style collaborative sharing
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
 from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
+import logging
+
+logger = logging.getLogger(__name__)
 
 from ..dependencies import get_db, get_current_user, log_activity
 from ..services.auth import pwd_context
@@ -391,3 +395,198 @@ async def get_shared_folder_contents(
             for f in files
         ],
     }
+
+
+@router.get("/share/{share_token}/stream")
+async def stream_shared_file(
+    share_token: str,
+    request: Request,
+    password: Optional[str] = None,
+    inline: bool = Query(True, description="Serve as inline content"),
+    compatible: bool = Query(False, description="Use compatible streaming for video"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream a shared file for preview (video, audio, PDF, images)"""
+    from ..services.encryption import encryption_service
+    from ..services.download_optimizer import download_optimizer
+    from ..config import settings
+    import os
+    import base64
+    import aiofiles
+
+    # Get share link and file
+    result = await db.execute(
+        select(ShareLink, Object, User)
+        .join(Object, ShareLink.file_id == Object.id)
+        .join(User, ShareLink.user_id == User.id)
+        .filter(ShareLink.share_token == share_token, ShareLink.is_active == True)
+    )
+    share_data = result.first()
+
+    if not share_data:
+        raise HTTPException(status_code=404, detail="Shared file not found")
+
+    share_link, file_obj, owner = share_data
+
+    # Check expiration
+    if share_link.expires_at and share_link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Verify password if required
+    if share_link.password_hash:
+        if not password:
+            raise HTTPException(status_code=401, detail="Password required")
+        if not pwd_context.verify(password, share_link.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid password")
+
+    # Check if preview is allowed
+    if not share_link.allow_preview:
+        raise HTTPException(status_code=403, detail="Preview not allowed for this share")
+
+    # Get encryption key - decrypt the file's encryption key
+    file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+
+    mime_type = file_obj.mime_type or 'application/octet-stream'
+    filename = file_obj.file_name.replace('"', '\\"')
+    total_size = file_obj.file_size
+
+    # Browser compatibility fix for video
+    display_mime_type = mime_type
+    if mime_type == 'video/quicktime' and file_obj.file_name.lower().endswith(('.mov', '.qt')):
+        display_mime_type = 'video/mp4'
+
+    # Handle range requests
+    range_header = request.headers.get("Range")
+
+    # Parse range header helper
+    async def parse_range(header: str, file_size: int):
+        if not header or not header.startswith("bytes="):
+            return None
+        try:
+            range_spec = header[6:]
+            if '-' not in range_spec:
+                return None
+            parts = range_spec.split('-')
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if parts[1] else file_size - 1
+            if start > end or start >= file_size:
+                return None
+            end = min(end, file_size - 1)
+            return (start, end)
+        except ValueError:
+            return None
+
+    parsed_range = await parse_range(range_header, total_size) if total_size else None
+
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": display_mime_type,
+        "Content-Disposition": f'inline; filename="{filename}"',
+        "Cache-Control": "public, max-age=3600",
+    }
+
+    # Video compatible streaming (transcoded H.264 MP4)
+    if compatible and mime_type.startswith('video/'):
+        from ..services.video_transcoder import video_transcoder, VideoTranscodeError
+        try:
+            compat_path = await video_transcoder.get_or_create_stream(
+                file_obj=file_obj,
+                encryption_service=encryption_service
+            )
+            if compat_path:
+                compat_size = os.path.getsize(compat_path)
+                compat_range = await parse_range(range_header, compat_size)
+                start, end = compat_range if compat_range else (0, compat_size - 1)
+                status_code = 206 if compat_range else 200
+
+                headers = {
+                    **base_headers,
+                    "Content-Type": "video/mp4",
+                    "Content-Disposition": f'inline; filename="{filename.rsplit(".", 1)[0]}.mp4"',
+                    "Content-Length": str(end - start + 1),
+                    "X-Video-Transcoded": "true",
+                }
+                if compat_range:
+                    headers["Content-Range"] = f"bytes {start}-{end}/{compat_size}"
+
+                async def stream_compat():
+                    async with aiofiles.open(compat_path, 'rb') as f:
+                        await f.seek(start)
+                        remaining = end - start + 1
+                        while remaining > 0:
+                            chunk = await f.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            remaining -= len(chunk)
+                            yield chunk
+
+                return StreamingResponse(stream_compat(), status_code=status_code, headers=headers, media_type="video/mp4")
+        except VideoTranscodeError as exc:
+            if exc.status_code == 202:
+                raise HTTPException(status_code=202, detail={"status": "transcoding", "message": exc.message})
+            # Fall back to regular streaming
+            logger.warning(f"Video transcode failed, falling back: {exc.message}")
+
+    # Handle different storage types
+    was_compressed = file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False)
+
+    # INLINE STORAGE
+    if file_obj.storage_type == "inline":
+        encrypted_data = base64.b64decode(file_obj.storage_key)
+        data = encryption_service.decrypt_file(encrypted_data, file_key)
+
+        if was_compressed:
+            from ..utils.compression import compressor
+            data = compressor.decompress(data)
+
+        if parsed_range:
+            start, end = parsed_range
+            chunk = data[start:end + 1]
+            headers = {**base_headers, "Content-Range": f"bytes {start}-{end}/{total_size}", "Content-Length": str(len(chunk))}
+            return Response(content=chunk, status_code=206, headers=headers)
+        else:
+            headers = {**base_headers, "Content-Length": str(len(data))}
+            return Response(content=data, status_code=200, headers=headers)
+
+    # SINGLE FILE STORAGE
+    elif file_obj.storage_type == "single":
+        if not os.path.exists(file_obj.object_path):
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        if parsed_range:
+            start, end = parsed_range
+            headers = {**base_headers, "Content-Range": f"bytes {start}-{end}/{total_size}", "Content-Length": str(end - start + 1)}
+            generator = download_optimizer.stream_single_file_optimized(
+                file_path=file_obj.object_path,
+                file_key=file_key,
+                encryption_service=encryption_service,
+                start_byte=start,
+                end_byte=end,
+                compressed=was_compressed
+            )
+            return StreamingResponse(generator, status_code=206, headers=headers, media_type=display_mime_type)
+        else:
+            headers = {**base_headers, "Content-Length": str(total_size)}
+            generator = download_optimizer.stream_single_file_optimized(
+                file_path=file_obj.object_path,
+                file_key=file_key,
+                encryption_service=encryption_service,
+                start_byte=0,
+                end_byte=total_size - 1,
+                compressed=was_compressed
+            )
+            return StreamingResponse(generator, status_code=200, headers=headers, media_type=display_mime_type)
+
+    # CHUNKED STORAGE (including content-addressed)
+    else:
+        from .files import stream_chunked_range
+
+        if parsed_range:
+            start, end = parsed_range
+            headers = {**base_headers, "Content-Range": f"bytes {start}-{end}/{total_size}", "Content-Length": str(end - start + 1)}
+            generator = stream_chunked_range(file_obj, start, end, file_key, encryption_service)
+            return StreamingResponse(generator, status_code=206, headers=headers, media_type=display_mime_type)
+        else:
+            headers = {**base_headers, "Content-Length": str(total_size)}
+            generator = stream_chunked_range(file_obj, 0, total_size - 1, file_key, encryption_service)
+            return StreamingResponse(generator, status_code=200, headers=headers, media_type=display_mime_type)

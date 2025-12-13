@@ -365,6 +365,9 @@ services:
       KAFKAJS_NO_PARTITIONER_WARNING: 1
     ports:
       - "3001:3001"
+    volumes:
+      - ../services/web-service/public:/app/public
+      - ../services/web-service/src:/app/src
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
       interval: 10s
