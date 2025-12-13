@@ -26,6 +26,7 @@ export const StorageProvider = ({ children }) => {
   const [dedupStats, setDedupStats] = useState(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [selectedFiles, setSelectedFiles] = useState(new Set());
+  const [lastClickedIndex, setLastClickedIndex] = useState(null);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -389,7 +390,33 @@ export const StorageProvider = ({ children }) => {
     setSelectedFiles(new Set());
   };
 
-  const selectFile = (fileId) => {
+  // Get all items (folders + files) for consistent indexing
+  const getAllItems = () => [...folders, ...files];
+
+  // Range selection for shift+click
+  const selectFileRange = (startIndex, endIndex) => {
+    const allItems = getAllItems();
+    const minIdx = Math.min(startIndex, endIndex);
+    const maxIdx = Math.max(startIndex, endIndex);
+    const itemsInRange = allItems.slice(minIdx, maxIdx + 1);
+
+    setSelectedFiles(prev => {
+      const newSet = new Set(prev);
+      itemsInRange.forEach(item => newSet.add(item.id));
+      return newSet;
+    });
+  };
+
+  // Enhanced file selection with shift+click support
+  const selectFile = (fileId, index = null, shiftKey = false) => {
+    // If shift is pressed and we have a previous click, select range
+    if (shiftKey && lastClickedIndex !== null && index !== null) {
+      selectFileRange(lastClickedIndex, index);
+      setLastClickedIndex(index);
+      return;
+    }
+
+    // Regular toggle selection
     setSelectedFiles(prev => {
       const newSet = new Set(prev);
       if (newSet.has(fileId)) {
@@ -399,13 +426,19 @@ export const StorageProvider = ({ children }) => {
       }
       return newSet;
     });
+
+    // Update last clicked index
+    if (index !== null) {
+      setLastClickedIndex(index);
+    }
   };
 
   const selectAll = () => {
-    if (selectedFiles.size === files.length) {
+    const allItems = getAllItems();
+    if (selectedFiles.size === allItems.length) {
       setSelectedFiles(new Set());
     } else {
-      setSelectedFiles(new Set(files.map(f => f.id)));
+      setSelectedFiles(new Set(allItems.map(item => item.id)));
     }
   };
 
@@ -440,6 +473,7 @@ export const StorageProvider = ({ children }) => {
     selectFile,
     selectAll,
     clearSelection,
+    getAllItems,
     refreshFiles,
     refreshStats: loadStorageStats,
     refreshAll

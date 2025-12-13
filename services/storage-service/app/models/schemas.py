@@ -111,6 +111,111 @@ class SharedItemResponse(BaseModel):
     file_id: Optional[str] = None
     folder_id: Optional[str] = None
 
+
+# ============================================================================
+# Share Bundle Schemas - Multi-file sharing (better than Google Drive)
+# ============================================================================
+
+class ShareBundleCreate(BaseModel):
+    """Request to create a share bundle with multiple files and/or folders"""
+    file_ids: Optional[List[str]] = []  # List of file IDs to include in bundle
+    folder_ids: Optional[List[str]] = []  # List of folder IDs (all files inside will be included)
+    name: Optional[str] = None  # Auto-generate if not provided
+    description: Optional[str] = None
+    share_type: str = 'view'  # view, download
+    expires_hours: Optional[int] = None  # None = never expires
+    password: Optional[str] = None
+    max_downloads: Optional[int] = None
+    allow_preview: bool = True
+    allow_zip_download: bool = True
+
+
+class ShareBundleUpdate(BaseModel):
+    """Request to update share bundle settings"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    share_type: Optional[str] = None
+    expires_hours: Optional[int] = None
+    password: Optional[str] = None  # Set to empty string to remove password
+    max_downloads: Optional[int] = None
+    allow_preview: Optional[bool] = None
+    allow_zip_download: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class ShareBundleFileItem(BaseModel):
+    """File item within a share bundle"""
+    id: str
+    name: str
+    size: int
+    mime_type: Optional[str] = None
+    can_preview: bool = True
+    display_order: int = 0
+    folder_path: Optional[str] = None  # Path within bundle (for folder structure display)
+
+
+class ShareBundleResponse(BaseModel):
+    """Response when creating/getting a share bundle"""
+    id: str
+    name: str
+    description: Optional[str] = None
+    share_url: str
+    token: str
+    share_type: str
+    file_count: int
+    total_size: int
+    expires_at: Optional[datetime] = None
+    password_protected: bool
+    max_downloads: Optional[int] = None
+    download_count: int = 0
+    view_count: int = 0
+    allow_preview: bool = True
+    allow_zip_download: bool = True
+    is_active: bool = True
+    created_at: datetime
+    last_accessed: Optional[datetime] = None
+    files: Optional[List[ShareBundleFileItem]] = None  # Included when fetching details
+
+
+class ShareBundleListResponse(BaseModel):
+    """Response for listing user's share bundles"""
+    id: str
+    name: str
+    share_type: str
+    file_count: int
+    total_size: int
+    expires_at: Optional[datetime] = None
+    password_protected: bool
+    view_count: int
+    download_count: int
+    is_active: bool
+    created_at: datetime
+
+
+class ShareBundlePublicInfo(BaseModel):
+    """Public info for share bundle viewer (no auth required)"""
+    name: str
+    description: Optional[str] = None
+    file_count: int
+    total_size: int
+    share_type: str  # view, download
+    allow_preview: bool
+    allow_zip_download: bool
+    requires_password: bool = False
+    files: List[ShareBundleFileItem]
+    owner_name: Optional[str] = None  # Optional: show who shared
+
+
+class ShareBundleAddFiles(BaseModel):
+    """Request to add files to existing bundle"""
+    file_ids: List[str]
+
+
+class ShareBundleRemoveFiles(BaseModel):
+    """Request to remove files from bundle"""
+    file_ids: List[str]
+
+
 # Storage Schemas
 class StorageStats(BaseModel):
     quota: int

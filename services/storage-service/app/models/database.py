@@ -174,6 +174,86 @@ class ShareLink(Base):
         Index('idx_share_active', 'is_active'),
     )
 
+
+class ShareBundle(Base):
+    """
+    Virtual collection of files for sharing - no folder required.
+    Better than Google Drive: share multiple files without creating folders.
+    Files stay in their original location while being grouped for sharing.
+    """
+    __tablename__ = 'share_bundles'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Bundle metadata
+    name = Column(String(255), nullable=False)  # "My Share Bundle" or auto-generated
+    description = Column(Text, nullable=True)
+
+    # Share token (same pattern as ShareLink)
+    share_token = Column(String(64), unique=True, nullable=False, index=True)
+
+    # Sharing settings
+    share_type = Column(String(20), default='view')  # view, download
+    password_hash = Column(String(255), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    max_downloads = Column(Integer, nullable=True)
+    download_count = Column(Integer, default=0)
+    view_count = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    allow_preview = Column(Boolean, default=True)
+
+    # Bundle-specific settings
+    allow_zip_download = Column(Boolean, default=True)  # Download all as ZIP
+    show_file_sizes = Column(Boolean, default=True)
+
+    # Statistics (cached for performance)
+    total_size = Column(BigInteger, default=0)
+    file_count = Column(Integer, default=0)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_accessed = Column(DateTime, nullable=True)
+
+    # Relationships
+    user = relationship('User', backref='share_bundles')
+
+    __table_args__ = (
+        Index('idx_bundle_token', 'share_token'),
+        Index('idx_bundle_user', 'user_id'),
+        Index('idx_bundle_active', 'is_active'),
+        Index('idx_bundle_created', 'created_at'),
+    )
+
+
+class ShareBundleFile(Base):
+    """Junction table linking files to share bundles"""
+    __tablename__ = 'share_bundle_files'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bundle_id = Column(UUID(as_uuid=True), ForeignKey('share_bundles.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+
+    # Order within bundle (for custom sorting)
+    display_order = Column(Integer, default=0)
+
+    # Folder path for structure display (e.g., "Documents/Reports/")
+    folder_path = Column(String(1024), nullable=True)
+
+    # Timestamps
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    bundle = relationship('ShareBundle', backref='bundle_files')
+    file = relationship('Object', backref='bundle_memberships')
+
+    __table_args__ = (
+        Index('idx_bundle_file_bundle', 'bundle_id'),
+        Index('idx_bundle_file_file', 'file_id'),
+        UniqueConstraint('bundle_id', 'file_id', name='unique_bundle_file'),
+    )
+
+
 class SharedAccess(Base):
     """Collaborative sharing - share folders/files with specific users"""
     __tablename__ = 'shared_access'

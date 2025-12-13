@@ -55,13 +55,13 @@ export default function FileGrid({
       ))}
 
       {/* Files */}
-      {files.map(file => (
+      {files.map((file, fileIndex) => (
         <div
           key={file.id}
           data-file-card="true"
-          onClick={() => {
-            // Single click selects file
-            onFileClick(file.id);
+          onClick={(e) => {
+            // Single click selects file, pass index for shift+click range selection
+            onFileClick(file.id, folders.length + fileIndex, e.shiftKey);
           }}
           onDoubleClick={(e) => {
             // Double click opens preview

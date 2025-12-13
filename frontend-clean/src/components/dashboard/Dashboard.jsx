@@ -35,6 +35,7 @@ import SearchResults from './SearchResults';
 import SessionUnlockModal from '../auth/SessionUnlockModal';
 import DownloadProgress from './DownloadProgress';
 import FileCorruptionModal from './FileCorruptionModal';
+import ShareBundleComposer from './ShareBundleComposer';
 import { formatBytes, formatDate, getFileIcon, getFileType } from '../../utils/helpers';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../services/storageService';
@@ -94,6 +95,7 @@ export default function Dashboard() {
   const [downloads, setDownloads] = useState({});
   const [pendingDownload, setPendingDownload] = useState(null); // Store download info for retry after unlock
   const [corruptionError, setCorruptionError] = useState(null); // Store corruption error details
+  const [showShareBundleComposer, setShowShareBundleComposer] = useState(false); // Share bundle modal
 
 
   useEffect(() => {
@@ -902,7 +904,9 @@ export default function Dashboard() {
                   selectedCount={selectedFiles.size}
                   onDownload={handleBulkDownload}
                   onDelete={handleBulkDelete}
+                  onShare={() => setShowShareBundleComposer(true)}
                   onClear={clearSelection}
+                  darkMode={darkMode}
                 />
               )}
 
@@ -1004,6 +1008,20 @@ export default function Dashboard() {
           onClose={() => setCorruptionError(null)}
           fileName={corruptionError.fileName}
           errorMessage={corruptionError.errorMessage}
+          darkMode={darkMode}
+        />
+      )}
+
+      {/* Share Bundle Composer Modal */}
+      {showShareBundleComposer && (
+        <ShareBundleComposer
+          selectedFiles={Array.from(selectedFiles).map(id => files.find(f => f.id === id)).filter(Boolean)}
+          selectedFolders={Array.from(selectedFiles).map(id => folders.find(f => f.id === id)).filter(Boolean)}
+          onClose={() => setShowShareBundleComposer(false)}
+          onSuccess={() => {
+            setShowShareBundleComposer(false);
+            clearSelection();
+          }}
           darkMode={darkMode}
         />
       )}
