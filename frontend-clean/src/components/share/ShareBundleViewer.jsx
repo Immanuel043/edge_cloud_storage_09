@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Download, Lock, AlertCircle, Cloud, FileText, Loader, Eye, Package,
   Image as ImageIcon, Video, Music, File, Archive, Code, X, Play,
-  ChevronLeft, ExternalLink, Clock, Shield
+  ChevronLeft, ExternalLink, Clock, Shield, Folder, ChevronRight
 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { formatBytes, VIDEO_EXTENSIONS } from '../../utils/helpers';
@@ -18,7 +18,62 @@ export default function ShareBundleViewer() {
   const [bundleInfo, setBundleInfo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const [downloading, setDownloading] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState(new Set());
   const videoRef = useRef(null);
+
+  // Group files by folder path
+  const groupedFiles = useMemo(() => {
+    if (!bundleInfo?.files) return { rootFiles: [], folders: {} };
+
+    const rootFiles = [];
+    const folders = {};
+
+    bundleInfo.files.forEach(file => {
+      if (!file.folder_path) {
+        rootFiles.push(file);
+      } else {
+        // Get the top-level folder name
+        const pathParts = file.folder_path.split('/').filter(Boolean);
+        const topFolder = pathParts[0];
+
+        if (!folders[topFolder]) {
+          folders[topFolder] = [];
+        }
+        folders[topFolder].push({
+          ...file,
+          relativePath: pathParts.slice(1).join('/'),
+        });
+      }
+    });
+
+    return { rootFiles, folders };
+  }, [bundleInfo?.files]);
+
+  const toggleFolder = (folderName) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderName)) {
+        next.delete(folderName);
+      } else {
+        next.add(folderName);
+      }
+      return next;
+    });
+  };
+
+  // Auto-expand all folders initially
+  useEffect(() => {
+    if (bundleInfo?.files) {
+      const folderNames = new Set();
+      bundleInfo.files.forEach(file => {
+        if (file.folder_path) {
+          const topFolder = file.folder_path.split('/').filter(Boolean)[0];
+          folderNames.add(topFolder);
+        }
+      });
+      setExpandedFolders(folderNames);
+    }
+  }, [bundleInfo?.files]);
 
   // Helper functions for media detection
   const getFileExtension = (filename) => {
@@ -428,7 +483,73 @@ export default function ShareBundleViewer() {
           </div>
 
           <div className="divide-y">
-            {bundleInfo?.files?.map((file, index) => (
+            {/* Folders first */}
+            {Object.entries(groupedFiles.folders).map(([folderName, files]) => (
+              <div key={folderName}>
+                {/* Folder header */}
+                <div
+                  onClick={() => toggleFolder(folderName)}
+                  className="px-6 py-3 flex items-center gap-3 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
+                >
+                  <ChevronRight
+                    size={18}
+                    className={`text-gray-400 transition-transform ${expandedFolders.has(folderName) ? 'rotate-90' : ''}`}
+                  />
+                  <Folder size={20} className="text-blue-500" />
+                  <span className="font-medium text-gray-900">{folderName}</span>
+                  <span className="text-sm text-gray-500">({files.length} files)</span>
+                </div>
+
+                {/* Folder contents */}
+                {expandedFolders.has(folderName) && (
+                  <div className="bg-gray-50/50">
+                    {files.map((file) => (
+                      <div
+                        key={file.id}
+                        className="px-6 pl-14 py-3 flex items-center gap-4 hover:bg-gray-100 transition-colors border-t border-gray-100"
+                      >
+                        <div className="flex-shrink-0">
+                          {getFileIcon(file)}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-900 truncate">{file.name}</p>
+                          <p className="text-sm text-gray-500">
+                            {file.relativePath && <span className="text-gray-400">{file.relativePath}/</span>}
+                            {formatBytes(file.size)}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {bundleInfo?.allow_preview && (
+                            <button
+                              onClick={() => setPreviewFile(file)}
+                              className="px-3 py-1.5 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 flex items-center gap-1.5 text-sm"
+                            >
+                              <Eye size={16} />
+                              Preview
+                            </button>
+                          )}
+
+                          {canDownload && (
+                            <button
+                              onClick={() => handleDownloadFile(file)}
+                              className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 flex items-center gap-1.5 text-sm"
+                            >
+                              <Download size={16} />
+                              Download
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Root files (not in any folder) */}
+            {groupedFiles.rootFiles.map((file) => (
               <div
                 key={file.id}
                 className="px-6 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors"

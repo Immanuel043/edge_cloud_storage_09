@@ -26,15 +26,24 @@ export default function FileGrid({
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
       {/* Folders */}
-      {folders.map(folder => (
+      {folders.map((folder, folderIndex) => (
         <div
           key={folder.id}
-          onClick={() => onFolderClick(folder.id)}
+          data-file-card="true"
+          onClick={(e) => {
+            // Single click selects folder
+            onFileClick(folder.id, folderIndex, e.shiftKey);
+          }}
+          onDoubleClick={(e) => {
+            // Double click navigates into folder
+            e.stopPropagation();
+            onFolderClick(folder.id);
+          }}
           className={`group p-5 rounded-xl cursor-pointer transition-all border ${
             darkMode
               ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
               : 'bg-white hover:bg-blue-50/30 border-gray-200 hover:border-blue-200'
-          } hover:shadow-lg`}
+          } ${selectedFiles.has(folder.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg`}
         >
           <div className="flex flex-col items-center">
             <div className={`p-4 rounded-xl transition-colors ${

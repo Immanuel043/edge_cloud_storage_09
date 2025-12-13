@@ -1,5 +1,5 @@
-import React from 'react';
-import { Users, Loader, AlertCircle, Star } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Users, Loader, AlertCircle, Star, FileText, Folder } from 'lucide-react';
 import { useSharedWithMe } from '../../hooks/useSharedWithMe';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
@@ -18,6 +18,36 @@ export default function SharedWithMeView({
   darkMode
 }) {
   const { sharedFiles, loading, error, refresh } = useSharedWithMe();
+
+  // Transform shared items to file-like objects for FileGrid/FileList compatibility
+  const transformedFiles = useMemo(() => {
+    return sharedFiles
+      .filter(item => item.item_type === 'file' && item.file_id)
+      .map(item => ({
+        id: item.file_id,
+        name: item.item_name,
+        size: 0, // Size not available from shared-with-me endpoint
+        created_at: item.shared_at,
+        last_accessed: item.shared_at,
+        is_favorite: false,
+        shared_by: item.owner_email,
+        permission: item.permission,
+        share_access_id: item.id,
+      }));
+  }, [sharedFiles]);
+
+  const transformedFolders = useMemo(() => {
+    return sharedFiles
+      .filter(item => item.item_type === 'folder' && item.folder_id)
+      .map(item => ({
+        id: item.folder_id,
+        name: item.item_name,
+        created_at: item.shared_at,
+        shared_by: item.owner_email,
+        permission: item.permission,
+        share_access_id: item.id,
+      }));
+  }, [sharedFiles]);
 
   if (loading) {
     return (
@@ -54,7 +84,7 @@ export default function SharedWithMeView({
     );
   }
 
-  if (sharedFiles.length === 0) {
+  if (transformedFiles.length === 0 && transformedFolders.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <div className={`p-6 rounded-2xl mb-4 ${
@@ -73,6 +103,8 @@ export default function SharedWithMeView({
     );
   }
 
+  const totalItems = transformedFiles.length + transformedFolders.length;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -88,7 +120,7 @@ export default function SharedWithMeView({
               Shared with me
             </h2>
             <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              {sharedFiles.length} {sharedFiles.length === 1 ? 'file' : 'files'} shared by others
+              {totalItems} {totalItems === 1 ? 'item' : 'items'} shared by others
             </p>
           </div>
         </div>
@@ -97,8 +129,8 @@ export default function SharedWithMeView({
       {/* Files */}
       {viewMode === 'grid' ? (
         <FileGrid
-          folders={[]}
-          files={sharedFiles}
+          folders={transformedFolders}
+          files={transformedFiles}
           selectedFiles={selectedFiles}
           onFolderClick={() => {}}
           onFileClick={onFileClick}
@@ -113,8 +145,8 @@ export default function SharedWithMeView({
         />
       ) : (
         <FileList
-          folders={[]}
-          files={sharedFiles}
+          folders={transformedFolders}
+          files={transformedFiles}
           selectedFiles={selectedFiles}
           onFolderClick={() => {}}
           onFileClick={onFileClick}

@@ -38,15 +38,24 @@ export default function FileList({
       </div>
 
       {/* Folders */}
-      {folders.map(folder => (
+      {folders.map((folder, folderIndex) => (
         <div
           key={folder.id}
-          onClick={() => onFolderClick(folder.id)}
+          data-file-card="true"
+          onClick={(e) => {
+            // Single click selects folder
+            onFileClick(folder.id, folderIndex, e.shiftKey);
+          }}
+          onDoubleClick={(e) => {
+            // Double click navigates into folder
+            e.stopPropagation();
+            onFolderClick(folder.id);
+          }}
           className={`group grid grid-cols-12 gap-4 px-4 py-2.5 cursor-pointer transition-all border-b ${
             darkMode
               ? 'hover:bg-gray-800/40 border-gray-800'
               : 'hover:bg-blue-50/40 border-gray-100'
-          }`}
+          } ${selectedFiles.has(folder.id) ? darkMode ? 'bg-blue-900/20 border-blue-800' : 'bg-blue-50/60 border-blue-200' : ''}`}
         >
           <div className="col-span-1 flex items-center">
             <div className={`p-1.5 rounded-lg transition-colors ${

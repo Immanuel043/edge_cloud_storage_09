@@ -246,7 +246,7 @@ export default function ShareBundleComposer({ selectedFiles = [], selectedFolder
                   Create Share Bundle
                 </h2>
                 <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  Share {selectedFiles.length} files with a single link
+                  Share {totalItems} {totalItems === 1 ? 'item' : 'items'} with a single link
                 </p>
               </div>
             </div>
@@ -503,7 +503,7 @@ export default function ShareBundleComposer({ selectedFiles = [], selectedFolder
             </button>
             <button
               onClick={handleCreateBundle}
-              disabled={isCreating || selectedFiles.length === 0}
+              disabled={isCreating || (selectedFiles.length === 0 && selectedFolders.length === 0)}
               className="flex-1 py-3 px-4 bg-purple-500 text-white rounded-xl font-medium hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isCreating ? (
