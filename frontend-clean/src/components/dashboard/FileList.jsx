@@ -49,7 +49,7 @@ export default function FileList({
           onDoubleClick={(e) => {
             // Double click navigates into folder
             e.stopPropagation();
-            onFolderClick(folder.id);
+            onFolderClick(folder.id, folder.name);
           }}
           className={`group grid grid-cols-12 gap-4 px-4 py-2.5 cursor-pointer transition-all border-b ${
             darkMode

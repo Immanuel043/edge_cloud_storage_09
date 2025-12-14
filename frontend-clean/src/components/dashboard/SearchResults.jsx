@@ -5,9 +5,28 @@ import { formatBytes, formatDate } from '../../utils/helpers';
 export default function SearchResults({ results, onClose, onFileClick, onFolderClick, darkMode }) {
   if (!results) return null;
 
-  const totalFiles = results.files?.total || 0;
-  const totalFolders = results.folders?.total || 0;
+  // Minimum relevance threshold (25% of max score) to filter out irrelevant results
+  const RELEVANCE_THRESHOLD = 0.25;
+
+  // Calculate max score for normalization (highest score = 100%)
+  const maxScore = Math.max(
+    ...(results.files?.hits?.map(f => f.score) || [0]),
+    ...(results.folders?.hits?.map(f => f.score) || [0])
+  );
+
+  // Filter out low-relevance results (below threshold)
+  const filteredFiles = results.files?.hits?.filter(f => f.score >= maxScore * RELEVANCE_THRESHOLD) || [];
+  const filteredFolders = results.folders?.hits?.filter(f => f.score >= maxScore * RELEVANCE_THRESHOLD) || [];
+
+  const totalFiles = filteredFiles.length;
+  const totalFolders = filteredFolders.length;
   const totalResults = totalFiles + totalFolders;
+
+  // Normalize score to percentage (0-100) relative to max score
+  const normalizeScore = (score) => {
+    if (!score || !maxScore) return 0;
+    return Math.round((score / maxScore) * 100);
+  };
 
   const getFileIcon = (mimeType) => {
     if (!mimeType) return <File size={20} />;
@@ -60,14 +79,14 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
       {/* Results List */}
       <div className="max-h-96 overflow-y-auto">
         {/* Folders */}
-        {results.folders?.hits?.length > 0 && (
+        {filteredFolders.length > 0 && (
           <div className={`p-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
             <h4 className={`text-xs font-semibold uppercase tracking-wider px-2 py-1 ${
               darkMode ? 'text-gray-400' : 'text-gray-500'
             }`}>
               Folders
             </h4>
-            {results.folders.hits.map((folder) => (
+            {filteredFolders.map((folder) => (
               <div
                 key={folder.id}
                 onClick={() => {
@@ -98,14 +117,14 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
         )}
 
         {/* Files */}
-        {results.files?.hits?.length > 0 && (
+        {filteredFiles.length > 0 && (
           <div className="p-2">
             <h4 className={`text-xs font-semibold uppercase tracking-wider px-2 py-1 ${
               darkMode ? 'text-gray-400' : 'text-gray-500'
             }`}>
               Files
             </h4>
-            {results.files.hits.map((file) => (
+            {filteredFiles.map((file) => (
               <div
                 key={file.id}
                 onClick={() => {
@@ -139,7 +158,7 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
                   <div className={`text-xs px-2 py-1 rounded ${
                     darkMode ? 'bg-blue-900/20 text-blue-400' : 'bg-blue-50 text-blue-600'
                   }`}>
-                    {(file.score * 100).toFixed(0)}% match
+                    {normalizeScore(file.score)}% match
                   </div>
                 )}
               </div>

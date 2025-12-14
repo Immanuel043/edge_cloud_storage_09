@@ -907,6 +907,39 @@ async def complete_upload(
             )
         )
 
+    # ============ VIDEO PREVIEW QUEUEING (BACKGROUND) ============
+    # Queue large videos (>50MB) for background preview generation
+    PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50MB
+    is_video = mime_type and mime_type.startswith('video/')
+
+    if is_video and session["size"] > PREVIEW_QUEUE_THRESHOLD:
+        try:
+            producer = await get_kafka_producer()
+            if producer:
+                await producer.send_and_wait(
+                    'preview-processing',
+                    {
+                        'file_id': str(file_id),
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'file_name': session['name'],
+                        'file_size': session['size'],
+                        'mime_type': mime_type,
+                        'storage_type': storage_strategy
+                    }
+                )
+                # Set initial status in Redis
+                await redis_client.setex(
+                    f'preview:status:{file_id}',
+                    3600,  # 1 hour TTL
+                    json.dumps({'status': 'queued', 'queued_at': datetime.utcnow().isoformat()})
+                )
+                logger.info(f"🎬 Queued video preview for background processing: {session['name']} ({session['size'] / 1024 / 1024:.1f}MB)")
+            else:
+                logger.warning(f"Kafka producer not available, skipping preview queue for {session['name']}")
+        except Exception as e:
+            logger.error(f"Failed to queue video preview for {session['name']}: {e}")
+            # Non-fatal - preview can still be generated on-demand
+
     # Index file in Elasticsearch (fire and forget)
     asyncio.create_task(
         search_service.index_file({

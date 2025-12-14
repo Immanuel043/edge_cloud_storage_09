@@ -48,6 +48,7 @@ export default function Dashboard() {
     files,
     folders,
     currentFolder,
+    currentFolderName,
     storageStats,
     isOnline,
     selectedFiles,
@@ -704,15 +705,16 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2 mb-4 text-sm">
                       <button
                         onClick={() => navigateToFolder(null)}
-                        className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                        className={`flex items-center gap-1 ${currentFolder ? (darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700') : (darkMode ? 'text-white' : 'text-gray-900')} transition-colors`}
                       >
+                        <Home size={16} />
                         Home
                       </button>
                       {currentFolder && (
                         <>
                           <ChevronRight size={16} className="text-gray-400" />
-                          <span className={darkMode ? 'text-white' : 'text-gray-900'}>
-                            Current Folder
+                          <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                            {currentFolderName || 'Folder'}
                           </span>
                         </>
                       )}

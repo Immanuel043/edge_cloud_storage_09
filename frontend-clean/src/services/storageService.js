@@ -1169,6 +1169,26 @@ async getSharedWithMe() {
   return await response.json();
 }
 
+// Remove a file/folder from "Shared with me" (removes access, not the original file)
+async removeSharedAccess(shareAccessId) {
+  await rateLimiter.checkLimit();
+
+  const response = await fetch(`${API_URL}/shared-with-me/${shareAccessId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || 'Failed to remove shared access');
+  }
+
+  return await response.json();
+}
+
 // Get activity history for a specific file
 async getFileActivity(fileId, limit = 50) {
   await rateLimiter.checkLimit();

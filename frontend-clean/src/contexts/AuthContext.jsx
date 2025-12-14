@@ -107,24 +107,69 @@ export const AuthProvider = ({ children }) => {
     const bootstrap = async () => {
       // SECURITY FIX: Check if user is authenticated via HTTP-only cookie
       // by attempting to load profile (backend will validate cookie)
-      try {
-        const userData = await loadUserData(null); // No token needed - uses cookie
+
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY = 2000; // 2 seconds between retries
+      const REQUEST_TIMEOUT = 15000; // 15 seconds per request
+
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         if (!mounted) return;
 
-        setIsAuthenticated(true);
-        await refreshSessionToken();
-
-        // Connect WebSocket (will use cookie or token from backend response)
         try {
-          await websocketService.connect(null);
-          if (!mounted) return;
-          setupWebSocketListeners();
-        } catch (error) {
-          console.error('Failed to connect WebSocket on boot:', error);
+          console.log(`Bootstrap attempt ${attempt}/${MAX_RETRIES}...`);
+
+          // Create abort controller for timeout
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+          try {
+            const userData = await loadUserDataWithSignal(null, controller.signal);
+            clearTimeout(timeoutId);
+
+            if (!mounted) return;
+
+            setIsAuthenticated(true);
+            await refreshSessionToken();
+
+            // Connect WebSocket (will use cookie or token from backend response)
+            try {
+              await websocketService.connect(null);
+              if (!mounted) return;
+              setupWebSocketListeners();
+            } catch (error) {
+              console.error('Failed to connect WebSocket on boot:', error);
+            }
+
+            // Success - exit retry loop
+            break;
+          } catch (err) {
+            clearTimeout(timeoutId);
+
+            // If aborted due to timeout, retry
+            if (err.name === 'AbortError') {
+              console.log(`Bootstrap attempt ${attempt} timed out`);
+              if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                continue;
+              }
+            }
+
+            // If 401/403, user is not authenticated - don't retry
+            if (err.message?.includes('401') || err.message?.includes('403') || err.message?.includes('Failed to load profile')) {
+              console.log('User not authenticated');
+              break;
+            }
+
+            // Other error - retry
+            console.log(`Bootstrap attempt ${attempt} failed:`, err.message);
+            if (attempt < MAX_RETRIES) {
+              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+              continue;
+            }
+          }
+        } catch (err) {
+          console.log('Bootstrap error:', err.message);
         }
-      } catch (err) {
-        // Not authenticated - this is fine, user needs to login
-        console.log('User not authenticated');
       }
 
       if (mounted) setLoading(false);
@@ -194,6 +239,19 @@ export const AuthProvider = ({ children }) => {
   const loadUserData = async (authToken) => {
     try {
       const userData = await authService.getProfile(authToken);
+      setUser(userData);
+      setIsAuthenticated(true);
+      return userData;
+    } catch (error) {
+      console.error('Failed to load user data:', error);
+      throw error;
+    }
+  };
+
+  // Version with AbortSignal support for timeout handling
+  const loadUserDataWithSignal = async (authToken, signal) => {
+    try {
+      const userData = await authService.getProfileWithSignal(authToken, signal);
       setUser(userData);
       setIsAuthenticated(true);
       return userData;

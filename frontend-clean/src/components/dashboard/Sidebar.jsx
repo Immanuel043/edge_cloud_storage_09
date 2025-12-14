@@ -242,23 +242,23 @@ export default function Sidebar({
             </div>
             <div className="space-y-1">
               <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {formatBytes(storageStats.used_bytes)} / {formatBytes(storageStats.quota_bytes)}
+                {formatBytes(storageStats.used)} / {formatBytes(storageStats.quota)}
               </div>
               <div className="w-full bg-gray-300 dark:bg-gray-600 rounded-full h-2 overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all duration-300"
                   style={{
-                    width: `${storageStats.usage_percentage || 0}%`,
-                    backgroundColor: storageStats.usage_percentage > 90
+                    width: `${storageStats.percentage_used || 0}%`,
+                    backgroundColor: storageStats.percentage_used > 90
                       ? '#ef4444'
-                      : storageStats.usage_percentage > 70
+                      : storageStats.percentage_used > 70
                         ? '#f59e0b'
                         : '#0033A0'
                   }}
                 />
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                {(storageStats.usage_percentage || 0).toFixed(1)}% used
+                {(storageStats.percentage_used || 0).toFixed(1)}% used
               </div>
             </div>
           </div>

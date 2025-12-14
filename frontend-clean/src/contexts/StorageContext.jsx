@@ -3,6 +3,7 @@ import { storageService } from '../services/storageService';
 import { websocketService } from '../services/websocketService';
 import { useAuth } from './AuthContext';
 import { offlineDB } from '../utils/offlineStorage';
+import { requestCache } from '../utils/requestCache';
 
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -22,6 +23,7 @@ export const StorageProvider = ({ children }) => {
   const [files, setFiles] = useState([]);
   const [folders, setFolders] = useState([]);
   const [currentFolder, setCurrentFolder] = useState(null);
+  const [currentFolderName, setCurrentFolderName] = useState(null);
   const [storageStats, setStorageStats] = useState(null);
   const [dedupStats, setDedupStats] = useState(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -247,6 +249,10 @@ export const StorageProvider = ({ children }) => {
 
     // Immediately refresh - backend now commits before responding
     try {
+      // Invalidate cache to ensure fresh data is fetched
+      requestCache.invalidate(/^files-/);
+      requestCache.invalidate(/^folders-/);
+
       await refreshFiles();
       await loadDedupStats();
     } catch (refreshError) {
@@ -296,7 +302,11 @@ export const StorageProvider = ({ children }) => {
   const deleteFile = async (fileId) => {
     try {
       const result = await storageService.deleteFile(token, fileId);
-      
+
+      // Invalidate cache to ensure fresh data is fetched
+      requestCache.invalidate(/^files-/);
+      requestCache.invalidate(/^folders-/);
+
       // After successful deletion, refresh everything
       await refreshFiles();
       await loadDedupStats(); // Refresh dedup stats after deletion
@@ -352,18 +362,22 @@ export const StorageProvider = ({ children }) => {
     
     const result = await response.json();
     console.log('Bulk delete successful:', result);
-    
+
+    // Invalidate cache to ensure fresh data is fetched
+    requestCache.invalidate(/^files-/);
+    requestCache.invalidate(/^folders-/);
+
     // Update local state
     setFiles(prevFiles => prevFiles.filter(file => !fileIds.includes(file.id)));
     setSelectedFiles(new Set());
-    
+
     // Refresh all data
     await Promise.all([
       refreshFiles(),
       loadStorageStats(),
       loadDedupStats()
     ]);
-    
+
     return result;
   } catch (error) {
     console.error('Failed to bulk delete:', error);
@@ -378,6 +392,9 @@ export const StorageProvider = ({ children }) => {
 
   const createFolder = async (name) => {
     await storageService.createFolder(token, name, currentFolder);
+    // Invalidate cache to ensure fresh data is fetched
+    requestCache.invalidate(/^files-/);
+    requestCache.invalidate(/^folders-/);
     await loadFiles();
   };
 
@@ -385,8 +402,9 @@ export const StorageProvider = ({ children }) => {
     return await storageService.createShareLink(token, fileId, options);
   };
 
-  const navigateToFolder = (folderId) => {
+  const navigateToFolder = (folderId, folderName = null) => {
     setCurrentFolder(folderId);
+    setCurrentFolderName(folderId ? folderName : null);
     setSelectedFiles(new Set());
   };
 
@@ -458,6 +476,7 @@ export const StorageProvider = ({ children }) => {
     files,
     folders,
     currentFolder,
+    currentFolderName,
     storageStats,
     isOnline,
     selectedFiles,

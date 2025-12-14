@@ -17,7 +17,21 @@ export default function SharedWithMeView({
   onRename,
   darkMode
 }) {
-  const { sharedFiles, loading, error, refresh } = useSharedWithMe();
+  const { sharedFiles, loading, error, refresh, removeSharedAccess } = useSharedWithMe();
+
+  // Custom delete handler for shared files - removes access, not the original file
+  const handleRemoveSharedFile = async (fileId) => {
+    // Find the share_access_id for this file
+    const file = sharedFiles.find(item => item.file_id === fileId || item.folder_id === fileId);
+    if (file) {
+      try {
+        await removeSharedAccess(file.id);
+      } catch (err) {
+        console.error('Failed to remove shared access:', err);
+        alert('Failed to remove from Shared with me');
+      }
+    }
+  };
 
   // Transform shared items to file-like objects for FileGrid/FileList compatibility
   const transformedFiles = useMemo(() => {
@@ -137,10 +151,10 @@ export default function SharedWithMeView({
           onFilePreview={onFilePreview}
           onFileDownload={onFileDownload}
           onFileShare={onFileShare}
-          onFileDelete={onFileDelete}
+          onFileDelete={handleRemoveSharedFile}
           onVersionHistory={onVersionHistory}
-          onToggleFavorite={onToggleFavorite}
-          onRename={onRename}
+          onToggleFavorite={null}
+          onRename={null}
           darkMode={darkMode}
         />
       ) : (
@@ -153,10 +167,10 @@ export default function SharedWithMeView({
           onFilePreview={onFilePreview}
           onFileDownload={onFileDownload}
           onFileShare={onFileShare}
-          onFileDelete={onFileDelete}
+          onFileDelete={handleRemoveSharedFile}
           onVersionHistory={onVersionHistory}
-          onToggleFavorite={onToggleFavorite}
-          onRename={onRename}
+          onToggleFavorite={null}
+          onRename={null}
           darkMode={darkMode}
         />
       )}

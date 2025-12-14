@@ -773,6 +773,92 @@ async def get_file_preview(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # ============ CHECK BACKGROUND PREVIEW STATUS FOR LARGE VIDEOS ============
+    # For large videos (>50MB), check if preview is being generated in background
+    PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50MB
+    is_large_video = (
+        file_obj.mime_type and
+        file_obj.mime_type.startswith('video/') and
+        file_obj.file_size > PREVIEW_QUEUE_THRESHOLD
+    )
+
+    if is_large_video:
+        status_key = f"preview:status:{file_id}"
+        status_data = await redis.get(status_key)
+
+        if status_data:
+            try:
+                if isinstance(status_data, bytes):
+                    status_data = status_data.decode('utf-8')
+                status_info = json.loads(status_data)
+                status = status_info.get('status')
+
+                if status in ['queued', 'processing']:
+                    logger.info(f"🎬 Preview {status} for large video {file_id}, returning 202")
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            'status': status,
+                            'message': f'Preview is being generated in background ({status})',
+                            'retry_after': 5,
+                            'file_id': file_id
+                        },
+                        headers={'Retry-After': '5'}
+                    )
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Failed to parse preview status for {file_id}: {e}")
+        else:
+            # No status yet - queue for background processing (existing file before feature was added)
+            try:
+                from aiokafka import AIOKafkaProducer
+                from ..config import settings
+                from datetime import datetime
+
+                # Quick check if Kafka is configured
+                if hasattr(settings, 'KAFKA_BROKERS'):
+                    producer = AIOKafkaProducer(
+                        bootstrap_servers=settings.KAFKA_BROKERS,
+                        value_serializer=lambda v: json.dumps(v).encode()
+                    )
+                    await producer.start()
+                    try:
+                        await producer.send_and_wait(
+                            'preview-processing',
+                            {
+                                'file_id': str(file_id),
+                                'timestamp': datetime.utcnow().isoformat(),
+                                'file_name': file_obj.file_name,
+                                'file_size': file_obj.file_size,
+                                'mime_type': file_obj.mime_type,
+                                'storage_type': file_obj.storage_type
+                            }
+                        )
+                        # Set initial status
+                        await redis.setex(
+                            status_key,
+                            3600,
+                            json.dumps({'status': 'queued', 'queued_at': datetime.utcnow().isoformat()})
+                        )
+                        logger.info(f"🎬 Queued existing large video for background preview: {file_obj.file_name}")
+                    finally:
+                        await producer.stop()
+
+                    # Return 202 with placeholder
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            'status': 'queued',
+                            'message': 'Preview is being generated in background',
+                            'retry_after': 5,
+                            'file_id': file_id
+                        },
+                        headers={'Retry-After': '5'}
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to queue large video for background preview: {e}")
+
     size_tuple = preview_generator.SIZES.get(size, preview_generator.SIZES['medium'])
 
     def _placeholder_meta():
@@ -899,6 +985,74 @@ async def get_file_preview(
                 os.remove(temp_file_path)
             except Exception as e:
                 print(f"Warning: Failed to cleanup temp file {temp_file_path}: {e}")
+
+
+@router.get("/{file_id}/preview/status")
+async def get_preview_status(
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get the status of background preview generation for a file.
+
+    Returns:
+    - status: 'queued', 'processing', 'ready', 'failed', or 'unknown'
+    - For ready status, the preview can be fetched from the preview endpoint
+    - For queued/processing, the client should retry after the suggested delay
+    """
+    from ..database import get_redis
+
+    redis = await get_redis()
+
+    # First check if preview is already cached (ready)
+    for size in ['small', 'medium', 'large']:
+        cache_key = f"preview:{file_id}:{size}"
+        if await redis.exists(cache_key):
+            return {
+                'status': 'ready',
+                'file_id': file_id,
+                'message': 'Preview is ready'
+            }
+
+    # Check status key
+    status_key = f"preview:status:{file_id}"
+    status_data = await redis.get(status_key)
+
+    if status_data:
+        try:
+            if isinstance(status_data, bytes):
+                status_data = status_data.decode('utf-8')
+            status_info = json.loads(status_data)
+            status = status_info.get('status', 'unknown')
+
+            response = {
+                'status': status,
+                'file_id': file_id,
+            }
+
+            if status == 'queued':
+                response['message'] = 'Preview is queued for generation'
+                response['retry_after'] = 5
+            elif status == 'processing':
+                response['message'] = 'Preview is being generated'
+                response['retry_after'] = 3
+            elif status == 'failed':
+                response['message'] = 'Preview generation failed'
+                response['error'] = status_info.get('error', 'Unknown error')
+            elif status == 'ready':
+                response['message'] = 'Preview is ready'
+
+            return response
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # No status found - preview hasn't been queued or status expired
+    return {
+        'status': 'unknown',
+        'file_id': file_id,
+        'message': 'No preview status found - preview will be generated on first request'
+    }
 
 
 @router.patch("/{file_id}/rename", response_model=FileResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
@@ -1560,7 +1714,7 @@ async def copy_file(
             copy_name = f"{name_part} (Copy {next_num}){ext_part}"
 
         # Generate new encryption key for the copy
-        new_file_key = encryption_service.generate_key()
+        new_file_key = encryption_service.generate_file_key()
         encrypted_new_key = encryption_service.encrypt_key(new_file_key)
 
         # Handle storage based on type
@@ -1568,8 +1722,13 @@ async def copy_file(
         new_object_path = None
 
         if original_file.storage_type == "inline":
-            # For inline storage, copy the encrypted data directly
-            new_storage_key = original_file.storage_key
+            # For inline storage, decrypt and re-encrypt with new key
+            import base64
+            original_file_key = encryption_service.decrypt_key(original_file.encryption_key)
+            original_encrypted_data = base64.b64decode(original_file.storage_key)
+            decrypted_data = encryption_service.decrypt_file(original_encrypted_data, original_file_key)
+            new_encrypted_data = encryption_service.encrypt_file(decrypted_data, new_file_key)
+            new_storage_key = base64.b64encode(new_encrypted_data).decode('utf-8')
 
         elif original_file.storage_type == "single":
             # For single file storage, copy the file on disk

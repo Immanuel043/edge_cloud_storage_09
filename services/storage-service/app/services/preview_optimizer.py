@@ -387,12 +387,11 @@ class PreviewOptimizer:
                     )
 
                 # Standard approach for other files
-                # Read file (partial or complete)
+                # NOTE: For encrypted files, we must read the COMPLETE file for decryption
+                # because GCM encryption requires the full ciphertext to verify the MAC.
+                # After decryption, we can then use only a portion for preview generation.
                 async with aiofiles.open(file_obj.object_path, 'rb') as f:
-                    if is_partial:
-                        encrypted_data = await f.read(max_size)
-                    else:
-                        encrypted_data = await f.read()
+                    encrypted_data = await f.read()  # Always read complete encrypted file
 
                 file_data = encryption_service.decrypt_file(encrypted_data, file_key)
 
@@ -400,8 +399,12 @@ class PreviewOptimizer:
                     from ..utils.compression import compressor
                     file_data = compressor.decompress(file_data)
 
+                # Write only the portion needed for preview if file is large
                 async with aiofiles.open(temp_file_path, 'wb') as f:
-                    await f.write(file_data)
+                    if is_partial:
+                        await f.write(file_data[:max_size])
+                    else:
+                        await f.write(file_data)
 
                 return temp_file_path, not is_partial
 

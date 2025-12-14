@@ -409,6 +409,40 @@ services:
     volumes:
       - /tmp/chunks:/tmp/chunks
 
+  # Preview Processor Worker - Background video preview generation
+  preview-processor:
+    build:
+      context: ../services/storage-service
+      dockerfile: Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "app.workers.preview_worker"]
+    deploy:
+      replicas: 2              # 2 workers for parallel preview generation
+      resources:
+        limits:
+          memory: 2G           # Higher limit for FFmpeg processing
+        reservations:
+          memory: 512M
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MAX_CONCURRENT_PREVIEWS: 2  # Limit concurrent FFmpeg processes per worker
+      STORAGE_ROOT: /app/storage
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      storage-service:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/storage
+      - /tmp/preview_temp:/tmp/preview_temp
+    restart: unless-stopped
+
   # Nginx reverse-proxy
   nginx:
     image: nginx:stable

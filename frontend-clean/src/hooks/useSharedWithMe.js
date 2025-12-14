@@ -28,10 +28,23 @@ export function useSharedWithMe(enabled = true) {
     fetchSharedFiles();
   }, [enabled]);
 
+  const removeSharedAccess = async (shareAccessId) => {
+    try {
+      await storageService.removeSharedAccess(shareAccessId);
+      // Remove from local state
+      setSharedFiles(prev => prev.filter(item => item.id !== shareAccessId));
+      return true;
+    } catch (err) {
+      console.error('Failed to remove shared access:', err);
+      throw err;
+    }
+  };
+
   return {
     sharedFiles,
     loading,
     error,
     refresh: fetchSharedFiles,
+    removeSharedAccess,
   };
 }

@@ -290,6 +290,37 @@ async def get_shared_with_me(
     return shared_items
 
 
+@router.delete("/shared-with-me/{share_access_id}")
+async def remove_shared_access(
+    share_access_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a file/folder from 'Shared with me' (removes your access, not the original file)"""
+    # Find the shared access record
+    result = await db.execute(
+        select(SharedAccess).filter(
+            SharedAccess.id == share_access_id,
+            or_(
+                SharedAccess.shared_with_email == current_user.email,
+                SharedAccess.shared_with_user_id == current_user.id
+            )
+        )
+    )
+    shared_access = result.scalar_one_or_none()
+
+    if not shared_access:
+        raise HTTPException(status_code=404, detail="Shared access not found")
+
+    # Delete the shared access record (this removes it from user's "Shared with me")
+    await db.delete(shared_access)
+    await db.commit()
+
+    logger.info(f"User {current_user.email} removed shared access {share_access_id}")
+
+    return {"success": True, "message": "Removed from Shared with me"}
+
+
 @router.get("/share/{share_token}/info")
 async def get_share_info(
     share_token: str,

@@ -37,7 +37,7 @@ export default function FileGrid({
           onDoubleClick={(e) => {
             // Double click navigates into folder
             e.stopPropagation();
-            onFolderClick(folder.id);
+            onFolderClick(folder.id, folder.name);
           }}
           className={`group p-5 rounded-xl cursor-pointer transition-all border ${
             darkMode

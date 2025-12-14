@@ -64,6 +64,22 @@ class AuthService {
     return await response.json();
   }
 
+  // Version with AbortSignal support for timeout handling
+  async getProfileWithSignal(token, signal) {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/users/profile`, {
+      credentials: 'include',
+      signal  // Pass abort signal for timeout support
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to load profile: ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
   async logout() {
     await rateLimiter.checkLimit();
 

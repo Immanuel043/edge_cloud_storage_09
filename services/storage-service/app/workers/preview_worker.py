@@ -1,0 +1,283 @@
+# services/storage-service/app/workers/preview_worker.py
+"""
+Background Preview Processing Worker
+
+Consumes from 'preview-processing' Kafka topic and generates video previews
+in the background without blocking the main API.
+
+Features:
+- LIFO priority (newest uploads first via timestamp sorting)
+- Reuses existing preview_generator and preview_optimizer
+- Caches results in Redis
+- Updates status for frontend polling
+- Semaphore to limit concurrent FFmpeg processes
+"""
+
+import asyncio
+import json
+import logging
+import os
+import sys
+import signal
+from datetime import datetime
+from typing import Optional
+
+from aiokafka import AIOKafkaConsumer, TopicPartition
+import redis.asyncio as aioredis
+
+# Add parent path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from app.services.preview_generator import preview_generator
+from app.services.preview_optimizer import preview_optimizer
+from app.services.encryption import encryption_service
+from app.database import async_session, get_redis, init_redis
+from app.models.database import Object
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Configuration
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
+KAFKA_TOPIC = 'preview-processing'
+KAFKA_GROUP_ID = 'preview-processors'
+MAX_CONCURRENT_PREVIEWS = int(os.getenv('MAX_CONCURRENT_PREVIEWS', '2'))
+PREVIEW_SIZES = ['small', 'medium', 'large']
+PREVIEW_CACHE_TTL = 604800  # 7 days for videos
+
+
+class PreviewWorker:
+    """
+    Kafka consumer that processes video preview generation requests
+    in the background without blocking the main API.
+    """
+
+    def __init__(self):
+        self.consumer: Optional[AIOKafkaConsumer] = None
+        self.redis: Optional[aioredis.Redis] = None
+        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_PREVIEWS)
+        self.running = True
+        self.pending_tasks: list = []
+
+    async def start(self):
+        """Start the preview worker"""
+        logger.info(f"🚀 Starting Preview Worker...")
+        logger.info(f"   Kafka: {KAFKA_BOOTSTRAP_SERVERS}")
+        logger.info(f"   Topic: {KAFKA_TOPIC}")
+        logger.info(f"   Max concurrent: {MAX_CONCURRENT_PREVIEWS}")
+
+        # Setup signal handlers for graceful shutdown
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self._handle_shutdown)
+
+        try:
+            # Initialize and connect to Redis
+            await init_redis()
+            self.redis = await get_redis()
+            logger.info("✅ Redis connected")
+
+            # Create Kafka consumer
+            self.consumer = AIOKafkaConsumer(
+                KAFKA_TOPIC,
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                group_id=KAFKA_GROUP_ID,
+                auto_offset_reset='earliest',
+                enable_auto_commit=True,
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                # Fetch multiple messages for LIFO sorting
+                max_poll_records=10,
+                fetch_max_wait_ms=1000
+            )
+
+            await self.consumer.start()
+            logger.info("✅ Kafka consumer started")
+
+            # Main processing loop
+            await self._process_loop()
+
+        except Exception as e:
+            logger.error(f"❌ Worker error: {e}")
+            raise
+        finally:
+            await self._cleanup()
+
+    def _handle_shutdown(self):
+        """Handle shutdown signal"""
+        logger.info("🛑 Shutdown signal received...")
+        self.running = False
+
+    async def _cleanup(self):
+        """Cleanup resources"""
+        logger.info("🧹 Cleaning up...")
+
+        # Wait for pending tasks
+        if self.pending_tasks:
+            logger.info(f"   Waiting for {len(self.pending_tasks)} pending tasks...")
+            await asyncio.gather(*self.pending_tasks, return_exceptions=True)
+
+        # Stop consumer
+        if self.consumer:
+            await self.consumer.stop()
+            logger.info("   Kafka consumer stopped")
+
+        logger.info("✅ Cleanup complete")
+
+    async def _process_loop(self):
+        """Main processing loop with LIFO priority"""
+        logger.info("📥 Waiting for preview requests...")
+
+        while self.running:
+            try:
+                # Fetch batch of messages
+                messages = await self.consumer.getmany(timeout_ms=1000, max_records=10)
+
+                if not messages:
+                    continue
+
+                # Flatten all messages
+                all_msgs = []
+                for tp, msgs in messages.items():
+                    all_msgs.extend(msgs)
+
+                if not all_msgs:
+                    continue
+
+                # Sort by timestamp DESC (LIFO - newest first)
+                all_msgs.sort(
+                    key=lambda m: m.value.get('timestamp', ''),
+                    reverse=True
+                )
+
+                logger.info(f"📦 Processing batch of {len(all_msgs)} preview requests (newest first)")
+
+                # Process messages
+                for msg in all_msgs:
+                    if not self.running:
+                        break
+
+                    task = asyncio.create_task(self._process_preview(msg.value))
+                    self.pending_tasks.append(task)
+
+                    # Remove completed tasks
+                    self.pending_tasks = [t for t in self.pending_tasks if not t.done()]
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"❌ Processing loop error: {e}")
+                await asyncio.sleep(1)
+
+    async def _process_preview(self, data: dict):
+        """Process a single preview generation request"""
+        file_id = data.get('file_id')
+        if not file_id:
+            logger.warning("⚠️ Missing file_id in message")
+            return
+
+        logger.info(f"🎬 Processing preview for file {file_id}...")
+
+        # Acquire semaphore to limit concurrent FFmpeg processes
+        async with self.semaphore:
+            try:
+                # Update status to 'processing'
+                await self._set_status(file_id, 'processing')
+
+                # Get file from database
+                async with async_session() as db:
+                    from sqlalchemy import select
+                    result = await db.execute(
+                        select(Object).filter(Object.id == file_id)
+                    )
+                    file_obj = result.scalar_one_or_none()
+
+                    if not file_obj:
+                        logger.warning(f"⚠️ File not found: {file_id}")
+                        await self._set_status(file_id, 'failed', 'File not found')
+                        return
+
+                    # Download file for preview (can take time - that's OK, we're in background!)
+                    logger.info(f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)")
+
+                    temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+                        file_obj=file_obj,
+                        encryption_service=encryption_service
+                    )
+
+                    if not temp_file_path:
+                        logger.error(f"❌ Failed to download file for preview: {file_id}")
+                        await self._set_status(file_id, 'failed', 'Download failed')
+                        return
+
+                    try:
+                        # Generate previews for all sizes
+                        for size in PREVIEW_SIZES:
+                            await self._generate_and_cache_preview(
+                                file_obj, temp_file_path, size
+                            )
+
+                        # Update status to 'ready'
+                        await self._set_status(file_id, 'ready')
+                        logger.info(f"✅ Preview ready for {file_obj.file_name}")
+
+                    finally:
+                        # Cleanup temp file
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            try:
+                                os.remove(temp_file_path)
+                            except Exception as e:
+                                logger.warning(f"Failed to cleanup temp file: {e}")
+
+            except Exception as e:
+                logger.error(f"❌ Preview generation failed for {file_id}: {e}")
+                await self._set_status(file_id, 'failed', str(e)[:200])
+
+    async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str):
+        """Generate preview and cache in Redis"""
+        try:
+            preview_bytes, content_type = await preview_generator.generate_preview(
+                file_path=temp_file_path,
+                mime_type=file_obj.mime_type,
+                size=size,
+                file_name=file_obj.file_name
+            )
+
+            # Cache in Redis
+            cache_key = f"preview:{file_obj.id}:{size}"
+            await self.redis.setex(cache_key, PREVIEW_CACHE_TTL, preview_bytes)
+            logger.info(f"   📦 Cached preview {size} for {file_obj.id}")
+
+        except Exception as e:
+            logger.warning(f"   ⚠️ Failed to generate {size} preview: {e}")
+
+    async def _set_status(self, file_id: str, status: str, error: str = None):
+        """Update preview status in Redis"""
+        status_key = f"preview:status:{file_id}"
+        status_data = {
+            'status': status,
+            'updated_at': datetime.utcnow().isoformat()
+        }
+        if error:
+            status_data['error'] = error
+
+        await self.redis.setex(
+            status_key,
+            3600,  # 1 hour TTL for status
+            json.dumps(status_data)
+        )
+
+
+async def main():
+    """Entry point"""
+    worker = PreviewWorker()
+    await worker.start()
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🎬 Preview Processing Worker")
+    print("=" * 60)
+    asyncio.run(main())

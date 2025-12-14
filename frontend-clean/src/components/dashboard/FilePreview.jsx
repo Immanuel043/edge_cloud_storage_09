@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, ZoomIn, ZoomOut, RotateCw, Download } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Download, Table, FileCode } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
-import { VIDEO_EXTENSIONS } from '../../utils/helpers';
+import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS } from '../../utils/helpers';
 
 export default function FilePreview({ file, onClose, darkMode }) {
   const { isAuthenticated, token } = useAuth();
@@ -10,6 +10,9 @@ export default function FilePreview({ file, onClose, darkMode }) {
   const extension = file.name?.split('.').pop()?.toLowerCase() || '';
   const isVideoFile = mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension);
   const isPdfFile = mimeType === 'application/pdf' || extension === 'pdf';
+  const isExcelFile = mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType === 'text/csv' || EXCEL_EXTENSIONS.includes(extension);
+  const isXmlFile = mimeType.includes('xml') || XML_EXTENSIONS.includes(extension);
+  const isTextFile = mimeType.startsWith('text/') || TEXT_EXTENSIONS.includes(extension);
   const applyToken = (url) => {
     if (!token) return url;
     return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
@@ -353,6 +356,42 @@ export default function FilePreview({ file, onClose, darkMode }) {
               <iframe
                 src={applyToken(`${API_URL}/files/${file.id}/download?inline=true`)}
                 className="w-full h-full rounded-lg"
+                style={{ minHeight: '70vh' }}
+                title={file.name}
+              />
+            </div>
+          ) : isExcelFile ? (
+            <div className={`flex flex-col items-center justify-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-emerald-500/10' : 'bg-emerald-50'}`}>
+                <Table size={64} className="text-emerald-600" />
+              </div>
+              <div>
+                <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  Excel/Spreadsheet File
+                </h3>
+                <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Browser preview is not available for spreadsheet files.<br />
+                  Download the file to view it in Excel or Google Sheets.
+                </p>
+              </div>
+              <a
+                href={downloadLink}
+                download={file.name}
+                className={`inline-flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-colors ${
+                  darkMode
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                }`}
+              >
+                <Download size={20} />
+                Download Spreadsheet
+              </a>
+            </div>
+          ) : isXmlFile || isTextFile ? (
+            <div className="w-full h-full min-h-[70vh]">
+              <iframe
+                src={applyToken(`${API_URL}/files/${file.id}/download?inline=true`)}
+                className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
                 style={{ minHeight: '70vh' }}
                 title={file.name}
               />
