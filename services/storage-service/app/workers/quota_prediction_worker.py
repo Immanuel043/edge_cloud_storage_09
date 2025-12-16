@@ -95,8 +95,6 @@ class QuotaPredictionWorker:
                     except Exception as e:
                         logger.error(f"Error in quota prediction worker cycle: {e}", exc_info=True)
                         await db.rollback()
-                    finally:
-                        break  # Exit the async generator
 
                 # Update metrics
                 metrics_collector.increment_counter('quota_prediction_worker_cycles_total')

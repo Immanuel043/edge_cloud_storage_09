@@ -72,7 +72,7 @@ async def get_storage_analysis(
                     logger.info(f"Returning cached analysis for user {current_user.id}")
                     metrics_collector.increment_counter('storage_analysis_cache_hits_total')
 
-                    return await self._build_analysis_response(existing_analysis)
+                    return await _build_analysis_response(existing_analysis)
 
         # Generate new analysis
         logger.info(f"Generating new storage analysis for user {current_user.id}")
@@ -103,7 +103,7 @@ async def get_storage_analysis(
         logger.info(f"Generated storage analysis for user {current_user.id}")
         metrics_collector.increment_counter('storage_analyses_completed_total')
 
-        return await self._build_analysis_response(analysis)
+        return await _build_analysis_response(analysis)
 
     except HTTPException:
         raise

@@ -14,6 +14,8 @@ import SharedWithMeView from './SharedWithMeView';
 import TrashView from './TrashView';
 import AnalyticsView from './AnalyticsView';
 import DeduplicationPanel from './DeduplicationPanel';
+import AutoOrganizeView from './AutoOrganizeView';
+import RecommendationsView from './RecommendationsView';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
@@ -652,6 +654,31 @@ export default function Dashboard() {
         );
 
       case 'analytics':
+        return (
+          <AnalyticsView
+            darkMode={darkMode}
+            storageStats={storageStats}
+          />
+        );
+
+      case 'auto-organize':
+        return (
+          <AutoOrganizeView
+            darkMode={darkMode}
+            onNavigate={navigateToFolder}
+          />
+        );
+
+      case 'recommendations':
+        return (
+          <RecommendationsView
+            darkMode={darkMode}
+            onFileClick={setPreviewFile}
+          />
+        );
+
+      case 'quota-alerts':
+      case 'storage-optimization':
         return (
           <AnalyticsView
             darkMode={darkMode}

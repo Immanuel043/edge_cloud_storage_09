@@ -127,6 +127,8 @@ transformers==4.35.2
 torch==2.1.1
 torchvision==0.16.1
 sentencepiece==0.1.99  # Required by some transformers models
+sentence-transformers==2.7.0  # Semantic search embeddings (all-MiniLM-L6-v2)
+huggingface_hub>=0.23.0  # Required by sentence-transformers
 
 # -----------------------------------------------------------------------------
 # Development Dependencies (install separately with requirements-dev.txt)

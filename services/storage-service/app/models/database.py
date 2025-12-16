@@ -987,6 +987,52 @@ class FileSimilarity(Base):
     )
 
 
+# ============================================================================
+# ML FEATURES - SEMANTIC SEARCH EMBEDDINGS
+# ============================================================================
+
+class FileEmbedding(Base):
+    """Store semantic embeddings for files (for AI-powered search)"""
+    __tablename__ = 'file_embeddings'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Embedding data stored as binary (384 floats * 4 bytes = 1536 bytes for all-MiniLM-L6-v2)
+    embedding = Column(LargeBinary, nullable=False)
+    embedding_dim = Column(Integer, default=384)  # Dimension of the embedding vector
+
+    # Model versioning for future upgrades
+    model_name = Column(String(100), default='all-MiniLM-L6-v2')
+    model_version = Column(String(50), default='1.0')
+
+    # Source text metadata
+    source_text_hash = Column(String(64))  # SHA256 hash to detect changes
+    source_type = Column(String(50), default='filename')  # 'filename', 'content', 'tags', 'combined'
+
+    # Processing status
+    status = Column(String(20), default='pending')  # 'pending', 'processing', 'completed', 'failed'
+    error_message = Column(Text)
+
+    # Timestamps
+    computed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    file = relationship('Object', backref='embeddings')
+    user = relationship('User', backref='file_embeddings')
+
+    __table_args__ = (
+        Index('idx_file_embedding_file_id', 'file_id'),
+        Index('idx_file_embedding_user_id', 'user_id'),
+        Index('idx_file_embedding_status', 'status'),
+        Index('idx_file_embedding_model', 'model_name'),
+        UniqueConstraint('file_id', 'source_type', name='unique_file_embedding_source')
+    )
+
+
 class UserInteraction(Base):
     """Track user interactions with files for collaborative filtering"""
     __tablename__ = 'user_interactions'

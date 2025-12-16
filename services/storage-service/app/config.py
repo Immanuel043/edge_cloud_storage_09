@@ -104,6 +104,22 @@ class Settings:
     ML_CPU_THREADS: int = int(os.getenv("ML_CPU_THREADS", 32))  # 16C/32T
     ML_BATCH_SIZE: int = int(os.getenv("ML_BATCH_SIZE", 100))  # Batch processing size
 
+    # Semantic Search Configuration
+    SEMANTIC_SEARCH_ENABLED: bool = os.getenv("SEMANTIC_SEARCH_ENABLED", "true").lower() == "true"
+    SEMANTIC_MODEL_NAME: str = os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2")
+    SEMANTIC_EMBEDDING_DIM: int = int(os.getenv("SEMANTIC_EMBEDDING_DIM", 384))
+    SEMANTIC_CACHE_TTL: int = int(os.getenv("SEMANTIC_CACHE_TTL", 604800))  # 7 days
+    SEMANTIC_BATCH_SIZE: int = int(os.getenv("SEMANTIC_BATCH_SIZE", 100))
+    SEMANTIC_SEARCH_TOP_K: int = int(os.getenv("SEMANTIC_SEARCH_TOP_K", 50))
+    SEMANTIC_MIN_SCORE: float = float(os.getenv("SEMANTIC_MIN_SCORE", 0.3))
+
+    # Hybrid Search Weights (keyword + semantic)
+    HYBRID_KEYWORD_WEIGHT: float = float(os.getenv("HYBRID_KEYWORD_WEIGHT", 0.4))
+    HYBRID_SEMANTIC_WEIGHT: float = float(os.getenv("HYBRID_SEMANTIC_WEIGHT", 0.6))
+
+    # Kafka Configuration
+    KAFKA_BROKERS: str = os.getenv("KAFKA_BROKERS", "localhost:9092")
+
     # OAuth Configuration
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")

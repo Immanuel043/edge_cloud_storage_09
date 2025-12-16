@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, X, Filter, Loader2 } from 'lucide-react';
+import { Search, X, Filter, Loader2, Sparkles, Zap } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1';
 
@@ -9,6 +9,9 @@ export default function SearchBar({ onSearch, darkMode }) {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [smartSearchEnabled, setSmartSearchEnabled] = useState(true); // AI-powered search
+  const [searchMode, setSearchMode] = useState('hybrid'); // 'semantic', 'keyword', 'hybrid'
+  const [smartSearchStatus, setSmartSearchStatus] = useState(null);
   const [filters, setFilters] = useState({
     mime_type: '',
     storage_tier: '',
@@ -31,6 +34,28 @@ export default function SearchBar({ onSearch, darkMode }) {
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Fetch smart search status on mount
+  useEffect(() => {
+    const fetchSmartSearchStatus = async () => {
+      try {
+        const response = await fetch(`${API_URL}/search/smart/status`, {
+          credentials: 'include'
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setSmartSearchStatus(data);
+          // Auto-disable smart search if not available
+          if (!data.semantic_enabled) {
+            setSmartSearchEnabled(false);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch smart search status:', error);
+      }
+    };
+    fetchSmartSearchStatus();
   }, []);
 
   // Fetch autocomplete suggestions
@@ -81,26 +106,45 @@ export default function SearchBar({ onSearch, darkMode }) {
     setShowSuggestions(false);
 
     try {
-      const response = await fetch(`${API_URL}/search/`, {
+      // Use smart search endpoint if enabled, otherwise use regular search
+      const endpoint = smartSearchEnabled ? `${API_URL}/search/smart` : `${API_URL}/search/`;
+
+      const requestBody = smartSearchEnabled
+        ? {
+            query: searchQuery,
+            filters: Object.fromEntries(
+              Object.entries(filters).filter(([_, v]) => v !== '')
+            ),
+            size: 50,
+            page: 1,
+            mode: searchMode // 'semantic', 'keyword', or 'hybrid'
+          }
+        : {
+            query: searchQuery,
+            filters: Object.fromEntries(
+              Object.entries(filters).filter(([_, v]) => v !== '')
+            ),
+            size: 50,
+            page: 1,
+            fuzzy: true
+          };
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         credentials: 'include',
-        body: JSON.stringify({
-          query: searchQuery,
-          filters: Object.fromEntries(
-            Object.entries(filters).filter(([_, v]) => v !== '')
-          ),
-          size: 50,
-          page: 1,
-          fuzzy: true
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (response.ok) {
         const data = await response.json();
-        onSearch(data.results);
+        // Smart search returns results directly, regular search has nested structure
+        const results = smartSearchEnabled
+          ? { files: { hits: data.results, total: data.total }, mode: data.mode, semantic_enabled: data.semantic_enabled }
+          : data.results;
+        onSearch(results);
       }
     } catch (error) {
       console.error('Search failed:', error);
@@ -171,6 +215,23 @@ export default function SearchBar({ onSearch, darkMode }) {
             </button>
           )}
 
+          {/* Smart Search Toggle */}
+          <button
+            onClick={() => setSmartSearchEnabled(!smartSearchEnabled)}
+            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
+              smartSearchEnabled
+                ? 'bg-purple-500 text-white'
+                : darkMode
+                  ? 'hover:bg-gray-700 text-gray-400'
+                  : 'hover:bg-gray-200 text-gray-600'
+            }`}
+            title={smartSearchEnabled ? 'AI Smart Search enabled (click to disable)' : 'Enable AI Smart Search'}
+            disabled={smartSearchStatus && !smartSearchStatus.semantic_enabled}
+          >
+            <Sparkles size={16} />
+            {smartSearchEnabled && <span className="text-xs font-medium hidden sm:inline">AI</span>}
+          </button>
+
           <button
             onClick={() => setShowFilters(!showFilters)}
             className={`p-1.5 rounded transition-colors ${
@@ -225,6 +286,67 @@ export default function SearchBar({ onSearch, darkMode }) {
               Clear All
             </button>
           </div>
+
+          {/* Smart Search Mode Selector */}
+          {smartSearchEnabled && smartSearchStatus?.semantic_enabled && (
+            <div className={`mb-4 p-3 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-purple-50'}`}>
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles size={16} className="text-purple-500" />
+                <span className={`text-sm font-medium ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                  AI Search Mode
+                </span>
+                {smartSearchStatus?.coverage_percent !== undefined && (
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${darkMode ? 'bg-gray-600 text-gray-300' : 'bg-purple-100 text-purple-600'}`}>
+                    {smartSearchStatus.coverage_percent}% indexed
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSearchMode('hybrid')}
+                  className={`flex-1 px-3 py-1.5 text-xs rounded transition-colors ${
+                    searchMode === 'hybrid'
+                      ? 'bg-purple-500 text-white'
+                      : darkMode
+                        ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                  }`}
+                  title="Best of both: combines keyword and semantic search"
+                >
+                  <Zap size={12} className="inline mr-1" />
+                  Hybrid
+                </button>
+                <button
+                  onClick={() => setSearchMode('semantic')}
+                  className={`flex-1 px-3 py-1.5 text-xs rounded transition-colors ${
+                    searchMode === 'semantic'
+                      ? 'bg-purple-500 text-white'
+                      : darkMode
+                        ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                  }`}
+                  title="Find files by meaning (e.g., 'vacation photos')"
+                >
+                  <Sparkles size={12} className="inline mr-1" />
+                  Semantic
+                </button>
+                <button
+                  onClick={() => setSearchMode('keyword')}
+                  className={`flex-1 px-3 py-1.5 text-xs rounded transition-colors ${
+                    searchMode === 'keyword'
+                      ? 'bg-purple-500 text-white'
+                      : darkMode
+                        ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                  }`}
+                  title="Traditional exact keyword matching"
+                >
+                  <Search size={12} className="inline mr-1" />
+                  Keyword
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             {/* File Type */}

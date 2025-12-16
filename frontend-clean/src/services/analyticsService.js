@@ -127,7 +127,7 @@ class AnalyticsService {
    * @returns {Promise<Object>} Storage analysis data
    */
   async getStorageAnalysis() {
-    const response = await fetch(`${API_URL}/api/v1/storage-optimization/analysis`, {
+    const response = await fetch(`${API_URL}/api/v1/storage/optimization/analysis`, {
       credentials: 'include'
     });
 
@@ -143,7 +143,7 @@ class AnalyticsService {
    * @returns {Promise<Array>} List of suggestions
    */
   async getOptimizationSuggestions() {
-    const response = await fetch(`${API_URL}/api/v1/storage-optimization/suggestions`, {
+    const response = await fetch(`${API_URL}/api/v1/storage/optimization/suggestions`, {
       credentials: 'include'
     });
 
@@ -159,7 +159,7 @@ class AnalyticsService {
    * @returns {Promise<Object>} Optimization summary
    */
   async getOptimizationSummary() {
-    const response = await fetch(`${API_URL}/api/v1/storage-optimization/summary`, {
+    const response = await fetch(`${API_URL}/api/v1/storage/optimization/summary`, {
       credentials: 'include'
     });
 
@@ -177,7 +177,7 @@ class AnalyticsService {
    */
   async dismissSuggestion(suggestionId) {
     const response = await fetch(
-      `${API_URL}/api/v1/storage-optimization/suggestions/${suggestionId}/dismiss`,
+      `${API_URL}/api/v1/storage/optimization/suggestions/${suggestionId}/dismiss`,
       {
         method: 'POST',
         credentials: 'include'
@@ -196,7 +196,7 @@ class AnalyticsService {
    * @returns {Promise<Object>} Analysis result
    */
   async triggerAnalysis() {
-    const response = await fetch(`${API_URL}/api/v1/storage-optimization/trigger-analysis`, {
+    const response = await fetch(`${API_URL}/api/v1/storage/optimization/trigger-analysis`, {
       method: 'POST',
       credentials: 'include'
     });

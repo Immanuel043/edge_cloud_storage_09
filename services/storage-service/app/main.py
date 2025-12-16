@@ -348,6 +348,7 @@ async def health_check():
         "auto_organization": settings.AUTO_ORGANIZATION_ENABLED,
         "storage_optimization": settings.STORAGE_OPTIMIZATION_ENABLED,
         "content_recommendations": settings.CONTENT_RECOMMENDATIONS_ENABLED,
+        "semantic_search": settings.SEMANTIC_SEARCH_ENABLED,
     }
 
     return health_status

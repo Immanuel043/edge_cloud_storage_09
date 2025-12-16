@@ -940,6 +940,52 @@ async def complete_upload(
             logger.error(f"Failed to queue video preview for {session['name']}: {e}")
             # Non-fatal - preview can still be generated on-demand
 
+    # ============ SEMANTIC EMBEDDING QUEUEING (BACKGROUND) ============
+    # Queue file for semantic embedding generation (for AI-powered search)
+    if settings.SEMANTIC_SEARCH_ENABLED:
+        try:
+            producer = await get_kafka_producer()
+            if producer:
+                await producer.send_and_wait(
+                    'embedding-processing',
+                    {
+                        'file_id': str(file_id),
+                        'user_id': str(current_user.id),
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'file_name': session['name'],
+                        'mime_type': mime_type,
+                        'tags': session.get('tags', []),
+                        'description': session.get('description', ''),
+                        'ai_tags': []  # Will be populated by AI tagging service
+                    }
+                )
+                logger.debug(f"🧠 Queued file for semantic embedding: {session['name']}")
+        except Exception as e:
+            logger.warning(f"Failed to queue embedding for {session['name']}: {e}")
+            # Non-fatal - embedding can still be generated on-demand
+
+    # ============ FILE ANALYSIS QUEUEING (BACKGROUND) ============
+    # Queue file for AI analysis (OCR, metadata, auto-tagging)
+    if settings.ML_FEATURES_ENABLED:
+        try:
+            producer = await get_kafka_producer()
+            if producer:
+                await producer.send_and_wait(
+                    'file-analysis',
+                    {
+                        'file_id': str(file_id),
+                        'user_id': str(current_user.id),
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'file_name': session['name'],
+                        'mime_type': mime_type,
+                        'file_size': session['size']
+                    }
+                )
+                logger.debug(f"🏷️ Queued file for AI analysis: {session['name']}")
+        except Exception as e:
+            logger.warning(f"Failed to queue analysis for {session['name']}: {e}")
+            # Non-fatal - analysis can still be triggered manually
+
     # Index file in Elasticsearch (fire and forget)
     asyncio.create_task(
         search_service.index_file({

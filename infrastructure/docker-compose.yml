@@ -443,6 +443,73 @@ services:
       - /tmp/preview_temp:/tmp/preview_temp
     restart: unless-stopped
 
+  # Embedding Processor Worker - Background semantic embedding generation
+  embedding-processor:
+    build:
+      context: ../services/storage-service
+      dockerfile: Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "app.workers.embedding_worker"]
+    deploy:
+      replicas: 1              # 1 worker is enough for embeddings (model is single-threaded)
+      resources:
+        limits:
+          memory: 2G           # Memory for sentence-transformers model
+        reservations:
+          memory: 1G
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SEMANTIC_SEARCH_ENABLED: "true"
+      SEMANTIC_MODEL_NAME: all-MiniLM-L6-v2
+      EMBEDDING_BATCH_SIZE: 10
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # File Analysis Processor Worker - Background AI tagging, OCR, metadata extraction
+  file-analysis-processor:
+    build:
+      context: ../services/storage-service
+      dockerfile: Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "app.workers.file_analysis_worker"]
+    deploy:
+      replicas: 1              # 1 worker for AI analysis (GPU-bound if available)
+      resources:
+        limits:
+          memory: 4G           # Higher memory for ViT, BART, OCR models
+        reservations:
+          memory: 2G
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      STORAGE_ROOT: /app/storage
+      ML_FEATURES_ENABLED: "true"
+      # AI Analysis settings
+      AI_TAGGING_ENABLED: "true"
+      OCR_ENABLED: "true"
+      METADATA_EXTRACTION_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      storage-service:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/storage
+    restart: unless-stopped
+
   # Nginx reverse-proxy
   nginx:
     image: nginx:stable

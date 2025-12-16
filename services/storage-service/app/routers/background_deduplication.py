@@ -34,6 +34,11 @@ class BackgroundDeduplicationService:
         self.gc_task = None
         self.active_jobs = {}  # Track currently processing jobs
 
+    @property
+    def worker_task(self):
+        """Alias for gc_task to support health check compatibility"""
+        return self.gc_task
+
     async def start(self):
         """Start smart queue and garbage collection"""
         # Start smart queue (replaces old worker)

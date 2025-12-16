@@ -1,22 +1,40 @@
 import React from 'react';
-import { File, Folder, X, FileText, Image, Video, Archive } from 'lucide-react';
+import { File, Folder, X, FileText, Image, Video, Archive, Sparkles, Zap, Search as SearchIcon } from 'lucide-react';
 import { formatBytes, formatDate } from '../../utils/helpers';
 
 export default function SearchResults({ results, onClose, onFileClick, onFolderClick, darkMode }) {
   if (!results) return null;
 
+  // Check if this is a smart search result (has mode property)
+  const isSmartSearch = results.mode !== undefined;
+  const searchMode = results.mode || 'keyword';
+  const semanticEnabled = results.semantic_enabled !== false;
+
   // Minimum relevance threshold (25% of max score) to filter out irrelevant results
   const RELEVANCE_THRESHOLD = 0.25;
 
+  // Get the appropriate score based on search mode
+  const getScore = (item) => {
+    if (item.hybrid_score !== undefined) return item.hybrid_score;
+    if (item.semantic_score !== undefined) return item.semantic_score;
+    return item.score || 0;
+  };
+
   // Calculate max score for normalization (highest score = 100%)
   const maxScore = Math.max(
-    ...(results.files?.hits?.map(f => f.score) || [0]),
-    ...(results.folders?.hits?.map(f => f.score) || [0])
+    ...(results.files?.hits?.map(f => getScore(f)) || [0]),
+    ...(results.folders?.hits?.map(f => getScore(f)) || [0]),
+    1 // Ensure at least 1 for semantic scores which are already 0-1
   );
 
+  // For semantic/hybrid search, scores are 0-1, so threshold differently
+  const effectiveThreshold = isSmartSearch && (searchMode === 'semantic' || searchMode === 'hybrid')
+    ? 0.2  // 20% minimum for semantic scores
+    : maxScore * RELEVANCE_THRESHOLD;
+
   // Filter out low-relevance results (below threshold)
-  const filteredFiles = results.files?.hits?.filter(f => f.score >= maxScore * RELEVANCE_THRESHOLD) || [];
-  const filteredFolders = results.folders?.hits?.filter(f => f.score >= maxScore * RELEVANCE_THRESHOLD) || [];
+  const filteredFiles = results.files?.hits?.filter(f => getScore(f) >= effectiveThreshold) || [];
+  const filteredFolders = results.folders?.hits?.filter(f => getScore(f) >= effectiveThreshold) || [];
 
   const totalFiles = filteredFiles.length;
   const totalFolders = filteredFolders.length;
@@ -24,9 +42,28 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
 
   // Normalize score to percentage (0-100) relative to max score
   const normalizeScore = (score) => {
-    if (!score || !maxScore) return 0;
+    if (!score) return 0;
+    // For semantic/hybrid scores (0-1 range), multiply by 100
+    if (isSmartSearch && (searchMode === 'semantic' || searchMode === 'hybrid')) {
+      return Math.round(score * 100);
+    }
+    if (!maxScore) return 0;
     return Math.round((score / maxScore) * 100);
   };
+
+  // Get search mode display info
+  const getModeInfo = () => {
+    switch (searchMode) {
+      case 'semantic':
+        return { icon: <Sparkles size={14} className="text-purple-500" />, label: 'Semantic', color: 'purple' };
+      case 'hybrid':
+        return { icon: <Zap size={14} className="text-blue-500" />, label: 'Hybrid', color: 'blue' };
+      default:
+        return { icon: <SearchIcon size={14} className="text-gray-500" />, label: 'Keyword', color: 'gray' };
+    }
+  };
+
+  const modeInfo = getModeInfo();
 
   const getFileIcon = (mimeType) => {
     if (!mimeType) return <File size={20} />;
@@ -59,9 +96,23 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
         darkMode ? 'border-gray-700' : 'border-gray-200'
       }`}>
         <div>
-          <h3 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            Search Results
-          </h3>
+          <div className="flex items-center gap-2">
+            <h3 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              Search Results
+            </h3>
+            {isSmartSearch && (
+              <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${
+                modeInfo.color === 'purple'
+                  ? darkMode ? 'bg-purple-900/30 text-purple-400' : 'bg-purple-100 text-purple-600'
+                  : modeInfo.color === 'blue'
+                    ? darkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'
+                    : darkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-100 text-gray-600'
+              }`}>
+                {modeInfo.icon}
+                {modeInfo.label}
+              </span>
+            )}
+          </div>
           <p className={`text-sm mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
             {totalResults} result{totalResults !== 1 ? 's' : ''} found
             {totalFiles > 0 && ` (${totalFiles} file${totalFiles !== 1 ? 's' : ''})`}
@@ -154,11 +205,16 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
                     )}
                   </div>
                 </div>
-                {file.score && (
-                  <div className={`text-xs px-2 py-1 rounded ${
-                    darkMode ? 'bg-blue-900/20 text-blue-400' : 'bg-blue-50 text-blue-600'
+                {getScore(file) > 0 && (
+                  <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
+                    file.semantic_score !== undefined || file.hybrid_score !== undefined
+                      ? darkMode ? 'bg-purple-900/20 text-purple-400' : 'bg-purple-50 text-purple-600'
+                      : darkMode ? 'bg-blue-900/20 text-blue-400' : 'bg-blue-50 text-blue-600'
                   }`}>
-                    {normalizeScore(file.score)}% match
+                    {(file.semantic_score !== undefined || file.hybrid_score !== undefined) && (
+                      <Sparkles size={12} />
+                    )}
+                    {normalizeScore(getScore(file))}%
                   </div>
                 )}
               </div>

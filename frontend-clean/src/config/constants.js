@@ -122,7 +122,7 @@ export const ZK_FEATURES = Object.freeze({
   ENABLED: import.meta.env.VITE_ZK_ENABLED !== 'false', // ZK encryption available
   REQUIRED: import.meta.env.VITE_ZK_REQUIRED === 'true', // Force ZK for all users
   RECOVERY_PHRASE: true, // BIP39 recovery phrase support
-  HARDWARE_KEYS: false, // Hardware key support (future)
+  HARDWARE_KEYS: true, // Hardware key support (FIDO2/WebAuthn) - ENABLED
   SOCIAL_RECOVERY: false, // Social recovery (future)
   BIOMETRIC_UNLOCK: false, // Biometric unlock (future)
 });
