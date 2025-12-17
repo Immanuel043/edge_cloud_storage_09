@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Shield, Key, AlertCircle, RefreshCw, Check, X } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Shield, Key, AlertCircle, RefreshCw, Check, X, Eye, EyeOff } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 
 /**
@@ -18,6 +18,13 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [recovered, setRecovered] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // Refs for focus management
+  const emailRef = useRef(null);
+  const phraseRef = useRef(null);
+  const newPasswordRef = useRef(null);
 
   if (!isOpen) return null;
 
@@ -163,9 +170,13 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
               </div>
 
               {error && (
-                <div className={`mb-6 p-4 rounded-xl border-2 ${
-                  darkMode ? 'bg-red-900/20 border-red-600/40' : 'bg-red-50 border-red-400'
-                }`}>
+                <div
+                  role="alert"
+                  aria-live="polite"
+                  className={`mb-6 p-4 rounded-xl border-2 ${
+                    darkMode ? 'bg-red-900/20 border-red-600/40' : 'bg-red-50 border-red-400'
+                  }`}
+                >
                   <div className="flex items-center gap-3">
                     <AlertCircle className="text-red-500 flex-shrink-0" size={20} />
                     <p className={`text-sm font-medium ${darkMode ? 'text-red-300' : 'text-red-800'}`}>
@@ -179,16 +190,22 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
               {step === 1 && (
                 <form onSubmit={handlePhraseSubmit} className="space-y-4">
                   <div>
-                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <label
+                      htmlFor="recovery-email"
+                      className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
                       Email Address
                     </label>
                     <input
+                      ref={emailRef}
+                      id="recovery-email"
                       type="email"
                       placeholder="you@example.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       required
                       autoFocus
+                      aria-label="Email address for account recovery"
                       className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
                         darkMode
                           ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
@@ -198,22 +215,29 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                   </div>
 
                   <div>
-                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <label
+                      htmlFor="recovery-phrase"
+                      className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
                       24-Word Recovery Phrase
                     </label>
                     <textarea
+                      ref={phraseRef}
+                      id="recovery-phrase"
                       placeholder="word1 word2 word3 ... word24"
                       value={recoveryPhrase}
                       onChange={(e) => setRecoveryPhrase(e.target.value)}
                       required
                       rows={4}
+                      aria-label="24-word recovery phrase"
+                      aria-describedby="phrase-count"
                       className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm ${
                         darkMode
                           ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
                           : 'bg-gray-50 border border-gray-300 focus:bg-white'
                       }`}
                     />
-                    <p className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                    <p id="phrase-count" className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                       {recoveryPhrase.trim().split(/\s+/).filter(w => w).length} / 24 words entered
                     </p>
                   </div>
@@ -231,7 +255,10 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
               {step === 2 && (
                 <form onSubmit={handlePasswordSubmit} className="space-y-4">
                   <div>
-                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <label
+                      htmlFor="newPassword"
+                      className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
                       New Password
                     </label>
                     <div className="relative">
@@ -239,7 +266,9 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                         <Key className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={18} />
                       </div>
                       <input
-                        type="password"
+                        ref={newPasswordRef}
+                        id="newPassword"
+                        type={showNewPassword ? 'text' : 'password'}
                         placeholder="Enter new password (min 8 characters)"
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
@@ -247,17 +276,32 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                         required
                         minLength={8}
                         autoFocus
-                        className={`w-full pl-11 pr-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
+                        aria-label="New password"
+                        className={`w-full pl-11 pr-12 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
                           darkMode
                             ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
                             : 'bg-gray-50 border border-gray-300 focus:bg-white'
                         } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword(!showNewPassword)}
+                        disabled={loading}
+                        className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded transition-colors ${
+                          darkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'
+                        } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
                     </div>
                   </div>
 
                   <div>
-                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <label
+                      htmlFor="confirmNewPassword"
+                      className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
                       Confirm New Password
                     </label>
                     <div className="relative">
@@ -265,20 +309,39 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                         <Key className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={18} />
                       </div>
                       <input
-                        type="password"
+                        id="confirmNewPassword"
+                        type={showConfirmPassword ? 'text' : 'password'}
                         placeholder="Re-enter new password"
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         disabled={loading}
                         required
                         minLength={8}
-                        className={`w-full pl-11 pr-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
+                        aria-label="Confirm new password"
+                        className={`w-full pl-11 pr-12 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
                           darkMode
                             ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
                             : 'bg-gray-50 border border-gray-300 focus:bg-white'
                         } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        disabled={loading}
+                        className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded transition-colors ${
+                          darkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'
+                        } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
                     </div>
+                    {/* Password match indicator */}
+                    {confirmPassword && newPassword === confirmPassword && (
+                      <p className="mt-1 text-sm text-green-500 flex items-center gap-1">
+                        <Check size={14} /> Passwords match
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex gap-3">

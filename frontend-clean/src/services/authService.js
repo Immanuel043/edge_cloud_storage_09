@@ -129,6 +129,76 @@ class AuthService {
 
     return await response.json();
   }
+
+  // ==================== OAuth Methods ====================
+
+  /**
+   * Get list of available OAuth providers
+   * @returns {Promise<Array>} List of configured providers
+   */
+  async getOAuthProviders() {
+    const response = await fetch(`${API_URL}/auth/oauth/providers`, {
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get OAuth providers');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Initiate OAuth login flow
+   * Redirects user to the OAuth provider's login page
+   * @param {string} provider - 'google', 'microsoft', or 'github'
+   */
+  initiateOAuthLogin(provider) {
+    // Redirect to OAuth login endpoint - backend handles the OAuth flow
+    window.location.href = `${API_URL}/auth/oauth/${provider}/login`;
+  }
+
+  /**
+   * Get user's linked OAuth accounts
+   * @returns {Promise<Array>} List of linked OAuth accounts
+   */
+  async getLinkedAccounts() {
+    const response = await fetch(`${API_URL}/auth/linked-accounts`, {
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get linked accounts');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Link OAuth provider to existing account
+   * @param {string} provider - OAuth provider name
+   */
+  linkOAuthAccount(provider) {
+    window.location.href = `${API_URL}/auth/oauth/${provider}/link`;
+  }
+
+  /**
+   * Unlink OAuth provider from account
+   * @param {string} provider - OAuth provider name
+   * @returns {Promise<Object>} Result of unlink operation
+   */
+  async unlinkOAuthAccount(provider) {
+    const response = await fetch(`${API_URL}/auth/oauth/${provider}/unlink`, {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to unlink OAuth account');
+    }
+
+    return await response.json();
+  }
 }
 
 export const authService = new AuthService();

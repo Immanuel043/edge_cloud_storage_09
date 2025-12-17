@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sun, Moon, Cloud, Shield, Zap, Database, Lock, Upload, Download, Eye, ChevronRight, Check, Sparkles, Search, FileText, Copy, History, Share2, Scan, Gauge, RefreshCw, TrendingUp, Activity, Globe, Award } from 'lucide-react';
+import { Sun, Moon, Cloud, Shield, Zap, Database, Lock, Upload, Download, Eye, EyeOff, ChevronRight, Check, Sparkles, Search, FileText, Copy, History, Share2, Scan, Gauge, RefreshCw, TrendingUp, Activity, Globe, Award, Info, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { validateEmail, validatePassword, sanitizeInput } from '../../utils/security';
+import { validateEmail, validatePassword, sanitizeInput, validatePasswordStrength } from '../../utils/security';
+import { authService } from '../../services/authService';
 import RecoveryPhraseSetup from './RecoveryPhraseSetup';
 import RecoveryPhraseConfirm from './RecoveryPhraseConfirm';
 import RecoveryModal from './RecoveryModal';
+import PasswordStrengthMeter from './PasswordStrengthMeter';
 
 export default function AuthPage() {
   const navigate = useNavigate();
@@ -23,30 +25,97 @@ export default function AuthPage() {
   const [showRecoverySetup, setShowRecoverySetup] = useState(false);
   const [showRecoveryConfirm, setShowRecoveryConfirm] = useState(false);
 
+  // New state for improvements
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState(null);
+  const [showZkTooltip, setShowZkTooltip] = useState(false);
+
+  // Refs for focus management
+  const emailRef = useRef(null);
+  const passwordRef = useRef(null);
+  const usernameRef = useRef(null);
+  const confirmPasswordRef = useRef(null);
+
   const [formData, setFormData] = useState({
     email: '',
     password: '',
+    confirmPassword: '',
     username: '',
     userType: 'individual'
   });
 
+  // Password strength calculation
+  const passwordStrength = formData.password ? validatePasswordStrength(formData.password) : null;
+
+  // Lockout timer effect
+  useEffect(() => {
+    if (lockoutUntil) {
+      const timer = setInterval(() => {
+        if (Date.now() >= lockoutUntil) {
+          setLockoutUntil(null);
+          setFailedAttempts(0);
+        }
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [lockoutUntil]);
+
+  // Calculate remaining lockout time
+  const getLockoutRemaining = useCallback(() => {
+    if (!lockoutUntil) return 0;
+    return Math.max(0, Math.ceil((lockoutUntil - Date.now()) / 1000));
+  }, [lockoutUntil]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setFieldErrors({});
 
+    // Check lockout
+    if (lockoutUntil && Date.now() < lockoutUntil) {
+      setError(`Too many failed attempts. Please wait ${getLockoutRemaining()} seconds.`);
+      return;
+    }
+
+    // Validate email
     if (!validateEmail(formData.email)) {
-      setError('Please enter a valid email address');
+      setFieldErrors(prev => ({ ...prev, email: 'Please enter a valid email address' }));
+      emailRef.current?.focus();
       return;
     }
 
+    // Validate password
     if (!validatePassword(formData.password)) {
-      setError('Password must be at least 8 characters');
+      setFieldErrors(prev => ({ ...prev, password: 'Password must be at least 8 characters' }));
+      passwordRef.current?.focus();
       return;
     }
 
-    if (authMode === 'register' && formData.username.length < 3) {
-      setError('Username must be at least 3 characters');
-      return;
+    // Registration-specific validation
+    if (authMode === 'register') {
+      if (formData.username.length < 3) {
+        setFieldErrors(prev => ({ ...prev, username: 'Username must be at least 3 characters' }));
+        usernameRef.current?.focus();
+        return;
+      }
+
+      // Check password strength for registration
+      if (passwordStrength && !passwordStrength.isValid) {
+        setFieldErrors(prev => ({ ...prev, password: 'Password does not meet strength requirements' }));
+        passwordRef.current?.focus();
+        return;
+      }
+
+      // Check confirm password
+      if (formData.password !== formData.confirmPassword) {
+        setFieldErrors(prev => ({ ...prev, confirmPassword: 'Passwords do not match' }));
+        confirmPasswordRef.current?.focus();
+        return;
+      }
     }
 
     setLoading(true);
@@ -58,8 +127,9 @@ export default function AuthPage() {
         if (enableZK) {
           await loginZK(formData.email, formData.password);
         } else {
-          await login(formData.email, formData.password);
+          await login(formData.email, formData.password, rememberMe);
         }
+        setFailedAttempts(0); // Reset on success
         navigate('/');
       } else {
         // Registration: use ZK if checkbox is checked
@@ -87,6 +157,18 @@ export default function AuthPage() {
       const errorMessage = err.message || (authMode === 'login' ? 'Invalid credentials' : 'Registration failed');
       setError(errorMessage);
       setLoading(false);
+
+      // Handle rate limiting for login
+      if (authMode === 'login') {
+        const newFailedAttempts = failedAttempts + 1;
+        setFailedAttempts(newFailedAttempts);
+
+        // Lock out after 5 failed attempts for 30 seconds
+        if (newFailedAttempts >= 5) {
+          setLockoutUntil(Date.now() + 30000);
+          setError('Too many failed attempts. Please wait 30 seconds before trying again.');
+        }
+      }
     }
   };
 
@@ -143,6 +225,31 @@ export default function AuthPage() {
       ...prev,
       [name]: sanitizeInput(value)
     }));
+    // Clear field error when user starts typing
+    if (fieldErrors[name]) {
+      setFieldErrors(prev => ({ ...prev, [name]: null }));
+    }
+    // Clear general error too
+    if (error) {
+      setError('');
+    }
+  };
+
+  // Inline validation on blur
+  const handleBlur = (e) => {
+    const { name, value } = e.target;
+
+    if (name === 'email' && value && !validateEmail(value)) {
+      setFieldErrors(prev => ({ ...prev, email: 'Please enter a valid email address' }));
+    }
+
+    if (name === 'username' && authMode === 'register' && value && value.length < 3) {
+      setFieldErrors(prev => ({ ...prev, username: 'Username must be at least 3 characters' }));
+    }
+
+    if (name === 'confirmPassword' && authMode === 'register' && value && value !== formData.password) {
+      setFieldErrors(prev => ({ ...prev, confirmPassword: 'Passwords do not match' }));
+    }
   };
 
   return (
@@ -298,21 +405,46 @@ export default function AuthPage() {
                   </button>
                 </div>
 
+                {/* Lockout Warning */}
+                {lockoutUntil && Date.now() < lockoutUntil && (
+                  <div
+                    role="alert"
+                    aria-live="assertive"
+                    className={`mb-6 p-4 rounded-xl flex items-center gap-3 ${
+                      darkMode ? 'bg-orange-900/50 border border-orange-700' : 'bg-orange-50 border border-orange-200'
+                    }`}
+                  >
+                    <AlertTriangle className="flex-shrink-0 text-orange-500" size={20} />
+                    <p className={darkMode ? 'text-orange-200' : 'text-orange-700'}>
+                      Account temporarily locked. Try again in {getLockoutRemaining()} seconds.
+                    </p>
+                  </div>
+                )}
+
                 {error && (
-                  <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 ${
-                    darkMode ? 'bg-red-900/50 border border-red-700' : 'bg-red-50 border border-red-200'
-                  }`}>
+                  <div
+                    role="alert"
+                    aria-live="polite"
+                    className={`mb-6 p-4 rounded-xl flex items-center gap-3 ${
+                      darkMode ? 'bg-red-900/50 border border-red-700' : 'bg-red-50 border border-red-200'
+                    }`}
+                  >
                     <div className="flex-shrink-0 w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
                     <p className={darkMode ? 'text-red-200' : 'text-red-700'}>{error}</p>
                   </div>
                 )}
 
-                <form onSubmit={handleSubmit} className="space-y-4">
+                <form onSubmit={handleSubmit} className="space-y-4" noValidate>
                   <div>
-                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <label
+                      htmlFor="email"
+                      className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
                       Email Address
                     </label>
                     <input
+                      ref={emailRef}
+                      id="email"
                       type="email"
                       name="email"
                       placeholder="you@example.com"
@@ -320,21 +452,35 @@ export default function AuthPage() {
                       maxLength={100}
                       value={formData.email}
                       onChange={handleInputChange}
-                      disabled={loading}
+                      onBlur={handleBlur}
+                      disabled={loading || !!lockoutUntil}
+                      aria-label="Email address"
+                      aria-describedby={fieldErrors.email ? 'email-error' : undefined}
+                      aria-invalid={!!fieldErrors.email}
                       className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
                         darkMode
                           ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
                           : 'bg-gray-50 border border-gray-300 focus:bg-white'
-                      } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      } ${fieldErrors.email ? 'border-red-500 focus:ring-red-500' : ''} ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : ''}`}
                     />
+                    {fieldErrors.email && (
+                      <p id="email-error" role="alert" className="mt-1 text-sm text-red-500">
+                        {fieldErrors.email}
+                      </p>
+                    )}
                   </div>
 
                   {authMode === 'register' && (
                     <div>
-                      <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      <label
+                        htmlFor="username"
+                        className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                      >
                         Username
                       </label>
                       <input
+                        ref={usernameRef}
+                        id="username"
                         type="text"
                         name="username"
                         placeholder="johndoe"
@@ -342,59 +488,206 @@ export default function AuthPage() {
                         maxLength={50}
                         value={formData.username}
                         onChange={handleInputChange}
+                        onBlur={handleBlur}
                         disabled={loading}
+                        aria-label="Username"
+                        aria-describedby={fieldErrors.username ? 'username-error' : undefined}
+                        aria-invalid={!!fieldErrors.username}
                         className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
                           darkMode
                             ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
                             : 'bg-gray-50 border border-gray-300 focus:bg-white'
-                        } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        } ${fieldErrors.username ? 'border-red-500 focus:ring-red-500' : ''} ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
                       />
+                      {fieldErrors.username && (
+                        <p id="username-error" role="alert" className="mt-1 text-sm text-red-500">
+                          {fieldErrors.username}
+                        </p>
+                      )}
                     </div>
                   )}
 
                   <div>
-                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <label
+                      htmlFor="password"
+                      className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
                       Password
                     </label>
-                    <input
-                      type="password"
-                      name="password"
-                      placeholder="••••••••"
-                      required
-                      minLength={8}
-                      value={formData.password}
-                      onChange={handleInputChange}
-                      disabled={loading}
-                      className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
-                        darkMode
-                          ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
-                          : 'bg-gray-50 border border-gray-300 focus:bg-white'
-                      } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    />
+                    <div className="relative">
+                      <input
+                        ref={passwordRef}
+                        id="password"
+                        type={showPassword ? 'text' : 'password'}
+                        name="password"
+                        placeholder="••••••••"
+                        required
+                        minLength={8}
+                        value={formData.password}
+                        onChange={handleInputChange}
+                        disabled={loading || !!lockoutUntil}
+                        aria-label="Password"
+                        aria-describedby={fieldErrors.password ? 'password-error' : authMode === 'register' ? 'password-requirements' : undefined}
+                        aria-invalid={!!fieldErrors.password}
+                        className={`w-full px-4 py-3 pr-12 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
+                          darkMode
+                            ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
+                            : 'bg-gray-50 border border-gray-300 focus:bg-white'
+                        } ${fieldErrors.password ? 'border-red-500 focus:ring-red-500' : ''} ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        disabled={loading || !!lockoutUntil}
+                        className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded transition-colors ${
+                          darkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'
+                        } ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                      </button>
+                    </div>
+                    {fieldErrors.password && (
+                      <p id="password-error" role="alert" className="mt-1 text-sm text-red-500">
+                        {fieldErrors.password}
+                      </p>
+                    )}
+
+                    {/* Password Strength Meter (Registration only) */}
+                    {authMode === 'register' && formData.password && (
+                      <div id="password-requirements">
+                        <PasswordStrengthMeter
+                          strengthData={passwordStrength}
+                          darkMode={darkMode}
+                          showRequirements={true}
+                        />
+                      </div>
+                    )}
+
                     {authMode === 'login' && (
-                      <div className="mt-2 flex justify-between items-center">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={enableZK}
-                            onChange={(e) => setEnableZK(e.target.checked)}
-                            disabled={loading}
-                            className="rounded border-gray-300 text-blue-500 focus:ring-blue-500"
-                          />
-                          <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            Zero-Knowledge Mode
-                          </span>
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => setShowRecovery(true)}
-                          className={`text-sm ${darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'} transition-colors`}
-                        >
-                          Forgot password?
-                        </button>
+                      <div className="mt-2 space-y-2">
+                        {/* Remember Me and ZK Mode */}
+                        <div className="flex justify-between items-center">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={rememberMe}
+                              onChange={(e) => setRememberMe(e.target.checked)}
+                              disabled={loading || !!lockoutUntil}
+                              className="rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                              aria-label="Remember me"
+                            />
+                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Remember me
+                            </span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowRecovery(true)}
+                            disabled={loading || !!lockoutUntil}
+                            className={`text-sm ${darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'} transition-colors`}
+                          >
+                            Forgot password?
+                          </button>
+                        </div>
+
+                        {/* ZK Mode with Tooltip */}
+                        <div className="relative">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={enableZK}
+                              onChange={(e) => setEnableZK(e.target.checked)}
+                              disabled={loading || !!lockoutUntil}
+                              className="rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                              aria-label="Enable Zero-Knowledge Mode"
+                            />
+                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Zero-Knowledge Mode
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setShowZkTooltip(!showZkTooltip)}
+                              onBlur={() => setTimeout(() => setShowZkTooltip(false), 200)}
+                              className={`p-0.5 rounded-full ${darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}
+                              aria-label="What is Zero-Knowledge Mode?"
+                            >
+                              <Info size={14} />
+                            </button>
+                          </label>
+
+                          {/* ZK Tooltip */}
+                          {showZkTooltip && (
+                            <div className={`absolute left-0 top-full mt-2 z-50 w-72 p-3 rounded-lg shadow-lg border ${
+                              darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+                            }`}>
+                              <p className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                                <strong className={darkMode ? 'text-white' : 'text-gray-900'}>Zero-Knowledge Mode</strong> encrypts your files with a key only you control.
+                                Even we cannot access your data. Use this for maximum privacy and security.
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
+
+                  {/* Confirm Password (Registration only) */}
+                  {authMode === 'register' && (
+                    <div>
+                      <label
+                        htmlFor="confirmPassword"
+                        className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                      >
+                        Confirm Password
+                      </label>
+                      <div className="relative">
+                        <input
+                          ref={confirmPasswordRef}
+                          id="confirmPassword"
+                          type={showConfirmPassword ? 'text' : 'password'}
+                          name="confirmPassword"
+                          placeholder="••••••••"
+                          required
+                          minLength={8}
+                          value={formData.confirmPassword}
+                          onChange={handleInputChange}
+                          onBlur={handleBlur}
+                          disabled={loading}
+                          aria-label="Confirm password"
+                          aria-describedby={fieldErrors.confirmPassword ? 'confirm-password-error' : undefined}
+                          aria-invalid={!!fieldErrors.confirmPassword}
+                          className={`w-full px-4 py-3 pr-12 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
+                            darkMode
+                              ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
+                              : 'bg-gray-50 border border-gray-300 focus:bg-white'
+                          } ${fieldErrors.confirmPassword ? 'border-red-500 focus:ring-red-500' : ''} ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                          disabled={loading}
+                          className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded transition-colors ${
+                            darkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'
+                          } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                        >
+                          {showConfirmPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                        </button>
+                      </div>
+                      {fieldErrors.confirmPassword && (
+                        <p id="confirm-password-error" role="alert" className="mt-1 text-sm text-red-500">
+                          {fieldErrors.confirmPassword}
+                        </p>
+                      )}
+                      {/* Password match indicator */}
+                      {formData.confirmPassword && !fieldErrors.confirmPassword && formData.password === formData.confirmPassword && (
+                        <p className="mt-1 text-sm text-green-500 flex items-center gap-1">
+                          <Check size={14} /> Passwords match
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                   {authMode === 'register' && (
                     <div className={`p-4 rounded-xl border-2 ${enableZK ? (darkMode ? 'bg-blue-900/20 border-blue-500/40' : 'bg-blue-50 border-blue-300') : (darkMode ? 'bg-gray-800/50 border-gray-700' : 'bg-gray-50 border-gray-200')}`}>
@@ -405,9 +698,10 @@ export default function AuthPage() {
                           onChange={(e) => setEnableZK(e.target.checked)}
                           disabled={loading}
                           className="mt-1 rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                          aria-label="Enable Zero-Knowledge Encryption"
                         />
                         <div className="flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <Shield className={enableZK ? 'text-blue-500' : 'text-gray-400'} size={16} />
                             <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                               Enable Zero-Knowledge Encryption
@@ -449,9 +743,9 @@ export default function AuthPage() {
 
                   <button
                     type="submit"
-                    disabled={loading}
+                    disabled={loading || !!lockoutUntil}
                     className={`w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2 ${
-                      loading ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02]'
+                      loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02]'
                     }`}
                   >
                     {loading ? (
@@ -467,6 +761,75 @@ export default function AuthPage() {
                     )}
                   </button>
                 </form>
+
+                {/* OAuth Divider */}
+                <div className="relative my-6">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className={`w-full border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}></div>
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className={`px-4 ${darkMode ? 'bg-gray-800 text-gray-400' : 'bg-white text-gray-500'}`}>
+                      Or continue with
+                    </span>
+                  </div>
+                </div>
+
+                {/* OAuth Buttons */}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Google OAuth */}
+                  <button
+                    type="button"
+                    onClick={() => authService.initiateOAuthLogin('google')}
+                    disabled={loading || !!lockoutUntil}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all border ${
+                      darkMode
+                        ? 'bg-gray-900 border-gray-700 text-white hover:bg-gray-800 hover:border-gray-600'
+                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400'
+                    } ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02]'}`}
+                    aria-label="Sign in with Google"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                      />
+                    </svg>
+                    <span>Google</span>
+                  </button>
+
+                  {/* Microsoft OAuth */}
+                  <button
+                    type="button"
+                    onClick={() => authService.initiateOAuthLogin('microsoft')}
+                    disabled={loading || !!lockoutUntil}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all border ${
+                      darkMode
+                        ? 'bg-gray-900 border-gray-700 text-white hover:bg-gray-800 hover:border-gray-600'
+                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400'
+                    } ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02]'}`}
+                    aria-label="Sign in with Microsoft"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24">
+                      <path fill="#F25022" d="M1 1h10v10H1z" />
+                      <path fill="#00A4EF" d="M1 13h10v10H1z" />
+                      <path fill="#7FBA00" d="M13 1h10v10H13z" />
+                      <path fill="#FFB900" d="M13 13h10v10H13z" />
+                    </svg>
+                    <span>Microsoft</span>
+                  </button>
+                </div>
 
                 {/* Trust Indicators */}
                 <div className={`mt-6 pt-6 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
