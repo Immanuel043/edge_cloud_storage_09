@@ -370,10 +370,10 @@ services:
       - ../services/web-service/src:/app/src
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s  # Increased: depends on storage-service & zk-service which need time
     restart: unless-stopped
     deploy:
       resources:

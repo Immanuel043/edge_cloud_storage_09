@@ -153,7 +153,7 @@ export default function ShareBundleViewer() {
 
   // Build streaming URL for a file in the bundle
   const getStreamUrl = (fileId) => {
-    let url = `${API_URL}/share/bundle/${token}/file/${fileId}/stream`;
+    let url = `${API_URL}/api/v1/share/bundle/${token}/file/${fileId}/stream`;
     if (password) url += `?password=${encodeURIComponent(password)}`;
     return url;
   };
@@ -167,7 +167,7 @@ export default function ShareBundleViewer() {
     setError('');
 
     try {
-      const url = new URL(`${API_URL}/share/bundle/${token}/info`);
+      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/info`);
       if (pwd || password) {
         url.searchParams.append('password', pwd || password);
       }
@@ -210,7 +210,7 @@ export default function ShareBundleViewer() {
 
   const handleDownloadFile = async (file) => {
     try {
-      const url = new URL(`${API_URL}/share/bundle/${token}/file/${file.id}/stream`);
+      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/file/${file.id}/stream`);
       if (password) url.searchParams.append('password', password);
 
       const response = await fetch(url.toString());
@@ -236,7 +236,7 @@ export default function ShareBundleViewer() {
     setDownloading(true);
 
     try {
-      const url = new URL(`${API_URL}/share/bundle/${token}/download`);
+      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/download`);
       if (password) url.searchParams.append('password', password);
 
       const response = await fetch(url.toString());

@@ -335,9 +335,8 @@ export const StorageProvider = ({ children }) => {
   try {
     console.log('Bulk deleting files:', fileIds);
 
-    // Since API_URL already includes /api/v1, just append the endpoint
-    const url = `${API_URL}/files/bulk-delete`;  // NOT /api/v1/files/bulk-delete
-    console.log('Bulk delete URL:', url); // Should log: http://localhost:8001/api/v1/files/bulk-delete
+    const url = `${API_URL}/api/v1/files/bulk-delete`;
+    console.log('Bulk delete URL:', url);
 
     const response = await fetch(url, {
       method: 'POST',

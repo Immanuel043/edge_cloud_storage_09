@@ -40,7 +40,7 @@ export default function SearchBar({ onSearch, darkMode }) {
   useEffect(() => {
     const fetchSmartSearchStatus = async () => {
       try {
-        const response = await fetch(`${API_URL}/search/smart/status`, {
+        const response = await fetch(`${API_URL}/api/v1/search/smart/status`, {
           credentials: 'include'
         });
         if (response.ok) {
@@ -67,7 +67,7 @@ export default function SearchBar({ onSearch, darkMode }) {
 
     try {
       const response = await fetch(
-        `${API_URL}/search/autocomplete?q=${encodeURIComponent(searchQuery)}`,
+        `${API_URL}/api/v1/search/autocomplete?q=${encodeURIComponent(searchQuery)}`,
         {
           credentials: 'include'
         }
@@ -107,7 +107,7 @@ export default function SearchBar({ onSearch, darkMode }) {
 
     try {
       // Use smart search endpoint if enabled, otherwise use regular search
-      const endpoint = smartSearchEnabled ? `${API_URL}/search/smart` : `${API_URL}/search/`;
+      const endpoint = smartSearchEnabled ? `${API_URL}/api/v1/search/smart` : `${API_URL}/api/v1/search/`;
 
       const requestBody = smartSearchEnabled
         ? {

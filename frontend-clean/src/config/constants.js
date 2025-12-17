@@ -51,9 +51,9 @@ export const RATE_LIMIT = Object.freeze({
 
 // Common endpoints (optional)
 export const ENDPOINTS = Object.freeze({
-  LOGIN: `${API_URL}/auth/login`,
-  REFRESH: `${API_URL}/auth/refresh`,
-  UPLOAD_INIT: `${API_URL}/upload/init`,
+  LOGIN: `${API_URL}/api/v1/auth/login`,
+  REFRESH: `${API_URL}/api/v1/auth/refresh`,
+  UPLOAD_INIT: `${API_URL}/api/v1/upload/init`,
   WS_PATH: `${WS_URL}/ws`, // e.g., new WebSocket(ENDPOINTS.WS_PATH)
 });
 

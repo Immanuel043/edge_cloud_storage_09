@@ -47,7 +47,7 @@ export default function ShareOptionsModal({ file, folder, onClose, darkMode }) {
       const itemType = folder ? 'folders' : 'files';
       const itemId = folder ? folder.id : file.id;
 
-      const response = await fetch(`${API_URL}/${itemType}/${itemId}/share`, {
+      const response = await fetch(`${API_URL}/api/v1/${itemType}/${itemId}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -95,7 +95,7 @@ export default function ShareOptionsModal({ file, folder, onClose, darkMode }) {
     const itemType = folder ? 'folders' : 'files';
     const itemId = folder ? folder.id : file.id;
 
-    const response = await fetch(`${API_URL}/${itemType}/${itemId}/collaborate`, {
+    const response = await fetch(`${API_URL}/api/v1/${itemType}/${itemId}/collaborate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

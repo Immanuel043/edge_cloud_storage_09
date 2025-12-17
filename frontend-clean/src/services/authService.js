@@ -12,7 +12,7 @@ class AuthService {
     formData.append('timestamp', Date.now());
 
     // SECURITY FIX: Include credentials to receive HTTP-only cookie
-    const response = await fetch(`${API_URL}/auth/login`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/login`, {
       method: 'POST',
       body: formData,
       credentials: 'include'  // Important for cookie-based auth
@@ -36,7 +36,7 @@ class AuthService {
     formData.append('timestamp', Date.now());
 
     // SECURITY FIX: Include credentials to receive HTTP-only cookie
-    const response = await fetch(`${API_URL}/auth/register`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/register`, {
       method: 'POST',
       body: formData,
       credentials: 'include'  // Important for cookie-based auth
@@ -53,7 +53,7 @@ class AuthService {
     await rateLimiter.checkLimit();
 
     // SECURITY FIX: Use cookies instead of Authorization header
-    const response = await fetch(`${API_URL}/users/profile`, {
+    const response = await fetch(`${API_URL}/api/v1/users/profile`, {
       credentials: 'include'  // Send HTTP-only cookie
     });
 
@@ -68,7 +68,7 @@ class AuthService {
   async getProfileWithSignal(token, signal) {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/users/profile`, {
+    const response = await fetch(`${API_URL}/api/v1/users/profile`, {
       credentials: 'include',
       signal  // Pass abort signal for timeout support
     });
@@ -84,7 +84,7 @@ class AuthService {
     await rateLimiter.checkLimit();
 
     // SECURITY FIX: Call logout endpoint to clear HTTP-only cookie
-    const response = await fetch(`${API_URL}/auth/logout`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/logout`, {
       method: 'POST',
       credentials: 'include'
     });
@@ -100,7 +100,7 @@ class AuthService {
     await rateLimiter.checkLimit();
 
     // SECURITY FIX: Use cookies instead of Authorization header
-    const response = await fetch(`${API_URL}/users/theme`, {
+    const response = await fetch(`${API_URL}/api/v1/users/theme`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json'
@@ -119,7 +119,7 @@ class AuthService {
   async getSessionToken() {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/auth/session-token`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/session-token`, {
       credentials: 'include'
     });
 
@@ -137,7 +137,7 @@ class AuthService {
    * @returns {Promise<Array>} List of configured providers
    */
   async getOAuthProviders() {
-    const response = await fetch(`${API_URL}/auth/oauth/providers`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/oauth/providers`, {
       credentials: 'include'
     });
 
@@ -155,7 +155,7 @@ class AuthService {
    */
   initiateOAuthLogin(provider) {
     // Redirect to OAuth login endpoint - backend handles the OAuth flow
-    window.location.href = `${API_URL}/auth/oauth/${provider}/login`;
+    window.location.href = `${API_URL}/api/v1/auth/oauth/${provider}/login`;
   }
 
   /**
@@ -163,7 +163,7 @@ class AuthService {
    * @returns {Promise<Array>} List of linked OAuth accounts
    */
   async getLinkedAccounts() {
-    const response = await fetch(`${API_URL}/auth/linked-accounts`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/linked-accounts`, {
       credentials: 'include'
     });
 
@@ -179,7 +179,7 @@ class AuthService {
    * @param {string} provider - OAuth provider name
    */
   linkOAuthAccount(provider) {
-    window.location.href = `${API_URL}/auth/oauth/${provider}/link`;
+    window.location.href = `${API_URL}/api/v1/auth/oauth/${provider}/link`;
   }
 
   /**
@@ -188,7 +188,7 @@ class AuthService {
    * @returns {Promise<Object>} Result of unlink operation
    */
   async unlinkOAuthAccount(provider) {
-    const response = await fetch(`${API_URL}/auth/oauth/${provider}/unlink`, {
+    const response = await fetch(`${API_URL}/api/v1/auth/oauth/${provider}/unlink`, {
       method: 'DELETE',
       credentials: 'include'
     });

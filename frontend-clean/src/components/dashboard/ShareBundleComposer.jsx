@@ -68,7 +68,7 @@ export default function ShareBundleComposer({ selectedFiles = [], selectedFolder
     setError(null);
 
     try {
-      const response = await fetch(`${API_URL}/share-bundles`, {
+      const response = await fetch(`${API_URL}/api/v1/share-bundles`, {
         method: 'POST',
         credentials: 'include',
         headers: {

@@ -48,7 +48,7 @@ export default function ShareViewer() {
   // Build streaming URL for shared content
   const getStreamUrl = () => {
     if (!shareInfo?.file_id) return '';
-    let url = `${API_URL}/share/${token}/stream?inline=true`;
+    let url = `${API_URL}/api/v1/share/${token}/stream?inline=true`;
     if (password) url += `&password=${encodeURIComponent(password)}`;
     if (isVideoFile(shareInfo)) url += '&compatible=true';
     return url;
@@ -63,7 +63,7 @@ export default function ShareViewer() {
     setError('');
 
     try {
-      const url = new URL(`${API_URL}/share/${token}/info`);
+      const url = new URL(`${API_URL}/api/v1/share/${token}/info`);
       if (pwd || password) {
         url.searchParams.append('password', pwd || password);
       }
@@ -107,7 +107,7 @@ export default function ShareViewer() {
 
   const loadFolderContents = async (pwd = null) => {
     try {
-      const url = new URL(`${API_URL}/share/${token}/folder/contents`);
+      const url = new URL(`${API_URL}/api/v1/share/${token}/folder/contents`);
       if (pwd || password) {
         url.searchParams.append('password', pwd || password);
       }
@@ -130,8 +130,8 @@ export default function ShareViewer() {
   const handleDownload = async (fileId = null) => {
     try {
       const downloadUrl = fileId
-        ? `${API_URL}/files/${fileId}/download`
-        : `${API_URL}/share/${token}`;
+        ? `${API_URL}/api/v1/files/${fileId}/download`
+        : `${API_URL}/api/v1/share/${token}`;
 
       const url = new URL(downloadUrl);
       if (password) {

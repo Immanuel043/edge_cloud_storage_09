@@ -136,7 +136,7 @@ export default function FileThumbnail({
         // Add cache-busting for video files to ensure fresh thumbnails
         const cacheBuster = isVideoFile ? `&_t=${file.updated_at || Date.now()}` : '';
         const response = await fetch(
-          `${API_URL}/files/${file.id}/preview?size=${size}${cacheBuster}`,
+          `${API_URL}/api/v1/files/${file.id}/preview?size=${size}${cacheBuster}`,
           {
             credentials: 'include',
             signal: controller.signal,

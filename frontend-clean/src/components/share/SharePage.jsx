@@ -24,7 +24,7 @@ export default function SharePage() {
     setError('');
 
     try {
-      const url = new URL(`${API_URL}/share/${token}`);
+      const url = new URL(`${API_URL}/api/v1/share/${token}`);
       if (password) {
         url.searchParams.append('password', password);
       }

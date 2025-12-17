@@ -26,7 +26,7 @@ class ResumableDownloadManager {
 
     try {
       // HEAD to get metadata
-      const headResp = await fetch(`${API_URL}/files/${fileId}/download`, {
+      const headResp = await fetch(`${API_URL}/api/v1/files/${fileId}/download`, {
         method: 'HEAD',
         credentials: 'include'  // Send HTTP-only cookie
       });
@@ -106,7 +106,7 @@ class ResumableDownloadManager {
 
   // Attempt a range download with retries. Accept both 206 and 200 (server may return 200).
   async downloadRange(token, fileId, start, end, downloadInfo, onProgress, maxRetries = 3) {
-    const url = `${API_URL}/files/${fileId}/download`;
+    const url = `${API_URL}/api/v1/files/${fileId}/download`;
     let attempt = 0;
     let lastError = null;
 
@@ -143,7 +143,7 @@ class ResumableDownloadManager {
   }
 
   async downloadFull(token, fileId, downloadInfo, onProgress, maxRetries = 3) {
-    const url = `${API_URL}/files/${fileId}/download`;
+    const url = `${API_URL}/api/v1/files/${fileId}/download`;
     let attempt = 0;
     let lastError = null;
 
@@ -274,7 +274,7 @@ class ResumableDownloadManager {
 
   // Native anchor fallback (preferred for very large files)
   async nativeDownload(token, fileId, fileName) {
-    const url = `${API_URL}/files/${fileId}/download`;
+    const url = `${API_URL}/api/v1/files/${fileId}/download`;
 
     try {
         // Fetch with authentication via HTTP-only cookie
@@ -332,7 +332,7 @@ class StorageService {
     // PERFORMANCE FIX: Deduplicate simultaneous requests
     const cacheKey = `files-${folderId || 'root'}`;
     return requestCache.dedupe(cacheKey, async () => {
-      const url = `${API_URL}/files${folderId ? `?folder_id=${folderId}` : ''}`;
+      const url = `${API_URL}/api/v1/files${folderId ? `?folder_id=${folderId}` : ''}`;
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) throw new Error('Failed to load files');
       return await response.json();
@@ -345,7 +345,7 @@ class StorageService {
     // PERFORMANCE FIX: Deduplicate simultaneous requests
     const cacheKey = `folders-${parentId || 'root'}`;
     return requestCache.dedupe(cacheKey, async () => {
-      const url = `${API_URL}/folders${parentId ? `?parent_id=${parentId}` : ''}`;
+      const url = `${API_URL}/api/v1/folders${parentId ? `?parent_id=${parentId}` : ''}`;
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) throw new Error('Failed to load folders');
       return await response.json();
@@ -391,7 +391,7 @@ class StorageService {
 
   // Fallback simple download kept for compatibility (use nativeDownload instead for large files)
   async simpleDownload(token, fileId, fileName) {
-    const response = await fetch(`${API_URL}/files/${fileId}/download`, {
+    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/download`, {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -417,7 +417,7 @@ class StorageService {
 
     try {
       const chunkResponse = await fetch(
-        `${API_URL}/files/${fileId}/download/chunk/${chunkIndex}`,
+        `${API_URL}/api/v1/files/${fileId}/download/chunk/${chunkIndex}`,
         { credentials: 'include' }
       );
 
@@ -763,7 +763,7 @@ class StorageService {
       ...(folderId && { folder_id: folderId })
     });
 
-    const initResponse = await fetch(`${API_URL}/upload/init?${params}`, {
+    const initResponse = await fetch(`${API_URL}/api/v1/upload/init?${params}`, {
       method: 'POST',
       credentials: 'include'  // Send HTTP-only cookie
     });
@@ -795,7 +795,7 @@ class StorageService {
       formData.append('file', file);
       
       await rateLimiter.checkLimit();
-      const directResponse = await fetch(`${API_URL}/upload/direct/${upload_id}`, {
+      const directResponse = await fetch(`${API_URL}/api/v1/upload/direct/${upload_id}`, {
         method: 'POST',
         credentials: 'include',  // Send HTTP-only cookie
         body: formData,
@@ -831,7 +831,7 @@ class StorageService {
         formData.append('chunk', chunk);
         
         await rateLimiter.checkLimit();
-        const response = await fetch(`${API_URL}/upload/chunk/${upload_id}?chunk_index=${i}`, {
+        const response = await fetch(`${API_URL}/api/v1/upload/chunk/${upload_id}?chunk_index=${i}`, {
           method: 'POST',
           credentials: 'include',  // Send HTTP-only cookie
           body: formData,
@@ -861,7 +861,7 @@ class StorageService {
     console.log('Completing upload...');
     await rateLimiter.checkLimit();
     
-    const completeResponse = await fetch(`${API_URL}/upload/complete/${upload_id}`, {
+    const completeResponse = await fetch(`${API_URL}/api/v1/upload/complete/${upload_id}`, {
       method: 'POST',
       credentials: 'include'  // Send HTTP-only cookie
     });
@@ -908,7 +908,7 @@ class StorageService {
 
   async deleteFile(token, fileId) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/files/${fileId}`, {
+    const response = await fetch(`${API_URL}/api/v1/files/${fileId}`, {
       method: 'DELETE',
       credentials: 'include'
     });
@@ -918,7 +918,7 @@ class StorageService {
 
   async renameFile(token, fileId, newName) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/files/${fileId}/rename`, {
+    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/rename`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -933,7 +933,7 @@ class StorageService {
 
   async createFolder(token, name, parentId) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/folders`, {
+    const response = await fetch(`${API_URL}/api/v1/folders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -945,7 +945,7 @@ class StorageService {
 
   async createShareLink(token, fileId, options = {}) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/files/${fileId}/share`, {
+    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/share`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -961,21 +961,21 @@ class StorageService {
 
   async getStorageStats(token) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/storage/stats`, { credentials: 'include' });
+    const response = await fetch(`${API_URL}/api/v1/storage/stats`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to load storage stats');
     return await response.json();
   }
 
   async getActivityLogs(token) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/activity`, { credentials: 'include' });
+    const response = await fetch(`${API_URL}/api/v1/activity`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to load activity logs');
     return await response.json();
   }
 
   async getFilePreview(token, fileId) {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/files/${fileId}/preview`, { credentials: 'include' });
+    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/preview`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to get preview');
     return await response.blob();
   }
@@ -988,7 +988,7 @@ class StorageService {
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
     
-    const response = await fetch(`${API_URL}/dedup/analytics`, {
+    const response = await fetch(`${API_URL}/api/v1/dedup/analytics`, {
       headers,
       credentials: 'include'
     });
@@ -1006,13 +1006,13 @@ class StorageService {
 async getDedupAnalytics(token) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/dedup/analytics`, {
+  const response = await fetch(`${API_URL}/api/v1/dedup/analytics`, {
     method: 'GET',
     credentials: 'include'  // Send HTTP-only cookie
   });
 
   if (!response.ok) {
-    console.error('Failed to load dedup analytics:', response.status, 'URL:', `${API_URL}/dedup/analytics`);
+    console.error('Failed to load dedup analytics:', response.status, 'URL:', `${API_URL}/api/v1/dedup/analytics`);
     throw new Error('Failed to load deduplication analytics');
   }
 
@@ -1027,7 +1027,7 @@ async getDedupSavings(token) {
   const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
   try {
-    const response = await fetch(`${API_URL}/dedup/savings`, {
+    const response = await fetch(`${API_URL}/api/v1/dedup/savings`, {
       method: 'GET',
       credentials: 'include',  // Send HTTP-only cookie
       signal: controller.signal
@@ -1036,7 +1036,7 @@ async getDedupSavings(token) {
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.error('Failed to load dedup savings:', response.status, 'URL:', `${API_URL}/dedup/savings`);
+      console.error('Failed to load dedup savings:', response.status, 'URL:', `${API_URL}/api/v1/dedup/savings`);
       throw new Error('Failed to load deduplication savings');
     }
 
@@ -1058,7 +1058,7 @@ async optimizeFileDedup(token, fileId) {
     throw new Error('File ID required');
   }
 
-  const response = await fetch(`${API_URL}/dedup/optimize/${fileId}`, {
+  const response = await fetch(`${API_URL}/api/v1/dedup/optimize/${fileId}`, {
     method: 'POST',
     credentials: 'include'  // Send HTTP-only cookie
   });
@@ -1074,7 +1074,7 @@ async optimizeFileDedup(token, fileId) {
 async runGarbageCollection(token) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/dedup/gc`, {
+  const response = await fetch(`${API_URL}/api/v1/dedup/gc`, {
     method: 'POST',
     credentials: 'include'  // Send HTTP-only cookie
   });
@@ -1091,7 +1091,7 @@ async runGarbageCollection(token) {
 async getRecentFiles(days = 30) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/recents?days=${days}`, {
+  const response = await fetch(`${API_URL}/api/v1/files/recents?days=${days}`, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -1112,7 +1112,7 @@ async getRecentFiles(days = 30) {
 async getFavorites() {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/favorites`, {
+  const response = await fetch(`${API_URL}/api/v1/files/favorites`, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -1133,7 +1133,7 @@ async getFavorites() {
 async toggleFavorite(fileId) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/${fileId}/favorite`, {
+  const response = await fetch(`${API_URL}/api/v1/files/${fileId}/favorite`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -1152,7 +1152,7 @@ async toggleFavorite(fileId) {
 async getSharedWithMe() {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/shared-with-me`, {
+  const response = await fetch(`${API_URL}/api/v1/shared-with-me`, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -1173,7 +1173,7 @@ async getSharedWithMe() {
 async removeSharedAccess(shareAccessId) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/shared-with-me/${shareAccessId}`, {
+  const response = await fetch(`${API_URL}/api/v1/shared-with-me/${shareAccessId}`, {
     method: 'DELETE',
     credentials: 'include',
     headers: {
@@ -1193,7 +1193,7 @@ async removeSharedAccess(shareAccessId) {
 async getFileActivity(fileId, limit = 50) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/${fileId}/activity?limit=${limit}`, {
+  const response = await fetch(`${API_URL}/api/v1/files/${fileId}/activity?limit=${limit}`, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -1213,7 +1213,7 @@ async getFileActivity(fileId, limit = 50) {
 async getTrash() {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/trash`, {
+  const response = await fetch(`${API_URL}/api/v1/files/trash`, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -1231,7 +1231,7 @@ async getTrash() {
 async restoreFromTrash(fileId) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/trash/${fileId}/restore`, {
+  const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/restore`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -1250,7 +1250,7 @@ async restoreFromTrash(fileId) {
 async permanentDelete(fileId) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/trash/${fileId}/permanent`, {
+  const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/permanent`, {
     method: 'DELETE',
     credentials: 'include',
     headers: {
@@ -1269,7 +1269,7 @@ async permanentDelete(fileId) {
 async emptyTrash() {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/files/trash/empty`, {
+  const response = await fetch(`${API_URL}/api/v1/files/trash/empty`, {
     method: 'POST',
     credentials: 'include',
     headers: {

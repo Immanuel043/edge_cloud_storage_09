@@ -18,8 +18,8 @@ export default function FilePreview({ file, onClose, darkMode }) {
     return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
   };
 
-  const downloadLink = applyToken(`${API_URL}/files/${file.id}/download`);
-  const streamUrl = applyToken(`${API_URL}/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`);
+  const downloadLink = applyToken(`${API_URL}/api/v1/files/${file.id}/download`);
+  const streamUrl = applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`);
 
   const [previewUrl, setPreviewUrl] = useState('');
   const [zoom, setZoom] = useState(1);
@@ -81,7 +81,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
     const checkStream = async () => {
       try {
         // Check transcode progress using new API endpoint
-        const progressUrl = applyToken(`${API_URL}/files/${file.id}/transcode/progress`);
+        const progressUrl = applyToken(`${API_URL}/api/v1/files/${file.id}/transcode/progress`);
         const response = await fetch(progressUrl);
 
         if (cancelled) {
@@ -178,7 +178,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
     };
 
     try {
-      const response = await fetch(`${API_URL}/files/${file.id}/preview?size=large`, {
+      const response = await fetch(`${API_URL}/api/v1/files/${file.id}/preview?size=large`, {
         credentials: 'include'
       });
 
@@ -354,7 +354,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
           ) : isPdfFile ? (
             <div className="w-full h-full min-h-[70vh]">
               <iframe
-                src={applyToken(`${API_URL}/files/${file.id}/download?inline=true`)}
+                src={applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
                 className="w-full h-full rounded-lg"
                 style={{ minHeight: '70vh' }}
                 title={file.name}
@@ -390,7 +390,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
           ) : isXmlFile || isTextFile ? (
             <div className="w-full h-full min-h-[70vh]">
               <iframe
-                src={applyToken(`${API_URL}/files/${file.id}/download?inline=true`)}
+                src={applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
                 className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
                 style={{ minHeight: '70vh' }}
                 title={file.name}

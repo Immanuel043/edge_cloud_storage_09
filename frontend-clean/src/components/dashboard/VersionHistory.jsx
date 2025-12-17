@@ -18,7 +18,7 @@ export default function VersionHistory({ file, onClose, onRestore, darkMode }) {
     setError('');
 
     try {
-      const response = await fetch(`${API_URL}/files/${file.id}/versions`, {
+      const response = await fetch(`${API_URL}/api/v1/files/${file.id}/versions`, {
         credentials: 'include',
       });
 
@@ -45,7 +45,7 @@ export default function VersionHistory({ file, onClose, onRestore, darkMode }) {
     setError('');
 
     try {
-      const response = await fetch(`${API_URL}/files/${file.id}/versions/restore`, {
+      const response = await fetch(`${API_URL}/api/v1/files/${file.id}/versions/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -72,7 +72,7 @@ export default function VersionHistory({ file, onClose, onRestore, darkMode }) {
   const handleDownload = async (versionNumber) => {
     try {
       const response = await fetch(
-        `${API_URL}/files/${file.id}/versions/${versionNumber}/download`,
+        `${API_URL}/api/v1/files/${file.id}/versions/${versionNumber}/download`,
         { credentials: 'include' }
       );
 
@@ -109,7 +109,7 @@ export default function VersionHistory({ file, onClose, onRestore, darkMode }) {
 
     try {
       const response = await fetch(
-        `${API_URL}/files/${file.id}/versions/${versionNumber}`,
+        `${API_URL}/api/v1/files/${file.id}/versions/${versionNumber}`,
         {
           method: 'DELETE',
           credentials: 'include',

@@ -327,7 +327,7 @@ export default function Dashboard() {
       console.log(`Copying file: ${file.name}...`);
 
       // Call server-side copy endpoint
-      const response = await fetch(`${API_URL}/files/${file.id}/copy`, {
+      const response = await fetch(`${API_URL}/api/v1/files/${file.id}/copy`, {
         method: 'POST',
         credentials: 'include',
         headers: {
