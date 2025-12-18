@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { FileText, Film, FileImage, Music, Archive, File, Table, FileCode, Code } from 'lucide-react';
+import { FileText, Film, FileImage, Music, Archive, File, Table, FileCode, Code, Loader2 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import {
   IMAGE_EXTENSIONS,
@@ -59,6 +59,7 @@ export default function FileThumbnail({
   const [error, setError] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false); // Processing state for 202 responses
   const imgRef = useRef(null);
   const observerRef = useRef(null);
 
@@ -168,25 +169,34 @@ export default function FileThumbnail({
 
               console.log(`Preview ${data.status} for ${file.name}, retrying in ${retryAfter/1000}s`);
 
+              // Show processing indicator
+              setIsProcessing(true);
+
               // Schedule retry after the suggested delay
-              if (retryCount < 5) { // Allow up to 5 retries for background processing
+              if (retryCount < 10) { // Allow up to 10 retries for background processing
                 setTimeout(() => {
                   if (mounted) {
                     setRetryCount(prev => prev + 1);
                   }
                 }, retryAfter);
+              } else {
+                // After max retries, stop processing indicator
+                setIsProcessing(false);
               }
 
               setLoading(false);
               setError(false); // Show fallback icon while waiting
             } catch (e) {
               // If JSON parsing fails, just use default retry
-              if (retryCount < 5) {
+              setIsProcessing(true);
+              if (retryCount < 10) {
                 setTimeout(() => {
                   if (mounted) {
                     setRetryCount(prev => prev + 1);
                   }
                 }, 5000);
+              } else {
+                setIsProcessing(false);
               }
               setLoading(false);
               setError(false);
@@ -204,6 +214,7 @@ export default function FileThumbnail({
           const url = URL.createObjectURL(blob);
           setThumbnailUrl(url);
           setLoading(false);
+          setIsProcessing(false); // Clear processing indicator on success
         }
       } catch (err) {
         // Clear timeout on error
@@ -269,24 +280,48 @@ export default function FileThumbnail({
   // Show thumbnail if loaded
   if (thumbnailUrl && !error) {
     return (
-      <div ref={imgRef} className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
+      <div ref={imgRef} className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}>
         <img
           src={thumbnailUrl}
           alt={file.name}
           className="w-full h-full object-cover"
           onError={() => setError(true)}
         />
+        {/* Processing indicator overlay on thumbnail */}
+        {isProcessing && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 rounded-lg">
+            <Loader2
+              className="text-white animate-spin"
+              size={size === 'small' ? 12 : size === 'medium' ? 20 : 28}
+            />
+          </div>
+        )}
       </div>
     );
   }
 
-  // Fallback to icon
+  // Fallback to icon with optional processing indicator
   return (
     <div
       ref={imgRef}
       className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}
     >
       {getFileTypeIcon(file.name, iconSizes[size])}
+
+      {/* Processing indicator overlay */}
+      {isProcessing && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 rounded-lg">
+          <Loader2
+            className="text-blue-400 animate-spin"
+            size={size === 'small' ? 16 : size === 'medium' ? 24 : 32}
+          />
+          {size !== 'small' && (
+            <span className="text-white text-xs mt-1 font-medium">
+              Processing
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

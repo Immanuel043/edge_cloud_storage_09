@@ -115,7 +115,7 @@ export default function EnhancedAnalyticsView({ darkMode, storageStats }) {
       <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <BarChart3 size={24} className="text-[#0033A0]" />
+            <BarChart3 size={24} className="text-blue-500" />
             <div>
               <h1 className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                 Analytics Dashboard

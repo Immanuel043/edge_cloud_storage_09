@@ -346,7 +346,17 @@ class VideoTranscoder:
 
         logger.info(f"🎬 get_or_create_stream called for {file_obj.file_name}")
 
-        # Probe file metadata (with fallback to None if probe fails)
+        file_id = str(file_obj.id)
+        target_path = self._target_path(file_obj)
+
+        # ============ CHECK CACHE FIRST (before any expensive operations) ============
+        # If a transcoded version already exists, return it immediately without probing
+        if os.path.exists(target_path):
+            logger.info(f"⚡ Using cached compatible stream for {file_obj.file_name} (skipped probe)")
+            return target_path
+
+        # ============ PROBE FILE METADATA ============
+        # Only probe if we don't have a cached version
         probe_data = await self._probe_file_metadata(file_obj, encryption_service)
         logger.info(f"🎬 Probe data: {probe_data}")
 
@@ -375,11 +385,11 @@ class VideoTranscoder:
                 status_code=413
             )
 
-        file_id = str(file_obj.id)
-        target_path = self._target_path(file_obj)
+        # file_id and target_path already defined at start of function
         lock = self._lock_for(file_id)
 
         async with lock:
+            # Double-check cache within lock (race condition protection)
             if os.path.exists(target_path):
                 logger.info(f"🎬 Using cached compatible stream for {file_obj.file_name}")
                 return target_path

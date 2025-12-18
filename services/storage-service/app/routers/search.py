@@ -292,8 +292,7 @@ async def smart_search_status(
         total_result = await db.execute(
             select(Object).filter(
                 Object.user_id == current_user.id,
-                Object.is_folder == False,
-                Object.deleted_at == None
+                Object.is_deleted == False
             )
         )
         total_files = len(total_result.scalars().all())

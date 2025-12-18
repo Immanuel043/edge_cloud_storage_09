@@ -121,6 +121,58 @@ async def list_files(
         for f in files
     ]
 
+
+@router.get("/stats", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
+async def get_file_stats(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get file statistics including:
+    - Total files count
+    - Total storage used
+    - File type distribution by MIME type
+    """
+    from sqlalchemy import func
+
+    # Get total files and size
+    total_query = select(
+        func.count(Object.id).label('total_files'),
+        func.coalesce(func.sum(Object.file_size), 0).label('total_size')
+    ).filter(
+        Object.user_id == current_user.id,
+        Object.is_deleted == False
+    )
+    total_result = await db.execute(total_query)
+    totals = total_result.one()
+
+    # Get MIME type distribution
+    mime_query = select(
+        Object.mime_type,
+        func.count(Object.id).label('count'),
+        func.coalesce(func.sum(Object.file_size), 0).label('total_size')
+    ).filter(
+        Object.user_id == current_user.id,
+        Object.is_deleted == False
+    ).group_by(Object.mime_type)
+
+    mime_result = await db.execute(mime_query)
+    mime_distribution = {}
+    for row in mime_result:
+        mime_type = row.mime_type or 'unknown'
+        mime_distribution[mime_type] = {
+            'count': row.count,
+            'total_size': row.total_size
+        }
+
+    return {
+        'total_files': totals.total_files,
+        'total_size': totals.total_size,
+        'mime_type_distribution': mime_distribution
+    }
+
+
 ###########Download with Range Support##################################
 async def parse_range_header(range_header: Optional[str], file_size: int) -> Optional[Tuple[int, int]]:
     """Parse Range header and return (start, end) inclusive byte offsets."""

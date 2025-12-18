@@ -59,7 +59,7 @@ class FileClusteringService:
             import scipy.sparse as sp
 
             # Extract filename tokens
-            filenames = [self._tokenize_filename(f.filename) for f in files]
+            filenames = [self._tokenize_filename(f.file_name) for f in files]
 
             # TF-IDF vectorization
             vectorizer = TfidfVectorizer(
@@ -71,7 +71,7 @@ class FileClusteringService:
             tfidf_features = vectorizer.fit_transform(filenames)
 
             # Extension features (one-hot)
-            extensions = [self._get_extension(f.filename) for f in files]
+            extensions = [self._get_extension(f.file_name) for f in files]
             unique_exts = list(set(extensions))
             ext_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
             ext_array = np.array(extensions).reshape(-1, 1)
@@ -114,11 +114,11 @@ class FileClusteringService:
             # Raw features for analysis
             raw_features = [
                 {
-                    'filename': f.filename,
-                    'extension': self._get_extension(f.filename),
+                    'filename': f.file_name,
+                    'extension': self._get_extension(f.file_name),
                     'size': f.file_size,
                     'created_at': f.created_at,
-                    'tokens': self._tokenize_filename(f.filename)
+                    'tokens': self._tokenize_filename(f.file_name)
                 }
                 for f in files
             ]

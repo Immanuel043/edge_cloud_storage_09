@@ -128,12 +128,10 @@ export default function Sidebar({
           w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
           ${isSubItem ? 'pl-12 py-2' : ''}
           ${isActive
-            ? darkMode
-              ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
-              : 'bg-[#0033A0] text-white shadow-lg'
+            ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg'
             : darkMode
               ? 'text-gray-300 hover:bg-gray-700 hover:text-white'
-              : 'text-gray-700 hover:bg-blue-50 hover:text-[#0033A0]'
+              : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
           }
         `}
         title={item.description}
@@ -148,25 +146,17 @@ export default function Sidebar({
     <>
       {/* Logo Section */}
       <div className={`p-6 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-        <div className="flex items-center justify-center">
-          <img
-            src="/logo.png"
-            alt="Edge Cloud Storage"
-            className="h-16 w-auto"
-            onError={(e) => {
-              // Fallback to text logo if image fails to load
-              e.target.style.display = 'none';
-              e.target.nextSibling.style.display = 'flex';
-            }}
-          />
-          <div
-            className="hidden flex-col items-center"
-            style={{ display: 'none' }}
-          >
-            <Cloud size={48} className="text-[#0033A0]" />
-            <span className={`text-sm font-bold mt-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              EDGE CLOUD
-            </span>
+        <div className="flex items-center justify-center gap-3">
+          <div className={`p-2 rounded-xl ${darkMode ? 'bg-gradient-to-br from-blue-500 to-purple-600' : 'bg-gradient-to-br from-blue-400 to-purple-500'} shadow-lg`}>
+            <Cloud className="text-white" size={28} />
+          </div>
+          <div>
+            <h1 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              Edge Cloud
+            </h1>
+            <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              Storage
+            </p>
           </div>
         </div>
       </div>
@@ -191,7 +181,7 @@ export default function Sidebar({
               w-full flex items-center justify-between px-4 py-3 rounded-lg transition-all
               ${darkMode
                 ? 'text-gray-300 hover:bg-gray-700 hover:text-white'
-                : 'text-gray-700 hover:bg-blue-50 hover:text-[#0033A0]'
+                : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
               }
             `}
           >
@@ -249,11 +239,11 @@ export default function Sidebar({
                   className="h-full rounded-full transition-all duration-300"
                   style={{
                     width: `${storageStats.percentage_used || 0}%`,
-                    backgroundColor: storageStats.percentage_used > 90
+                    background: storageStats.percentage_used > 90
                       ? '#ef4444'
                       : storageStats.percentage_used > 70
                         ? '#f59e0b'
-                        : '#0033A0'
+                        : 'linear-gradient(to right, #3b82f6, #8b5cf6)'
                   }}
                 />
               </div>

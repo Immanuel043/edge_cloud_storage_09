@@ -411,18 +411,18 @@ class AutoOrganizerService:
         """Check if file matches rule criteria"""
         # Pattern matching
         if rule.pattern:
-            if not self._matches_pattern(file_obj.filename, rule.pattern):
+            if not self._matches_pattern(file_obj.file_name, rule.pattern):
                 return False
 
         # Extension matching
         if rule.file_extensions:
-            file_ext = file_obj.filename.rsplit('.', 1)[-1].lower() if '.' in file_obj.filename else ''
+            file_ext = file_obj.file_name.rsplit('.', 1)[-1].lower() if '.' in file_obj.file_name else ''
             if file_ext not in rule.file_extensions:
                 return False
 
         # Keyword matching
         if rule.keywords:
-            filename_lower = file_obj.filename.lower()
+            filename_lower = file_obj.file_name.lower()
             if not any(keyword.lower() in filename_lower for keyword in rule.keywords):
                 return False
 

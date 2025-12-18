@@ -13,6 +13,7 @@ import FavoritesView from './FavoritesView';
 import SharedWithMeView from './SharedWithMeView';
 import TrashView from './TrashView';
 import AnalyticsView from './AnalyticsView';
+import QuotaAlertsView from './QuotaAlertsView';
 import DeduplicationPanel from './DeduplicationPanel';
 import AutoOrganizeView from './AutoOrganizeView';
 import RecommendationsView from './RecommendationsView';
@@ -678,6 +679,13 @@ export default function Dashboard() {
         );
 
       case 'quota-alerts':
+        return (
+          <QuotaAlertsView
+            darkMode={darkMode}
+            storageStats={storageStats}
+          />
+        );
+
       case 'storage-optimization':
         return (
           <AnalyticsView

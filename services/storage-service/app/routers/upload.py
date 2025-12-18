@@ -17,7 +17,7 @@ from ..dependencies import get_db, log_activity, get_current_user
 from ..services.auth import auth_service
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
-from ..models.database import User, Object
+from ..models.database import User, Object, FileVersion
 from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
 from ..config import settings
@@ -785,6 +785,22 @@ async def complete_upload(
             current_user.storage_used = (current_user.storage_used or 0) + session["size"]
 
         # Commit transaction
+        await db.commit()
+
+        # Create initial version (Version 1) for version history
+        initial_version = FileVersion(
+            file_id=file_id,
+            version_number=1,
+            file_size=session["size"],
+            content_hash=file_obj.content_hash,
+            storage_path=file_obj.object_path if storage_strategy in ["single"] else None,
+            chunk_info=file_obj.chunk_info if storage_strategy == "chunked" else (
+                {"storage_type": "inline"} if storage_strategy == "inline" else None
+            ),
+            created_by=current_user.id,
+            comment="Initial upload",
+        )
+        db.add(initial_version)
         await db.commit()
 
         # Log activity (separate transaction)

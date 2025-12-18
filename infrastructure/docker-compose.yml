@@ -67,7 +67,7 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "ES_JAVA_OPTS=-Xms768m -Xmx768m"  # Increased heap for stability
     ports:
       - "9200:9200"
     # No volumes by default (non-persistent mode for development)
@@ -77,13 +77,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s  # Give ES 2 minutes to start before healthchecks count
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G  # ES needs ~2x heap for native memory + overhead
         reservations:
-          memory: 512M
+          memory: 1G
 
   # ClamAV Antivirus Scanner
   clamav:

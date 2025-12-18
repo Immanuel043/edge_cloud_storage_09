@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from typing import List
 from datetime import datetime
+from pydantic import BaseModel
 
 from ..dependencies import get_db, get_current_user, log_activity
 from ..models.database import User, Object, FileVersion
@@ -16,6 +17,10 @@ from ..services.storage import storage_service
 import hashlib
 
 router = APIRouter(prefix="/api/v1", tags=["versions"])
+
+
+class RestoreVersionRequest(BaseModel):
+    version_number: int
 
 
 @router.get("/files/{file_id}/versions")
@@ -67,12 +72,14 @@ async def get_file_versions(
 @router.post("/files/{file_id}/versions/restore")
 async def restore_file_version(
     file_id: str,
-    version_number: int,
+    restore_request: RestoreVersionRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
     """Restore a file to a previous version"""
+    version_number = restore_request.version_number
+
     # Verify file belongs to user
     result = await db.execute(
         select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)

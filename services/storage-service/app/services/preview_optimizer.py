@@ -373,23 +373,33 @@ class PreviewOptimizer:
                 if not os.path.exists(file_obj.object_path):
                     raise FileNotFoundError(f"File not found: {file_obj.object_path}")
 
-                # Special handling for large tail-heavy video files
-                if _needs_head_tail(file_obj, is_partial):
-                    # Use head+tail strategy for large MOV files
-                    logger.info(
-                        f"Large video {file_obj.file_name} detected, using head+tail strategy"
-                    )
-                    return await self.download_with_head_tail(
-                        file_obj.object_path,
-                        file_obj.file_size,
-                        encryption_service,
-                        file_key
-                    )
+                # =================================================================
+                # IMPORTANT: Head+tail strategy DOES NOT WORK for single encrypted files!
+                # AES-GCM requires the FULL ciphertext to decrypt (nonce at start, MAC at end).
+                # Partial decryption will always fail with an authentication error.
+                # =================================================================
 
-                # Standard approach for other files
+                # Check file size for OOM protection
+                file_size_mb = file_obj.file_size / MB
+                mime = (file_obj.mime_type or '').lower()
+                is_video = mime.startswith('video/')
+
+                # For large single-storage videos (>100MB), trigger background processing
+                # to prevent OOM and long blocking requests
+                if is_video and file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
+                    logger.info(
+                        f"⏳ Large single-storage video: {file_obj.file_name} "
+                        f"({file_size_mb:.1f}MB > {MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB}MB limit). "
+                        f"Returning None to trigger background processing."
+                    )
+                    os.unlink(temp_file_path)
+                    return None, False
+
+                # Standard approach: decrypt FULL file
                 # NOTE: For encrypted files, we must read the COMPLETE file for decryption
                 # because GCM encryption requires the full ciphertext to verify the MAC.
                 # After decryption, we can then use only a portion for preview generation.
+                logger.info(f"Downloading full single-storage file for preview: {file_obj.file_name} ({file_size_mb:.1f}MB)")
                 async with aiofiles.open(file_obj.object_path, 'rb') as f:
                     encrypted_data = await f.read()  # Always read complete encrypted file
 
@@ -399,14 +409,26 @@ class PreviewOptimizer:
                     from ..utils.compression import compressor
                     file_data = compressor.decompress(file_data)
 
-                # Write only the portion needed for preview if file is large
+                # Write file data for preview
+                # For videos, always write full data since moov atom may be at the end
+                # We've already decrypted the full file, so truncating wastes that work
+                mime = (file_obj.mime_type or '').lower()
+                is_video = mime.startswith('video/')
+
                 async with aiofiles.open(temp_file_path, 'wb') as f:
-                    if is_partial:
+                    if is_partial and not is_video:
+                        # Non-video: write only first portion
                         await f.write(file_data[:max_size])
                     else:
+                        # Video or small file: write full decrypted data
                         await f.write(file_data)
+                        if is_video and is_partial:
+                            logger.info(
+                                f"Video preview: wrote full {len(file_data)/1024/1024:.1f}MB "
+                                f"(not truncated to {max_size/1024/1024:.1f}MB to preserve moov atom)"
+                            )
 
-                return temp_file_path, not is_partial
+                return temp_file_path, True  # Always complete since we wrote full decrypted data
 
             else:  # chunked storage
                 # Download only first N chunks
