@@ -5,7 +5,7 @@ import {
   User, LogOut, Home, Search, Settings, ChevronRight, Grid,
   List, Filter, Eye, Copy, Wifi, WifiOff, Check, Info,
   Image, FileText, Video, Music, Archive, Code, Clock,
-  Zap
+  Zap, Lock
 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RecentsView from './RecentsView';
@@ -17,6 +17,7 @@ import QuotaAlertsView from './QuotaAlertsView';
 import DeduplicationPanel from './DeduplicationPanel';
 import AutoOrganizeView from './AutoOrganizeView';
 import RecommendationsView from './RecommendationsView';
+import SettingsView from './SettingsView';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
@@ -37,8 +38,10 @@ import SearchBar from './SearchBar';
 import SearchResults from './SearchResults';
 import SessionUnlockModal from '../auth/SessionUnlockModal';
 import DownloadProgress from './DownloadProgress';
+import MigrationBanner from './MigrationBanner';
 import FileCorruptionModal from './FileCorruptionModal';
 import ShareBundleComposer from './ShareBundleComposer';
+import ZKDashboardLayout from './ZKDashboardLayout';
 import { formatBytes, formatDate, getFileIcon, getFileType } from '../../utils/helpers';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../services/storageService';
@@ -696,14 +699,7 @@ export default function Dashboard() {
 
       case 'settings':
         return (
-          <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-            <h1 className={`text-2xl font-bold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Settings
-            </h1>
-            <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
-              Settings panel - Coming soon
-            </p>
-          </div>
+          <SettingsView darkMode={darkMode} />
         );
 
       case 'cloud-drive':
@@ -811,6 +807,49 @@ export default function Dashboard() {
     }
   };
 
+  // Route to ZK Dashboard for Zero-Knowledge users with unlocked session
+  if (zkEnabled && zkSessionUnlocked) {
+    return (
+      <>
+        <ZKDashboardLayout
+          // Theme
+          darkMode={darkMode}
+          toggleTheme={toggleTheme}
+          // Auth
+          user={user}
+          logout={logout}
+          isUnlocked={zkSessionUnlocked}
+          onLock={lockSession}
+          // Storage
+          files={files}
+          folders={folders}
+          currentFolder={currentFolder}
+          currentFolderName={currentFolderName}
+          storageStats={storageStats}
+          selectedFiles={selectedFiles}
+          // Actions
+          uploadFile={uploadFile}
+          downloadFile={downloadFile}
+          deleteFile={deleteFile}
+          createFolder={createFolder}
+          navigateToFolder={navigateToFolder}
+          selectFile={selectFile}
+          selectAll={selectAll}
+          clearSelection={clearSelection}
+          refreshFiles={refreshFiles}
+        />
+        {/* Session Unlock Modal - also needed here for when session expires */}
+        {showUnlockModal && (
+          <SessionUnlockModal
+            isOpen={showUnlockModal}
+            onClose={handleSessionUnlockClose}
+          />
+        )}
+      </>
+    );
+  }
+
+  // Normal Dashboard for non-ZK users
   return (
     <div className={`min-h-screen ${darkMode ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
       {/* Sidebar */}
@@ -904,6 +943,11 @@ export default function Dashboard() {
           {/* Storage Stats - only show in cloud-drive view */}
           {activeView === 'cloud-drive' && storageStats && (
             <StorageStats stats={storageStats} darkMode={darkMode} />
+          )}
+
+          {/* Migration Banner - show when V1 files need upgrade */}
+          {activeView === 'cloud-drive' && (
+            <MigrationBanner />
           )}
 
           {/* Filter Panel */}

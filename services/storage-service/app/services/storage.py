@@ -191,6 +191,25 @@ class StorageService:
             # For chunked files, caller should use get_chunk; but you can also reassemble here
             raise ValueError("Use get_chunk for chunked files")
     
+    async def get_encrypted_chunk(self, chunk_hash: str) -> bytes:
+        """
+        Retrieve raw encrypted chunk bytes WITHOUT decryption.
+        Used for ZK-safe share links where client handles decryption.
+        """
+        redis_client = await get_redis()
+        chunk_info_raw = await redis_client.get(f"chunk:{chunk_hash}")
+
+        if not chunk_info_raw:
+            raise HTTPException(404, "Chunk not found")
+
+        chunk_info = json.loads(chunk_info_raw)
+
+        # Read raw bytes - DO NOT decrypt or decompress
+        async with aiofiles.open(chunk_info["path"], "rb") as f:
+            raw_bytes = await f.read()
+
+        return raw_bytes
+
     async def move_to_tier(self, chunk_hash: str, target_tier: str):
         """Move chunk between storage tiers"""
         redis_client = await get_redis()

@@ -3,6 +3,12 @@ Redis Client
 
 Connection pool and helper functions for Redis.
 Used for session storage, rate limiting, and caching.
+
+Key Namespacing:
+- All ZK service keys are prefixed with "zk:" to prevent collisions with storage-service
+- Session keys: zk:session:{session_id}
+- Rate limit keys: zk:ratelimit:{action}:{identifier}
+- Upload progress keys: zk:upload:{upload_id}
 """
 import json
 import structlog
@@ -13,6 +19,9 @@ from redis.asyncio import ConnectionPool
 from app.config import settings
 
 logger = structlog.get_logger()
+
+# Key prefix for all ZK service keys - prevents collision with storage-service
+ZK_KEY_PREFIX = "zk:"
 
 # Global Redis client
 _redis_client: Optional[aioredis.Redis] = None
@@ -242,8 +251,8 @@ class SessionService:
 
     @staticmethod
     def _session_key(session_id: str) -> str:
-        """Generate Redis key for session"""
-        return f"session:{session_id}"
+        """Generate Redis key for session (with ZK prefix)"""
+        return f"{ZK_KEY_PREFIX}session:{session_id}"
 
     @staticmethod
     async def create_session(
@@ -329,8 +338,8 @@ class RateLimitService:
 
     @staticmethod
     def _rate_limit_key(identifier: str, action: str) -> str:
-        """Generate Redis key for rate limiting"""
-        return f"ratelimit:{action}:{identifier}"
+        """Generate Redis key for rate limiting (with ZK prefix)"""
+        return f"{ZK_KEY_PREFIX}ratelimit:{action}:{identifier}"
 
     @staticmethod
     async def check_rate_limit(

@@ -5,6 +5,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { validateEmail, validatePassword, sanitizeInput, validatePasswordStrength } from '../../utils/security';
 import { authService } from '../../services/authService';
+import * as zkAuthService from '../../services/zkAuthService';
 import RecoveryPhraseSetup from './RecoveryPhraseSetup';
 import RecoveryPhraseConfirm from './RecoveryPhraseConfirm';
 import RecoveryModal from './RecoveryModal';
@@ -141,8 +142,9 @@ export default function AuthPage() {
             formData.userType
           );
           // For ZK registration, show recovery phrase setup
+          // Pass true to skip session check since we just registered (state hasn't updated yet)
           setLoading(false);
-          await handleRecoveryPhraseSetup();
+          await handleRecoveryPhraseSetup(true);
         } else {
           await register(
             formData.email,
@@ -172,9 +174,9 @@ export default function AuthPage() {
     }
   };
 
-  const handleRecoveryPhraseSetup = async () => {
+  const handleRecoveryPhraseSetup = async (skipSessionCheck = false) => {
     try {
-      const result = await setupRecoveryPhrase();
+      const result = await setupRecoveryPhrase(skipSessionCheck);
       if (result.success) {
         setRecoveryPhrase(result.recoveryPhrase);
         setShowRecoverySetup(true);
@@ -235,12 +237,33 @@ export default function AuthPage() {
     }
   };
 
+  // Check if email has ZK enabled (for auto-detection on login)
+  const checkZKStatus = useCallback(async (email) => {
+    if (!email || !validateEmail(email) || authMode !== 'login') return;
+
+    try {
+      const kdfParams = await zkAuthService.getKDFParams(email);
+      if (kdfParams) {
+        // Email has ZK enabled - auto-check the ZK checkbox
+        setEnableZK(true);
+      }
+    } catch (error) {
+      // User not found or ZK not enabled - that's fine
+      console.log('ZK check:', error.message);
+    }
+  }, [authMode]);
+
   // Inline validation on blur
   const handleBlur = (e) => {
     const { name, value } = e.target;
 
     if (name === 'email' && value && !validateEmail(value)) {
       setFieldErrors(prev => ({ ...prev, email: 'Please enter a valid email address' }));
+    }
+
+    // Auto-detect ZK accounts on login
+    if (name === 'email' && authMode === 'login' && value && validateEmail(value)) {
+      checkZKStatus(value);
     }
 
     if (name === 'username' && authMode === 'register' && value && value.length < 3) {

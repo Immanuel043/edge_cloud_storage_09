@@ -44,7 +44,7 @@ class EnableZKRequest(BaseModel):
     encrypted_master_key: str
     kdf_salt: str
     kdf_algorithm: str = Field(default="pbkdf2", pattern="^(pbkdf2|argon2id)$")
-    kdf_iterations: int = Field(default=600000, ge=100000)
+    kdf_iterations: int = Field(default=600000, ge=1)  # Argon2id uses 3, PBKDF2 uses 600000
     kdf_memory: Optional[int] = None
     kdf_parallelism: Optional[int] = None
 
@@ -99,9 +99,9 @@ async def enable_zero_knowledge(
 
     logger.info("enabling_zk_for_user", user_id=str(user.id))
 
-    # Decode salt
+    # Decode salt (expecting hex string from frontend)
     try:
-        kdf_salt = base64.b64decode(request_data.kdf_salt)
+        kdf_salt = bytes.fromhex(request_data.kdf_salt)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -417,9 +417,9 @@ async def recover_with_phrase(
     user.password_hash = bcrypt_hash.decode('utf-8')
     user.encrypted_master_key = request_data.new_encrypted_master_key
 
-    # Update KDF salt if changed
+    # Update KDF salt if changed (expecting hex string from frontend)
     try:
-        new_kdf_salt = base64.b64decode(request_data.new_kdf_salt)
+        new_kdf_salt = bytes.fromhex(request_data.new_kdf_salt)
         user.kdf_salt = new_kdf_salt
     except Exception:
         pass

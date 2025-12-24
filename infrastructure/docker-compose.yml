@@ -298,6 +298,8 @@ services:
       REDIS_URL: redis://redis:6379
       STORAGE_SERVICE_URL: http://storage-service:8000
       STORAGE_PATH: /app/storage
+      # ZK-specific storage path - isolated from normal storage
+      ZK_STORAGE_PATH: /app/storage/zk
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 120
@@ -312,6 +314,10 @@ services:
       MAX_HARDWARE_KEYS_PER_USER: 5
       RATE_LIMIT_ENABLED: "true"
       RATE_LIMIT_REQUESTS_PER_MINUTE: 60
+      # Cookie security (false for HTTP development, true for HTTPS production)
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # CORS origins for frontend
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001"]'
       # Logging
       LOG_LEVEL: INFO
       DEBUG: ${DEBUG:-false}

@@ -53,6 +53,9 @@ class FileMetadataResponse(BaseModel):
     total_chunks: int
     uploaded_at: Optional[str]
     file_hash: Optional[str]
+    # Migration fields
+    encryption_version: Optional[int] = 2  # 1=V1, 2=V2 (HKDF+AAD)
+    is_encrypted: bool = True  # ZK files are always encrypted
 
 
 class FileListResponse(BaseModel):
@@ -104,21 +107,23 @@ async def list_files(
         offset=offset
     )
 
-    # Build query
+    # Build query - ONLY return ZK-encrypted files (encryption_mode = 'client_zk')
     query = select(StorageObject).where(
         StorageObject.user_id == user.id,
         StorageObject.is_deleted == False,
-        StorageObject.upload_status == "completed"
+        StorageObject.upload_status == "completed",
+        StorageObject.encryption_mode == "client_zk"  # Only ZK-encrypted files
     )
 
     if folder_id:
         query = query.where(StorageObject.parent_folder_id == folder_id)
 
-    # Get total count
+    # Get total count (only ZK files)
     count_query = select(func.count()).select_from(StorageObject).where(
         StorageObject.user_id == user.id,
         StorageObject.is_deleted == False,
-        StorageObject.upload_status == "completed"
+        StorageObject.upload_status == "completed",
+        StorageObject.encryption_mode == "client_zk"  # Only ZK-encrypted files
     )
     if folder_id:
         count_query = count_query.where(StorageObject.parent_folder_id == folder_id)
@@ -132,11 +137,12 @@ async def list_files(
     result = await db.execute(query)
     files = result.scalars().all()
 
-    # Calculate total size
+    # Calculate total size (only ZK files)
     size_query = select(func.sum(StorageObject.file_size)).where(
         StorageObject.user_id == user.id,
         StorageObject.is_deleted == False,
-        StorageObject.upload_status == "completed"
+        StorageObject.upload_status == "completed",
+        StorageObject.encryption_mode == "client_zk"  # Only ZK-encrypted files
     )
     total_size = await db.scalar(size_query) or 0
 
@@ -149,7 +155,7 @@ async def list_files(
 
         file_list.append(FileMetadataResponse(
             file_id=str(file_obj.id),
-            filename=file_obj.filename,
+            filename=file_obj.file_name,
             file_size=file_obj.file_size,
             mime_type=file_obj.mime_type or "application/octet-stream",
             encrypted_file_key=file_obj.encrypted_file_key or "",
@@ -158,7 +164,9 @@ async def list_files(
             chunk_size=chunk_size,
             total_chunks=total_chunks,
             uploaded_at=file_obj.uploaded_at.isoformat() if file_obj.uploaded_at else None,
-            file_hash=file_obj.file_hash
+            file_hash=file_obj.file_hash,
+            encryption_version=file_obj.encryption_version,
+            is_encrypted=True
         ))
 
     logger.info(
@@ -225,7 +233,7 @@ async def get_file_metadata(
 
     return FileMetadataResponse(
         file_id=str(file_obj.id),
-        filename=file_obj.filename,
+        filename=file_obj.file_name,
         file_size=file_obj.file_size,
         mime_type=file_obj.mime_type or "application/octet-stream",
         encrypted_file_key=file_obj.encrypted_file_key or "",
@@ -290,8 +298,8 @@ async def download_file(
             detail="File upload not completed"
         )
 
-    # Get storage directory
-    storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+    # Get storage directory - use ZK-specific isolated path
+    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
 
     if not storage_dir.exists():
         raise HTTPException(
@@ -329,7 +337,7 @@ async def download_file(
         "zk_download_started",
         user_id=str(user.id),
         file_id=file_id,
-        filename=file_obj.filename,
+        filename=file_obj.file_name,
         total_chunks=total_chunks
     )
 
@@ -338,7 +346,7 @@ async def download_file(
         chunk_generator(),
         media_type=file_obj.mime_type or "application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{file_obj.filename}"',
+            "Content-Disposition": f'attachment; filename="{file_obj.file_name}"',
             "Content-Length": str(file_obj.file_size),
             "X-File-Encrypted": "true",
             "X-Encryption-Algorithm": file_obj.encryption_algorithm or "AES-256-GCM"
@@ -392,8 +400,8 @@ async def download_chunk(
             detail="File not found"
         )
 
-    # Get chunk path
-    storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+    # Get chunk path - use ZK-specific isolated path
+    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
     chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
 
     if not chunk_path.exists():
@@ -470,8 +478,8 @@ async def delete_file(
         )
 
     if permanent:
-        # Permanently delete file data
-        storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+        # Permanently delete file data - use ZK-specific isolated path
+        storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
         if storage_dir.exists():
             shutil.rmtree(storage_dir)
 
@@ -483,23 +491,23 @@ async def delete_file(
             "zk_file_permanently_deleted",
             user_id=str(user.id),
             file_id=file_id,
-            filename=file_obj.filename
+            filename=file_obj.file_name
         )
 
         return {
             "message": "File permanently deleted",
             "file_id": file_id,
-            "filename": file_obj.filename
+            "filename": file_obj.file_name
         }
 
     else:
-        # Soft delete
+        # Soft delete (set is_deleted flag and update updated_at)
         await db.execute(
             update(StorageObject)
             .where(StorageObject.id == file_id)
             .values(
                 is_deleted=True,
-                deleted_at=datetime.utcnow()
+                updated_at=datetime.utcnow()
             )
         )
         await db.commit()
@@ -508,13 +516,13 @@ async def delete_file(
             "zk_file_soft_deleted",
             user_id=str(user.id),
             file_id=file_id,
-            filename=file_obj.filename
+            filename=file_obj.file_name
         )
 
         return {
             "message": "File moved to trash",
             "file_id": file_id,
-            "filename": file_obj.filename,
+            "filename": file_obj.file_name,
             "can_restore": True
         }
 
@@ -570,13 +578,13 @@ async def restore_file(
         "zk_file_restored",
         user_id=str(user.id),
         file_id=file_id,
-        filename=file_obj.filename
+        filename=file_obj.file_name
     )
 
     return {
         "message": "File restored successfully",
         "file_id": file_id,
-        "filename": file_obj.filename
+        "filename": file_obj.file_name
     }
 
 

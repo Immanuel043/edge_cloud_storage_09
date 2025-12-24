@@ -32,6 +32,7 @@ class User(Base):
     zk_enabled = Column(Boolean, default=False)
     zk_enrolled_at = Column(DateTime, nullable=True)
     encrypted_master_key = Column(Text, nullable=True)
+    master_key_iv = Column(Text, nullable=True)  # IV for AES-GCM encryption of master key
     kdf_salt = Column(BYTEA, nullable=True)
     kdf_algorithm = Column(String(20), default='pbkdf2', nullable=True)
     kdf_iterations = Column(Integer, default=600000, nullable=True)
@@ -57,11 +58,16 @@ class StorageObject(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_deleted = Column(Boolean, default=False)
 
+    # Encryption mode to distinguish file types
+    # Values: 'none' (no encryption), 'server_side' (storage service encrypts), 'client_zk' (ZK client-side encryption)
+    encryption_mode = Column(String(20), default='client_zk', nullable=False)
+
     # Zero-Knowledge Encryption fields
     is_encrypted = Column(Boolean, default=False)
     encrypted_file_key = Column(Text, nullable=True)
     file_key_iv = Column(String(255), nullable=True)
     encryption_algorithm = Column(String(50), default="AES-256-GCM", nullable=True)
+    encryption_version = Column(Integer, default=2, nullable=True)  # 1=V1 (basic), 2=V2 (HKDF+AAD) - default V2
     upload_status = Column(String(20), default="completed", nullable=True)
     upload_id = Column(String(255), nullable=True)
     uploaded_at = Column(DateTime, nullable=True)

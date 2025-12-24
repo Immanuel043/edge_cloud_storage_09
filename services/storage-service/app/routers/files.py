@@ -117,6 +117,10 @@ async def list_files(
             updated_at=f.updated_at,
             path=f.object_path,
             is_favorite=(f.id in favorite_file_ids),
+            # ZK encryption fields
+            is_encrypted=f.is_encrypted or False,
+            encryption_version=f.encryption_version,
+            encryption_mode=f.encryption_mode,
         )
         for f in files
     ]

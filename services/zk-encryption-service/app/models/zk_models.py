@@ -256,8 +256,8 @@ class ZKEnableRequest(BaseModel):
     encrypted_master_key: str
     kdf_salt: str
     kdf_algorithm: Literal['pbkdf2', 'argon2id'] = 'pbkdf2'
-    kdf_iterations: int = Field(default=600000, ge=100000)
-    kdf_memory: Optional[int] = Field(default=None, ge=65536)  # For Argon2
+    kdf_iterations: int = Field(default=600000, ge=1)  # Argon2id uses 3, PBKDF2 uses 600000
+    kdf_memory: Optional[int] = Field(default=None, ge=16384)  # Min 16MB for Argon2id
     kdf_parallelism: Optional[int] = Field(default=None, ge=1)  # For Argon2
     recovery_encrypted_master_key: Optional[str] = None
     recovery_phrase_hash: Optional[str] = None

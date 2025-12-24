@@ -66,6 +66,7 @@ export const ZK_ENDPOINTS = Object.freeze({
   LOGIN_ZK: `${ZK_SERVICE_URL}/api/v1/zk/login-zk`,
   LOGOUT: `${ZK_SERVICE_URL}/api/v1/zk/logout`,
   KDF_PARAMS: `${ZK_SERVICE_URL}/api/v1/zk/kdf-params`,
+  UPGRADE_TO_ZK: `${ZK_SERVICE_URL}/api/v1/zk/upgrade-to-zk`,
 
   // User & Status
   STATUS: `${ZK_SERVICE_URL}/api/v1/zk/status`,
@@ -133,6 +134,8 @@ export const ZK_STORAGE = Object.freeze({
   ZK_ENABLED_KEY: 'zkEnabled',
   ZK_EMAIL_KEY: 'zkEmail',
   RECOVERY_ENABLED_KEY: 'zkRecoveryEnabled',
+  // Encrypted data (safe to store - encrypted with password-derived key)
+  ZK_DATA_KEY: 'zkData',
 
   // Session storage keys
   SESSION_UNLOCKED_KEY: 'zkSessionUnlocked',

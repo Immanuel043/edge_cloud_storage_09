@@ -15,6 +15,9 @@ import {
 
 // File type to icon mapping
 const getFileTypeIcon = (fileName, size = 48) => {
+  if (!fileName) {
+    return <File size={size} className="text-gray-400" />;
+  }
   const ext = fileName.split('.').pop()?.toLowerCase();
   const iconProps = { size };
 
@@ -63,7 +66,9 @@ export default function FileThumbnail({
   const imgRef = useRef(null);
   const observerRef = useRef(null);
 
-  const extension = file.name?.split('.').pop()?.toLowerCase() || '';
+  // Derive file name from various possible sources
+  const fileName = file.name || file.file_name || 'Unknown File';
+  const extension = fileName.split('.').pop()?.toLowerCase() || '';
   const mimeType = (file.mime_type || '').toLowerCase();
   const isVideoFile = mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension);
   const isImageFile = mimeType.startsWith('image/') || IMAGE_EXTENSIONS.includes(extension);
@@ -118,7 +123,7 @@ export default function FileThumbnail({
         // Set a timeout to abort the request if it takes too long
         timeoutId = setTimeout(() => {
           if (mounted) {
-            console.log(`Thumbnail timeout for ${file.name} after ${timeoutMs}ms`);
+            console.log(`Thumbnail timeout for ${fileName} after ${timeoutMs}ms`);
             controller.abort();
             setLoading(false);
             setError(false); // Don't show error, just use fallback icon
@@ -136,8 +141,9 @@ export default function FileThumbnail({
 
         // Add cache-busting for video files to ensure fresh thumbnails
         const cacheBuster = isVideoFile ? `&_t=${file.updated_at || Date.now()}` : '';
+        const fileId = file.id || file.file_id;
         const response = await fetch(
-          `${API_URL}/api/v1/files/${file.id}/preview?size=${size}${cacheBuster}`,
+          `${API_URL}/api/v1/files/${fileId}/preview?size=${size}${cacheBuster}`,
           {
             credentials: 'include',
             signal: controller.signal,
@@ -167,7 +173,7 @@ export default function FileThumbnail({
               const data = await response.json();
               const retryAfter = (data.retry_after || 5) * 1000; // Convert to ms
 
-              console.log(`Preview ${data.status} for ${file.name}, retrying in ${retryAfter/1000}s`);
+              console.log(`Preview ${data.status} for ${fileName}, retrying in ${retryAfter/1000}s`);
 
               // Show processing indicator
               setIsProcessing(true);
@@ -246,7 +252,7 @@ export default function FileThumbnail({
         URL.revokeObjectURL(thumbnailUrl);
       }
     };
-  }, [isVisible, file.id, size, isVideoFile, file.name, file.updated_at, retryCount]);
+  }, [isVisible, file.id, size, isVideoFile, fileName, file.updated_at, retryCount]);
 
   // Size mapping
   const sizeClasses = {
@@ -271,7 +277,7 @@ export default function FileThumbnail({
         className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} animate-pulse`}
       >
         <div className="w-full h-full flex items-center justify-center">
-          {getFileTypeIcon(file.name, iconSizes[size] / 2)}
+          {getFileTypeIcon(fileName, iconSizes[size] / 2)}
         </div>
       </div>
     );
@@ -283,7 +289,7 @@ export default function FileThumbnail({
       <div ref={imgRef} className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}>
         <img
           src={thumbnailUrl}
-          alt={file.name}
+          alt={fileName}
           className="w-full h-full object-cover"
           onError={() => setError(true)}
         />
@@ -306,7 +312,7 @@ export default function FileThumbnail({
       ref={imgRef}
       className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}
     >
-      {getFileTypeIcon(file.name, iconSizes[size])}
+      {getFileTypeIcon(fileName, iconSizes[size])}
 
       {/* Processing indicator overlay */}
       {isProcessing && (

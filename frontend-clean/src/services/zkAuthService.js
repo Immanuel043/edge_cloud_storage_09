@@ -49,7 +49,24 @@ async function zkFetch(url, options = {}) {
 
     if (!response.ok) {
       // Extract error message from response
-      const errorMessage = data?.detail || data?.message || data || 'Unknown error';
+      let errorMessage = 'Unknown error';
+      if (typeof data === 'string') {
+        errorMessage = data;
+      } else if (data?.error?.message) {
+        // Handle custom ZK service error format: {"error": {"code": 400, "message": "..."}}
+        errorMessage = data.error.message;
+      } else if (data?.detail) {
+        // Handle FastAPI validation errors (array of error objects)
+        if (Array.isArray(data.detail)) {
+          errorMessage = data.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+        } else if (typeof data.detail === 'string') {
+          errorMessage = data.detail;
+        } else {
+          errorMessage = JSON.stringify(data.detail);
+        }
+      } else if (data?.message) {
+        errorMessage = typeof data.message === 'string' ? data.message : JSON.stringify(data.message);
+      }
       throw new Error(errorMessage);
     }
 
@@ -97,8 +114,10 @@ export async function getKDFParams(email) {
  * @param {string} registrationData.passwordHash - Hashed derived key
  * @param {string} registrationData.encryptedMasterKey - Encrypted master key (base64)
  * @param {string} registrationData.kdfSalt - KDF salt (hex)
- * @param {string} registrationData.kdfAlgorithm - KDF algorithm
+ * @param {string} registrationData.kdfAlgorithm - KDF algorithm (pbkdf2 or argon2id)
  * @param {number} registrationData.kdfIterations - KDF iterations
+ * @param {number} registrationData.kdfMemory - Argon2id memory parameter (optional)
+ * @param {number} registrationData.kdfParallelism - Argon2id parallelism parameter (optional)
  * @returns {Promise<Object>} { user_id, access_token, message }
  */
 export async function registerZK(registrationData) {
@@ -107,9 +126,12 @@ export async function registerZK(registrationData) {
     username: registrationData.username,
     password_hash: registrationData.passwordHash,
     encrypted_master_key: registrationData.encryptedMasterKey,
+    master_key_iv: registrationData.masterKeyIV,
     kdf_salt: registrationData.kdfSalt,
     kdf_algorithm: registrationData.kdfAlgorithm,
     kdf_iterations: registrationData.kdfIterations,
+    kdf_memory: registrationData.kdfMemory,
+    kdf_parallelism: registrationData.kdfParallelism,
   };
 
   const response = await zkFetch(ZK_ENDPOINTS.REGISTER_ZK, {
@@ -242,6 +264,7 @@ export async function initializeUpload(uploadData) {
     encrypted_file_key: uploadData.encryptedFileKey,
     file_key_iv: uploadData.fileKeyIV,
     encryption_algorithm: uploadData.encryptionAlgorithm,
+    encryption_version: uploadData.encryptionVersion || 2, // Default to V2 (HKDF+AAD)
     chunk_size: uploadData.chunkSize,
     parent_folder_id: uploadData.parentFolderId || null,
   };
@@ -259,41 +282,53 @@ export async function initializeUpload(uploadData) {
  * @param {string} uploadId - Upload ID from initialization
  * @param {number} chunkIndex - Chunk index
  * @param {Uint8Array} encryptedChunk - Encrypted chunk data
- * @param {string} chunkIV - Chunk IV (base64)
+ * @param {string} chunkIV - Chunk IV (base64) - IV is embedded in the encrypted chunk
  * @returns {Promise<Object>} { message, chunk_index, status }
  */
 export async function uploadChunk(uploadId, chunkIndex, encryptedChunk, chunkIV) {
-  // Convert Uint8Array to base64
-  const base64Chunk = btoa(String.fromCharCode(...encryptedChunk));
+  // Create FormData for multipart upload (backend expects file upload)
+  const formData = new FormData();
+  formData.append('chunk_index', chunkIndex.toString());
 
-  const payload = {
-    upload_id: uploadId,
-    chunk_index: chunkIndex,
-    encrypted_data: base64Chunk,
-    chunk_iv: chunkIV,
-  };
+  // Create a Blob from the encrypted chunk data
+  const chunkBlob = new Blob([encryptedChunk], { type: 'application/octet-stream' });
+  formData.append('chunk', chunkBlob, `chunk_${chunkIndex}.enc`);
 
-  const response = await zkFetch(ZK_ENDPOINTS.UPLOAD_CHUNK, {
+  // Build URL with upload_id in path: /upload/chunk/{upload_id}
+  const url = `${ZK_ENDPOINTS.UPLOAD_CHUNK}/${uploadId}`;
+
+  const response = await fetch(url, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    credentials: 'include', // Include cookies for authentication
+    body: formData,
+    // Note: Don't set Content-Type header - browser will set it with multipart boundary
   });
 
-  return response;
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Chunk upload failed' }));
+    throw new Error(errorData.detail || errorData.message || 'Chunk upload failed');
+  }
+
+  return response.json();
 }
 
 /**
  * Complete encrypted file upload
  * @param {string} uploadId - Upload ID
  * @param {string} fileHash - SHA-256 hash of original file
+ * @param {number} totalChunks - Total number of chunks uploaded
  * @returns {Promise<Object>} { file_id, message }
  */
-export async function completeUpload(uploadId, fileHash) {
+export async function completeUpload(uploadId, fileHash, totalChunks = 1) {
   const payload = {
-    upload_id: uploadId,
+    total_chunks: totalChunks,
     file_hash: fileHash,
   };
 
-  const response = await zkFetch(ZK_ENDPOINTS.UPLOAD_COMPLETE, {
+  // Build URL with upload_id in path: /upload/complete/{upload_id}
+  const url = `${ZK_ENDPOINTS.UPLOAD_COMPLETE}/${uploadId}`;
+
+  const response = await zkFetch(url, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -364,7 +399,8 @@ export async function getStorageUsage() {
  * @returns {Promise<Object>} { message }
  */
 export async function deleteFile(fileId) {
-  const url = `${ZK_ENDPOINTS.FILE_METADATA}/${fileId}`;
+  // Use FILES_LIST base URL - delete endpoint is /files/{file_id}
+  const url = `${ZK_ENDPOINTS.FILES_LIST}/${fileId}`;
   const response = await zkFetch(url, {
     method: 'DELETE',
   });
@@ -380,6 +416,41 @@ export async function deleteFile(fileId) {
  */
 export async function checkHealth() {
   const response = await zkFetch(ZK_ENDPOINTS.HEALTH);
+  return response;
+}
+
+// ==================== Account Upgrade ====================
+
+/**
+ * Upgrade existing regular account to Zero-Knowledge encryption
+ * @param {Object} upgradeData - Upgrade data
+ * @param {string} upgradeData.passwordHash - SHA-256 hash of derived key
+ * @param {string} upgradeData.encryptedMasterKey - Encrypted master key (base64)
+ * @param {string} upgradeData.masterKeyIV - IV for AES-GCM (base64)
+ * @param {string} upgradeData.kdfSalt - KDF salt (hex)
+ * @param {string} upgradeData.kdfAlgorithm - KDF algorithm (pbkdf2 or argon2id)
+ * @param {number} upgradeData.kdfIterations - KDF iterations
+ * @param {number} upgradeData.kdfMemory - Argon2id memory parameter (optional)
+ * @param {number} upgradeData.kdfParallelism - Argon2id parallelism parameter (optional)
+ * @returns {Promise<Object>} { message, access_token, user }
+ */
+export async function upgradeToZK(upgradeData) {
+  const payload = {
+    password_hash: upgradeData.passwordHash,
+    encrypted_master_key: upgradeData.encryptedMasterKey,
+    master_key_iv: upgradeData.masterKeyIV,
+    kdf_salt: upgradeData.kdfSalt,
+    kdf_algorithm: upgradeData.kdfAlgorithm,
+    kdf_iterations: upgradeData.kdfIterations,
+    kdf_memory: upgradeData.kdfMemory,
+    kdf_parallelism: upgradeData.kdfParallelism,
+  };
+
+  const response = await zkFetch(ZK_ENDPOINTS.UPGRADE_TO_ZK, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
   return response;
 }
 
@@ -414,4 +485,7 @@ export default {
 
   // Health
   checkHealth,
+
+  // Account Upgrade
+  upgradeToZK,
 };

@@ -88,17 +88,27 @@ def verify_token(token: str) -> Optional[dict]:
         )
 
 
+# Cookie name for session token (must match auth_zk.py)
+COOKIE_NAME = "access_token"
+
+
 # ========== USER AUTHENTICATION DEPENDENCIES ==========
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get current authenticated user from JWT token.
 
+    Checks for token in:
+    1. Authorization header (Bearer token)
+    2. HTTP-only cookie (access_token)
+
     Args:
-        credentials: HTTP Authorization header with Bearer token
+        request: FastAPI request object
+        credentials: Optional HTTP Authorization header with Bearer token
         db: Database session
 
     Returns:
@@ -107,7 +117,21 @@ async def get_current_user(
     Raises:
         HTTPException: If user not found or token invalid
     """
-    token = credentials.credentials
+    token = None
+
+    # First, try Authorization header
+    if credentials:
+        token = credentials.credentials
+    # Fallback to cookie
+    elif COOKIE_NAME in request.cookies:
+        token = request.cookies[COOKIE_NAME]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authenticated",
+        )
+
     payload = verify_token(token)
 
     user_id = payload.get("sub")
@@ -166,26 +190,40 @@ async def get_current_zk_user(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get current user if authenticated, None otherwise.
 
+    Checks for token in:
+    1. Authorization header (Bearer token)
+    2. HTTP-only cookie (access_token)
+
     Useful for endpoints that work both with and without authentication.
 
     Args:
+        request: FastAPI request object
         credentials: Optional HTTP Authorization header
         db: Database session
 
     Returns:
         User object or None
     """
-    if credentials is None:
+    token = None
+
+    # Try Authorization header first
+    if credentials:
+        token = credentials.credentials
+    # Fallback to cookie
+    elif COOKIE_NAME in request.cookies:
+        token = request.cookies[COOKIE_NAME]
+
+    if not token:
         return None
 
     try:
-        token = credentials.credentials
         payload = verify_token(token)
         user_id = payload.get("sub")
 

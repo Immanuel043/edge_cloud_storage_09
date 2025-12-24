@@ -78,11 +78,16 @@ class Object(Base):
     is_deleted = Column(Boolean, default=False)  # Soft delete for trash functionality
     deleted_at = Column(DateTime, nullable=True)  # Timestamp when file was moved to trash
 
+    # Encryption mode to distinguish file types
+    # Values: 'none' (no encryption), 'server_side' (storage service encrypts), 'client_zk' (ZK client-side encryption)
+    encryption_mode = Column(String(20), default='none', nullable=False, index=True)
+
     # Zero-Knowledge Encryption fields (for client-side encrypted files)
     is_encrypted = Column(Boolean, default=False)  # True if client-side encrypted
     encrypted_file_key = Column(Text, nullable=True)  # File key encrypted with user's master key
     file_key_iv = Column(String(255), nullable=True)  # IV used for file key encryption
     encryption_algorithm = Column(String(50), default="AES-256-GCM", nullable=True)
+    encryption_version = Column(Integer, default=1, nullable=True)  # 1=V1 (basic), 2=V2 (HKDF+AAD)
     upload_status = Column(String(20), default="completed", nullable=True)  # pending, uploading, completed, failed
     upload_id = Column(String(255), nullable=True)  # Upload session ID
     uploaded_at = Column(DateTime, nullable=True)  # Timestamp when upload completed

@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         default="/app/storage",
         env="STORAGE_PATH"
     )
+    # ZK-specific storage path - isolated from normal storage
+    ZK_STORAGE_PATH: str = Field(
+        default="/app/storage/zk",
+        env="ZK_STORAGE_PATH"
+    )
 
     # JWT Settings (shared with storage service)
     SECRET_KEY: str = Field(..., env="SECRET_KEY")

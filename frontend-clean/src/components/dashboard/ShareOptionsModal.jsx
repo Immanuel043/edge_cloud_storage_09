@@ -1,8 +1,73 @@
 import React, { useState } from 'react';
-import { X, Lock, Clock, Download, Link as LinkIcon, Copy, Check, Eye, Edit, Users } from 'lucide-react';
+import { X, Lock, Clock, Download, Link as LinkIcon, Copy, Check, Eye, Edit, Users, ShieldCheck, ShieldX } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 
 export default function ShareOptionsModal({ file, folder, onClose, darkMode }) {
+  // Check if file is ZK encrypted - block sharing
+  const isZKEncrypted = file?.is_encrypted || file?.encryption_mode === 'client_zk';
+
+  // If ZK encrypted, show blocked message
+  if (isZKEncrypted) {
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className={`p-6 rounded-2xl max-w-md w-full shadow-2xl ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <div className="text-center">
+            {/* Icon */}
+            <div className={`mx-auto w-20 h-20 rounded-full flex items-center justify-center mb-6 ${
+              darkMode ? 'bg-green-900/30' : 'bg-green-100'
+            }`}>
+              <ShieldCheck className={darkMode ? 'text-green-400' : 'text-green-600'} size={40} />
+            </div>
+
+            {/* Title */}
+            <h3 className={`text-xl font-bold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              Sharing Not Available
+            </h3>
+
+            {/* Message */}
+            <p className={`mb-6 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+              <span className="font-medium">"{file?.name}"</span> is protected with Zero-Knowledge encryption.
+            </p>
+
+            {/* Explanation Box */}
+            <div className={`p-4 rounded-xl text-left mb-6 ${
+              darkMode ? 'bg-gray-900 border border-gray-700' : 'bg-gray-50 border border-gray-200'
+            }`}>
+              <div className="flex items-start gap-3">
+                <Lock className={`flex-shrink-0 mt-0.5 ${darkMode ? 'text-green-400' : 'text-green-600'}`} size={18} />
+                <div>
+                  <p className={`text-sm font-medium mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    End-to-End Encrypted
+                  </p>
+                  <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Only you can decrypt this file with your password. Sharing would require sharing your encryption keys, which defeats the purpose of zero-knowledge security.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Alternative suggestion */}
+            <p className={`text-sm mb-6 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+              To share this file, download it first and send it through a secure channel.
+            </p>
+
+            {/* Close Button */}
+            <button
+              onClick={onClose}
+              className={`w-full py-3 rounded-xl font-semibold transition-all ${
+                darkMode
+                  ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-900'
+              }`}
+            >
+              I Understand
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const [shareUrl, setShareUrl] = useState('');
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);

@@ -36,11 +36,13 @@ class OfflineDB {
 
   async cacheFiles(files) {
     if (!this.db) await this.init();
-    
+
     const transaction = this.db.transaction(['files'], 'readwrite');
     const store = transaction.objectStore('files');
-    
-    files.forEach(file => store.put(file));
+
+    // Filter out files without valid IDs (required for IndexedDB keyPath)
+    const validFiles = files.filter(file => file && file.id != null);
+    validFiles.forEach(file => store.put(file));
     
     return new Promise((resolve, reject) => {
       transaction.oncomplete = resolve;

@@ -56,6 +56,8 @@ class FileResponse(BaseModel):
     encrypted_file_key: Optional[str] = None  # Base64-encoded encrypted file key
     file_key_iv: Optional[str] = None  # Base64-encoded IV for file key encryption
     encryption_algorithm: Optional[str] = None  # "AES-256-GCM" for ZK files
+    encryption_version: Optional[int] = None  # 1=V1, 2=V2 (HKDF+AAD)
+    encryption_mode: Optional[str] = None  # "client_zk" for ZK encryption
 
 # Folder Schemas
 class FolderCreate(BaseModel):

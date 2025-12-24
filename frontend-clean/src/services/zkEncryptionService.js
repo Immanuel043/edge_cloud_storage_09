@@ -3,6 +3,10 @@
  *
  * High-level service for managing client-side encryption.
  * Handles master key management, file encryption/decryption, and recovery.
+ *
+ * Key Derivation:
+ * - New registrations use Argon2id (memory-hard, GPU-resistant)
+ * - Backward compatible with PBKDF2 for existing users
  */
 
 import {
@@ -30,6 +34,13 @@ import {
   generateUploadId,
   ZK_CONSTANTS,
 } from '../utils/zkCrypto.js';
+
+// Import Argon2id functions from V2
+import {
+  deriveKeyArgon2id,
+  getArgon2Memory,
+  ZK_CONSTANTS_V2,
+} from '../utils/zkCryptoV2.js';
 
 // ==================== Session State Management ====================
 
@@ -113,16 +124,18 @@ const zkSession = new ZKEncryptionSession();
 // ==================== Registration ====================
 
 /**
- * Generate ZK registration data
+ * Generate ZK registration data using Argon2id (async)
+ * Uses memory-hard Argon2id for better resistance against GPU attacks
+ *
  * @param {string} password - User password
- * @returns {Object} Registration data for backend
+ * @returns {Promise<Object>} Registration data for backend
  */
-export function generateZKRegistrationData(password) {
+export async function generateZKRegistrationData(password) {
   // Generate salt for password derivation
   const salt = generateSalt();
 
-  // Derive key from password (client-side only)
-  const derivedKey = deriveKeyFromPassword(password, salt);
+  // Derive key from password using Argon2id (memory-hard, GPU-resistant)
+  const derivedKey = await deriveKeyArgon2id(password, salt);
 
   // Hash the derived key (server stores this, never the key itself)
   const passwordHash = hashDerivedKey(derivedKey);
@@ -137,46 +150,87 @@ export function generateZKRegistrationData(password) {
   zkSession.setMasterKey(masterKey);
   zkSession.setDerivedKey(derivedKey);
 
+  // Get Argon2 parameters used
+  const argon2Memory = getArgon2Memory();
+
   return {
     passwordHash,
     encryptedMasterKey,
     kdfSalt: bytesToHexString(salt),
-    kdfAlgorithm: ZK_CONSTANTS.KDF_ALGORITHM,
-    kdfIterations: ZK_CONSTANTS.KDF_ITERATIONS,
+    kdfAlgorithm: 'argon2id',  // New registrations use Argon2id
+    kdfIterations: ZK_CONSTANTS_V2.ARGON2_ITERATIONS,
+    kdfMemory: argon2Memory,
+    kdfParallelism: ZK_CONSTANTS_V2.ARGON2_PARALLELISM,
     masterKeyIV: iv,
   };
 }
 
 /**
- * Unlock ZK session after login
+ * Unlock ZK session after login (async)
+ * Supports Argon2id (primary) and PBKDF2 (low-memory device fallback)
+ *
  * @param {string} password - User password
- * @param {Object} zkData - ZK data from backend (kdfSalt, encryptedMasterKey, etc.)
- * @returns {boolean} True if unlock successful
+ * @param {Object} zkData - ZK data from backend (kdfSalt, encryptedMasterKey, kdfAlgorithm, etc.)
+ * @returns {Promise<boolean>} True if unlock successful
  */
-export function unlockZKSession(password, zkData) {
+export async function unlockZKSession(password, zkData) {
   try {
-    const { kdfSalt, encryptedMasterKey, kdfIterations = ZK_CONSTANTS.KDF_ITERATIONS } = zkData;
+    console.log('[ZK] unlockZKSession called');
 
-    // Derive key from password
-    const derivedKey = deriveKeyFromPassword(password, kdfSalt, kdfIterations);
+    const {
+      kdfSalt,
+      encryptedMasterKey,
+      kdfAlgorithm = 'argon2id',  // Default to argon2id (primary algorithm)
+      kdfIterations = ZK_CONSTANTS.KDF_ITERATIONS,
+    } = zkData;
+
+    console.log('[ZK] KDF Algorithm:', kdfAlgorithm);
+
+    if (!kdfSalt) {
+      throw new Error('KDF salt is missing');
+    }
+    if (!encryptedMasterKey) {
+      throw new Error('Encrypted master key is missing');
+    }
+
+    // Derive key from password using appropriate algorithm
+    let derivedKey;
+    if (kdfAlgorithm === 'argon2id') {
+      // Use Argon2id (primary - memory-hard, GPU-resistant)
+      console.log('[ZK] Using Argon2id for key derivation...');
+      const saltBytes = typeof kdfSalt === 'string'
+        ? new Uint8Array(kdfSalt.match(/.{1,2}/g).map(byte => parseInt(byte, 16)))
+        : kdfSalt;
+      derivedKey = await deriveKeyArgon2id(password, saltBytes);
+    } else {
+      // Use PBKDF2 (fallback for low-memory devices)
+      console.log('[ZK] Using PBKDF2 for key derivation (low-memory fallback)...');
+      derivedKey = deriveKeyFromPassword(password, kdfSalt, kdfIterations);
+    }
+    console.log('[ZK] Derived key length:', derivedKey.length);
 
     // Hash derived key for verification
     const passwordHash = hashDerivedKey(derivedKey);
 
-    // Extract IV from encrypted master key if stored together, or use separate field
-    // Assuming backend returns separate IV field
+    // Extract IV
     const iv = zkData.masterKeyIV || zkData.kdf_iv;
+    if (!iv) {
+      throw new Error('Master key IV is missing');
+    }
 
     // Decrypt master key
+    console.log('[ZK] Decrypting master key...');
     const masterKey = decryptMasterKey(encryptedMasterKey, derivedKey, iv);
+    console.log('[ZK] Master key decrypted successfully');
 
     // Store in session
     zkSession.setMasterKey(masterKey);
     zkSession.setDerivedKey(derivedKey);
 
+    console.log('[ZK] Session unlocked successfully!');
     return true;
   } catch (error) {
-    console.error('Failed to unlock ZK session:', error);
+    console.error('[ZK] Failed to unlock ZK session:', error.message);
     return false;
   }
 }
@@ -197,14 +251,31 @@ export function isZKSessionUnlocked() {
 }
 
 /**
- * Get password hash for login
+ * Get password hash for login (async)
+ * Supports Argon2id (primary) and PBKDF2 (low-memory device fallback)
+ *
  * @param {string} password - User password
  * @param {string} kdfSalt - KDF salt (hex string)
  * @param {number} [kdfIterations=600000] - KDF iterations
- * @returns {string} Password hash for backend verification
+ * @param {string} [kdfAlgorithm='argon2id'] - KDF algorithm ('argon2id' or 'pbkdf2')
+ * @returns {Promise<string>} Password hash for backend verification
  */
-export function getPasswordHashForLogin(password, kdfSalt, kdfIterations = ZK_CONSTANTS.KDF_ITERATIONS) {
-  const derivedKey = deriveKeyFromPassword(password, kdfSalt, kdfIterations);
+export async function getPasswordHashForLogin(password, kdfSalt, kdfIterations = ZK_CONSTANTS.KDF_ITERATIONS, kdfAlgorithm = 'argon2id') {
+  let derivedKey;
+
+  if (kdfAlgorithm === 'argon2id') {
+    // Use Argon2id (primary - memory-hard, GPU-resistant)
+    console.log('[ZK] Login: Using Argon2id for key derivation');
+    const saltBytes = typeof kdfSalt === 'string'
+      ? new Uint8Array(kdfSalt.match(/.{1,2}/g).map(byte => parseInt(byte, 16)))
+      : kdfSalt;
+    derivedKey = await deriveKeyArgon2id(password, saltBytes);
+  } else {
+    // Use PBKDF2 (fallback for low-memory devices)
+    console.log('[ZK] Login: Using PBKDF2 for key derivation (low-memory fallback)');
+    derivedKey = deriveKeyFromPassword(password, kdfSalt, kdfIterations);
+  }
+
   return hashDerivedKey(derivedKey);
 }
 
@@ -212,17 +283,17 @@ export function getPasswordHashForLogin(password, kdfSalt, kdfIterations = ZK_CO
 
 /**
  * Generate and encrypt master key with recovery phrase
- * @returns {Object} { recoveryPhrase, recoveryEncryptedMasterKey, recoveryPhraseHash }
+ * @returns {Promise<Object>} { recoveryPhrase, recoveryEncryptedMasterKey, recoveryPhraseHash }
  */
-export function generateRecoveryPhraseData() {
+export async function generateRecoveryPhraseData() {
   const masterKey = zkSession.getMasterKey();
 
-  // Generate BIP39 recovery phrase
-  const recoveryPhrase = generateRecoveryPhrase();
+  // Generate BIP39 recovery phrase (now async due to lazy bip39 loading)
+  const recoveryPhrase = await generateRecoveryPhrase();
 
-  // Encrypt master key with recovery phrase
+  // Encrypt master key with recovery phrase (now async)
   const { recoveryEncryptedMasterKey, recoveryIV, recoveryPhraseHash } =
-    encryptMasterKeyWithRecovery(masterKey, recoveryPhrase);
+    await encryptMasterKeyWithRecovery(masterKey, recoveryPhrase);
 
   return {
     recoveryPhrase, // Show this to user ONCE
@@ -235,10 +306,10 @@ export function generateRecoveryPhraseData() {
 /**
  * Verify recovery phrase
  * @param {string} recoveryPhrase - Recovery phrase entered by user
- * @returns {boolean} True if valid
+ * @returns {Promise<boolean>} True if valid
  */
-export function verifyRecoveryPhrase(recoveryPhrase) {
-  return validateRecoveryPhrase(recoveryPhrase);
+export async function verifyRecoveryPhrase(recoveryPhrase) {
+  return await validateRecoveryPhrase(recoveryPhrase);
 }
 
 /**
@@ -246,17 +317,17 @@ export function verifyRecoveryPhrase(recoveryPhrase) {
  * @param {string} recoveryPhrase - Recovery phrase
  * @param {string} recoveryEncryptedMasterKey - Encrypted master key (base64)
  * @param {string} recoveryIV - Recovery IV (base64)
- * @returns {boolean} True if recovery successful
+ * @returns {Promise<boolean>} True if recovery successful
  */
-export function recoverMasterKeyFromPhrase(recoveryPhrase, recoveryEncryptedMasterKey, recoveryIV) {
+export async function recoverMasterKeyFromPhrase(recoveryPhrase, recoveryEncryptedMasterKey, recoveryIV) {
   try {
-    // Validate phrase first
-    if (!validateRecoveryPhrase(recoveryPhrase)) {
+    // Validate phrase first (now async)
+    if (!await validateRecoveryPhrase(recoveryPhrase)) {
       throw new Error('Invalid recovery phrase format');
     }
 
-    // Derive key from recovery phrase
-    const recoveryKey = deriveKeyFromRecoveryPhrase(recoveryPhrase);
+    // Derive key from recovery phrase (now async)
+    const recoveryKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase);
 
     // Decrypt master key
     const masterKey = decryptMasterKey(recoveryEncryptedMasterKey, recoveryKey, recoveryIV);
@@ -455,6 +526,92 @@ export async function decryptFile(encryptedChunks, encryptedFileKey, fileKeyIV, 
   return blob;
 }
 
+// ==================== Metadata Encryption ====================
+
+// Import V2 crypto for HKDF-based key derivation (ZK_CONSTANTS_V2 already imported at top)
+import {
+  deriveMetadataKey,
+  encryptAESGCM as encryptAESGCMv2,
+  decryptAESGCM as decryptAESGCMv2,
+  bytesToBase64 as bytesToBase64v2,
+  base64ToBytes as base64ToBytesv2,
+} from '../utils/zkCryptoV2.js';
+
+/**
+ * Encrypt file metadata (name, path, size, MIME type)
+ * Uses HKDF-derived MetadataKey for encryption
+ *
+ * @param {Object} metadata - { name, path, size, mime, created }
+ * @returns {string} Base64 encoded encrypted metadata
+ */
+export function encryptMetadata(metadata) {
+  const masterKey = zkSession.getMasterKey();
+  const metadataKey = deriveMetadataKey(masterKey);
+
+  const encoder = new TextEncoder();
+  const plaintext = encoder.encode(JSON.stringify(metadata));
+
+  const { ciphertext, iv, tag } = encryptAESGCMv2(plaintext, metadataKey);
+
+  // Format: IV + ciphertext + tag
+  const result = new Uint8Array(iv.length + ciphertext.length + tag.length);
+  result.set(iv);
+  result.set(ciphertext, iv.length);
+  result.set(tag, iv.length + ciphertext.length);
+
+  return bytesToBase64v2(result);
+}
+
+/**
+ * Decrypt file metadata
+ * @param {string} encryptedMetadataB64 - Base64 encrypted metadata
+ * @returns {Object} Decrypted metadata object
+ */
+export function decryptMetadata(encryptedMetadataB64) {
+  const masterKey = zkSession.getMasterKey();
+  const metadataKey = deriveMetadataKey(masterKey);
+
+  const encrypted = base64ToBytesv2(encryptedMetadataB64);
+
+  const IV_LENGTH = ZK_CONSTANTS_V2.GCM_IV_LENGTH;
+  const TAG_LENGTH = ZK_CONSTANTS_V2.GCM_TAG_LENGTH;
+
+  const iv = encrypted.slice(0, IV_LENGTH);
+  const ciphertext = encrypted.slice(IV_LENGTH, -TAG_LENGTH);
+  const tag = encrypted.slice(-TAG_LENGTH);
+
+  const plaintext = decryptAESGCMv2(ciphertext, metadataKey, iv, tag);
+
+  const decoder = new TextDecoder();
+  return JSON.parse(decoder.decode(plaintext));
+}
+
+/**
+ * Prepare encrypted file metadata for upload
+ * @param {File} file - File to get metadata from
+ * @param {string} path - Folder path (optional)
+ * @returns {Object} { encryptedMetadata, plaintextHints }
+ */
+export function prepareEncryptedMetadata(file, path = '/') {
+  const metadata = {
+    name: file.name,
+    path: path,
+    size: file.size,
+    mime: file.type || 'application/octet-stream',
+    created: new Date().toISOString(),
+  };
+
+  const encryptedMetadata = encryptMetadata(metadata);
+
+  // Provide some hints for server (non-sensitive)
+  const plaintextHints = {
+    sizeHint: Math.ceil(file.size / 1024), // Size in KB (approximate)
+    typeHint: file.type ? file.type.split('/')[0] : 'unknown', // Just the type category
+  };
+
+  return { encryptedMetadata, plaintextHints };
+}
+
 // ==================== Utility Functions ====================
 
 /**
@@ -550,6 +707,11 @@ export default {
   prepareFileForDecryption,
   decryptFileChunk,
   decryptFile,
+
+  // Metadata Encryption
+  encryptMetadata,
+  decryptMetadata,
+  prepareEncryptedMetadata,
 
   // Utilities
   getFileChunks,

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info, Copy } from 'lucide-react';
+import { Folder, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info, Copy, Shield } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
@@ -18,7 +18,8 @@ export default function FileList({
   onRename,
   onFileInfo,
   onFileCopy,
-  darkMode
+  darkMode,
+  isZKMode = false
 }) {
   const [openMenuId, setOpenMenuId] = useState(null);
   const [hoveredMenuId, setHoveredMenuId] = useState(null);
@@ -134,6 +135,15 @@ export default function FileList({
               darkMode={darkMode}
             />
             <span className="truncate">{sanitizeInput(file.name)}</span>
+            {/* Encrypted badge for ZK files */}
+            {(file.is_encrypted || file.encryption_mode === 'client_zk') && (
+              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0 ${
+                darkMode ? 'bg-green-900/40 text-green-400' : 'bg-green-100 text-green-700'
+              }`}>
+                <Shield size={10} />
+                ZK
+              </span>
+            )}
           </div>
           <div className={`col-span-2 flex items-center text-sm ${
             darkMode ? 'text-gray-400' : 'text-gray-600'

@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Download, Lock, AlertCircle, CheckCircle, Cloud, FileText, Loader } from 'lucide-react';
+import { Download, Lock, AlertCircle, Shield, Cloud, FileText, Loader, CheckCircle } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { formatBytes } from '../../utils/helpers';
+import {
+  deriveKeyFromPassword,
+  decryptFileKey,
+  decryptChunk,
+  base64ToBytes,
+} from '../../utils/zkCrypto';
 
 export default function SharePage() {
   const { token } = useParams();
@@ -12,14 +18,149 @@ export default function SharePage() {
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [password, setPassword] = useState('');
   const [downloading, setDownloading] = useState(false);
-  const [fileInfo, setFileInfo] = useState(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [shareInfo, setShareInfo] = useState(null);
+  const [isZKEncrypted, setIsZKEncrypted] = useState(false);
 
   useEffect(() => {
-    // Page is ready - just show download UI
-    setLoading(false);
+    fetchShareInfo();
   }, [token]);
 
+  const fetchShareInfo = async () => {
+    try {
+      // Try to get ZK share info first
+      const response = await fetch(`${API_URL}/api/v1/share/${token}/info`);
+
+      if (response.ok) {
+        const data = await response.json();
+        setShareInfo(data);
+        setIsZKEncrypted(!!data.encrypted_file_key);
+        setRequiresPassword(data.password_required);
+        setLoading(false);
+        return;
+      }
+
+      // If info endpoint fails, it might be a legacy share
+      if (response.status === 404) {
+        setError('Share link not found or has expired');
+      } else if (response.status === 410) {
+        setError('Share link has expired');
+      } else if (response.status === 403) {
+        setError('Download limit exceeded for this share link');
+      }
+    } catch (err) {
+      console.error('Failed to fetch share info:', err);
+    }
+
+    setLoading(false);
+  };
+
   const handleDownload = async () => {
+    if (isZKEncrypted) {
+      await handleZKDownload();
+    } else {
+      await handleLegacyDownload();
+    }
+  };
+
+  /**
+   * Handle ZK-encrypted file download with client-side decryption
+   */
+  const handleZKDownload = async () => {
+    if (!password) {
+      setError('Password required for encrypted files');
+      setRequiresPassword(true);
+      return;
+    }
+
+    setDownloading(true);
+    setError('');
+    setDownloadProgress(0);
+
+    try {
+      // 1. Derive key from password
+      // Note: For ZK shares, we need a salt. The share should include one.
+      // Using a fixed salt for share links (derived from token)
+      const encoder = new TextEncoder();
+      const tokenHash = await crypto.subtle.digest('SHA-256', encoder.encode(token));
+      const salt = new Uint8Array(tokenHash).slice(0, 32);
+
+      const derivedKey = deriveKeyFromPassword(password, salt, 600000);
+
+      // 2. Decrypt the file key
+      let fileKey;
+      try {
+        fileKey = decryptFileKey(
+          shareInfo.encrypted_file_key,
+          derivedKey,
+          shareInfo.file_key_iv
+        );
+      } catch (e) {
+        setError('Invalid password. Unable to decrypt file.');
+        setDownloading(false);
+        return;
+      }
+
+      // 3. Download and decrypt chunks
+      const chunks = shareInfo.chunks || [];
+      const decryptedChunks = [];
+      let totalBytes = 0;
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const url = new URL(`${API_URL}${chunk.url}`);
+        if (password) {
+          url.searchParams.append('password', password);
+        }
+
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+          throw new Error(`Failed to download chunk ${i}`);
+        }
+
+        const encryptedChunk = new Uint8Array(await response.arrayBuffer());
+
+        // Decrypt chunk
+        const decryptedChunk = decryptChunk(encryptedChunk, fileKey, i);
+        decryptedChunks.push(decryptedChunk);
+        totalBytes += decryptedChunk.length;
+
+        // Update progress
+        setDownloadProgress(Math.round(((i + 1) / chunks.length) * 100));
+      }
+
+      // 4. Combine chunks and create download
+      const fileData = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of decryptedChunks) {
+        fileData.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      // Create download
+      const blob = new Blob([fileData]);
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `shared_file_${token.slice(0, 8)}`; // Default filename
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      setDownloading(false);
+      setDownloadProgress(100);
+    } catch (err) {
+      console.error('ZK download failed:', err);
+      setError(err.message || 'Download failed');
+      setDownloading(false);
+    }
+  };
+
+  /**
+   * Handle legacy (non-ZK) file download
+   */
+  const handleLegacyDownload = async () => {
     setDownloading(true);
     setError('');
 
@@ -30,6 +171,18 @@ export default function SharePage() {
       }
 
       const response = await fetch(url.toString());
+
+      if (response.status === 400) {
+        // This is a ZK file - switch to ZK mode
+        const data = await response.json();
+        if (data.detail?.includes('zero-knowledge')) {
+          setIsZKEncrypted(true);
+          setRequiresPassword(true);
+          setError('This file is encrypted. Please enter the password to decrypt.');
+          setDownloading(false);
+          return;
+        }
+      }
 
       if (response.status === 401) {
         setError('Password required or invalid');
@@ -102,7 +255,7 @@ export default function SharePage() {
             <Loader className="animate-spin text-blue-500 mb-3" size={32} />
             <p className="text-gray-600">Checking share link...</p>
           </div>
-        ) : error ? (
+        ) : error && !requiresPassword ? (
           <div className="flex flex-col items-center justify-center py-12">
             <AlertCircle className="text-red-500 mb-3" size={48} />
             <p className="text-red-600 text-center mb-4">{error}</p>
@@ -115,23 +268,45 @@ export default function SharePage() {
           </div>
         ) : (
           <div className="space-y-6">
+            {/* ZK Encryption Badge */}
+            {isZKEncrypted && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                <div className="flex items-center gap-2 text-green-700">
+                  <Shield size={20} />
+                  <span className="font-medium">Zero-Knowledge Encrypted</span>
+                </div>
+                <p className="text-sm text-green-600 mt-1">
+                  This file is encrypted. Decryption happens in your browser - the server never sees your data.
+                </p>
+              </div>
+            )}
+
             {/* Info Box */}
             <div className="bg-gray-50 rounded-lg p-4">
               <div className="flex items-center gap-3 mb-2">
                 <FileText className="text-gray-600" size={20} />
                 <span className="font-medium text-gray-900">Shared File</span>
               </div>
-              <p className="text-sm text-gray-500 ml-8">
-                Click download to access this file
-              </p>
+              {shareInfo?.file_size && (
+                <p className="text-sm text-gray-500 ml-8">
+                  Size: {formatBytes(shareInfo.file_size)}
+                </p>
+              )}
             </div>
 
-            {/* Password Input - Show if required or on error */}
+            {/* Error Message */}
+            {error && requiresPassword && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-sm text-red-600">{error}</p>
+              </div>
+            )}
+
+            {/* Password Input */}
             {requiresPassword && (
               <div>
                 <label className="flex items-center gap-2 mb-2 text-sm font-medium text-gray-700">
                   <Lock size={16} />
-                  Password Required
+                  {isZKEncrypted ? 'Decryption Password' : 'Password Required'}
                 </label>
                 <input
                   type="password"
@@ -139,10 +314,15 @@ export default function SharePage() {
                   onChange={(e) => setPassword(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && !downloading && password && handleDownload()}
                   className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Enter password"
+                  placeholder={isZKEncrypted ? 'Enter decryption password' : 'Enter password'}
                   disabled={downloading}
                   autoFocus
                 />
+                {isZKEncrypted && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Your password is used locally to decrypt the file.
+                  </p>
+                )}
               </div>
             )}
 
@@ -159,6 +339,22 @@ export default function SharePage() {
               </div>
             )}
 
+            {/* Download Progress */}
+            {downloading && downloadProgress > 0 && (
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm text-gray-600">
+                  <span>{isZKEncrypted ? 'Decrypting...' : 'Downloading...'}</span>
+                  <span>{downloadProgress}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 to-purple-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Download Button */}
             <button
               onClick={handleDownload}
@@ -172,12 +368,17 @@ export default function SharePage() {
               {downloading ? (
                 <>
                   <Loader className="animate-spin" size={20} />
-                  Downloading...
+                  {isZKEncrypted ? 'Decrypting & Downloading...' : 'Downloading...'}
+                </>
+              ) : downloadProgress === 100 ? (
+                <>
+                  <CheckCircle size={20} />
+                  Download Complete
                 </>
               ) : (
                 <>
                   <Download size={20} />
-                  Download File
+                  {isZKEncrypted ? 'Decrypt & Download' : 'Download File'}
                 </>
               )}
             </button>

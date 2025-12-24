@@ -44,6 +44,12 @@ export const AuthProvider = ({ children }) => {
   const lastActivityRef = useRef(Date.now());
   const inactivityTimerRef = useRef(null);
 
+  // Rate limiting for unlock attempts
+  const [unlockAttempts, setUnlockAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState(null);
+  const MAX_UNLOCK_ATTEMPTS = 5;
+  const LOCKOUT_DURATION = 60 * 1000; // 60 seconds
+
   // Keep unsubscribe functions here so we can remove listeners cleanly
   const wsUnsubscribersRef = useRef([]);
 
@@ -140,6 +146,41 @@ export const AuthProvider = ({ children }) => {
               console.error('Failed to connect WebSocket on boot:', error);
             }
 
+            // If user has ZK enabled, load ZK data from localStorage and show unlock modal
+            if (userData.zk_enabled && !isZKSessionUnlocked()) {
+              console.log('[Auth] ZK user detected but session not unlocked - loading ZK data from localStorage');
+              try {
+                // Get ZK data from localStorage (stored during login)
+                const storedZkData = localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY);
+                console.log('[Auth] storedZkData from localStorage:', storedZkData ? 'found' : 'not found');
+
+                if (storedZkData && mounted) {
+                  const zkDataObj = JSON.parse(storedZkData);
+                  console.log('[Auth] Parsed zkData:', {
+                    hasKdfSalt: !!zkDataObj.kdfSalt,
+                    hasEncryptedMasterKey: !!zkDataObj.encryptedMasterKey,
+                    hasKdfIterations: !!zkDataObj.kdfIterations,
+                    hasMasterKeyIV: !!zkDataObj.masterKeyIV,
+                  });
+
+                  // Validate zkData has required fields
+                  if (!zkDataObj.kdfSalt || !zkDataObj.encryptedMasterKey) {
+                    console.error('[Auth] Invalid zkData - missing required fields');
+                    console.warn('[Auth] ZK user needs to re-login to get valid credentials');
+                  } else {
+                    // Store ZK data for unlock
+                    setZkData(zkDataObj);
+                    // Show unlock modal
+                    setShowUnlockModal(true);
+                  }
+                } else {
+                  console.warn('[Auth] ZK user detected but no ZK data in localStorage - user needs to re-login');
+                }
+              } catch (zkError) {
+                console.error('[Auth] Failed to load ZK data from localStorage:', zkError);
+              }
+            }
+
             // Success - exit retry loop
             break;
           } catch (err) {
@@ -206,8 +247,8 @@ export const AuthProvider = ({ children }) => {
       lastActivityRef.current = Date.now();
     };
 
-    // Activity event listeners
-    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    // Activity event listeners - only meaningful user actions (not mousemove)
+    const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
     events.forEach(event => {
       window.addEventListener(event, updateActivity, { passive: true });
     });
@@ -236,11 +277,27 @@ export const AuthProvider = ({ children }) => {
     };
   }, [zkEnabled, zkSessionUnlocked]);
 
+  // Auto-lock behavior is handled by:
+  // 1. Inactivity timeout (30 minutes) - see above useEffect
+  // 2. Manual lock button
+  //
+  // Note: We intentionally do NOT lock on:
+  // - Tab visibility change (too aggressive, annoying UX)
+  // - Page refresh (would require unlock on every refresh)
+  // - Page hide (same as above)
+  //
+  // The encryption keys are still cleared from memory on refresh,
+  // but we attempt to restore the session from localStorage zkData.
+
   const loadUserData = async (authToken) => {
     try {
       const userData = await authService.getProfile(authToken);
       setUser(userData);
       setIsAuthenticated(true);
+      // Set ZK enabled status from profile
+      if (userData.zk_enabled) {
+        setZkEnabled(true);
+      }
       return userData;
     } catch (error) {
       console.error('Failed to load user data:', error);
@@ -254,6 +311,10 @@ export const AuthProvider = ({ children }) => {
       const userData = await authService.getProfileWithSignal(authToken, signal);
       setUser(userData);
       setIsAuthenticated(true);
+      // Set ZK enabled status from profile
+      if (userData.zk_enabled) {
+        setZkEnabled(true);
+      }
       return userData;
     } catch (error) {
       console.error('Failed to load user data:', error);
@@ -339,6 +400,12 @@ export const AuthProvider = ({ children }) => {
       setZkData(null);
     }
 
+    // Clear ZK data from localStorage
+    localStorage.removeItem(ZK_STORAGE.ZK_ENABLED_KEY);
+    localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
+    localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
+    localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
+
     setToken(null);
     setIsAuthenticated(false);
     setUser(null);
@@ -357,18 +424,21 @@ export const AuthProvider = ({ children }) => {
    * @returns {Promise<Object>} Registration result
    */
   const registerZK = async (email, password, username, userType = 'individual') => {
-    // Generate ZK registration data (client-side encryption)
-    const zkRegData = generateZKRegistrationData(password);
+    // Generate ZK registration data (client-side encryption with Argon2id)
+    const zkRegData = await generateZKRegistrationData(password);
 
-    // Send encrypted data to backend
+    // Send encrypted data to backend (includes Argon2id parameters)
     const data = await zkAuthService.registerZK({
       email,
       username,
       passwordHash: zkRegData.passwordHash,
       encryptedMasterKey: zkRegData.encryptedMasterKey,
+      masterKeyIV: zkRegData.masterKeyIV,
       kdfSalt: zkRegData.kdfSalt,
       kdfAlgorithm: zkRegData.kdfAlgorithm,
       kdfIterations: zkRegData.kdfIterations,
+      kdfMemory: zkRegData.kdfMemory,
+      kdfParallelism: zkRegData.kdfParallelism,
     });
 
     // Set user data and auth state
@@ -378,16 +448,21 @@ export const AuthProvider = ({ children }) => {
     setZkSessionUnlocked(true);
 
     // Store ZK data for session
-    setZkData({
+    const zkDataObj = {
       kdfSalt: zkRegData.kdfSalt,
+      kdfAlgorithm: zkRegData.kdfAlgorithm,  // argon2id (primary) or pbkdf2 (low-memory fallback)
       kdfIterations: zkRegData.kdfIterations,
+      kdfMemory: zkRegData.kdfMemory,  // Argon2id memory parameter
       encryptedMasterKey: zkRegData.encryptedMasterKey,
       masterKeyIV: zkRegData.masterKeyIV,
-    });
+    };
+    setZkData(zkDataObj);
 
-    // Store ZK preferences in localStorage (non-sensitive data only)
+    // Store ZK preferences and encrypted data in localStorage
+    // (encrypted master key is safe to store - encrypted with password-derived key)
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
+    localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
     // Connect WebSocket after successful registration
     try {
@@ -416,20 +491,22 @@ export const AuthProvider = ({ children }) => {
       throw new Error('User not found or ZK not enabled for this account');
     }
 
-    // Derive password hash client-side
-    const passwordHash = getPasswordHashForLogin(
+    // Derive password hash client-side (async for Argon2id)
+    const passwordHash = await getPasswordHashForLogin(
       password,
       kdfParams.kdf_salt,
-      kdfParams.kdf_iterations
+      kdfParams.kdf_iterations,
+      kdfParams.kdf_algorithm || 'argon2id'  // Default to argon2id (primary algorithm)
     );
 
     // Login with hashed password
     const data = await zkAuthService.loginZK(email, passwordHash);
 
     // Unlock ZK session with the encrypted master key from backend
-    const unlocked = unlockZKSession(password, {
+    const unlocked = await unlockZKSession(password, {
       kdfSalt: kdfParams.kdf_salt,
       encryptedMasterKey: data.encrypted_master_key,
+      kdfAlgorithm: kdfParams.kdf_algorithm || 'argon2id',  // Default to argon2id (primary)
       kdfIterations: kdfParams.kdf_iterations,
       masterKeyIV: kdfParams.kdf_iv || data.kdf_iv,
     });
@@ -445,12 +522,15 @@ export const AuthProvider = ({ children }) => {
     setZkSessionUnlocked(true);
 
     // Store ZK data for session
-    setZkData({
+    const zkDataObj = {
       kdfSalt: kdfParams.kdf_salt,
+      kdfAlgorithm: kdfParams.kdf_algorithm || 'argon2id',  // argon2id (primary) or pbkdf2 (low-memory fallback)
       kdfIterations: kdfParams.kdf_iterations,
+      kdfMemory: kdfParams.kdf_memory,  // Argon2id memory parameter
       encryptedMasterKey: data.encrypted_master_key,
       masterKeyIV: kdfParams.kdf_iv || data.kdf_iv,
-    });
+    };
+    setZkData(zkDataObj);
 
     // Check if recovery is enabled
     if (data.recovery_enabled) {
@@ -458,9 +538,11 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
     }
 
-    // Store ZK preferences in localStorage
+    // Store ZK preferences and encrypted data in localStorage
+    // (encrypted master key is safe to store - encrypted with password-derived key)
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
+    localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
     // Connect WebSocket after successful login
     try {
@@ -477,24 +559,79 @@ export const AuthProvider = ({ children }) => {
 
   /**
    * Unlock ZK session (e.g., after session timeout)
+   * Includes rate limiting to prevent brute force attacks
    * @param {string} password - User password
    * @returns {boolean} True if unlock successful
    */
   const unlockSession = async (password) => {
+    console.log('[Auth] unlockSession called');
+
+    // Check if currently locked out
+    if (lockoutUntil && Date.now() < lockoutUntil) {
+      const remainingSeconds = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      throw new Error(`Too many failed attempts. Please wait ${remainingSeconds} seconds before trying again.`);
+    }
+
+    // Clear lockout if expired
+    if (lockoutUntil && Date.now() >= lockoutUntil) {
+      setLockoutUntil(null);
+      setUnlockAttempts(0);
+    }
+
+    console.log('[Auth] zkData:', zkData ? 'present' : 'null');
+
     if (!zkData) {
+      console.error('[Auth] No zkData available');
       throw new Error('No ZK data available. Please log in again.');
     }
 
-    const unlocked = unlockZKSession(password, zkData);
+    console.log('[Auth] zkData fields:', {
+      hasKdfSalt: !!zkData.kdfSalt,
+      hasEncryptedMasterKey: !!zkData.encryptedMasterKey,
+      hasKdfIterations: !!zkData.kdfIterations,
+      hasMasterKeyIV: !!zkData.masterKeyIV,
+    });
 
-    if (unlocked) {
-      setZkSessionUnlocked(true);
-      setShowUnlockModal(false);
-      lastActivityRef.current = Date.now(); // Reset activity timer
-      return true;
+    try {
+      const unlocked = await unlockZKSession(password, zkData);
+      console.log('[Auth] unlockZKSession result:', unlocked);
+
+      if (unlocked) {
+        console.log('[Auth] Setting zkSessionUnlocked to true');
+        setZkSessionUnlocked(true);
+        setShowUnlockModal(false);
+        lastActivityRef.current = Date.now(); // Reset activity timer
+        setUnlockAttempts(0); // Reset attempts on success
+        setLockoutUntil(null);
+        return true;
+      }
+
+      // Increment failed attempts
+      const newAttempts = unlockAttempts + 1;
+      setUnlockAttempts(newAttempts);
+
+      if (newAttempts >= MAX_UNLOCK_ATTEMPTS) {
+        setLockoutUntil(Date.now() + LOCKOUT_DURATION);
+        throw new Error(`Too many failed attempts. Please wait ${LOCKOUT_DURATION / 1000} seconds before trying again.`);
+      }
+
+      throw new Error(`Invalid password. ${MAX_UNLOCK_ATTEMPTS - newAttempts} attempts remaining.`);
+    } catch (error) {
+      console.error('[Auth] Error in unlockSession:', error);
+
+      // Only increment attempts for authentication failures, not other errors
+      if (error.message?.includes('Decryption failed') || error.message?.includes('Invalid password')) {
+        const newAttempts = unlockAttempts + 1;
+        setUnlockAttempts(newAttempts);
+
+        if (newAttempts >= MAX_UNLOCK_ATTEMPTS) {
+          setLockoutUntil(Date.now() + LOCKOUT_DURATION);
+          throw new Error(`Too many failed attempts. Please wait ${LOCKOUT_DURATION / 1000} seconds before trying again.`);
+        }
+      }
+
+      throw error;
     }
-
-    return false;
   };
 
   /**
@@ -507,15 +644,16 @@ export const AuthProvider = ({ children }) => {
 
   /**
    * Setup recovery phrase for account recovery
+   * @param {boolean} skipSessionCheck - Skip session check (used during registration when session is unlocked but state not updated)
    * @returns {Promise<Object>} { recoveryPhrase, success }
    */
-  const setupRecoveryPhrase = async () => {
-    if (!zkSessionUnlocked) {
+  const setupRecoveryPhrase = async (skipSessionCheck = false) => {
+    if (!skipSessionCheck && !zkSessionUnlocked) {
       throw new Error('Session must be unlocked to setup recovery phrase');
     }
 
-    // Generate recovery phrase and encrypt master key with it
-    const recoveryData = generateRecoveryPhraseData();
+    // Generate recovery phrase and encrypt master key with it (async)
+    const recoveryData = await generateRecoveryPhraseData();
 
     // Send encrypted data to backend
     await zkAuthService.enableRecoveryPhrase(
@@ -539,8 +677,8 @@ export const AuthProvider = ({ children }) => {
    * @returns {Promise<boolean>} True if valid
    */
   const verifyRecoveryPhrase = async (recoveryPhrase) => {
-    // Client-side validation first
-    if (!verifyRecoveryPhraseZK(recoveryPhrase)) {
+    // Client-side validation first (async)
+    if (!await verifyRecoveryPhraseZK(recoveryPhrase)) {
       return false;
     }
 
@@ -561,16 +699,16 @@ export const AuthProvider = ({ children }) => {
    * @returns {Promise<Object>} Recovery result
    */
   const recoverAccount = async (email, recoveryPhrase) => {
-    // Validate recovery phrase format
-    if (!verifyRecoveryPhraseZK(recoveryPhrase)) {
+    // Validate recovery phrase format (async)
+    if (!await verifyRecoveryPhraseZK(recoveryPhrase)) {
       throw new Error('Invalid recovery phrase format');
     }
 
     // Call backend to get encrypted master key
     const data = await zkAuthService.recoverAccount(email, recoveryPhrase);
 
-    // Recover master key from recovery phrase
-    const recovered = recoverMasterKeyFromPhrase(
+    // Recover master key from recovery phrase (async)
+    const recovered = await recoverMasterKeyFromPhrase(
       recoveryPhrase,
       data.recovery_encrypted_master_key,
       data.recovery_iv || data.kdf_iv

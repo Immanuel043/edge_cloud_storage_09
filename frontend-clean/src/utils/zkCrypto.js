@@ -10,8 +10,56 @@ import { randomBytes } from '@noble/ciphers/utils.js';
 import { pbkdf2 } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
-import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from 'bip39';
-import { Buffer } from 'buffer';
+
+// ==================== BIP39 Lazy Loading ====================
+// bip39 requires Node.js Buffer which must be polyfilled before import.
+// Using dynamic import ensures Buffer is available at load time.
+// This prevents the "Illegal constructor" error in browser environments.
+
+let bip39Module = null;
+let bip39LoadPromise = null;
+
+/**
+ * Lazily load bip39 module with Buffer polyfill
+ * Uses singleton pattern to ensure single load and prevent race conditions
+ * @returns {Promise<Object>} bip39 module exports
+ */
+async function getBip39() {
+  // Return cached module if already loaded
+  if (bip39Module) {
+    return bip39Module;
+  }
+
+  // Return existing promise if load in progress (prevents race conditions)
+  if (bip39LoadPromise) {
+    return bip39LoadPromise;
+  }
+
+  // Start loading
+  bip39LoadPromise = (async () => {
+    try {
+      // Ensure Buffer polyfill is applied BEFORE importing bip39
+      if (typeof globalThis.Buffer === 'undefined') {
+        const bufferModule = await import('buffer');
+        globalThis.Buffer = bufferModule.Buffer;
+        if (typeof window !== 'undefined') {
+          window.Buffer = bufferModule.Buffer;
+        }
+      }
+
+      // Now safe to import bip39
+      const bip39 = await import('bip39');
+      bip39Module = bip39;
+      return bip39;
+    } catch (error) {
+      // Reset promise on failure to allow retry
+      bip39LoadPromise = null;
+      throw new Error(`Failed to load bip39 module: ${error.message}`);
+    }
+  })();
+
+  return bip39LoadPromise;
+}
 
 // ==================== Constants ====================
 
@@ -186,15 +234,16 @@ export function decryptAESGCM(ciphertext, key, iv, tag) {
  * @returns {Object} { encryptedMasterKey: string (base64), iv: string (base64) }
  */
 export function encryptMasterKey(masterKey, derivedKey) {
-  const { ciphertext, iv } = encryptAESGCM(masterKey, derivedKey);
+  const { ciphertext, iv, tag } = encryptAESGCM(masterKey, derivedKey);
 
   // Combine ciphertext and tag for storage
-  const combined = new Uint8Array(ciphertext.length + ZK_CONSTANTS.GCM_TAG_LENGTH);
+  const combined = new Uint8Array(ciphertext.length + tag.length);
   combined.set(ciphertext);
+  combined.set(tag, ciphertext.length);
 
   return {
-    encryptedMasterKey: Buffer.from(combined).toString('base64'),
-    iv: Buffer.from(iv).toString('base64'),
+    encryptedMasterKey: bytesToBase64(combined),
+    iv: bytesToBase64(iv),
   };
 }
 
@@ -207,8 +256,8 @@ export function encryptMasterKey(masterKey, derivedKey) {
  * @throws {Error} If decryption fails
  */
 export function decryptMasterKey(encryptedMasterKeyB64, derivedKey, ivB64) {
-  const encrypted = Buffer.from(encryptedMasterKeyB64, 'base64');
-  const iv = Buffer.from(ivB64, 'base64');
+  const encrypted = base64ToBytes(encryptedMasterKeyB64);
+  const iv = base64ToBytes(ivB64);
 
   // Split ciphertext and tag
   const ciphertext = encrypted.slice(0, -ZK_CONSTANTS.GCM_TAG_LENGTH);
@@ -234,8 +283,8 @@ export function encryptFileKey(fileKey, masterKey) {
   combined.set(tag, ciphertext.length);
 
   return {
-    encryptedFileKey: Buffer.from(combined).toString('base64'),
-    iv: Buffer.from(iv).toString('base64'),
+    encryptedFileKey: bytesToBase64(combined),
+    iv: bytesToBase64(iv),
   };
 }
 
@@ -248,8 +297,8 @@ export function encryptFileKey(fileKey, masterKey) {
  * @throws {Error} If decryption fails
  */
 export function decryptFileKey(encryptedFileKeyB64, masterKey, ivB64) {
-  const encrypted = Buffer.from(encryptedFileKeyB64, 'base64');
-  const iv = Buffer.from(ivB64, 'base64');
+  const encrypted = base64ToBytes(encryptedFileKeyB64);
+  const iv = base64ToBytes(ivB64);
 
   // Split ciphertext and tag
   const ciphertext = encrypted.slice(0, -ZK_CONSTANTS.GCM_TAG_LENGTH);
@@ -292,7 +341,7 @@ export function encryptChunk(chunkData, fileKey, chunkIndex) {
 
   return {
     encryptedChunk,  // Now includes IV at the beginning
-    iv: Buffer.from(iv).toString('base64'),  // Also return IV for backward compatibility
+    iv: bytesToBase64(iv),  // Also return IV for backward compatibility
   };
 }
 
@@ -322,27 +371,31 @@ export function decryptChunk(encryptedChunk, fileKey, ivOrChunkIndex) {
 
 /**
  * Generate a BIP39 recovery phrase (24 words)
- * @returns {string} Space-separated 24-word mnemonic
+ * @returns {Promise<string>} Space-separated 24-word mnemonic
  */
-export function generateRecoveryPhrase() {
+export async function generateRecoveryPhrase() {
+  const { generateMnemonic } = await getBip39();
   return generateMnemonic(ZK_CONSTANTS.RECOVERY_PHRASE_STRENGTH);
 }
 
 /**
  * Validate a BIP39 recovery phrase
  * @param {string} phrase - Space-separated mnemonic
- * @returns {boolean} True if valid
+ * @returns {Promise<boolean>} True if valid
  */
-export function validateRecoveryPhrase(phrase) {
+export async function validateRecoveryPhrase(phrase) {
+  const { validateMnemonic } = await getBip39();
   return validateMnemonic(phrase);
 }
 
 /**
  * Derive a key from a recovery phrase
  * @param {string} phrase - Space-separated mnemonic
- * @returns {Uint8Array} Derived key (32 bytes)
+ * @returns {Promise<Uint8Array>} Derived key (32 bytes)
  */
-export function deriveKeyFromRecoveryPhrase(phrase) {
+export async function deriveKeyFromRecoveryPhrase(phrase) {
+  const { validateMnemonic, mnemonicToSeedSync } = await getBip39();
+
   if (!validateMnemonic(phrase)) {
     throw new Error('Invalid recovery phrase');
   }
@@ -368,10 +421,10 @@ export function hashRecoveryPhrase(phrase) {
  * Encrypt the master key with a recovery phrase-derived key
  * @param {Uint8Array} masterKey - Master key (32 bytes)
  * @param {string} recoveryPhrase - BIP39 mnemonic
- * @returns {Object} { recoveryEncryptedMasterKey: string (base64), recoveryPhraseHash: string (hex) }
+ * @returns {Promise<Object>} { recoveryEncryptedMasterKey: string (base64), recoveryPhraseHash: string (hex) }
  */
-export function encryptMasterKeyWithRecovery(masterKey, recoveryPhrase) {
-  const recoveryKey = deriveKeyFromRecoveryPhrase(recoveryPhrase);
+export async function encryptMasterKeyWithRecovery(masterKey, recoveryPhrase) {
+  const recoveryKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase);
   const { encryptedMasterKey, iv } = encryptMasterKey(masterKey, recoveryKey);
 
   return {
@@ -406,21 +459,34 @@ export function computeFileHash(fileData) {
 // ==================== Encoding Utilities ====================
 
 /**
- * Convert Uint8Array to base64
+ * Convert Uint8Array to base64 (browser-native implementation)
  * @param {Uint8Array} bytes - Bytes to encode
  * @returns {string} Base64 string
  */
 export function bytesToBase64(bytes) {
-  return Buffer.from(bytes).toString('base64');
+  // Use native browser APIs instead of Buffer for better compatibility
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 /**
- * Convert base64 to Uint8Array
+ * Convert base64 to Uint8Array (browser-native implementation)
  * @param {string} base64 - Base64 string
  * @returns {Uint8Array} Decoded bytes
  */
 export function base64ToBytes(base64) {
-  return Buffer.from(base64, 'base64');
+  // Use native browser APIs instead of Buffer for better compatibility
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 /**

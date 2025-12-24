@@ -52,6 +52,7 @@ class InitUploadRequest(BaseModel):
 
     # File encryption metadata (for client reference)
     encryption_algorithm: str = Field(default="AES-256-GCM")
+    encryption_version: int = Field(default=2, ge=1, le=2)  # 1=V1 (basic), 2=V2 (HKDF+AAD) - default V2
     chunk_size: int = Field(default=1048576)  # 1MB chunks
 
 
@@ -210,11 +211,15 @@ async def initialize_upload(
         mime_type=request_data.mime_type,
         folder_id=request_data.parent_folder_id,
 
+        # Encryption mode - marks this as ZK client-side encrypted
+        encryption_mode="client_zk",
+
         # ZK-specific fields
         is_encrypted=True,
         encrypted_file_key=request_data.encrypted_file_key,
         file_key_iv=request_data.file_key_iv,
         encryption_algorithm=request_data.encryption_algorithm,
+        encryption_version=request_data.encryption_version,  # Track V1 vs V2
 
         # Upload tracking
         upload_status="pending",
@@ -317,8 +322,8 @@ async def upload_chunk(
     import os
     from pathlib import Path
 
-    # Storage directory
-    storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+    # Storage directory - use ZK-specific isolated path
+    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
     storage_dir.mkdir(parents=True, exist_ok=True)
 
     # Write encrypted chunk
@@ -397,7 +402,7 @@ async def complete_upload(
     import os
     from pathlib import Path
 
-    storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
 
     for chunk_index in range(request_data.total_chunks):
         chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
@@ -431,7 +436,7 @@ async def complete_upload(
         "message": "Upload completed successfully",
         "file_id": str(file_obj.id),
         "upload_id": upload_id,
-        "filename": file_obj.filename,
+        "filename": file_obj.file_name,
         "file_size": file_obj.file_size,
         "total_chunks": request_data.total_chunks
     }
@@ -474,7 +479,7 @@ async def get_upload_status(
     import os
     from pathlib import Path
 
-    storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
 
     uploaded_chunks = 0
     if storage_dir.exists():
@@ -538,7 +543,7 @@ async def cancel_upload(
     import shutil
     from pathlib import Path
 
-    storage_dir = Path(settings.STORAGE_PATH) / str(user.id) / str(file_obj.id)
+    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
     if storage_dir.exists():
         shutil.rmtree(storage_dir)
 

@@ -1,4 +1,4 @@
-import { API_URL, CHUNK_SIZE } from '../config/constants';
+import { API_URL, CHUNK_SIZE, ZK_SERVICE_URL } from '../config/constants';
 import { sanitizeInput, validateFileType, validateFileSize } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
@@ -412,14 +412,18 @@ class StorageService {
   }
 
   // Helper function to download a single chunk with retry logic
-  async _downloadChunkWithRetry(fileId, chunkIndex, retryCount = 0, maxRetries = 3) {
+  // useZKService: if true, downloads from ZK service (port 8002) instead of storage service
+  async _downloadChunkWithRetry(fileId, chunkIndex, retryCount = 0, maxRetries = 3, useZKService = false) {
     const retryDelay = 1000; // 1 second base delay
 
     try {
-      const chunkResponse = await fetch(
-        `${API_URL}/api/v1/files/${fileId}/download/chunk/${chunkIndex}`,
-        { credentials: 'include' }
-      );
+      // Use ZK service URL for ZK-encrypted files, regular API for others
+      const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
+      const endpoint = useZKService
+        ? `${baseUrl}/api/v1/zk/files/${fileId}/chunk/${chunkIndex}`
+        : `${baseUrl}/api/v1/files/${fileId}/download/chunk/${chunkIndex}`;
+
+      const chunkResponse = await fetch(endpoint, { credentials: 'include' });
 
       if (!chunkResponse.ok) {
         throw new Error(`HTTP ${chunkResponse.status}: ${chunkResponse.statusText}`);
@@ -434,7 +438,7 @@ class StorageService {
         console.log(`[Download] Chunk ${chunkIndex} failed, retrying in ${delay}ms (attempt ${retryCount + 1}/${maxRetries})`);
 
         await new Promise(resolve => setTimeout(resolve, delay));
-        return this._downloadChunkWithRetry(fileId, chunkIndex, retryCount + 1, maxRetries);
+        return this._downloadChunkWithRetry(fileId, chunkIndex, retryCount + 1, maxRetries, useZKService);
       }
 
       // Max retries exceeded
@@ -483,8 +487,8 @@ class StorageService {
           });
         }
 
-        // Download encrypted chunk with retry logic
-        const encryptedChunk = await this._downloadChunkWithRetry(fileId, i);
+        // Download encrypted chunk with retry logic (use ZK service for ZK files)
+        const encryptedChunk = await this._downloadChunkWithRetry(fileId, i, 0, 3, true);
         console.log(`[Download] Downloaded chunk ${i}: ${encryptedChunk.byteLength} bytes`);
 
         // Update progress: decrypting stage
@@ -638,7 +642,8 @@ class StorageService {
           });
         }
 
-        const encryptedChunk = await this._downloadChunkWithRetry(fileId, chunkIndex);
+        // Download encrypted chunk from ZK service (useZKService = true)
+        const encryptedChunk = await this._downloadChunkWithRetry(fileId, chunkIndex, 0, 3, true);
         downloadedCount++;
         console.log(`[Download] Downloaded chunk ${chunkIndex}: ${encryptedChunk.byteLength} bytes`);
 

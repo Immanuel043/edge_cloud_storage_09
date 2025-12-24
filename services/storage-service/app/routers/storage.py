@@ -223,13 +223,154 @@ async def create_share_link(
         allow_preview=share_data.allow_preview,
     )
 
+@router.get("/share/{share_token}/info")
+async def get_share_info(
+    share_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get share link info for ZK-safe client-side decryption.
+    Returns encrypted file metadata - client decrypts with share password.
+    """
+    # Get share link from database
+    result = await db.execute(
+        select(ShareLink).filter(ShareLink.share_token == share_token, ShareLink.is_active == True)
+    )
+    share_link = result.scalar_one_or_none()
+
+    if not share_link:
+        raise HTTPException(status_code=404, detail="Share link not found or has been disabled")
+
+    # Check expiration
+    if share_link.expires_at and share_link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Check download limit
+    if share_link.max_downloads and share_link.download_count >= share_link.max_downloads:
+        raise HTTPException(status_code=403, detail="Download limit exceeded")
+
+    # Get file object
+    result = await db.execute(select(Object).filter(Object.id == share_link.file_id))
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Return encrypted metadata for client-side decryption
+    # Server NEVER decrypts - client handles everything
+    chunk_urls = []
+    if file_obj.chunk_info and "chunks" in file_obj.chunk_info:
+        for i, chunk_hash in enumerate(file_obj.chunk_info["chunks"]):
+            chunk_urls.append({
+                "index": i,
+                "hash": chunk_hash,
+                "url": f"/api/v1/share/{share_token}/chunk/{i}"
+            })
+    elif file_obj.content_hash:
+        chunk_urls.append({
+            "index": 0,
+            "hash": file_obj.content_hash,
+            "url": f"/api/v1/share/{share_token}/chunk/0"
+        })
+
+    return {
+        "file_id": str(file_obj.id),
+        "encrypted_file_key": file_obj.encrypted_file_key,  # Encrypted with share password
+        "file_key_iv": file_obj.file_key_iv,
+        "file_size": file_obj.file_size,
+        "chunk_count": len(chunk_urls),
+        "chunks": chunk_urls,
+        "password_required": bool(share_link.password_hash),
+        "encryption_algorithm": file_obj.encryption_algorithm or "AES-256-GCM",
+    }
+
+
+@router.get("/share/{share_token}/chunk/{chunk_index}")
+async def download_share_chunk(
+    share_token: str,
+    chunk_index: int,
+    password: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download encrypted chunk for client-side decryption.
+    Returns raw encrypted bytes - server NEVER decrypts.
+    """
+    from fastapi.responses import Response
+
+    # Get share link from database
+    result = await db.execute(
+        select(ShareLink).filter(ShareLink.share_token == share_token, ShareLink.is_active == True)
+    )
+    share_link = result.scalar_one_or_none()
+
+    if not share_link:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    # Check expiration
+    if share_link.expires_at and share_link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Verify password if required (only checks hash, doesn't use for decryption)
+    if share_link.password_hash:
+        if not password:
+            raise HTTPException(status_code=401, detail="Password required")
+        if not pwd_context.verify(password, share_link.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid password")
+
+    # Check download limit
+    if share_link.max_downloads and share_link.download_count >= share_link.max_downloads:
+        raise HTTPException(status_code=403, detail="Download limit exceeded")
+
+    # Get file object
+    result = await db.execute(select(Object).filter(Object.id == share_link.file_id))
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Get the encrypted chunk WITHOUT decrypting
+    if file_obj.storage_type == "inline":
+        if chunk_index != 0:
+            raise HTTPException(status_code=404, detail="Chunk not found")
+        # Return encrypted inline data
+        encrypted_data = file_obj.storage_key.encode() if isinstance(file_obj.storage_key, str) else file_obj.storage_key
+        return Response(
+            content=encrypted_data,
+            media_type="application/octet-stream"
+        )
+    elif file_obj.chunk_info and "chunks" in file_obj.chunk_info:
+        chunks = file_obj.chunk_info["chunks"]
+        if chunk_index >= len(chunks):
+            raise HTTPException(status_code=404, detail="Chunk not found")
+        chunk_hash = chunks[chunk_index]
+        # Get encrypted chunk from storage (no decryption!)
+        encrypted_chunk = await storage_service.get_encrypted_chunk(chunk_hash)
+        return Response(
+            content=encrypted_chunk,
+            media_type="application/octet-stream"
+        )
+    else:
+        if chunk_index != 0:
+            raise HTTPException(status_code=404, detail="Chunk not found")
+        encrypted_chunk = await storage_service.get_encrypted_chunk(file_obj.content_hash)
+        return Response(
+            content=encrypted_chunk,
+            media_type="application/octet-stream"
+        )
+
+
 @router.get("/share/{share_token}")
 async def download_shared(
     share_token: str,
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """Download shared file with validation"""
+    """
+    Download shared file with validation.
+    NOTE: For ZK-encrypted files, use /share/{token}/info and /share/{token}/chunk/{index}
+    for proper client-side decryption. This endpoint is for legacy non-ZK files only.
+    """
     from fastapi.responses import StreamingResponse
 
     # Get share link from database
@@ -263,12 +404,19 @@ async def download_shared(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Check if this is a ZK-encrypted file - redirect to ZK-safe endpoint
+    if file_obj.encrypted_file_key:
+        raise HTTPException(
+            status_code=400,
+            detail="This file uses zero-knowledge encryption. Use /share/{token}/info for client-side decryption."
+        )
+
     # Update download count and last accessed
     share_link.download_count += 1
     share_link.last_accessed = datetime.utcnow()
     await db.commit()
 
-    # Decrypt and stream file
+    # LEGACY: Server-side decryption for non-ZK files only
     from ..services.encryption import encryption_service
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
@@ -345,6 +493,7 @@ async def get_user_profile(
         "storage_used": storage_used,
         "theme": current_user.theme_preference,
         "created_at": current_user.created_at.isoformat(),
+        "zk_enabled": current_user.zk_enabled or False,
     }
 
 @router.put("/users/theme")

@@ -1,9 +1,14 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { storageService } from '../services/storageService';
 import { websocketService } from '../services/websocketService';
 import { useAuth } from './AuthContext';
 import { offlineDB } from '../utils/offlineStorage';
 import { requestCache } from '../utils/requestCache';
+import { encryptFile, isZKSessionUnlocked } from '../services/zkEncryptionService';
+import * as zkAuthService from '../services/zkAuthService';
+import { bytesToBase64 } from '../utils/zkCrypto';
+import { getMigrationStats, needsMigration, formatMigrationStats } from '../utils/zkMigration';
+import { isZKModeActive, getFileService } from '../services/fileServiceRouter';
 
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -19,7 +24,7 @@ export const useStorage = () => {
 };
 
 export const StorageProvider = ({ children }) => {
-  const { token, isAuthenticated, user } = useAuth(); // Added user here
+  const { token, isAuthenticated, user, zkEnabled, zkSessionUnlocked } = useAuth();
   const [files, setFiles] = useState([]);
   const [folders, setFolders] = useState([]);
   const [currentFolder, setCurrentFolder] = useState(null);
@@ -29,6 +34,11 @@ export const StorageProvider = ({ children }) => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [selectedFiles, setSelectedFiles] = useState(new Set());
   const [lastClickedIndex, setLastClickedIndex] = useState(null);
+
+  // Migration state
+  const [migrationStats, setMigrationStats] = useState(null);
+  const [migrationInProgress, setMigrationInProgress] = useState(false);
+  const [migrationProgress, setMigrationProgress] = useState({ current: 0, total: 0, currentFile: null });
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -64,15 +74,24 @@ export const StorageProvider = ({ children }) => {
   useEffect(() => {
     if (isAuthenticated) {
       if (isOnline) {
-        loadFiles();
-        loadStorageStats();
-        loadDedupStats(); // Load dedup stats on mount
+        // Only load files when:
+        // 1. Not ZK user, OR
+        // 2. ZK user with unlocked session
+        const shouldLoad = !zkEnabled || zkSessionUnlocked;
+        if (shouldLoad) {
+          console.log('[Storage] Loading files - zkEnabled:', zkEnabled, 'zkSessionUnlocked:', zkSessionUnlocked);
+          loadFiles();
+          loadStorageStats();
+          loadDedupStats();
+        } else {
+          console.log('[Storage] Skipping file load - ZK session locked');
+        }
       } else {
         loadOfflineData();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, currentFolder, isOnline]);
+  }, [isAuthenticated, currentFolder, isOnline, zkEnabled, zkSessionUnlocked]);
 
   useEffect(() => {
     // WebSocket event listeners
@@ -108,17 +127,62 @@ export const StorageProvider = ({ children }) => {
   }, [token]);
 
   const loadFiles = async (folderId = currentFolder) => {
+    // Check if we should use ZK service
+    const useZKService = zkEnabled && zkSessionUnlocked;
+
     try {
-      const [filesData, foldersData, statsData] = await Promise.all([
-        storageService.getFiles(token, folderId),
-        storageService.getFolders(token, folderId),
-        storageService.getStorageStats(token)
-      ]);
-      
+      let filesData, foldersData, statsData;
+
+      if (useZKService) {
+        // Use ZK service for encrypted files
+        try {
+          const zkFilesResponse = await zkAuthService.listFiles({ limit: 1000 });
+          filesData = (zkFilesResponse.files || zkFilesResponse || []).map(f => ({
+            id: f.file_id || f.id,
+            name: f.filename || f.file_name || f.name,
+            size: f.file_size || f.size,
+            mime_type: f.mime_type,
+            created_at: f.uploaded_at || f.created_at,
+            updated_at: f.uploaded_at || f.updated_at,
+            is_encrypted: f.is_encrypted !== undefined ? f.is_encrypted : true,
+            encryption_mode: 'client_zk',
+            encryption_version: f.encryption_version,
+            encrypted_file_key: f.encrypted_file_key,
+            file_key_iv: f.file_key_iv,
+            folder_id: f.folder_id,
+          }));
+          // Get storage usage from ZK service
+          const zkUsage = await zkAuthService.getStorageUsage().catch(() => null);
+          const usedBytes = zkUsage?.total_used || 0;
+          const quotaBytes = zkUsage?.storage_quota || 100 * 1024 * 1024 * 1024; // Default 100GB
+          statsData = zkUsage ? {
+            used: usedBytes,
+            total: quotaBytes,
+            quota: quotaBytes, // For StorageStats component
+            available: quotaBytes - usedBytes,
+            files_count: zkUsage.total_files || filesData.length,
+            percentage_used: zkUsage.usage_percentage || (quotaBytes > 0 ? (usedBytes / quotaBytes * 100) : 0),
+          } : { used: 0, total: 100 * 1024 * 1024 * 1024, quota: 100 * 1024 * 1024 * 1024, available: 100 * 1024 * 1024 * 1024, files_count: filesData.length, percentage_used: 0 };
+          foldersData = await storageService.getFolders(token, folderId).catch(() => []);
+        } catch (zkError) {
+          console.error('ZK loadFiles failed:', zkError);
+          filesData = [];
+          foldersData = [];
+          statsData = { used: 0, total: 100 * 1024 * 1024 * 1024, quota: 100 * 1024 * 1024 * 1024, available: 100 * 1024 * 1024 * 1024, files_count: 0, percentage_used: 0 };
+        }
+      } else {
+        // Use regular storage service
+        [filesData, foldersData, statsData] = await Promise.all([
+          storageService.getFiles(token, folderId),
+          storageService.getFolders(token, folderId),
+          storageService.getStorageStats(token)
+        ]);
+      }
+
       setFiles(filesData);
       setFolders(foldersData);
       setStorageStats(statsData);
-      
+
       // Cache for offline
       if (isOnline) {
         await offlineDB.cacheFiles(filesData);
@@ -134,17 +198,38 @@ export const StorageProvider = ({ children }) => {
     const cachedFiles = await offlineDB.getCachedFiles();
     const cachedFolders = await offlineDB.getCachedFolders();
     const cachedStats = await offlineDB.getCachedStats();
-    
+
     setFiles(cachedFiles || []);
     setFolders(cachedFolders || []);
     setStorageStats(cachedStats);
   };
 
   const loadStorageStats = async () => {
+    // Check if we should use ZK service
+    const useZKService = zkEnabled && zkSessionUnlocked;
+
     try {
-      const stats = await storageService.getStorageStats(token);
+      let stats;
+
+      if (useZKService) {
+        // Use ZK service for storage usage
+        const zkUsage = await zkAuthService.getStorageUsage().catch(() => null);
+        const usedBytes = zkUsage?.total_used || 0;
+        const quotaBytes = zkUsage?.storage_quota || 100 * 1024 * 1024 * 1024; // Default 100GB
+        stats = zkUsage ? {
+          used: usedBytes,
+          total: quotaBytes,
+          quota: quotaBytes, // For StorageStats component
+          available: quotaBytes - usedBytes,
+          files_count: zkUsage.total_files || 0,
+          percentage_used: zkUsage.usage_percentage || (quotaBytes > 0 ? (usedBytes / quotaBytes * 100) : 0),
+        } : { used: 0, total: 100 * 1024 * 1024 * 1024, quota: 100 * 1024 * 1024 * 1024, available: 100 * 1024 * 1024 * 1024, files_count: 0, percentage_used: 0 };
+      } else {
+        stats = await storageService.getStorageStats(token);
+      }
+
       setStorageStats(stats);
-      
+
       // Cache for offline
       if (isOnline) {
         await offlineDB.cacheStats(stats);
@@ -178,29 +263,63 @@ export const StorageProvider = ({ children }) => {
   const refreshFiles = async (folderId = currentFolder) => {
   const maxRetries = 3;
   let retryCount = 0;
-  
+
+  // Check if we should use ZK service for files
+  const useZKService = zkEnabled && zkSessionUnlocked;
+
   while (retryCount < maxRetries) {
     try {
-      console.log(`Refreshing files (attempt ${retryCount + 1})...`);
-      
+      console.log(`Refreshing files (attempt ${retryCount + 1})... useZKService: ${useZKService}`);
+
       // Add a small delay between retries
       if (retryCount > 0) {
         await new Promise(resolve => setTimeout(resolve, 500 * retryCount));
       }
-      
-      const [filesData, foldersData] = await Promise.all([
-        storageService.getFiles(token, folderId),
-        storageService.getFolders(token, folderId)
-      ]);
-      
+
+      let filesData, foldersData;
+
+      if (useZKService) {
+        // Use ZK service for encrypted files
+        try {
+          const zkFilesResponse = await zkAuthService.listFiles({ limit: 1000 });
+          // Transform ZK files response to match expected format
+          filesData = (zkFilesResponse.files || zkFilesResponse || []).map(f => ({
+            id: f.file_id || f.id,  // ZK API returns file_id
+            name: f.filename || f.file_name || f.name,  // ZK API returns filename
+            size: f.file_size || f.size,
+            mime_type: f.mime_type,
+            created_at: f.uploaded_at || f.created_at,  // ZK API returns uploaded_at
+            updated_at: f.uploaded_at || f.updated_at,
+            is_encrypted: f.is_encrypted !== undefined ? f.is_encrypted : true,
+            encryption_mode: 'client_zk',  // Mark as ZK client-side encrypted
+            encryption_version: f.encryption_version || 2,  // Default V2 for ZK files
+            encrypted_file_key: f.encrypted_file_key,
+            file_key_iv: f.file_key_iv,
+            folder_id: f.folder_id,
+          }));
+          // For now, folders from regular service (ZK folders to be implemented)
+          foldersData = await storageService.getFolders(token, folderId).catch(() => []);
+        } catch (zkError) {
+          console.error('ZK listFiles failed:', zkError);
+          filesData = [];
+          foldersData = [];
+        }
+      } else {
+        // Use regular storage service
+        [filesData, foldersData] = await Promise.all([
+          storageService.getFiles(token, folderId),
+          storageService.getFolders(token, folderId)
+        ]);
+      }
+
       console.log(`Files loaded: ${filesData.length} files, ${foldersData.length} folders`);
-      
+
       setFiles(filesData);
       setFolders(foldersData);
-      
+
       // Also refresh storage stats
       await loadStorageStats();
-      
+
       // Cache for offline
       if (isOnline) {
         try {
@@ -210,14 +329,14 @@ export const StorageProvider = ({ children }) => {
           console.warn('Failed to cache files:', cacheError);
         }
       }
-      
+
       // Success - exit the retry loop
       return;
-      
+
     } catch (error) {
       retryCount++;
       console.error(`Failed to load files (attempt ${retryCount}):`, error);
-      
+
       if (retryCount >= maxRetries) {
         console.error('Max retries reached, giving up');
         throw error;
@@ -228,12 +347,100 @@ export const StorageProvider = ({ children }) => {
 
   const uploadFile = async (file, onProgress) => {
   try {
+    // Check if ZK encryption should be used
+    console.log('[Storage] Upload check - zkEnabled:', zkEnabled, 'zkSessionUnlocked:', zkSessionUnlocked, 'isZKSessionUnlocked():', isZKSessionUnlocked());
+    const useZKEncryption = zkEnabled && zkSessionUnlocked && isZKSessionUnlocked();
+    console.log('[Storage] useZKEncryption:', useZKEncryption);
+
+    if (useZKEncryption) {
+      console.log('[Storage] Using ZK encrypted upload for:', file.name);
+
+      // Step 1: Encrypt the file client-side
+      let encryptionProgress = 0;
+      const encryptedData = await encryptFile(file, (bytesEncrypted, totalBytes) => {
+        encryptionProgress = Math.round((bytesEncrypted / totalBytes) * 30); // 0-30% for encryption
+        if (onProgress) {
+          onProgress({ progress: encryptionProgress, status: 'encrypting', uploadId: null });
+        }
+      });
+
+      console.log('[Storage] File encrypted, chunks:', encryptedData.totalChunks);
+
+      // Step 2: Initialize upload with ZK service
+      const initResult = await zkAuthService.initializeUpload({
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        encryptedFileKey: encryptedData.encryptedFileKey,
+        fileKeyIV: encryptedData.fileKeyIV,
+        encryptionAlgorithm: 'AES-256-GCM',
+        encryptionVersion: 2, // V2 = HKDF+AAD enhanced encryption
+        chunkSize: 64 * 1024 * 1024, // 64MB
+        parentFolderId: currentFolder,
+      });
+
+      console.log('[Storage] ZK upload initialized:', initResult);
+
+      // Step 3: Upload encrypted chunks
+      for (let i = 0; i < encryptedData.encryptedChunks.length; i++) {
+        const chunk = encryptedData.encryptedChunks[i];
+
+        // Convert IV to base64 if it's a Uint8Array
+        const chunkIV = chunk.iv instanceof Uint8Array ? bytesToBase64(chunk.iv) : chunk.iv;
+
+        await zkAuthService.uploadChunk(
+          initResult.upload_id,
+          chunk.index,
+          chunk.data,
+          chunkIV
+        );
+
+        // Progress: 30-90% for chunk uploads
+        const uploadProgress = 30 + Math.round(((i + 1) / encryptedData.encryptedChunks.length) * 60);
+        if (onProgress) {
+          onProgress({
+            progress: uploadProgress,
+            status: 'uploading',
+            uploadId: initResult.upload_id,
+            chunk: i + 1,
+            totalChunks: encryptedData.encryptedChunks.length
+          });
+        }
+      }
+
+      // Step 4: Complete upload
+      const completeResult = await zkAuthService.completeUpload(
+        initResult.upload_id,
+        encryptedData.fileHash,
+        encryptedData.totalChunks
+      );
+
+      console.log('[Storage] ZK upload completed:', completeResult);
+
+      if (onProgress) {
+        onProgress({ progress: 100, status: 'completed', uploadId: initResult.upload_id });
+      }
+
+      // Refresh files list
+      try {
+        requestCache.invalidate(/^files-/);
+        requestCache.invalidate(/^folders-/);
+        await refreshFiles();
+        await loadDedupStats();
+      } catch (refreshError) {
+        console.error('Refresh failed:', refreshError);
+      }
+
+      return { success: true, fileId: completeResult.file_id, encrypted: true };
+    }
+
+    // Regular (non-ZK) upload
     const result = await storageService.uploadFile(token, file, currentFolder, (progress) => {
       // Call the original progress callback
       if (onProgress) {
         onProgress(progress);
       }
-      
+
       // Send progress via WebSocket only if connected
       // Don't let WebSocket issues affect upload
       try {
@@ -244,7 +451,7 @@ export const StorageProvider = ({ children }) => {
         console.warn('WebSocket progress update failed:', wsError);
       }
     });
-    
+
     console.log('Upload completed:', result);
 
     // Immediately refresh - backend now commits before responding
@@ -301,7 +508,19 @@ export const StorageProvider = ({ children }) => {
 
   const deleteFile = async (fileId) => {
     try {
-      const result = await storageService.deleteFile(token, fileId);
+      // Find the file to determine which service to use
+      const file = files.find(f => f.id === fileId);
+      const isZKFile = file && getFileService(file) === 'zk';
+
+      let result;
+      if (isZKFile) {
+        // Use ZK service for client-side encrypted files
+        console.log('[Storage] Deleting ZK-encrypted file:', fileId);
+        result = await zkAuthService.deleteFile(fileId);
+      } else {
+        // Use regular storage service
+        result = await storageService.deleteFile(token, fileId);
+      }
 
       // Invalidate cache to ensure fresh data is fetched
       requestCache.invalidate(/^files-/);
@@ -311,14 +530,14 @@ export const StorageProvider = ({ children }) => {
       await refreshFiles();
       await loadDedupStats(); // Refresh dedup stats after deletion
       await loadStorageStats();
-      
+
       // Clear selection if the deleted file was selected
       setSelectedFiles(prev => {
         const newSet = new Set(prev);
         newSet.delete(fileId);
         return newSet;
       });
-      
+
       return result;
     } catch (error) {
       console.error('Failed to delete file:', error);
@@ -471,6 +690,147 @@ export const StorageProvider = ({ children }) => {
     setSelectedFiles(new Set());
   };
 
+  // Calculate migration stats when files change
+  const updateMigrationStats = useCallback(() => {
+    if (!zkEnabled || !files.length) {
+      setMigrationStats(null);
+      return;
+    }
+
+    // Only check ZK-encrypted files
+    const zkFiles = files.filter(f => f.is_encrypted);
+    if (!zkFiles.length) {
+      setMigrationStats(null);
+      return;
+    }
+
+    const stats = getMigrationStats(zkFiles);
+    setMigrationStats(stats);
+  }, [files, zkEnabled]);
+
+  // Update migration stats when files change
+  useEffect(() => {
+    updateMigrationStats();
+  }, [updateMigrationStats]);
+
+  /**
+   * Migrate a single file from V1 to V2 encryption
+   * This re-downloads, re-encrypts with new key hierarchy, and re-uploads
+   */
+  const migrateFile = async (fileId) => {
+    if (!zkSessionUnlocked) {
+      throw new Error('ZK session must be unlocked to migrate files');
+    }
+
+    const file = files.find(f => f.id === fileId);
+    if (!file) {
+      throw new Error('File not found');
+    }
+
+    if (!needsMigration(file)) {
+      return { skipped: true, reason: 'Already using V2 encryption' };
+    }
+
+    try {
+      // Download and decrypt with V1
+      const decryptedData = await storageService.downloadZKFile(fileId, file.name, {
+        file_size: file.size,
+        encrypted_file_key: file.encrypted_file_key,
+        file_key_iv: file.file_key_iv,
+        mime_type: file.mime_type,
+        chunk_size: 32 * 1024 * 1024
+      });
+
+      // Create a File object from the decrypted data
+      const blob = new Blob([decryptedData], { type: file.mime_type });
+      const migratedFile = new File([blob], file.name, { type: file.mime_type });
+
+      // Delete the old file
+      await deleteFile(fileId);
+
+      // Re-upload with V2 encryption (new uploads automatically use V2)
+      const result = await uploadFile(migratedFile);
+
+      return { success: true, newFileId: result.fileId };
+    } catch (error) {
+      console.error('Migration failed for file:', file.name, error);
+      throw error;
+    }
+  };
+
+  /**
+   * Migrate all V1 files to V2
+   */
+  const migrateAllFiles = async (onProgress) => {
+    if (!zkSessionUnlocked) {
+      throw new Error('ZK session must be unlocked to migrate files');
+    }
+
+    const filesToMigrate = files.filter(f => f.is_encrypted && needsMigration(f));
+
+    if (filesToMigrate.length === 0) {
+      return { completed: 0, failed: 0, skipped: 0 };
+    }
+
+    setMigrationInProgress(true);
+    setMigrationProgress({ current: 0, total: filesToMigrate.length, currentFile: null });
+
+    const results = {
+      completed: 0,
+      failed: 0,
+      skipped: 0,
+      errors: []
+    };
+
+    try {
+      for (let i = 0; i < filesToMigrate.length; i++) {
+        const file = filesToMigrate[i];
+        setMigrationProgress({ current: i + 1, total: filesToMigrate.length, currentFile: file.name });
+
+        if (onProgress) {
+          onProgress(i + 1, filesToMigrate.length, file.name);
+        }
+
+        try {
+          const result = await migrateFile(file.id);
+          if (result.skipped) {
+            results.skipped++;
+          } else {
+            results.completed++;
+          }
+        } catch (error) {
+          results.failed++;
+          results.errors.push({ file: file.name, error: error.message });
+        }
+      }
+    } finally {
+      setMigrationInProgress(false);
+      setMigrationProgress({ current: 0, total: 0, currentFile: null });
+
+      // Refresh files and stats
+      await refreshFiles();
+      updateMigrationStats();
+    }
+
+    return results;
+  };
+
+  /**
+   * Dismiss migration prompt (user chose not to migrate)
+   */
+  const dismissMigrationPrompt = () => {
+    // Store dismissal in session storage so it persists within the session
+    sessionStorage.setItem('migrationPromptDismissed', 'true');
+    setMigrationStats(null);
+  };
+
+  /**
+   * Check if migration prompt was dismissed
+   */
+  const isMigrationPromptDismissed = () => {
+    return sessionStorage.getItem('migrationPromptDismissed') === 'true';
+  };
+
   const value = {
     files,
     folders,
@@ -494,7 +854,16 @@ export const StorageProvider = ({ children }) => {
     getAllItems,
     refreshFiles,
     refreshStats: loadStorageStats,
-    refreshAll
+    refreshAll,
+    // Migration
+    migrationStats,
+    migrationInProgress,
+    migrationProgress,
+    migrateFile,
+    migrateAllFiles,
+    dismissMigrationPrompt,
+    isMigrationPromptDismissed,
+    formatMigrationStats,
   };
 
   return (
