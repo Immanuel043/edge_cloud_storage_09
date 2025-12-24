@@ -39,6 +39,12 @@ class User(Base):
     recovery_encrypted_master_key = Column(Text, nullable=True)
     recovery_phrase_hash = Column(String(64), nullable=True)
 
+    # Video optimization preferences
+    # 'keep_both': Store original + optimized MP4 (default)
+    # 'replace_original': Only keep optimized MP4 (saves storage)
+    # 'no_optimization': Skip proactive video optimization
+    video_optimization_mode = Column(String(20), default='keep_both', nullable=False)
+
 class Folder(Base):
     __tablename__ = "folders"
     
@@ -92,6 +98,20 @@ class Object(Base):
     upload_id = Column(String(255), nullable=True)  # Upload session ID
     uploaded_at = Column(DateTime, nullable=True)  # Timestamp when upload completed
     file_hash = Column(String(128), nullable=True)  # Hash of encrypted file (client-computed)
+
+    # Video processing status (for proactive optimization pipeline)
+    # NULL: Not a video or not yet queued
+    # 'queued': Waiting in Kafka queue
+    # 'processing': FFmpeg transcoding in progress
+    # 'ready': Optimized version available
+    # 'failed': Processing failed (see video_processing_error)
+    # 'skipped': User has no_optimization mode enabled
+    video_processing_status = Column(String(20), default=None, nullable=True, index=True)
+    video_processing_error = Column(Text, nullable=True)  # Error message if failed
+    video_processing_progress = Column(Integer, nullable=True)  # 0-100 progress percentage
+    optimized_path = Column(String(500), nullable=True)  # Path to transcoded/optimized version
+    optimized_size = Column(BigInteger, nullable=True)  # Size of optimized version in bytes
+    video_processed_at = Column(DateTime, nullable=True)  # Timestamp when processing completed
 
     # Performance indexes
     __table_args__ = (

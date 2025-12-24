@@ -84,11 +84,29 @@ class TranscodePolicy:
             tier="tier3"
         )
 
-    def to_ffmpeg_args(self) -> List[str]:
-        """Convert policy to ffmpeg command-line arguments."""
+    def to_ffmpeg_args(self, include_streaming_flags: bool = True) -> List[str]:
+        """
+        Convert policy to ffmpeg command-line arguments.
+
+        Args:
+            include_streaming_flags: If True, include -pix_fmt yuv420p and -movflags +faststart
+                                     for web browser compatibility and streaming optimization.
+                                     Default: True (always optimize for streaming).
+
+        Returns:
+            List of ffmpeg command-line arguments for video encoding.
+        """
         args = ['-preset', self.preset, '-crf', str(self.crf)]
+
+        # Add streaming optimization flags by default
+        # -pix_fmt yuv420p: Ensures color compatibility across all browsers
+        # -movflags +faststart: Moves moov atom to front for instant playback
+        if include_streaming_flags:
+            args.extend(['-pix_fmt', 'yuv420p', '-movflags', '+faststart'])
+
         if self.max_bitrate:
             args.extend(['-maxrate', self.max_bitrate, '-bufsize', self.max_bitrate])
+
         return args
 
 
@@ -753,9 +771,7 @@ class VideoTranscoder:
             '-y',
             '-i', source_path,
             '-c:v', 'libx264',
-            *policy.to_ffmpeg_args(),  # Dynamic preset/crf from policy
-            '-pix_fmt', 'yuv420p',
-            '-movflags', '+faststart',
+            *policy.to_ffmpeg_args(),  # Dynamic preset/crf + streaming flags (pix_fmt, movflags)
             '-c:a', 'aac',
             '-b:a', '128k',
             '-max_muxing_queue_size', '1024',
@@ -1012,9 +1028,7 @@ class VideoTranscoder:
             '-y',
             '-i', 'pipe:0',  # Read from stdin
             '-c:v', 'libx264',
-            *policy.to_ffmpeg_args(),
-            '-pix_fmt', 'yuv420p',
-            '-movflags', '+faststart',
+            *policy.to_ffmpeg_args(),  # Dynamic preset/crf + streaming flags (pix_fmt, movflags)
             '-c:a', 'aac',
             '-b:a', '128k',
             '-max_muxing_queue_size', '1024',

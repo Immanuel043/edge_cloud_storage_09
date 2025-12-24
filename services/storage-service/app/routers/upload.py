@@ -41,6 +41,7 @@ from ..services.virus_scanner import get_virus_scanner
 from ..services.dlp_service import get_dlp_service
 from ..services.audit_service import get_audit_service
 from ..services.video_optimizer import video_optimizer
+from ..services.video_ingestion_service import video_ingestion_service
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -911,7 +912,7 @@ async def complete_upload(
     )
 
     # ============ VIDEO OPTIMIZATION (BACKGROUND) ============
-    # Run video faststart optimization for MOV/MP4 files
+    # Run video faststart optimization for MOV/MP4 files (legacy single-file path)
     if storage_strategy == "single" and file_obj.object_path:
         asyncio.create_task(
             run_video_optimization(
@@ -922,6 +923,39 @@ async def complete_upload(
                 storage_strategy=storage_strategy
             )
         )
+
+    # ============ PROACTIVE VIDEO TRANSCODING (BACKGROUND) ============
+    # Queue video for proactive transcoding to ensure zero-latency playback
+    # This replaces the reactive transcoding that occurred on playback
+    is_video = mime_type and mime_type.startswith('video/')
+    if is_video:
+        try:
+            producer = await get_kafka_producer()
+            queue_result = await video_ingestion_service.on_upload_complete(
+                file_id=str(file_id),
+                user_id=str(current_user.id),
+                file_name=session['name'],
+                file_size=session['size'],
+                mime_type=mime_type,
+                kafka_producer=producer
+            )
+
+            if queue_result['queued']:
+                # Update database status to 'queued'
+                file_obj.video_processing_status = 'queued'
+                await db.commit()
+                logger.info(
+                    f"Queued video for proactive optimization: {session['name']} "
+                    f"({session['size'] / 1024 / 1024:.1f}MB)"
+                )
+            else:
+                logger.info(
+                    f"Video not queued for optimization: {session['name']} "
+                    f"[reason={queue_result.get('reason', 'unknown')}]"
+                )
+        except Exception as e:
+            logger.error(f"Failed to queue video for proactive optimization: {e}")
+            # Non-fatal - video can still be transcoded on-demand
 
     # ============ VIDEO PREVIEW QUEUEING (BACKGROUND) ============
     # Queue large videos (>50MB) for background preview generation

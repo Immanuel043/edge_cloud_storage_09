@@ -495,25 +495,63 @@ async def download_file(
     use_compat_stream = False
     if compatible and mime_type.startswith('video/'):
         from ..services.video_transcoder import video_transcoder, VideoTranscodeError
-        logger.info(f"🎬 Compatible stream requested for {file_obj.file_name} ({mime_type})")
-        try:
-            compat_path = await video_transcoder.get_or_create_stream(
-                file_obj=file_obj,
-                encryption_service=encryption_service
+
+        logger.info(f"Compatible stream requested for {file_obj.file_name} ({mime_type})")
+
+        # ============ PROACTIVE OPTIMIZATION CHECK (FAST PATH) ============
+        # Check if a proactively optimized version exists from write-time processing
+        # This provides instant playback without waiting for transcoding
+        if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+            # Instant stream from proactively optimized file
+            compat_path = file_obj.optimized_path
+            use_compat_stream = True
+            logger.info(f"Using proactively optimized video: {file_obj.file_name}")
+
+        # Check if video is still being processed
+        elif file_obj.video_processing_status == 'processing':
+            progress = file_obj.video_processing_progress or 0
+            raise HTTPException(
+                status_code=202,
+                detail={
+                    "status": "processing",
+                    "message": f"Video is being optimized for playback ({progress}% complete). Please wait...",
+                    "progress": progress
+                }
             )
-            logger.info(f"🎬 get_or_create_stream returned: {compat_path}")
-            if compat_path:
-                use_compat_stream = True
-        except VideoTranscodeError as exc:
-            if exc.status_code == 202:
-                raise HTTPException(
-                    status_code=202,
-                    detail={
-                        "status": "transcoding",
-                        "message": exc.message
-                    }
+
+        # Check if video is queued but not yet processing
+        elif file_obj.video_processing_status == 'queued':
+            raise HTTPException(
+                status_code=202,
+                detail={
+                    "status": "queued",
+                    "message": "Video is queued for optimization. Playback will be available shortly.",
+                    "progress": 0
+                }
+            )
+
+        # ============ LEGACY REACTIVE TRANSCODING (FALLBACK) ============
+        # If no proactive optimization, fall back to on-demand transcoding
+        # This handles videos uploaded before the proactive pipeline was deployed
+        if not use_compat_stream:
+            try:
+                compat_path = await video_transcoder.get_or_create_stream(
+                    file_obj=file_obj,
+                    encryption_service=encryption_service
                 )
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+                logger.info(f"get_or_create_stream returned: {compat_path}")
+                if compat_path:
+                    use_compat_stream = True
+            except VideoTranscodeError as exc:
+                if exc.status_code == 202:
+                    raise HTTPException(
+                        status_code=202,
+                        detail={
+                            "status": "transcoding",
+                            "message": exc.message
+                        }
+                    )
+                raise HTTPException(status_code=exc.status_code, detail=exc.message)
 
     if use_compat_stream and compat_path:
         compat_size = os.path.getsize(compat_path)
@@ -1969,3 +2007,236 @@ async def copy_file(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to copy file: {str(e)}")
+
+
+# ============================================================================
+# ARQ STREAMING ENDPOINTS
+# Automatic Repeat Request for reliable video streaming
+# ============================================================================
+
+@router.post("/{file_id}/stream/init")
+async def init_arq_stream(
+    file_id: str,
+    chunk_size: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Initialize an ARQ streaming session for reliable video delivery.
+
+    Returns session_id and chunk information for client-side ARQ handling.
+    """
+    from ..services.arq_streaming_service import arq_streaming_service
+    from ..database import get_redis
+
+    # Get file
+    result = await db.execute(select(Object).filter(Object.id == file_id, Object.user_id == current_user.id))
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Determine file path (prefer optimized version for videos)
+    file_path = None
+    if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+        file_path = file_obj.optimized_path
+    elif file_obj.object_path and os.path.exists(file_obj.object_path):
+        file_path = file_obj.object_path
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="File not available for streaming (may require decryption)"
+        )
+
+    # Initialize Redis for session tracking
+    redis = await get_redis()
+    arq_streaming_service.set_redis(redis)
+
+    # Create session
+    try:
+        session_info = await arq_streaming_service.init_stream_session(
+            file_id=file_id,
+            file_path=file_path,
+            chunk_size=chunk_size
+        )
+        return session_info
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+
+@router.get("/{file_id}/stream/{session_id}/chunk/{chunk_index}")
+async def get_stream_chunk(
+    file_id: str,
+    session_id: str,
+    chunk_index: int,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get a specific chunk with checksum for client verification.
+
+    Returns chunk data with checksum header for ARQ validation.
+    """
+    from ..services.arq_streaming_service import arq_streaming_service
+
+    try:
+        chunk = await arq_streaming_service.get_chunk(session_id, chunk_index)
+
+        headers = {
+            "X-Chunk-Index": str(chunk.chunk_index),
+            "X-Chunk-Checksum": chunk.checksum,
+            "X-Chunk-Is-Last": str(chunk.is_last).lower(),
+            "X-Byte-Range": f"{chunk.byte_start}-{chunk.byte_end}",
+            "X-Total-Size": str(chunk.total_size),
+            "Content-Length": str(len(chunk.data)),
+            "Content-Type": "application/octet-stream"
+        }
+
+        return Response(
+            content=chunk.data,
+            media_type="application/octet-stream",
+            headers=headers
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{file_id}/stream/{session_id}/ack")
+async def ack_chunks(
+    file_id: str,
+    session_id: str,
+    chunks: List[int],
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Acknowledge successfully received chunks.
+
+    Client calls this to confirm chunks were received correctly.
+    """
+    from ..services.arq_streaming_service import arq_streaming_service
+
+    try:
+        result = await arq_streaming_service.acknowledge_chunks(session_id, chunks)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{file_id}/stream/{session_id}/nack")
+async def retransmit_chunks(
+    file_id: str,
+    session_id: str,
+    chunks: List[int],
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Request retransmission of lost or corrupt chunks.
+
+    Client calls this when checksum validation fails or chunks are missing.
+    """
+    from ..services.arq_streaming_service import arq_streaming_service
+
+    try:
+        retransmitted = await arq_streaming_service.request_retransmit(session_id, chunks)
+
+        return {
+            "retransmitted_count": len(retransmitted),
+            "chunks": [
+                {
+                    "chunk_index": c.chunk_index,
+                    "checksum": c.checksum,
+                    "size": len(c.data)
+                }
+                for c in retransmitted
+            ]
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{file_id}/stream/{session_id}/status")
+async def get_stream_status(
+    file_id: str,
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get current streaming session status and statistics.
+    """
+    from ..services.arq_streaming_service import arq_streaming_service
+
+    try:
+        status = await arq_streaming_service.get_session_status(session_id)
+        return status
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/{file_id}/stream/{session_id}")
+async def close_stream_session(
+    file_id: str,
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Close a streaming session and clean up resources.
+    """
+    from ..services.arq_streaming_service import arq_streaming_service
+
+    try:
+        await arq_streaming_service.close_session(session_id)
+        return {"status": "closed", "session_id": session_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================================
+# VIDEO PROCESSING STATUS ENDPOINT
+# For frontend polling during proactive video optimization
+# ============================================================================
+
+@router.get("/{file_id}/video/status")
+async def get_video_processing_status(
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get video processing status for frontend polling.
+
+    Returns current status of proactive video optimization:
+    - 'queued': Waiting in processing queue
+    - 'processing': FFmpeg transcoding in progress (includes progress %)
+    - 'ready': Optimized version available for instant playback
+    - 'failed': Processing failed (includes error message)
+    - 'skipped': User has optimization disabled
+    - null: Not a video or not processed
+    """
+    from ..services.video_ingestion_service import video_ingestion_service
+
+    # Get file
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Check if it's a video
+    mime_type = file_obj.mime_type or ''
+    if not mime_type.startswith('video/'):
+        return {
+            "file_id": file_id,
+            "status": "not_video",
+            "message": "File is not a video"
+        }
+
+    # Get processing status
+    status = await video_ingestion_service.get_processing_status(file_obj)
+
+    return {
+        "file_id": file_id,
+        "file_name": file_obj.file_name,
+        **status
+    }

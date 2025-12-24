@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Dict, Any
 from datetime import datetime, timedelta
+from pydantic import BaseModel
 import json
 import secrets
 from ..dependencies import get_db, get_current_user, log_activity
@@ -506,6 +507,70 @@ async def update_theme(
     current_user.theme_preference = theme_data.theme
     await db.commit()
     return {"theme": theme_data.theme}
+
+
+# ============================================================================
+# VIDEO OPTIMIZATION SETTINGS
+# ============================================================================
+
+class VideoOptimizationSettings(BaseModel):
+    """Video optimization preference settings."""
+    mode: str  # 'keep_both', 'replace_original', 'no_optimization'
+
+
+@router.get("/users/settings/video-optimization")
+async def get_video_optimization_settings(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get user's video optimization preference.
+
+    Returns:
+        mode: 'keep_both' | 'replace_original' | 'no_optimization'
+        - keep_both: Store original + optimized MP4 (default)
+        - replace_original: Only keep optimized MP4 (saves storage)
+        - no_optimization: Skip proactive video optimization
+    """
+    return {
+        "mode": getattr(current_user, 'video_optimization_mode', 'keep_both'),
+        "description": {
+            "keep_both": "Store both original and optimized versions",
+            "replace_original": "Replace original with optimized version (saves storage)",
+            "no_optimization": "Disable automatic video optimization"
+        }
+    }
+
+
+@router.patch("/users/settings/video-optimization")
+async def update_video_optimization_settings(
+    settings: VideoOptimizationSettings,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update user's video optimization preference.
+
+    Args:
+        mode: 'keep_both' | 'replace_original' | 'no_optimization'
+
+    Note: This affects future uploads only. Existing videos are not re-processed.
+    """
+    valid_modes = {'keep_both', 'replace_original', 'no_optimization'}
+
+    if settings.mode not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode. Must be one of: {', '.join(valid_modes)}"
+        )
+
+    current_user.video_optimization_mode = settings.mode
+    await db.commit()
+
+    return {
+        "mode": settings.mode,
+        "message": f"Video optimization mode updated to '{settings.mode}'"
+    }
+
 
 # Background task for storage optimization
 async def optimize_user_storage(user_id: str):
