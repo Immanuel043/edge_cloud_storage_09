@@ -172,21 +172,26 @@ class EnhancedDeduplicationService:
                 'boundary': boundaries[i]
             }
 
-        # Batch lookup existing blocks
-        query = select(ContentBlock).where(ContentBlock.block_hash.in_(block_hashes))
-        if not self.enable_cross_user_dedup:
-            # Limit to user's own blocks
-            query = query.join(Object).where(Object.user_id == user_id)
-
-        result = await db.execute(query)
-        existing_blocks = result.scalars().all()
-
-        # Create hash map of existing blocks
+        # Batch lookup existing blocks (PostgreSQL limit is 32767 parameters)
+        # Process in batches of 10000 to stay well under the limit
+        BATCH_SIZE = 10000
         existing_block_map = {}
-        for existing_block in existing_blocks:
-            # Keep first (oldest) block for each hash
-            if existing_block.block_hash not in existing_block_map:
-                existing_block_map[existing_block.block_hash] = existing_block
+
+        for batch_start in range(0, len(block_hashes), BATCH_SIZE):
+            batch_hashes = block_hashes[batch_start:batch_start + BATCH_SIZE]
+            query = select(ContentBlock).where(ContentBlock.block_hash.in_(batch_hashes))
+            if not self.enable_cross_user_dedup:
+                # Limit to user's own blocks
+                query = query.join(Object).where(Object.user_id == user_id)
+
+            result = await db.execute(query)
+            existing_blocks = result.scalars().all()
+
+            # Add to hash map of existing blocks
+            for existing_block in existing_blocks:
+                # Keep first (oldest) block for each hash
+                if existing_block.block_hash not in existing_block_map:
+                    existing_block_map[existing_block.block_hash] = existing_block
 
         # Process each chunk with its pre-calculated hash
         start = 0

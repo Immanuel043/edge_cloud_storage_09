@@ -28,7 +28,8 @@ class RateLimitConfig:
     AUTH_REFRESH_TOKEN = {"times": 10, "minutes": 1}
 
     # File operations (user-based)
-    FILE_UPLOAD = {"times": 50, "hours": 1}
+    FILE_UPLOAD = {"times": 100, "hours": 1}  # For upload init
+    CHUNK_UPLOAD = {"times": 5000, "hours": 1}  # For chunk uploads (large files need many chunks)
     FILE_DOWNLOAD = {"times": 200, "hours": 1}
     FILE_DELETE = {"times": 100, "hours": 1}
     FILE_LIST = {"times": 500, "hours": 1}

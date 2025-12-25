@@ -95,18 +95,26 @@ async def get_kafka_producer():
             try:
                 kafka_producer = AIOKafkaProducer(
                     bootstrap_servers=settings.KAFKA_BROKERS,
-                    value_serializer=lambda v: json.dumps(v).encode(),
-                    compression_type='snappy',
+                    # Optimization: Only JSON encode if it's not already bytes
+                    value_serializer=lambda v: v if isinstance(v, (bytes, bytearray)) else json.dumps(v).encode(),
+
+                    compression_type='zstd',
+
+                    # 100MB max request matches large-scale needs
                     max_request_size=104857600,
+
+                    # Match 64MB upload chunk size
+                    max_batch_size=67108864,
+
+                    # Helps zstd find patterns across chunks
                     linger_ms=100,
-                    batch_size=524288,
                 )
                 await kafka_producer.start()
-                print("✅ Kafka producer initialized")
+                logger.info("Kafka producer initialized with ZSTD compression")
             except Exception as e:
-                print(f"⚠️ Kafka unavailable: {e}")
+                logger.warning(f"Kafka unavailable: {e}")
                 return None
-    
+
     return kafka_producer
 
 async def get_user_storage_info_fast(user_id: str, db: AsyncSession, redis_client):
@@ -389,7 +397,7 @@ async def init_zk_upload(
     )
 
 
-@router.post("/chunk/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
+@router.post("/chunk/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.CHUNK_UPLOAD))])
 async def upload_chunk(
     upload_id: str,
     chunk_index: int,

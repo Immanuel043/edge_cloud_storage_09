@@ -157,7 +157,7 @@ class ContentBlock(Base):
     __tablename__ = 'content_blocks'
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    block_hash = Column(String(64), nullable=False, index=True)
+    block_hash = Column(String(64), nullable=False, unique=True, index=True)  # Unique for deduplication
     file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id',ondelete='CASCADE'), index=True)
     block_size = Column(Integer)
     block_offset = Column(Integer)
@@ -166,7 +166,6 @@ class ContentBlock(Base):
 
     # Indexes and constraints for performance
     __table_args__ = (
-        UniqueConstraint('block_hash', 'file_id', 'block_offset'),
         Index('idx_block_file_id', 'file_id'),
         Index('idx_ref_count_zero', 'reference_count'),
     )

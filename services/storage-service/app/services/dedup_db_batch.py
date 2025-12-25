@@ -110,8 +110,9 @@ class BatchedDeduplicationWriter:
 
                 # Step 3: Merge from staging to main table (single lock)
                 await db.execute(text("""
-                    INSERT INTO content_blocks (block_hash, file_id, block_size, block_offset, reference_count, created_at)
+                    INSERT INTO content_blocks (id, block_hash, file_id, block_size, block_offset, reference_count, created_at)
                     SELECT
+                        gen_random_uuid(),
                         block_hash,
                         file_id,
                         block_size,
