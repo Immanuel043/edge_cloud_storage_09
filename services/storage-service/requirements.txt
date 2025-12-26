@@ -35,6 +35,7 @@ aioboto3==12.0.0
 # Compression & Hashing
 # -----------------------------------------------------------------------------
 zstandard==0.22.0
+cramjam>=2.8.0  # Required for aiokafka zstd/lz4/snappy compression
 xxhash==3.5.0
 pybloom_live==4.0.0
 

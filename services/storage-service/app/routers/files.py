@@ -403,6 +403,7 @@ async def download_file(
     accept_encoding: Optional[str] = Header(None, alias="accept-encoding"),
     inline: bool = False,  # Set to True for streaming video/audio in browser
     compatible: bool = False,  # Transcode to browser-friendly variant when needed
+    original: bool = False,  # Force download of original file (skip optimization)
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -489,11 +490,15 @@ async def download_file(
     )
     
     # Handle different storage types
-    
+
     # Video compatibility stream (transcoded H.264 MP4)
     compat_path = None
     use_compat_stream = False
-    if compatible and mime_type.startswith('video/'):
+
+    # Skip video optimization if user explicitly requests original file
+    skip_optimization = original
+
+    if not skip_optimization and compatible and mime_type.startswith('video/'):
         from ..services.video_transcoder import video_transcoder, VideoTranscodeError
 
         logger.info(f"Compatible stream requested for {file_obj.file_name} ({mime_type})")

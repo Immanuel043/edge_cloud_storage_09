@@ -98,6 +98,7 @@ async def get_kafka_producer():
                     # Optimization: Only JSON encode if it's not already bytes
                     value_serializer=lambda v: v if isinstance(v, (bytes, bytearray)) else json.dumps(v).encode(),
 
+                    # zstd compression (requires cramjam package)
                     compression_type='zstd',
 
                     # 100MB max request matches large-scale needs

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Shield,
   ShieldCheck,
@@ -13,13 +13,16 @@ import {
   EyeOff,
   ChevronRight,
   HardDrive,
-  Database
+  Database,
+  Video
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
 import { generateZKRegistrationData, unlockZKSession } from '../../services/zkEncryptionService';
 import * as zkAuthService from '../../services/zkAuthService';
 import { ZK_STORAGE } from '../../config/constants';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // Get KDF display string from localStorage
 function getKdfDisplayString() {
@@ -69,6 +72,53 @@ export default function SettingsView({ darkMode }) {
   const [upgradeError, setUpgradeError] = useState('');
   const [upgradeSuccess, setUpgradeSuccess] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Video optimization settings
+  const [videoMode, setVideoMode] = useState('keep_both');
+  const [videoModeLoading, setVideoModeLoading] = useState(false);
+  const [videoModeError, setVideoModeError] = useState('');
+
+  // Fetch current video optimization setting
+  useEffect(() => {
+    const fetchVideoSettings = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/users/settings/video-optimization`, {
+          credentials: 'include'
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setVideoMode(data.mode);
+        }
+      } catch (e) {
+        console.error('Failed to fetch video settings:', e);
+      }
+    };
+    fetchVideoSettings();
+  }, []);
+
+  const handleVideoModeChange = async (newMode) => {
+    setVideoModeLoading(true);
+    setVideoModeError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/users/settings/video-optimization`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ mode: newMode })
+      });
+      if (response.ok) {
+        setVideoMode(newMode);
+      } else {
+        throw new Error('Failed to update setting');
+      }
+    } catch (e) {
+      setVideoModeError(e.message);
+    } finally {
+      setVideoModeLoading(false);
+    }
+  };
 
   const resetUpgradeModal = useCallback(() => {
     setShowUpgradeModal(false);
@@ -271,6 +321,54 @@ export default function SettingsView({ darkMode }) {
             </div>
           </div>
         </div>
+
+        {/* Video Optimization Settings - Only for non-ZK users */}
+        {!zkEnabled && (
+          <div className={`p-4 rounded-lg border ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-gray-50'}`}>
+            <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              <Video size={20} />
+              Video Optimization
+            </h2>
+            <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              Choose how videos are processed after upload. Optimized videos use H.264 codec for better browser compatibility.
+            </p>
+
+            <div className="space-y-3">
+              {[
+                { value: 'keep_both', label: 'Keep Both Versions', desc: 'Store original + optimized (recommended)' },
+                { value: 'replace_original', label: 'Replace Original', desc: 'Only keep optimized version (saves storage)' },
+                { value: 'no_optimization', label: 'No Optimization', desc: 'Keep original only, skip processing' }
+              ].map(option => (
+                <label
+                  key={option.value}
+                  className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer border transition-colors ${
+                    videoMode === option.value
+                      ? darkMode ? 'border-blue-500 bg-blue-900/20' : 'border-blue-500 bg-blue-50'
+                      : darkMode ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-200 hover:bg-gray-100'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="videoMode"
+                    value={option.value}
+                    checked={videoMode === option.value}
+                    onChange={() => handleVideoModeChange(option.value)}
+                    disabled={videoModeLoading}
+                    className="mt-1"
+                  />
+                  <div>
+                    <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{option.label}</p>
+                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{option.desc}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            {videoModeError && (
+              <p className="text-red-500 text-sm mt-2">{videoModeError}</p>
+            )}
+          </div>
+        )}
 
         {/* Security Section */}
         <div className={`p-4 rounded-lg border ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-gray-50'}`}>

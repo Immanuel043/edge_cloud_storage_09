@@ -9,6 +9,7 @@ WORKDIR /app
 # Install system dependencies (including OpenCV, OCR, and video codec dependencies)
 RUN apt-get update && apt-get install -y \
     gcc \
+    g++ \
     libpq-dev \
     postgresql-client \
     netcat-traditional \
@@ -25,7 +26,9 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Python dependencies with extended timeout and retries for large packages
+RUN pip install --no-cache-dir --timeout=300 --retries=10 -r requirements.txt
 
 # Copy alembic configuration FILE (not directory)
 COPY alembic.ini .

@@ -1,4 +1,5 @@
 # services/storage-service/app/main.py
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -21,6 +22,10 @@ from .services.cold_storage_tiering import cold_storage_service  # ENABLED
 from .services.search_service import search_service
 from .workers.quota_prediction_worker import quota_prediction_worker
 from .workers.storage_optimization_worker import storage_optimization_worker
+from .workers.video_processing_worker import VideoProcessingWorker
+
+# Initialize video processing worker
+video_processing_worker = VideoProcessingWorker()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -101,6 +106,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Failed to start storage optimization worker: {e}")
 
+    # Start video processing worker (Kafka consumer for video optimization)
+    try:
+        asyncio.create_task(video_processing_worker.start())
+        print("Video processing worker started")
+    except Exception as e:
+        print(f"Failed to start video processing worker: {e}")
+
     print("Application startup complete")
     yield
 
@@ -150,6 +162,13 @@ async def lifespan(app: FastAPI):
             print("Storage optimization worker stopped")
         except Exception as e:
             print(f"Error stopping storage optimization worker: {e}")
+
+    # Stop video processing worker
+    try:
+        await video_processing_worker.stop()
+        print("Video processing worker stopped")
+    except Exception as e:
+        print(f"Error stopping video processing worker: {e}")
 
     # try:
     #     production_upload_service.cleanup()
