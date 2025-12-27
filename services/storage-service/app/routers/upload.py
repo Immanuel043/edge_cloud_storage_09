@@ -780,7 +780,8 @@ async def complete_upload(
                 "paths": session.get("chunk_paths", {}),
                 "upload_id": upload_id,
                 "compressed": session.get("compress", False),
-                "zk_mode": is_zk_mode  # Mark chunks as ZK-encrypted
+                "zk_mode": is_zk_mode,  # Mark chunks as ZK-encrypted
+                "chunk_size": CHUNK_SIZE  # Store chunk size for download
             },
             storage_tier="cache",
             **zk_fields  # Add ZK fields if applicable
@@ -1045,22 +1046,29 @@ async def complete_upload(
             logger.warning(f"Failed to queue analysis for {session['name']}: {e}")
             # Non-fatal - analysis can still be triggered manually
 
-    # Index file in Elasticsearch (fire and forget)
-    asyncio.create_task(
-        search_service.index_file({
-            'id': file_id,
-            'name': session['name'],
-            'original_name': session['name'],
-            'mime_type': mime_type,
-            'size': session['size'],
-            'hash': file_obj.content_hash,
-            'storage_tier': 'cache',
-            'folder_id': session.get('folder'),
-            'user_id': current_user.id,
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
-        })
-    )
+    # Index file in Elasticsearch (best effort, non-blocking)
+    if settings.ELASTICSEARCH_ENABLED:
+        async def index_with_logging():
+            try:
+                indexed = await search_service.index_file({
+                    'id': file_id,
+                    'name': session['name'],
+                    'original_name': session['name'],
+                    'mime_type': mime_type,
+                    'size': session['size'],
+                    'hash': file_obj.content_hash,
+                    'storage_tier': 'cache',
+                    'folder_id': session.get('folder'),
+                    'user_id': current_user.id,
+                    'created_at': datetime.utcnow(),
+                    'updated_at': datetime.utcnow()
+                })
+                if not indexed:
+                    logger.warning(f"File {file_id} ({session['name']}) not indexed - search may not find it")
+            except Exception as e:
+                logger.error(f"Failed to index file {file_id}: {e}")
+
+        asyncio.create_task(index_with_logging())
 
     # Clean up Redis
     await redis_client.delete(f"up:{upload_id}")

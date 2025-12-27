@@ -84,11 +84,19 @@ async def lifespan(app: FastAPI):
         print(f"Failed to start tiering service: {e}")
 
     # Initialize Elasticsearch
-    try:
-        await search_service.connect()
-        print("Elasticsearch connection established")
-    except Exception as e:
-        print(f"Elasticsearch connection failed: {e}")
+    if settings.ELASTICSEARCH_ENABLED:
+        try:
+            await search_service.connect()
+            if search_service.connected:
+                print("Elasticsearch connection established")
+            else:
+                print("Elasticsearch disabled by configuration")
+        except Exception as e:
+            print(f"WARNING: Elasticsearch connection failed: {e}")
+            print("WARNING: Search functionality will be unavailable")
+            # Don't re-raise - allow app to run without search
+    else:
+        print("Elasticsearch is disabled (ELASTICSEARCH_ENABLED=false)")
 
     # Start quota prediction worker (ML feature)
     if settings.QUOTA_PREDICTION_ENABLED:

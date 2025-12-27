@@ -146,38 +146,54 @@ export const AuthProvider = ({ children }) => {
               console.error('Failed to connect WebSocket on boot:', error);
             }
 
-            // If user has ZK enabled, load ZK data from localStorage and show unlock modal
-            if (userData.zk_enabled && !isZKSessionUnlocked()) {
-              console.log('[Auth] ZK user detected but session not unlocked - loading ZK data from localStorage');
-              try {
-                // Get ZK data from localStorage (stored during login)
-                const storedZkData = localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY);
-                console.log('[Auth] storedZkData from localStorage:', storedZkData ? 'found' : 'not found');
+            // If user has ZK enabled, check session state and sync React state
+            if (userData.zk_enabled) {
+              // Check if ZK session is already unlocked (keys still in memory)
+              if (isZKSessionUnlocked()) {
+                console.log('[Auth] ZK session already unlocked - syncing React state');
+                setZkSessionUnlocked(true);
 
-                if (storedZkData && mounted) {
-                  const zkDataObj = JSON.parse(storedZkData);
-                  console.log('[Auth] Parsed zkData:', {
-                    hasKdfSalt: !!zkDataObj.kdfSalt,
-                    hasEncryptedMasterKey: !!zkDataObj.encryptedMasterKey,
-                    hasKdfIterations: !!zkDataObj.kdfIterations,
-                    hasMasterKeyIV: !!zkDataObj.masterKeyIV,
-                  });
-
-                  // Validate zkData has required fields
-                  if (!zkDataObj.kdfSalt || !zkDataObj.encryptedMasterKey) {
-                    console.error('[Auth] Invalid zkData - missing required fields');
-                    console.warn('[Auth] ZK user needs to re-login to get valid credentials');
-                  } else {
-                    // Store ZK data for unlock
-                    setZkData(zkDataObj);
-                    // Show unlock modal
-                    setShowUnlockModal(true);
+                // Also load ZK data for potential re-lock/unlock
+                try {
+                  const storedZkData = localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY);
+                  if (storedZkData && mounted) {
+                    setZkData(JSON.parse(storedZkData));
                   }
-                } else {
-                  console.warn('[Auth] ZK user detected but no ZK data in localStorage - user needs to re-login');
+                } catch (e) {
+                  console.warn('[Auth] Failed to load zkData from localStorage:', e);
                 }
-              } catch (zkError) {
-                console.error('[Auth] Failed to load ZK data from localStorage:', zkError);
+              } else {
+                console.log('[Auth] ZK user detected but session not unlocked - loading ZK data from localStorage');
+                try {
+                  // Get ZK data from localStorage (stored during login)
+                  const storedZkData = localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY);
+                  console.log('[Auth] storedZkData from localStorage:', storedZkData ? 'found' : 'not found');
+
+                  if (storedZkData && mounted) {
+                    const zkDataObj = JSON.parse(storedZkData);
+                    console.log('[Auth] Parsed zkData:', {
+                      hasKdfSalt: !!zkDataObj.kdfSalt,
+                      hasEncryptedMasterKey: !!zkDataObj.encryptedMasterKey,
+                      hasKdfIterations: !!zkDataObj.kdfIterations,
+                      hasMasterKeyIV: !!zkDataObj.masterKeyIV,
+                    });
+
+                    // Validate zkData has required fields
+                    if (!zkDataObj.kdfSalt || !zkDataObj.encryptedMasterKey) {
+                      console.error('[Auth] Invalid zkData - missing required fields');
+                      console.warn('[Auth] ZK user needs to re-login to get valid credentials');
+                    } else {
+                      // Store ZK data for unlock
+                      setZkData(zkDataObj);
+                      // Show unlock modal
+                      setShowUnlockModal(true);
+                    }
+                  } else {
+                    console.warn('[Auth] ZK user detected but no ZK data in localStorage - user needs to re-login');
+                  }
+                } catch (zkError) {
+                  console.error('[Auth] Failed to load ZK data from localStorage:', zkError);
+                }
               }
             }
 

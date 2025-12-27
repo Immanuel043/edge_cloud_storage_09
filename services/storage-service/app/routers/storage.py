@@ -224,14 +224,15 @@ async def create_share_link(
         allow_preview=share_data.allow_preview,
     )
 
-@router.get("/share/{share_token}/info")
-async def get_share_info(
+@router.get("/share/{share_token}/zk-info")
+async def get_share_zk_info(
     share_token: str,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get share link info for ZK-safe client-side decryption.
     Returns encrypted file metadata - client decrypts with share password.
+    Note: Regular share info is at /share/{token}/info (handled by sharing.py)
     """
     # Get share link from database
     result = await db.execute(
@@ -369,7 +370,7 @@ async def download_shared(
 ):
     """
     Download shared file with validation.
-    NOTE: For ZK-encrypted files, use /share/{token}/info and /share/{token}/chunk/{index}
+    NOTE: For ZK-encrypted files, use /share/{token}/zk-info and /share/{token}/chunk/{index}
     for proper client-side decryption. This endpoint is for legacy non-ZK files only.
     """
     from fastapi.responses import StreamingResponse
@@ -409,7 +410,7 @@ async def download_shared(
     if file_obj.encrypted_file_key:
         raise HTTPException(
             status_code=400,
-            detail="This file uses zero-knowledge encryption. Use /share/{token}/info for client-side decryption."
+            detail="This file uses zero-knowledge encryption. Use /share/{token}/zk-info for client-side decryption."
         )
 
     # Update download count and last accessed

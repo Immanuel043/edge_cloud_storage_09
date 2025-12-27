@@ -872,6 +872,13 @@ async def get_file_preview(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Check if file is Zero-Knowledge encrypted - server cannot generate previews for these
+    if file_obj.is_encrypted or file_obj.encrypted_file_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Preview not available for Zero-Knowledge encrypted files. Files are encrypted client-side and cannot be processed by the server."
+        )
+
     # ============ CHECK BACKGROUND PREVIEW STATUS FOR LARGE VIDEOS ============
     # For large videos (>50MB), check if preview is being generated in background
     PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50MB
@@ -1403,13 +1410,20 @@ async def list_trash(
             size=f.file_size,
             mime_type=f.mime_type,
             folder_id=str(f.folder_id) if f.folder_id else None,
-            storage_tier=f.storage_tier,
-            backup_status=f.backup_status,
+            storage_tier=f.storage_tier or 'hot',
+            backup_status=f.backup_status or 'none',
             created_at=f.created_at,
             last_accessed=f.last_accessed,
             updated_at=f.updated_at,
             path=f.object_path,
             is_favorite=(f.id in favorite_file_ids),
+            # ZK encryption fields
+            is_encrypted=f.is_encrypted,
+            encrypted_file_key=f.encrypted_file_key,
+            file_key_iv=f.file_key_iv,
+            encryption_algorithm=f.encryption_algorithm,
+            encryption_version=f.encryption_version,
+            encryption_mode=f.encryption_mode,
         )
         for f in files
     ]
@@ -2245,3 +2259,141 @@ async def get_video_processing_status(
         "file_name": file_obj.file_name,
         **status
     }
+
+
+# ============================================================================
+# ZERO-KNOWLEDGE CHUNK DOWNLOAD ENDPOINT
+# For client-side decrypted video playback and file downloads
+# ============================================================================
+
+@router.get("/{file_id}/zk/metadata")
+async def get_zk_file_metadata(
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get ZK file metadata for client-side decryption.
+
+    Returns:
+        - encrypted_file_key: Client decrypts with master key
+        - file_key_iv: IV for file key decryption
+        - file_size: Total file size
+        - chunk_count: Number of chunks
+        - chunk_size: Size of each chunk
+        - mime_type: File MIME type
+    """
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Verify this is a ZK-encrypted file
+    if not file_obj.encrypted_file_key:
+        raise HTTPException(
+            status_code=400,
+            detail="This is not a Zero-Knowledge encrypted file"
+        )
+
+    # Get chunk info
+    chunk_info = file_obj.chunk_info or {}
+    chunk_count = chunk_info.get("count", 1)
+
+    # Get chunk size from upload session info (stored in chunk_info)
+    # Default to 32MB which is the standard upload chunk size
+    chunk_size = chunk_info.get("chunk_size", CHUNK_SIZE)
+
+    return {
+        "file_id": file_id,
+        "filename": file_obj.file_name,
+        "file_size": file_obj.file_size,
+        "mime_type": file_obj.mime_type or "application/octet-stream",
+        "encrypted_file_key": file_obj.encrypted_file_key,
+        "file_key_iv": file_obj.file_key_iv,
+        "encryption_algorithm": file_obj.encryption_algorithm or "AES-256-GCM",
+        "chunk_count": chunk_count,
+        "chunk_size": chunk_size,
+        "is_encrypted": True
+    }
+
+
+@router.get("/{file_id}/zk/chunk/{chunk_index}")
+async def download_zk_chunk(
+    file_id: str,
+    chunk_index: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download a single encrypted chunk for ZK files.
+
+    Returns raw encrypted chunk data for client-side decryption.
+    The server NEVER decrypts ZK file contents.
+
+    Args:
+        file_id: File UUID
+        chunk_index: Chunk number (0-based)
+
+    Returns:
+        Raw encrypted chunk bytes
+    """
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Verify this is a ZK-encrypted file
+    if not file_obj.encrypted_file_key:
+        raise HTTPException(
+            status_code=400,
+            detail="This is not a Zero-Knowledge encrypted file. Use the standard download endpoint."
+        )
+
+    # Get chunk path from chunk_info
+    chunk_info = file_obj.chunk_info or {}
+    chunk_paths = chunk_info.get("paths", {})
+
+    if str(chunk_index) not in chunk_paths:
+        # Fallback 1: ZK service path format (user_id/file_id/chunk_N.enc)
+        zk_path = f"/app/storage/zk/{current_user.id}/{file_id}/chunk_{chunk_index}.enc"
+        if os.path.exists(zk_path):
+            chunk_paths[str(chunk_index)] = zk_path
+        else:
+            # Fallback 2: Storage service path format (tier/shard/upload_id_chunk_N.enc)
+            upload_id = chunk_info.get("upload_id")
+            if upload_id:
+                shard = upload_id[:2]
+                for tier in ["cache", "hot", "warm", "cold"]:
+                    fallback_path = f"/app/storage/{tier}/{shard}/{upload_id}_chunk_{chunk_index}.enc"
+                    if os.path.exists(fallback_path):
+                        chunk_paths[str(chunk_index)] = fallback_path
+                        break
+
+    chunk_path = chunk_paths.get(str(chunk_index))
+
+    if not chunk_path or not os.path.exists(chunk_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chunk {chunk_index} not found"
+        )
+
+    # Read and return encrypted chunk
+    async with aiofiles.open(chunk_path, 'rb') as f:
+        chunk_data = await f.read()
+
+    return Response(
+        content=chunk_data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(chunk_data)),
+            "X-Chunk-Index": str(chunk_index),
+            "X-File-Encrypted": "true",
+            "X-Encryption-Algorithm": file_obj.encryption_algorithm or "AES-256-GCM"
+        }
+    )

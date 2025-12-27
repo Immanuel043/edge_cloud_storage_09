@@ -36,6 +36,9 @@ export function useSecureVideoPlayer(fileId, metadata) {
 
   const { zkSessionUnlocked } = useAuth();
 
+  // Track when video element is mounted
+  const [videoMounted, setVideoMounted] = useState(false);
+
   const [state, setState] = useState({
     isReady: false,
     isPlaying: false,
@@ -48,17 +51,35 @@ export function useSecureVideoPlayer(fileId, metadata) {
     error: null,
   });
 
+
   // Initialize controller when video element and metadata are available
   useEffect(() => {
+    console.log('[useSecureVideoPlayer] Effect triggered', {
+      zkSessionUnlocked,
+      fileId,
+      hasMetadata: !!metadata,
+      videoMounted,
+      hasVideoRef: !!videoRef.current,
+    });
+
     if (!zkSessionUnlocked) {
       // Session is locked - don't initialize
+      console.log('[useSecureVideoPlayer] Session is locked - skipping initialization');
       setState(s => ({ ...s, isLocked: true, isReady: false }));
       return;
     }
 
-    if (!fileId || !metadata || !videoRef.current) {
+    if (!fileId || !metadata || !videoMounted || !videoRef.current) {
+      console.log('[useSecureVideoPlayer] Missing required props', {
+        fileId: !!fileId,
+        metadata: !!metadata,
+        videoMounted,
+        videoRef: !!videoRef.current,
+      });
       return;
     }
+
+    console.log('[useSecureVideoPlayer] Starting controller initialization...');
 
     // Create and initialize controller
     const controller = new SecureMediaController();
@@ -101,12 +122,32 @@ export function useSecureVideoPlayer(fileId, metadata) {
       }));
     });
 
-    // Cleanup
+    // Cleanup - bulletproof memory management
     return () => {
+      const video = videoRef.current;
+
+      // First, stop playback and clear video source to release file handles
+      if (video) {
+        const currentSrc = video.src;
+        video.pause();
+        video.src = '';
+        video.load(); // Forces browser to release memory
+
+        // Revoke blob URL if it exists
+        if (currentSrc && currentSrc.startsWith('blob:')) {
+          try {
+            URL.revokeObjectURL(currentSrc);
+          } catch (e) {
+            // Ignore revocation errors
+          }
+        }
+      }
+
+      // Then destroy the controller (which also cleans up workers, buffers, etc.)
       controller.destroy();
       controllerRef.current = null;
     };
-  }, [fileId, metadata, zkSessionUnlocked]);
+  }, [fileId, metadata, zkSessionUnlocked, videoMounted]);
 
   // Handle session lock/unlock
   useEffect(() => {
@@ -186,9 +227,17 @@ export function useSecureVideoPlayer(fileId, metadata) {
     return ((state.currentTime + state.buffered) / state.duration) * 100;
   }, [state.currentTime, state.buffered, state.duration]);
 
+  // Callback ref that triggers re-render when video element mounts
+  const videoRefCallback = useCallback((node) => {
+    videoRef.current = node;
+    setVideoMounted(!!node);
+  }, []);
+
   return {
-    // Ref for video element
-    videoRef,
+    // Callback ref for video element - use as ref={videoRef}
+    videoRef: videoRefCallback,
+    // Access to video element for direct manipulation
+    videoElement: videoRef.current,
 
     // State
     ...state,

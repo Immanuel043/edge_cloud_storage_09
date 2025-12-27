@@ -1,6 +1,7 @@
 """
 Elasticsearch Search Service for Full-Text Search
 """
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -8,23 +9,40 @@ from elasticsearch import AsyncElasticsearch
 from elasticsearch.helpers import async_bulk
 import os
 
+from ..config import settings
+
 logger = logging.getLogger(__name__)
 
 class SearchService:
     def __init__(self):
-        self.es_url = os.getenv('ELASTICSEARCH_URL', 'http://localhost:9200')
+        self.es_url = settings.ELASTICSEARCH_URL
         self.client: Optional[AsyncElasticsearch] = None
-        self.files_index = 'files'
-        self.folders_index = 'folders'
+        self.connected: bool = False  # Track connection state
+        self.files_index = f'{settings.ELASTICSEARCH_INDEX_PREFIX}_files'
+        self.folders_index = f'{settings.ELASTICSEARCH_INDEX_PREFIX}_folders'
 
     async def connect(self):
         """Initialize Elasticsearch connection"""
+        # Check if ES is enabled
+        if not settings.ELASTICSEARCH_ENABLED:
+            logger.info("Elasticsearch is disabled by configuration (ELASTICSEARCH_ENABLED=false)")
+            return
+
         try:
-            self.client = AsyncElasticsearch([self.es_url])
+            self.client = AsyncElasticsearch(
+                [self.es_url],
+                retry_on_timeout=settings.ELASTICSEARCH_RETRY_ON_TIMEOUT,
+                max_retries=settings.ELASTICSEARCH_MAX_RETRIES,
+                request_timeout=settings.ELASTICSEARCH_TIMEOUT
+            )
+            # Test connection
+            await self.client.info()
             await self.create_indices()
+            self.connected = True
             logger.info(f"Connected to Elasticsearch at {self.es_url}")
         except Exception as e:
             logger.error(f"Failed to connect to Elasticsearch: {e}")
+            self.connected = False
             raise
 
     async def close(self):
@@ -112,55 +130,95 @@ class SearchService:
             await self.client.indices.create(index=self.folders_index, body=folders_mapping)
             logger.info(f"Created index: {self.folders_index}")
 
-    async def index_file(self, file_data: Dict[str, Any]):
-        """Index a file document"""
-        try:
-            doc = {
-                "id": str(file_data['id']),
-                "name": file_data['name'],
-                "original_name": file_data.get('original_name', file_data['name']),
-                "mime_type": file_data.get('mime_type', ''),
-                "size": file_data.get('size', 0),
-                "hash": file_data.get('hash', ''),
-                "storage_tier": file_data.get('storage_tier', 'warm'),
-                "folder_id": str(file_data['folder_id']) if file_data.get('folder_id') else None,
-                "user_id": str(file_data['user_id']),
-                "created_at": file_data.get('created_at', datetime.utcnow()).isoformat(),
-                "updated_at": file_data.get('updated_at', datetime.utcnow()).isoformat(),
-                "tags": file_data.get('tags', []),
-                "description": file_data.get('description', '')
-            }
+    async def index_file(self, file_data: Dict[str, Any], retries: int = 3) -> bool:
+        """
+        Index a file document with retry logic.
 
-            await self.client.index(
-                index=self.files_index,
-                id=str(file_data['id']),
-                document=doc
-            )
-            logger.debug(f"Indexed file: {file_data['name']}")
-        except Exception as e:
-            logger.error(f"Failed to index file: {e}")
+        Returns:
+            bool: True if indexing succeeded, False otherwise
+        """
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.warning(f"Elasticsearch not connected, skipping file indexing for: {file_data.get('name', 'unknown')}")
+            return False
 
-    async def index_folder(self, folder_data: Dict[str, Any]):
-        """Index a folder document"""
-        try:
-            doc = {
-                "id": str(folder_data['id']),
-                "name": folder_data['name'],
-                "parent_id": str(folder_data['parent_id']) if folder_data.get('parent_id') else None,
-                "user_id": str(folder_data['user_id']),
-                "created_at": folder_data.get('created_at', datetime.utcnow()).isoformat(),
-                "updated_at": folder_data.get('updated_at', datetime.utcnow()).isoformat(),
-                "path": folder_data.get('path', '')
-            }
+        doc = {
+            "id": str(file_data['id']),
+            "name": file_data['name'],
+            "original_name": file_data.get('original_name', file_data['name']),
+            "mime_type": file_data.get('mime_type', ''),
+            "size": file_data.get('size', 0),
+            "hash": file_data.get('hash', ''),
+            "storage_tier": file_data.get('storage_tier', 'warm'),
+            "folder_id": str(file_data['folder_id']) if file_data.get('folder_id') else None,
+            "user_id": str(file_data['user_id']),
+            "created_at": file_data.get('created_at', datetime.utcnow()).isoformat(),
+            "updated_at": file_data.get('updated_at', datetime.utcnow()).isoformat(),
+            "tags": file_data.get('tags', []),
+            "description": file_data.get('description', '')
+        }
 
-            await self.client.index(
-                index=self.folders_index,
-                id=str(folder_data['id']),
-                document=doc
-            )
-            logger.debug(f"Indexed folder: {folder_data['name']}")
-        except Exception as e:
-            logger.error(f"Failed to index folder: {e}")
+        for attempt in range(retries):
+            try:
+                await self.client.index(
+                    index=self.files_index,
+                    id=str(file_data['id']),
+                    document=doc
+                )
+                logger.debug(f"Indexed file: {file_data['name']}")
+                return True
+            except Exception as e:
+                if attempt < retries - 1:
+                    wait_time = (attempt + 1) * 1  # Exponential backoff: 1s, 2s, 3s
+                    logger.warning(f"Failed to index file (attempt {attempt + 1}/{retries}): {e}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to index file after {retries} attempts: {e}")
+                    return False
+
+        return False
+
+    async def index_folder(self, folder_data: Dict[str, Any], retries: int = 3) -> bool:
+        """
+        Index a folder document with retry logic.
+
+        Returns:
+            bool: True if indexing succeeded, False otherwise
+        """
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.warning(f"Elasticsearch not connected, skipping folder indexing for: {folder_data.get('name', 'unknown')}")
+            return False
+
+        doc = {
+            "id": str(folder_data['id']),
+            "name": folder_data['name'],
+            "parent_id": str(folder_data['parent_id']) if folder_data.get('parent_id') else None,
+            "user_id": str(folder_data['user_id']),
+            "created_at": folder_data.get('created_at', datetime.utcnow()).isoformat(),
+            "updated_at": folder_data.get('updated_at', datetime.utcnow()).isoformat(),
+            "path": folder_data.get('path', '')
+        }
+
+        for attempt in range(retries):
+            try:
+                await self.client.index(
+                    index=self.folders_index,
+                    id=str(folder_data['id']),
+                    document=doc
+                )
+                logger.debug(f"Indexed folder: {folder_data['name']}")
+                return True
+            except Exception as e:
+                if attempt < retries - 1:
+                    wait_time = (attempt + 1) * 1
+                    logger.warning(f"Failed to index folder (attempt {attempt + 1}/{retries}): {e}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to index folder after {retries} attempts: {e}")
+                    return False
+
+        return False
 
     async def search(
         self,
@@ -182,6 +240,11 @@ class SearchService:
             from_: Offset for pagination
             fuzzy: Enable fuzzy matching for typo tolerance
         """
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.warning("Elasticsearch not connected, search unavailable")
+            return {"files": {"total": 0, "hits": []}, "folders": {"total": 0, "hits": []}}
+
         try:
             # Build search query
             must_clauses = [
@@ -307,6 +370,11 @@ class SearchService:
 
     async def autocomplete(self, query: str, user_id: str, size: int = 5) -> List[str]:
         """Get autocomplete suggestions using prefix search"""
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.debug("Elasticsearch not connected, autocomplete unavailable")
+            return []
+
         try:
             # Use prefix query instead of completion suggester
             response = await self.client.search(
@@ -338,8 +406,13 @@ class SearchService:
             logger.error(f"Autocomplete failed: {e}")
             return []
 
-    async def update_file_text(self, file_id: str, ocr_text: str):
+    async def update_file_text(self, file_id: str, ocr_text: str) -> bool:
         """Update file with OCR extracted text for searchability"""
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.warning(f"Elasticsearch not connected, skipping OCR text update for file: {file_id}")
+            return False
+
         try:
             await self.client.update(
                 index=self.files_index,
@@ -352,24 +425,40 @@ class SearchService:
                 }
             )
             logger.debug(f"Updated file text in index: {file_id}")
+            return True
         except Exception as e:
             logger.error(f"Failed to update file text in index: {e}")
+            return False
 
-    async def delete_file(self, file_id: str):
+    async def delete_file(self, file_id: str) -> bool:
         """Remove file from index"""
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.warning(f"Elasticsearch not connected, skipping file deletion from index: {file_id}")
+            return False
+
         try:
             await self.client.delete(index=self.files_index, id=str(file_id))
             logger.debug(f"Deleted file from index: {file_id}")
+            return True
         except Exception as e:
             logger.error(f"Failed to delete file from index: {e}")
+            return False
 
-    async def delete_folder(self, folder_id: str):
+    async def delete_folder(self, folder_id: str) -> bool:
         """Remove folder from index"""
+        # Check if connected
+        if not self.connected or self.client is None:
+            logger.warning(f"Elasticsearch not connected, skipping folder deletion from index: {folder_id}")
+            return False
+
         try:
             await self.client.delete(index=self.folders_index, id=str(folder_id))
             logger.debug(f"Deleted folder from index: {folder_id}")
+            return True
         except Exception as e:
             logger.error(f"Failed to delete folder from index: {e}")
+            return False
 
 # Global search service instance
 search_service = SearchService()

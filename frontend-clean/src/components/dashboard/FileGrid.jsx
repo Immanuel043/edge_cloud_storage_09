@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info, Lock, Shield, Copy } from 'lucide-react';
+import { Folder, File, Download, Share2, Trash2, Eye, Check, Cloud, HardDrive, Clock, MoreVertical, Star, Edit2, Info, Lock, Shield, Copy, RotateCcw } from 'lucide-react';
 import { formatBytes, formatDate, getFileIcon, isImageFile, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
 
@@ -18,7 +18,9 @@ export default function FileGrid({
   onRename,
   onFileInfo,
   onFileCopy,
-  darkMode
+  darkMode,
+  trashedView = false,
+  onRestore,
 }) {
   const [openMenuId, setOpenMenuId] = useState(null);
   const [hoveredMenuId, setHoveredMenuId] = useState(null);
@@ -240,6 +242,24 @@ export default function FileGrid({
                           <Info size={16} className="text-cyan-500" />
                           <span className="font-medium">File information</span>
                         </button>
+                      )}
+                      {trashedView && onRestore && (
+                        <>
+                          <div className={`my-1 h-px ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRestore(file.id);
+                              setOpenMenuId(null);
+                            }}
+                            className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
+                              darkMode ? 'hover:bg-green-900/20 text-green-400' : 'hover:bg-green-50 text-green-600'
+                            }`}
+                          >
+                            <RotateCcw size={16} />
+                            <span className="font-medium">Restore</span>
+                          </button>
+                        </>
                       )}
                       <div className={`my-1 h-px ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
                       <button

@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, ZoomIn, ZoomOut, RotateCw, Download, Table, FileCode } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Download, Table, Shield, Lock, Loader } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
 import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS } from '../../utils/helpers';
+import SecureVideoPlayer from './SecureVideoPlayer';
+import { storageService } from '../../services/storageService';
+import { isZKSessionUnlocked } from '../../services/zkEncryptionService';
 
 export default function FilePreview({ file, onClose, darkMode }) {
   const { isAuthenticated, token } = useAuth();
@@ -13,6 +16,10 @@ export default function FilePreview({ file, onClose, darkMode }) {
   const isExcelFile = mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType === 'text/csv' || EXCEL_EXTENSIONS.includes(extension);
   const isXmlFile = mimeType.includes('xml') || XML_EXTENSIONS.includes(extension);
   const isTextFile = mimeType.startsWith('text/') || TEXT_EXTENSIONS.includes(extension);
+
+  // Check if file is ZK-encrypted (client-side encryption)
+  const isZKEncrypted = file.is_encrypted || !!file.encrypted_file_key;
+
   const applyToken = (url) => {
     if (!token) return url;
     return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
@@ -29,6 +36,10 @@ export default function FilePreview({ file, onClose, darkMode }) {
   const [previewWarning, setPreviewWarning] = useState(null);
   const [streamReady, setStreamReady] = useState(!isVideoFile);
   const pollTimerRef = useRef(null);
+
+  // ZK preview state
+  const [zkDecryptProgress, setZkDecryptProgress] = useState(null);
+  const [zkSessionLocked, setZkSessionLocked] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -55,7 +66,8 @@ export default function FilePreview({ file, onClose, darkMode }) {
   }, [file?.id, isVideoFile]);
 
   useEffect(() => {
-    if (!isVideoFile) {
+    // Skip stream check for non-videos and ZK-encrypted videos (uses SecureMediaController)
+    if (!isVideoFile || isZKEncrypted) {
       setStreamReady(true);
       return;
     }
@@ -160,7 +172,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
       clearTimer();
     };
 
-  }, [isVideoFile, streamUrl]);
+  }, [isVideoFile, isZKEncrypted, streamUrl]);
 
   const loadPreview = async () => {
     setLoading(true);
@@ -177,6 +189,73 @@ export default function FilePreview({ file, onClose, darkMode }) {
       }
     };
 
+    // Handle ZK-encrypted files with client-side decryption
+    if (isZKEncrypted) {
+      if (isVideoFile) {
+        // ZK video - SecureVideoPlayer will handle it
+        setLoading(false);
+        return;
+      }
+
+      // Check if ZK session is unlocked
+      if (!isZKSessionUnlocked()) {
+        setZkSessionLocked(true);
+        setPreviewFailure(
+          'Session is locked. Please unlock your ZK session to preview encrypted files.',
+          { fatal: true }
+        );
+        setLoading(false);
+        return;
+      }
+
+      // Check if file type is previewable (images, PDFs, text)
+      const isImage = mimeType.startsWith('image/');
+      const canPreviewZK = isImage || isPdfFile || isTextFile || isXmlFile;
+
+      if (!canPreviewZK) {
+        // Non-previewable ZK files (Excel, etc.) - show download prompt
+        setPreviewFailure(
+          'Preview not available for this encrypted file type. Download the file to view it locally.',
+          { fatal: true }
+        );
+        setLoading(false);
+        return;
+      }
+
+      // Decrypt and preview ZK file
+      try {
+        setZkDecryptProgress({ stage: 'starting', progress: 0 });
+
+        const result = await storageService.previewZKFile(
+          file.id,
+          {
+            encrypted_file_key: file.encrypted_file_key,
+            file_key_iv: file.file_key_iv,
+            file_size: file.size || file.file_size,
+            chunk_size: file.chunk_size,
+            mime_type: file.mime_type || file.type,
+          },
+          (progress) => setZkDecryptProgress(progress)
+        );
+
+        setPreviewUrl(result.blobUrl);
+        setZkDecryptProgress(null);
+        setLoading(false);
+        return;
+      } catch (error) {
+        console.error('[Preview] ZK preview failed:', error);
+        setZkDecryptProgress(null);
+        setPreviewFailure(
+          error.message.includes('locked')
+            ? 'Session is locked. Please unlock your ZK session to preview encrypted files.'
+            : 'Failed to decrypt file for preview. Please try again or download the file.',
+          { fatal: true }
+        );
+        setLoading(false);
+        return;
+      }
+    }
+
     try {
       const response = await fetch(`${API_URL}/api/v1/files/${file.id}/preview?size=large`, {
         credentials: 'include'
@@ -190,6 +269,12 @@ export default function FilePreview({ file, onClose, darkMode }) {
         setPreviewFailure(
           'Preview is still generating. Video playback will start using the inline player.',
           { fatal: false }
+        );
+      } else if (response.status === 400) {
+        // ZK-encrypted files cannot be previewed server-side
+        setPreviewFailure(
+          'Preview not available for encrypted files. Download the file to view it locally.',
+          { fatal: true }
         );
       } else if (response.status === 404) {
         setPreviewFailure('File not found. It may have been deleted or moved.', { fatal: true });
@@ -328,9 +413,41 @@ export default function FilePreview({ file, onClose, darkMode }) {
 
         {/* Content */}
         <div className="flex-1 overflow-auto flex items-center justify-center p-4 min-h-[60vh]">
-          {loading && !isPdfFile ? (
+          {/* ZK Decryption Progress */}
+          {zkDecryptProgress && (
+            <div className={`flex flex-col items-center text-center gap-4 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+              <div className={`p-4 rounded-full ${darkMode ? 'bg-green-900/30' : 'bg-green-50'}`}>
+                <Loader size={32} className="animate-spin text-green-500" />
+              </div>
+              <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                <Shield size={16} />
+                <span className="text-sm font-medium">Decrypting encrypted file...</span>
+              </div>
+              <p className="text-sm">
+                {zkDecryptProgress.stage === 'downloading' && `Downloading chunk ${zkDecryptProgress.chunk}/${zkDecryptProgress.totalChunks}...`}
+                {zkDecryptProgress.stage === 'decrypting' && `Decrypting chunk ${zkDecryptProgress.chunk}/${zkDecryptProgress.totalChunks}...`}
+                {zkDecryptProgress.stage === 'complete' && 'Preparing preview...'}
+              </p>
+              <div className="w-48 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 transition-all duration-300"
+                  style={{ width: `${zkDecryptProgress.progress || 0}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {/* ZK Session Locked */}
+          {!zkDecryptProgress && zkSessionLocked && fatalError ? (
+            <div className={`flex flex-col items-center text-center gap-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              <div className={`p-4 rounded-full ${darkMode ? 'bg-amber-900/30' : 'bg-amber-50'}`}>
+                <Lock size={32} className="text-amber-500" />
+              </div>
+              <p className="mb-2">{fatalError}</p>
+              <p className="text-sm">Unlock your session from the sidebar to view this file.</p>
+            </div>
+          ) : !zkDecryptProgress && loading && !isPdfFile ? (
             <div className={darkMode ? 'text-white' : 'text-gray-900'}>Loading preview...</div>
-          ) : fatalError ? (
+          ) : !zkDecryptProgress && fatalError ? (
             <div className={`text-center ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               <p className="mb-4">{fatalError}</p>
               {isVideoFile && (
@@ -353,8 +470,14 @@ export default function FilePreview({ file, onClose, darkMode }) {
             </div>
           ) : isPdfFile ? (
             <div className="w-full h-full min-h-[70vh]">
+              {isZKEncrypted && (
+                <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 mx-auto w-fit ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                  <Shield size={16} />
+                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
+                </div>
+              )}
               <iframe
-                src={applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
+                src={isZKEncrypted && previewUrl ? previewUrl : applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
                 className="w-full h-full rounded-lg"
                 style={{ minHeight: '70vh' }}
                 title={file.name}
@@ -389,14 +512,43 @@ export default function FilePreview({ file, onClose, darkMode }) {
             </div>
           ) : isXmlFile || isTextFile ? (
             <div className="w-full h-full min-h-[70vh]">
+              {isZKEncrypted && (
+                <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 mx-auto w-fit ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                  <Shield size={16} />
+                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
+                </div>
+              )}
               <iframe
-                src={applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
+                src={isZKEncrypted && previewUrl ? previewUrl : applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
                 className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
                 style={{ minHeight: '70vh' }}
                 title={file.name}
               />
             </div>
+          ) : isVideoFile && isZKEncrypted ? (
+            // ZK-encrypted video - use SecureVideoPlayer with client-side decryption
+            <div className="flex w-full max-w-4xl flex-col items-center">
+              {/* ZK Encryption Badge */}
+              <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                <Shield size={16} />
+                <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
+              </div>
+
+              <SecureVideoPlayer
+                fileId={file.id}
+                metadata={{
+                  encrypted_file_key: file.encrypted_file_key,
+                  file_key_iv: file.file_key_iv,
+                  file_size: file.size || file.file_size,
+                  chunk_size: file.chunk_size,
+                }}
+                darkMode={darkMode}
+                onClose={onClose}
+                className="w-full"
+              />
+            </div>
           ) : isVideoFile ? (
+            // Regular video - use server-side streaming
             streamReady ? (
               <div className="flex w-full max-w-4xl flex-col items-center">
                 <div className="relative w-full">
@@ -422,20 +574,28 @@ export default function FilePreview({ file, onClose, darkMode }) {
                 <div className="h-12 w-12 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
                 <p>{previewWarning || 'Preparing a browser-compatible stream...'}</p>
                 <p className="text-sm opacity-70">
-                  Leave this window open—we’ll start playback automatically once it’s ready.
+                  Leave this window open—we'll start playback automatically once it's ready.
                 </p>
               </div>
             )
           ) : previewUrl ? (
-            <img
-              src={previewUrl}
-              alt={file.name}
-              style={{
-                transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                transition: 'transform 0.3s ease'
-              }}
-              className="max-w-full max-h-full object-contain"
-            />
+            <div className="flex flex-col items-center">
+              {isZKEncrypted && (
+                <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                  <Shield size={16} />
+                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
+                </div>
+              )}
+              <img
+                src={previewUrl}
+                alt={file.name}
+                style={{
+                  transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                  transition: 'transform 0.3s ease'
+                }}
+                className="max-w-full max-h-full object-contain"
+              />
+            </div>
           ) : (
             <div className={darkMode ? 'text-white' : 'text-gray-900'}>Preview not available</div>
           )}

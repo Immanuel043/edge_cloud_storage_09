@@ -15,7 +15,7 @@ import { AppendQueue, isSafari, isIOSSafari } from './AppendQueue';
 import { BufferManager } from './BufferManager';
 import { ChunkManager } from './ChunkManager';
 import { SeekController } from './SeekController';
-import { ZK_CHUNK_SIZE } from '../../config/constants';
+import { ZK_CONFIG } from '../../config/constants';
 
 /**
  * Error codes for media playback
@@ -61,6 +61,8 @@ export class SecureMediaController {
     this.isLocked = false;
     this.isDestroyed = false;
     this.isReady = false;
+    this.useBlobFallback = false; // For non-fragmented MP4s
+    this.blobUrl = null;
 
     // Components
     this.chunkManager = null;
@@ -69,7 +71,7 @@ export class SecureMediaController {
     this.seekController = null;
 
     // Configuration
-    this.chunkSize = ZK_CHUNK_SIZE || 64 * 1024 * 1024;
+    this.chunkSize = ZK_CONFIG.ZK_CHUNK_SIZE || 64 * 1024 * 1024;
 
     // Tracking
     this.currentChunkIndex = 0;
@@ -101,44 +103,108 @@ export class SecureMediaController {
       throw new Error('Controller has been destroyed');
     }
 
-    // Check MSE support
-    if (!window.MediaSource || !MediaSource.isTypeSupported('video/mp4')) {
-      this._emitError(MediaErrorCodes.MSE_NOT_SUPPORTED, 'MediaSource Extensions not supported');
+    // Check MSE support with detailed logging - use proper codec strings
+    const codecChecks = {
+      hasMediaSource: !!window.MediaSource,
+      // Check various codec combinations for better compatibility
+      mp4Basic: window.MediaSource ? MediaSource.isTypeSupported('video/mp4') : false,
+      mp4H264: window.MediaSource ? MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"') : false,
+      mp4H264High: window.MediaSource ? MediaSource.isTypeSupported('video/mp4; codecs="avc1.64001E"') : false,
+      mp4H264WithAudio: window.MediaSource ? MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') : false,
+      webmVP9: window.MediaSource ? MediaSource.isTypeSupported('video/webm; codecs="vp9"') : false,
+    };
+
+    console.log('[SecureMediaController] Checking MSE support...', codecChecks);
+
+    if (!window.MediaSource) {
+      this._emitError(
+        MediaErrorCodes.MSE_NOT_SUPPORTED,
+        'MediaSource Extensions not available. Please use Chrome, Firefox, or Edge for encrypted video playback.'
+      );
+      return false;
+    }
+
+    // Check if any MP4 codec is supported
+    const mp4Supported = codecChecks.mp4Basic || codecChecks.mp4H264 || codecChecks.mp4H264High || codecChecks.mp4H264WithAudio;
+
+    if (!mp4Supported) {
+      // Check if in responsive/device emulation mode
+      const isEmulatedDevice = window.navigator.userAgent.includes('Mobile') &&
+                               window.navigator.platform.includes('Mac');
+
+      const errorMsg = isEmulatedDevice
+        ? 'MP4 codec not supported. If using Chrome DevTools device emulation, please disable it for video playback.'
+        : 'MP4 video format not supported by your browser. Please try Chrome or Firefox in normal mode.';
+
+      this._emitError(MediaErrorCodes.CODEC_NOT_SUPPORTED, errorMsg);
       return false;
     }
 
     this.fileId = fileId;
     this.videoElement = videoElement;
     this.metadata = metadata;
-    this._onProgress = options.onProgress;
-    this._onError = options.onError;
-    this._onReady = options.onReady;
-    this._onBuffering = options.onBuffering;
+    // Only set callbacks from options if provided (don't overwrite if already set via methods)
+    if (options.onProgress) this._onProgress = options.onProgress;
+    if (options.onError) this._onError = options.onError;
+    if (options.onReady) this._onReady = options.onReady;
+    if (options.onBuffering) this._onBuffering = options.onBuffering;
 
-    console.log(`[SecureMediaController] Initializing for file ${fileId}`);
+    console.log(`[SecureMediaController] Initializing for file ${fileId}`, {
+      hasMetadata: !!metadata,
+      encrypted_file_key: metadata?.encrypted_file_key ? 'present' : 'missing',
+      file_key_iv: metadata?.file_key_iv ? 'present' : 'missing',
+      file_size: metadata?.file_size,
+      chunk_size: metadata?.chunk_size,
+    });
 
     try {
       // 1. Initialize ChunkManager
+      console.log('[SecureMediaController] Step 1: Creating ChunkManager...');
       this.chunkManager = new ChunkManager(fileId, metadata, {
         cacheSize: 10,
         useWorkerPool: true,
       });
       await this.chunkManager.init();
+      console.log('[SecureMediaController] Step 1 complete: ChunkManager initialized');
 
       // 2. Extract and parse header
+      console.log('[SecureMediaController] Step 2: Extracting header...');
       await this._extractHeader();
+      console.log('[SecureMediaController] Step 2 complete: Header extracted');
 
-      // 3. Setup MSE
-      await this._setupMSE();
+      // 3. Setup playback (MSE for fragmented MP4, blob for non-fragmented)
+      if (this.useBlobFallback) {
+        // Non-fragmented MP4: use blob-based playback
+        console.log('[SecureMediaController] Step 3: Setting up blob playback (non-fragmented MP4)...');
+        await this._setupBlobPlayback();
+        console.log('[SecureMediaController] Step 3 complete: Blob playback ready');
 
-      // 4. Attach event listeners
-      this._attachEventListeners();
+        // 4. Attach basic event listeners for blob playback
+        console.log('[SecureMediaController] Step 4: Attaching event listeners...');
+        this._attachEventListeners();
+        console.log('[SecureMediaController] Step 4 complete: Event listeners attached');
 
-      // 5. Start initial buffering
-      await this._bufferInitial();
+        // No need for MSE buffer management with blob playback
+      } else {
+        // Fragmented MP4: use MSE
+        console.log('[SecureMediaController] Step 3: Setting up MSE...');
+        await this._setupMSE();
+        console.log('[SecureMediaController] Step 3 complete: MSE setup');
+
+        // 4. Attach event listeners
+        console.log('[SecureMediaController] Step 4: Attaching event listeners...');
+        this._attachEventListeners();
+        console.log('[SecureMediaController] Step 4 complete: Event listeners attached');
+
+        // 5. Start initial buffering
+        console.log('[SecureMediaController] Step 5: Initial buffering...');
+        await this._bufferInitial();
+        console.log('[SecureMediaController] Step 5 complete: Initial buffering done');
+      }
 
       this.isReady = true;
       this._onReady?.();
+      console.log('[SecureMediaController] Initialization complete - ready to play');
 
       return true;
     } catch (error) {
@@ -149,19 +215,63 @@ export class SecureMediaController {
   }
 
   /**
-   * Extract and parse MP4 header (first 5MB)
+   * Extract and parse MP4 header (first 5MB, or full file if moov is at end)
    */
   async _extractHeader() {
     console.log('[SecureMediaController] Extracting header...');
 
     // Calculate number of chunks needed for header
     const headerChunks = Math.ceil(SecureMediaController.HEADER_SIZE / this.chunkSize);
+    console.log('[SecureMediaController] Fetching header chunks:', { headerChunks, chunkSize: this.chunkSize });
 
     // Fetch and decrypt header chunks
-    const headerData = await this.chunkManager.getChunks(0, headerChunks);
+    let headerData = await this.chunkManager.getChunks(0, headerChunks);
+
+    // Debug: Check if data looks like valid MP4
+    const first8Bytes = [];
+    for (let i = 0; i < Math.min(8, headerData.byteLength); i++) {
+      first8Bytes.push(headerData[i]);
+    }
+    const first4CharsHex = first8Bytes.slice(0, 4).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const atomType = String.fromCharCode(...first8Bytes.slice(4, 8));
+
+    console.log('[SecureMediaController] Header data analysis:', {
+      totalBytes: headerData.byteLength,
+      first8Bytes: first8Bytes,
+      first4BytesHex: first4CharsHex,
+      atomType: atomType,
+      looksLikeMp4: ['ftyp', 'moov', 'mdat', 'free', 'skip'].includes(atomType),
+    });
+
+    // If it doesn't look like MP4, the decryption might have failed
+    if (!['ftyp', 'moov', 'mdat', 'free', 'skip', 'pdin', 'wide'].includes(atomType)) {
+      console.error('[SecureMediaController] Data does not look like valid MP4!');
+      console.error('First 32 bytes:', Array.from(headerData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+      throw new Error('Decrypted data is not valid MP4. The file may be corrupted or decryption failed.');
+    }
 
     // Parse MP4 header
     this.moovData = parseMP4(headerData.buffer, this.chunkSize);
+
+    // Handle moov atom at end of file (non-fast-start MP4)
+    if (!this.moovData.codecs && this.chunkManager.totalChunks > headerChunks) {
+      console.warn('[SecureMediaController] moov atom not found in header, checking end of file...');
+
+      // Download entire file to find moov (this is a fallback for non-optimized MP4s)
+      const totalChunks = this.chunkManager.totalChunks;
+      console.log(`[SecureMediaController] Downloading all ${totalChunks} chunks to find moov...`);
+
+      headerData = await this.chunkManager.getChunks(0, totalChunks);
+      this.moovData = parseMP4(headerData.buffer, this.chunkSize);
+
+      if (!this.moovData.codecs) {
+        throw new Error('Failed to parse video codecs. The moov atom could not be found.');
+      }
+
+      // Store full data for blob playback since we already downloaded it
+      this._preloadedData = headerData;
+      console.log('[SecureMediaController] Found moov at end of file, full data preloaded');
+    }
 
     if (!this.moovData.codecs) {
       throw new Error('Failed to parse video codecs from header');
@@ -171,7 +281,14 @@ export class SecureMediaController {
       codecs: this.moovData.codecs,
       duration: this.moovData.duration,
       seekTableSize: this.moovData.seekTable.length,
+      isFragmented: this.moovData.isFragmented,
     });
+
+    // Check if we need blob fallback for non-fragmented MP4
+    if (!this.moovData.isFragmented) {
+      console.log('[SecureMediaController] Non-fragmented MP4 detected, will use blob-based playback');
+      this.useBlobFallback = true;
+    }
   }
 
   /**
@@ -235,6 +352,101 @@ export class SecureMediaController {
   }
 
   /**
+   * Setup blob-based playback for non-fragmented MP4s
+   * Downloads all chunks, decrypts, and creates blob URL
+   */
+  async _setupBlobPlayback() {
+    console.log('[SecureMediaController] Setting up blob-based playback...');
+
+    this._onBuffering?.(true);
+
+    let blob;
+    const mimeType = `video/mp4`;
+
+    // Check if we already have preloaded data (from moov-at-end fallback)
+    if (this._preloadedData) {
+      console.log('[SecureMediaController] Using preloaded data for blob playback');
+      blob = new Blob([this._preloadedData], { type: mimeType });
+
+      // Clear preloaded data to free memory
+      this._preloadedData = null;
+    } else {
+      // Download all chunks
+      const totalChunks = this.chunkManager.totalChunks;
+      const chunks = [];
+      let totalBytes = 0;
+
+      console.log(`[SecureMediaController] Downloading ${totalChunks} chunks for blob playback...`);
+
+      // Download and decrypt all chunks
+      for (let i = 0; i < totalChunks; i++) {
+        try {
+          const chunk = await this.chunkManager.getChunk(i);
+          chunks.push(chunk);
+          totalBytes += chunk.length;
+
+          // Report progress
+          const progress = ((i + 1) / totalChunks) * 100;
+          console.log(`[SecureMediaController] Downloaded chunk ${i + 1}/${totalChunks} (${progress.toFixed(1)}%)`);
+
+          this._onProgress?.({
+            currentTime: 0,
+            duration: this.moovData.duration,
+            buffered: progress,
+            downloadProgress: progress,
+            isDownloading: true,
+          });
+        } catch (error) {
+          console.error(`[SecureMediaController] Failed to download chunk ${i}:`, error);
+          throw new Error(`Failed to download chunk ${i}: ${error.message}`);
+        }
+      }
+
+      console.log(`[SecureMediaController] All chunks downloaded. Total: ${totalBytes} bytes`);
+
+      // Memory optimization: Pass chunks array directly to Blob constructor
+      // This avoids allocating an extra combined Uint8Array (saves ~50% memory)
+      blob = new Blob(chunks, { type: mimeType });
+
+      // Clear chunks array to free memory sooner
+      chunks.length = 0;
+    }
+
+    // Create blob URL
+    this.blobUrl = URL.createObjectURL(blob);
+
+    // Set video source
+    this.videoElement.src = this.blobUrl;
+
+    // Wait for video to be ready
+    await new Promise((resolve, reject) => {
+      const onLoadedMetadata = () => {
+        this.videoElement.removeEventListener('loadedmetadata', onLoadedMetadata);
+        this.videoElement.removeEventListener('error', onError);
+        resolve();
+      };
+
+      const onError = () => {
+        this.videoElement.removeEventListener('loadedmetadata', onLoadedMetadata);
+        this.videoElement.removeEventListener('error', onError);
+        reject(new Error('Failed to load video: ' + (this.videoElement.error?.message || 'Unknown error')));
+      };
+
+      this.videoElement.addEventListener('loadedmetadata', onLoadedMetadata);
+      this.videoElement.addEventListener('error', onError);
+    });
+
+    this._onBuffering?.(false);
+
+    console.log('[SecureMediaController] Blob playback setup complete:', {
+      blobUrl: this.blobUrl,
+      duration: this.videoElement.duration,
+      videoWidth: this.videoElement.videoWidth,
+      videoHeight: this.videoElement.videoHeight,
+    });
+  }
+
+  /**
    * Buffer initial data to start playback
    */
   async _bufferInitial() {
@@ -290,6 +502,17 @@ export class SecureMediaController {
     if (this.isLocked || this.isDestroyed || this.isFetching) return;
 
     const currentTime = this.videoElement.currentTime;
+
+    // For blob-based playback, just emit progress (no buffer management needed)
+    if (this.useBlobFallback) {
+      this._onProgress?.({
+        currentTime,
+        duration: this.videoElement.duration || this.moovData?.duration || 0,
+        buffered: 100, // Entire file is already loaded
+        bufferedRanges: [[0, this.videoElement.duration || 0]],
+      });
+      return;
+    }
 
     // Throttle buffer checks
     const now = Date.now();
@@ -387,6 +610,11 @@ export class SecureMediaController {
     const targetTime = this.videoElement.currentTime;
     console.log(`[SecureMediaController] Seeking to ${targetTime}s`);
 
+    // For blob-based playback, seeking is handled natively by the browser
+    if (this.useBlobFallback) {
+      return;
+    }
+
     this._onBuffering?.(true);
 
     try {
@@ -411,6 +639,11 @@ export class SecureMediaController {
    * Handle waiting event (buffering)
    */
   _onWaiting() {
+    // For blob-based playback, entire file is loaded so waiting shouldn't happen
+    if (this.useBlobFallback) {
+      return;
+    }
+
     this._onBuffering?.(true);
 
     // Try to fetch more data
@@ -509,12 +742,24 @@ export class SecureMediaController {
     this.chunkManager?.clear();
     this.appendQueue?.clear();
 
-    // Zero out moov data
+    // Zero out moov data and preloaded data
     if (this.moovData) {
       this.moovData = null;
     }
+    if (this._preloadedData) {
+      this._preloadedData = null;
+    }
 
     // Revoke object URLs
+    if (this.blobUrl) {
+      try {
+        URL.revokeObjectURL(this.blobUrl);
+        this.blobUrl = null;
+      } catch (e) {
+        // Ignore
+      }
+    }
+
     if (this.mediaSource) {
       try {
         URL.revokeObjectURL(this.videoElement?.src);
@@ -593,6 +838,8 @@ export class SecureMediaController {
       isReady: this.isReady,
       isLocked: this.isLocked,
       isDestroyed: this.isDestroyed,
+      useBlobFallback: this.useBlobFallback,
+      isFragmented: this.moovData?.isFragmented ?? null,
       duration: this.moovData?.duration || 0,
       codecs: this.moovData?.codecs || '',
       currentTime: this.videoElement?.currentTime || 0,

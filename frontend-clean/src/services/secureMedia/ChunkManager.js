@@ -7,7 +7,7 @@
  * - Supports worker pool for parallel decryption
  */
 
-import { ZK_SERVICE_URL, ZK_CHUNK_SIZE } from '../../config/constants';
+import { API_URL, CHUNK_SIZE } from '../../config/constants';
 import { prepareFileForDecryption, decryptFileChunk } from '../zkEncryptionService';
 import { getWorkerPool } from '../zkDecryptWorkerPool';
 
@@ -78,7 +78,8 @@ export class ChunkManager {
   constructor(fileId, metadata, options = {}) {
     this.fileId = fileId;
     this.metadata = metadata;
-    this.chunkSize = metadata.chunk_size || ZK_CHUNK_SIZE || 64 * 1024 * 1024;
+    // Use chunk_size from metadata (from storage-service), fallback to CHUNK_SIZE constant (32MB)
+    this.chunkSize = metadata.chunk_size || CHUNK_SIZE || 32 * 1024 * 1024;
     this.totalChunks = Math.ceil(metadata.file_size / this.chunkSize);
 
     this.fileKey = null;
@@ -93,11 +94,37 @@ export class ChunkManager {
    * Initialize the chunk manager - decrypt file key
    */
   async init() {
+    console.log('[ChunkManager] Initializing...', {
+      fileId: this.fileId,
+      hasEncryptedFileKey: !!this.metadata.encrypted_file_key,
+      hasFileKeyIV: !!this.metadata.file_key_iv,
+      fileSize: this.metadata.file_size,
+      chunkSize: this.chunkSize,
+      totalChunks: this.totalChunks,
+    });
+
+    // Validate metadata
+    if (!this.metadata.encrypted_file_key) {
+      throw new Error('Missing encrypted_file_key in metadata');
+    }
+    if (!this.metadata.file_key_iv) {
+      throw new Error('Missing file_key_iv in metadata');
+    }
+    if (!this.metadata.file_size || this.metadata.file_size <= 0) {
+      throw new Error('Invalid or missing file_size in metadata');
+    }
+
     // Decrypt file key with master key
-    this.fileKey = prepareFileForDecryption(
-      this.metadata.encrypted_file_key,
-      this.metadata.file_key_iv
-    );
+    try {
+      this.fileKey = prepareFileForDecryption(
+        this.metadata.encrypted_file_key,
+        this.metadata.file_key_iv
+      );
+      console.log('[ChunkManager] File key decrypted successfully');
+    } catch (error) {
+      console.error('[ChunkManager] Failed to decrypt file key:', error);
+      throw new Error(`Failed to decrypt file key: ${error.message}. Make sure your ZK session is unlocked.`);
+    }
 
     // Initialize worker pool if enabled
     if (this.useWorkerPool) {
@@ -155,8 +182,8 @@ export class ChunkManager {
     // Combine signals
     const combinedSignal = signal || this.abortController?.signal;
 
-    // Fetch encrypted chunk
-    const url = `${ZK_SERVICE_URL}/api/v1/zk/files/${this.fileId}/chunk/${chunkIndex}`;
+    // Fetch encrypted chunk from storage-service (where ZK files are stored)
+    const url = `${API_URL}/api/v1/files/${this.fileId}/zk/chunk/${chunkIndex}`;
 
     const response = await fetch(url, {
       credentials: 'include',

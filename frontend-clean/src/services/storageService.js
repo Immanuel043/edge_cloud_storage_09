@@ -1,4 +1,4 @@
-import { API_URL, CHUNK_SIZE, ZK_SERVICE_URL } from '../config/constants';
+import { API_URL, CHUNK_SIZE } from '../config/constants';
 import { sanitizeInput, validateFileType, validateFileSize } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
@@ -412,16 +412,16 @@ class StorageService {
   }
 
   // Helper function to download a single chunk with retry logic
-  // useZKService: if true, downloads from ZK service (port 8002) instead of storage service
+  // useZKService: if true, uses ZK chunk endpoint (for client-side encrypted files)
   async _downloadChunkWithRetry(fileId, chunkIndex, retryCount = 0, maxRetries = 3, useZKService = false) {
     const retryDelay = 1000; // 1 second base delay
 
     try {
-      // Use ZK service URL for ZK-encrypted files, regular API for others
-      const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
+      // For ZK files, use the storage-service ZK endpoint (where chunks are stored)
+      // For regular files, use the standard download endpoint
       const endpoint = useZKService
-        ? `${baseUrl}/api/v1/zk/files/${fileId}/chunk/${chunkIndex}`
-        : `${baseUrl}/api/v1/files/${fileId}/download/chunk/${chunkIndex}`;
+        ? `${API_URL}/api/v1/files/${fileId}/zk/chunk/${chunkIndex}`
+        : `${API_URL}/api/v1/files/${fileId}/download/chunk/${chunkIndex}`;
 
       const chunkResponse = await fetch(endpoint, { credentials: 'include' });
 
@@ -587,6 +587,80 @@ class StorageService {
     } catch (error) {
       console.error('[Download] ZK download failed:', error);
       throw new Error(`ZK download failed: ${error.message}`);
+    }
+  }
+
+  // Zero-Knowledge file PREVIEW - returns blob URL for in-browser display
+  // Used for previewing ZK-encrypted images, PDFs, and other viewable files
+  async previewZKFile(fileId, metadata, onProgress) {
+    console.log('[Preview] Starting ZK file preview:', fileId);
+
+    // 1. Check if ZK session is unlocked
+    if (!zkEncryptionService.isZKSessionUnlocked()) {
+      throw new Error('ZK session is locked. Please unlock to preview encrypted files.');
+    }
+
+    try {
+      // 2. Decrypt file key with master key
+      const fileKey = zkEncryptionService.prepareFileForDecryption(
+        metadata.encrypted_file_key,
+        metadata.file_key_iv
+      );
+
+      // 3. Determine number of chunks
+      const chunkSize = metadata.chunk_size || 32 * 1024 * 1024;
+      const totalChunks = Math.ceil(metadata.file_size / chunkSize);
+      console.log(`[Preview] File has ${totalChunks} chunks`);
+
+      // 4. Download and decrypt chunks
+      const decryptedChunks = [];
+
+      for (let i = 0; i < totalChunks; i++) {
+        if (onProgress) {
+          onProgress({
+            stage: 'downloading',
+            chunk: i + 1,
+            totalChunks,
+            progress: Math.round((i / totalChunks) * 50)
+          });
+        }
+
+        // Download encrypted chunk from ZK service
+        const encryptedChunk = await this._downloadChunkWithRetry(fileId, i, 0, 3, true);
+
+        if (onProgress) {
+          onProgress({
+            stage: 'decrypting',
+            chunk: i + 1,
+            totalChunks,
+            progress: 50 + Math.round(((i + 1) / totalChunks) * 50)
+          });
+        }
+
+        // Decrypt chunk
+        const decryptedChunk = zkEncryptionService.decryptFileChunk(
+          new Uint8Array(encryptedChunk),
+          fileKey,
+          i
+        );
+        decryptedChunks.push(decryptedChunk);
+      }
+
+      // 5. Assemble decrypted chunks into Blob
+      const blob = new Blob(decryptedChunks, { type: metadata.mime_type || 'application/octet-stream' });
+      const blobUrl = URL.createObjectURL(blob);
+
+      console.log('[Preview] ZK file decrypted successfully for preview');
+
+      if (onProgress) {
+        onProgress({ stage: 'complete', progress: 100 });
+      }
+
+      return { blobUrl, blob, mimeType: metadata.mime_type };
+
+    } catch (error) {
+      console.error('[Preview] ZK preview failed:', error);
+      throw new Error(`ZK preview failed: ${error.message}`);
     }
   }
 

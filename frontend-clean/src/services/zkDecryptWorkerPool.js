@@ -6,14 +6,26 @@
  */
 
 class ZKDecryptWorkerPool {
-  constructor(poolSize = navigator.hardwareConcurrency || 4) {
-    this.poolSize = Math.min(poolSize, 8); // Max 8 workers
+  constructor(poolSize) {
+    // Detect mobile devices for conservative worker count
+    const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent
+    );
+
+    // Use hardware concurrency, but cap based on device type
+    const maxWorkers = isMobile ? 4 : 8;
+    const defaultWorkers = isMobile ? 2 : 4;
+    const hwConcurrency = navigator.hardwareConcurrency || defaultWorkers;
+
+    this.poolSize = poolSize || Math.min(hwConcurrency, maxWorkers);
     this.workers = [];
     this.availableWorkers = [];
     this.jobQueue = [];
     this.jobs = new Map(); // jobId -> { resolve, reject, chunkIndex }
     this.jobIdCounter = 0;
     this.initialized = false;
+
+    console.log(`[WorkerPool] Device: ${isMobile ? 'Mobile' : 'Desktop'}, Cores: ${hwConcurrency}, Workers: ${this.poolSize}`);
   }
 
   /**

@@ -1,8 +1,9 @@
 import React, { useState, useRef } from 'react';
 import {
   Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home, Search,
-  Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield
+  Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2
 } from 'lucide-react';
+import TrashView from './TrashView';
 import ZKStorageStats from './ZKStorageStats';
 import ZKEncryptionStatus from './ZKEncryptionStatus';
 import FileGrid from './FileGrid';
@@ -328,6 +329,20 @@ export default function ZKDashboardLayout({
       return <SettingsView darkMode={darkMode} />;
     }
 
+    if (activeView === 'trash') {
+      return (
+        <TrashView
+          viewMode={viewMode}
+          darkMode={darkMode}
+          selectedFiles={selectedFiles}
+          onFileClick={selectFile}
+          onFilePreview={setPreviewFile}
+          onFileDownload={handleFileDownload}
+          onRefresh={refreshFiles}
+        />
+      );
+    }
+
     return (
       <div
         className={`rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} ${isDragging ? 'ring-2 ring-blue-500' : ''}`}
@@ -476,6 +491,18 @@ export default function ZKDashboardLayout({
           >
             <Settings size={20} />
             <span className="font-medium text-sm">Settings</span>
+          </button>
+
+          <button
+            onClick={() => setActiveView('trash')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeView === 'trash'
+                ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg'
+                : darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-red-50'
+            }`}
+          >
+            <Trash2 size={20} />
+            <span className="font-medium text-sm">Trash</span>
           </button>
         </nav>
 

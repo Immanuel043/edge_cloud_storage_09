@@ -28,8 +28,8 @@ export default function SharePage() {
 
   const fetchShareInfo = async () => {
     try {
-      // Try to get ZK share info first
-      const response = await fetch(`${API_URL}/api/v1/share/${token}/info`);
+      // Try to get ZK share info from dedicated ZK endpoint
+      const response = await fetch(`${API_URL}/api/v1/share/${token}/zk-info`);
 
       if (response.ok) {
         const data = await response.json();

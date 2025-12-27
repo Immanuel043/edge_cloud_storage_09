@@ -56,6 +56,7 @@ export default function SecureVideoPlayer({
 }) {
   const {
     videoRef,
+    videoElement,
     isReady,
     isPlaying,
     isBuffering,
@@ -117,19 +118,19 @@ export default function SecureVideoPlayer({
     const newVolume = parseFloat(e.target.value);
     setVolume(newVolume);
     setIsMuted(newVolume === 0);
-    if (videoRef.current) {
-      videoRef.current.volume = newVolume;
-      videoRef.current.muted = newVolume === 0;
+    if (videoElement) {
+      videoElement.volume = newVolume;
+      videoElement.muted = newVolume === 0;
     }
-  }, [videoRef]);
+  }, [videoElement]);
 
   const toggleMute = useCallback(() => {
-    if (videoRef.current) {
+    if (videoElement) {
       const newMuted = !isMuted;
       setIsMuted(newMuted);
-      videoRef.current.muted = newMuted;
+      videoElement.muted = newMuted;
     }
-  }, [isMuted, videoRef]);
+  }, [isMuted, videoElement]);
 
   // Seek via progress bar
   const handleProgressClick = useCallback((e) => {
@@ -223,45 +224,44 @@ export default function SecureVideoPlayer({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePlay, skipBack, skipForward, toggleMute, toggleFullscreen, onClose]);
 
-  // Render loading state
-  if (!isReady && !error && !isLocked) {
-    return (
-      <div
-        className={`relative bg-black rounded-lg overflow-hidden ${className}`}
-        style={{ aspectRatio: '16/9' }}
-      >
+  // Always render container with video element so ref gets attached
+  // Show overlays for loading/locked/error states
+  return (
+    <div
+      ref={containerRef}
+      className={`relative bg-black rounded-lg overflow-hidden ${className}`}
+      style={{ aspectRatio: '16/9' }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={() => isPlaying && setShowControls(false)}
+    >
+      {/* Video Element - always rendered so ref gets attached */}
+      <video
+        ref={videoRef}
+        className={`w-full h-full object-contain ${(!isReady || isLocked || error) ? 'invisible' : ''}`}
+        playsInline
+        onClick={togglePlay}
+      />
+
+      {/* Loading Overlay */}
+      {!isReady && !error && !isLocked && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
           <Loader className="w-12 h-12 animate-spin mb-4" />
           <p className="text-lg">Loading encrypted video...</p>
           <p className="text-sm text-gray-400 mt-2">Decrypting header and initializing player</p>
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // Render locked state
-  if (isLocked) {
-    return (
-      <div
-        className={`relative bg-black rounded-lg overflow-hidden ${className}`}
-        style={{ aspectRatio: '16/9' }}
-      >
+      {/* Locked Overlay */}
+      {isLocked && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
           <Lock className="w-16 h-16 mb-4 text-yellow-500" />
           <p className="text-lg">Session Locked</p>
           <p className="text-sm text-gray-400 mt-2">Unlock your ZK session to play encrypted videos</p>
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // Render error state
-  if (error) {
-    return (
-      <div
-        className={`relative bg-black rounded-lg overflow-hidden ${className}`}
-        style={{ aspectRatio: '16/9' }}
-      >
+      {/* Error Overlay */}
+      {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
           <AlertCircle className="w-16 h-16 mb-4 text-red-500" />
           <p className="text-lg">Playback Error</p>
@@ -273,25 +273,7 @@ export default function SecureVideoPlayer({
             Try Again
           </button>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={containerRef}
-      className={`relative bg-black rounded-lg overflow-hidden ${className}`}
-      style={{ aspectRatio: '16/9' }}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={() => isPlaying && setShowControls(false)}
-    >
-      {/* Video Element */}
-      <video
-        ref={videoRef}
-        className="w-full h-full object-contain"
-        playsInline
-        onClick={togglePlay}
-      />
+      )}
 
       {/* Buffering Overlay */}
       {isBuffering && (
@@ -300,7 +282,8 @@ export default function SecureVideoPlayer({
         </div>
       )}
 
-      {/* Controls Overlay */}
+      {/* Controls Overlay - only show when ready */}
+      {isReady && !isLocked && !error && (
       <div
         className={`absolute inset-0 transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
@@ -420,6 +403,7 @@ export default function SecureVideoPlayer({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -383,6 +383,7 @@ export function parse(headerData, chunkSize = 64 * 1024 * 1024) {
     mdatOffset: 0,
     hasVideo: false,
     hasAudio: false,
+    isFragmented: false, // True if MP4 has mvex (Movie Extends) atom
   };
 
   // Find moov atom
@@ -392,6 +393,15 @@ export function parse(headerData, chunkSize = 64 * 1024 * 1024) {
     return result;
   }
   result.moovOffset = moov.offset;
+
+  // Check for mvex atom (indicates fragmented MP4)
+  // Fragmented MP4s have mvex inside moov, regular MP4s don't
+  const mvex = findAtom(view, moov.offset + 8, moov.offset + moov.size, 'mvex');
+  result.isFragmented = !!mvex;
+  console.log('[MP4Parser] Fragmentation check:', {
+    hasMvex: !!mvex,
+    isFragmented: result.isFragmented,
+  });
 
   // Find mdat atom (may be before or after moov)
   const mdat = findAtom(view, 0, headerData.byteLength, 'mdat');
@@ -492,6 +502,7 @@ export function parse(headerData, chunkSize = 64 * 1024 * 1024) {
     seekTableSize: result.seekTable.length,
     hasVideo: result.hasVideo,
     hasAudio: result.hasAudio,
+    isFragmented: result.isFragmented,
   });
 
   return result;
