@@ -41,24 +41,24 @@ export default function FileGrid({
             e.stopPropagation();
             onFolderClick(folder.id, folder.name);
           }}
-          className={`group p-5 rounded-xl cursor-pointer transition-all border ${
+          className={`group aspect-square p-3 rounded-xl cursor-pointer transition-all border ${
             darkMode
               ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
               : 'bg-white hover:bg-blue-50/30 border-gray-200 hover:border-blue-200'
           } ${selectedFiles.has(folder.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg`}
         >
-          <div className="flex flex-col items-center">
-            <div className={`p-4 rounded-xl transition-colors ${
+          <div className="flex flex-col items-center justify-center h-full">
+            <div className={`p-3 rounded-xl transition-colors ${
               darkMode ? 'bg-blue-500/10 group-hover:bg-blue-500/20' : 'bg-blue-50 group-hover:bg-blue-100'
             }`}>
-              <Folder className="text-blue-500" size={36} />
+              <Folder className="text-blue-500" size={32} />
             </div>
-            <p className={`text-sm mt-4 text-center font-medium truncate w-full px-2 ${
+            <p className={`text-sm mt-2 text-center font-medium truncate w-full px-1 ${
               darkMode ? 'text-white' : 'text-gray-900'
             }`} title={folder.name}>
               {sanitizeInput(folder.name)}
             </p>
-            <p className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            <p className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
               {formatDate(folder.created_at)}
             </p>
           </div>
@@ -79,7 +79,7 @@ export default function FileGrid({
             e.stopPropagation();
             onFilePreview(file);
           }}
-          className={`p-5 rounded-xl relative group transition-all border cursor-pointer ${
+          className={`aspect-square p-3 rounded-xl relative group transition-all border cursor-pointer flex flex-col ${
             darkMode
               ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
               : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'
@@ -282,31 +282,31 @@ export default function FileGrid({
             </div>
           </div>
 
-          <div className="flex flex-col items-center mt-4 file-preview-area">
-            <div className="w-full aspect-square flex items-center justify-center mb-3">
+          <div className="flex flex-col items-center justify-center flex-1 mt-6 file-preview-area">
+            <div className="flex-1 w-full flex items-center justify-center">
               <FileThumbnail
                 file={file}
                 size="large"
                 darkMode={darkMode}
               />
             </div>
-            <div className="w-full px-1 text-center">
-              <div className="flex items-center justify-center gap-1 mb-1">
-                <p className={`text-sm font-medium line-clamp-2 leading-tight ${
+            <div className="w-full px-1 text-center mt-2">
+              <div className="flex items-center justify-center gap-1">
+                <p className={`text-xs font-medium truncate leading-tight ${
                   darkMode ? 'text-white' : 'text-gray-900'
                 }`} title={file.name}>
                   {sanitizeInput(file.name)}
                 </p>
                 {file.is_encrypted && (
                   <span
-                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                    className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 flex-shrink-0"
                     title="Zero-Knowledge Encrypted - Server cannot decrypt this file"
                   >
-                    <Lock className="w-3 h-3" />
+                    <Lock className="w-2.5 h-2.5" />
                   </span>
                 )}
               </div>
-              <div className={`flex items-center justify-center gap-1.5 text-xs ${
+              <div className={`flex items-center justify-center gap-1 text-xs mt-0.5 ${
                 darkMode ? 'text-gray-500' : 'text-gray-500'
               }`}>
                 <span className="font-normal">{formatBytes(file.size)}</span>
