@@ -92,7 +92,7 @@ export default function FileGrid({
                 e.stopPropagation();
                 onToggleFavorite(file.id);
               }}
-              className={`absolute top-3 left-3 z-10 p-1.5 rounded-lg transition-all ${
+              className={`absolute top-2 left-2 z-10 p-1.5 rounded-lg transition-all ${
                 darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
               }`}
               title={file.is_favorite ? "Remove from favorites" : "Add to favorites"}
@@ -111,7 +111,7 @@ export default function FileGrid({
           )}
 
           {/* Menu */}
-          <div className="absolute top-3 right-3">
+          <div className="absolute top-2 right-2">
             <div className="relative">
               <button
                 onClick={(e) => {
@@ -282,7 +282,7 @@ export default function FileGrid({
             </div>
           </div>
 
-          <div className="flex flex-col items-center flex-1 mt-6 min-h-0 file-preview-area">
+          <div className="flex flex-col items-center justify-center flex-1 mt-6 min-h-0 file-preview-area">
             <div className="flex-1 w-full flex items-center justify-center min-h-0 overflow-hidden">
               <FileThumbnail
                 file={file}
