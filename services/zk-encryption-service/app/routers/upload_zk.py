@@ -55,6 +55,12 @@ class InitUploadRequest(BaseModel):
     encryption_version: int = Field(default=2, ge=1, le=2)  # 1=V1 (basic), 2=V2 (HKDF+AAD) - default V2
     chunk_size: int = Field(default=1048576)  # 1MB chunks
 
+    # ZK Thumbnail (client-side generated and encrypted with derived key)
+    encrypted_thumbnail: Optional[str] = None  # Base64 encoded encrypted thumbnail
+    thumbnail_iv: Optional[str] = None  # Base64 encoded IV for thumbnail
+    thumbnail_width: Optional[int] = None  # Thumbnail width in pixels
+    thumbnail_height: Optional[int] = None  # Thumbnail height in pixels
+
 
 class InitUploadResponse(BaseModel):
     """Response for upload initialization"""
@@ -203,6 +209,21 @@ async def initialize_upload(
     file_id = uuid4()
     upload_id = uuid4()
 
+    # Build file_metadata with ZK thumbnail if provided
+    file_metadata = {}
+    if request_data.encrypted_thumbnail:
+        file_metadata["zk_thumbnail"] = {
+            "encrypted_thumbnail": request_data.encrypted_thumbnail,
+            "thumbnail_iv": request_data.thumbnail_iv,
+            "width": request_data.thumbnail_width,
+            "height": request_data.thumbnail_height,
+        }
+        logger.info(
+            "zk_thumbnail_received",
+            user_id=str(user.id),
+            filename=request_data.filename
+        )
+
     new_file = StorageObject(
         id=file_id,
         user_id=user.id,
@@ -220,6 +241,9 @@ async def initialize_upload(
         file_key_iv=request_data.file_key_iv,
         encryption_algorithm=request_data.encryption_algorithm,
         encryption_version=request_data.encryption_version,  # Track V1 vs V2
+
+        # File metadata with ZK thumbnail
+        file_metadata=file_metadata if file_metadata else None,
 
         # Upload tracking
         upload_status="pending",

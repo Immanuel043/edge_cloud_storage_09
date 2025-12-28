@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { FileText, Film, FileImage, Music, Archive, File, Table, FileCode, Code, Loader2 } from 'lucide-react';
+import { FileText, Film, FileImage, Music, Archive, File, Table, FileCode, Code, Loader2, Lock } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import {
   IMAGE_EXTENSIONS,
@@ -12,6 +12,8 @@ import {
   ARCHIVE_EXTENSIONS,
   CODE_EXTENSIONS
 } from '../../utils/helpers';
+import { decryptThumbnail, createThumbnailUrl } from '../../utils/zkThumbnails';
+import { prepareFileForDecryption, isZKSessionUnlocked } from '../../services/zkEncryptionService';
 
 // File type to icon mapping
 const getFileTypeIcon = (fileName, size = 48) => {
@@ -215,12 +217,70 @@ export default function FileThumbnail({
           throw new Error('Failed to load thumbnail');
         }
 
-        const blob = await response.blob();
-        if (mounted) {
-          const url = URL.createObjectURL(blob);
-          setThumbnailUrl(url);
-          setLoading(false);
-          setIsProcessing(false); // Clear processing indicator on success
+        // Check if this is a ZK encrypted thumbnail
+        const isZKEncrypted = response.headers.get('X-ZK-Encrypted') === '1';
+
+        if (isZKEncrypted) {
+          // Handle ZK encrypted thumbnail - decrypt client-side
+          try {
+            if (!isZKSessionUnlocked()) {
+              console.log('ZK session not unlocked, cannot decrypt thumbnail');
+              if (mounted) {
+                setLoading(false);
+                setError(false); // Show icon instead
+              }
+              return;
+            }
+
+            const thumbnailIV = response.headers.get('X-ZK-Thumbnail-IV');
+            if (!thumbnailIV) {
+              throw new Error('Missing thumbnail IV');
+            }
+
+            // Get encrypted thumbnail data
+            const encryptedData = await response.arrayBuffer();
+            const encryptedBase64 = btoa(String.fromCharCode(...new Uint8Array(encryptedData)));
+
+            // Decrypt the file key first
+            if (!file.encrypted_file_key || !file.file_key_iv) {
+              // File missing encryption keys - fall back to icon
+              if (mounted) {
+                setLoading(false);
+                setError(false);
+              }
+              return;
+            }
+
+            const fileKey = prepareFileForDecryption(file.encrypted_file_key, file.file_key_iv);
+            if (!fileKey) {
+              throw new Error('Failed to decrypt file key');
+            }
+
+            // Decrypt the thumbnail
+            const decryptedThumbnail = decryptThumbnail(encryptedBase64, thumbnailIV, fileKey);
+
+            if (mounted) {
+              const url = createThumbnailUrl(decryptedThumbnail);
+              setThumbnailUrl(url);
+              setLoading(false);
+              setIsProcessing(false);
+            }
+          } catch (zkError) {
+            console.warn('ZK thumbnail decryption failed:', zkError.message, zkError);
+            if (mounted) {
+              setLoading(false);
+              setError(false); // Fall back to icon
+            }
+          }
+        } else {
+          // Regular (non-ZK) thumbnail
+          const blob = await response.blob();
+          if (mounted) {
+            const url = URL.createObjectURL(blob);
+            setThumbnailUrl(url);
+            setLoading(false);
+            setIsProcessing(false); // Clear processing indicator on success
+          }
         }
       } catch (err) {
         // Clear timeout on error
@@ -252,7 +312,7 @@ export default function FileThumbnail({
         URL.revokeObjectURL(thumbnailUrl);
       }
     };
-  }, [isVisible, file.id, size, isVideoFile, fileName, file.updated_at, retryCount]);
+  }, [isVisible, file.id, size, isVideoFile, fileName, file.updated_at, retryCount, file.encrypted_file_key, file.file_key_iv]);
 
   // Size mapping
   const sizeClasses = {

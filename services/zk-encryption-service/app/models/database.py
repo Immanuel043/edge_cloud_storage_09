@@ -4,8 +4,8 @@ Database models for Zero-Knowledge Encryption Service
 These models mirror the storage-service models but include only
 the tables needed for ZK operations. Both services share the same database.
 """
-from sqlalchemy import Column, String, Integer, DateTime, Boolean, BigInteger, Text
-from sqlalchemy.dialects.postgresql import UUID, BYTEA
+from sqlalchemy import Column, String, Integer, DateTime, Boolean, BigInteger, Text, JSON
+from sqlalchemy.dialects.postgresql import UUID, BYTEA, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import uuid
@@ -72,3 +72,6 @@ class StorageObject(Base):
     upload_id = Column(String(255), nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
     file_hash = Column(String(128), nullable=True)
+
+    # File metadata (shared with storage-service) - includes ZK thumbnail
+    file_metadata = Column(JSONB, nullable=True)

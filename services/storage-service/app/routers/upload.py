@@ -1,6 +1,6 @@
 # services/storage-service/app/routers/upload.py
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks, Response
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks, Response, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -18,7 +18,7 @@ from ..services.auth import auth_service
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
 from ..models.database import User, Object, FileVersion
-from ..models.schemas import UploadInitResponse, UploadStatusResponse
+from ..models.schemas import UploadInitResponse, UploadStatusResponse, ZKUploadInitRequest
 from ..database import get_redis
 from ..config import settings
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
@@ -249,13 +249,7 @@ async def init_upload(
 @router.post("/init/zk", response_model=UploadInitResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def init_zk_upload(
     request: Request,
-    file_name: str,
-    file_size: int,
-    encrypted_file_key: str,
-    file_key_iv: str,
-    encryption_algorithm: str = "AES-256-GCM",
-    mime_type: Optional[str] = None,
-    folder_id: Optional[str] = None,
+    payload: ZKUploadInitRequest = Body(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -266,44 +260,30 @@ async def init_zk_upload(
     The server will NOT re-encrypt the chunks - they're already encrypted.
 
     Args:
-        file_name: Original filename
-        file_size: Total file size (before client encryption)
-        encrypted_file_key: Base64-encoded file key encrypted with master key
-        file_key_iv: Base64-encoded IV used for file key encryption
-        encryption_algorithm: Encryption algorithm used (default: AES-256-GCM)
-        mime_type: MIME type of the original file
-        folder_id: Optional parent folder ID
+        payload: ZKUploadInitRequest containing:
+            - file_name: Original filename
+            - file_size: Total file size (before client encryption)
+            - encrypted_file_key: Base64-encoded file key encrypted with master key
+            - file_key_iv: Base64-encoded IV used for file key encryption
+            - encryption_algorithm: Encryption algorithm used (default: AES-256-GCM)
+            - mime_type: MIME type of the original file
+            - folder_id: Optional parent folder ID
+            - encrypted_thumbnail: Optional Base64-encoded encrypted thumbnail
+            - thumbnail_iv: Optional Base64-encoded IV for thumbnail
+            - thumbnail_width: Optional thumbnail width
+            - thumbnail_height: Optional thumbnail height
 
     Returns:
         UploadInitResponse with zk_mode metadata
     """
-    # Input validation
-    if not file_name or not file_name.strip():
-        raise HTTPException(400, "file_name cannot be empty")
-    if file_size is None or file_size <= 0:
-        raise HTTPException(400, "file_size must be greater than 0")
-    if not encrypted_file_key or not file_key_iv:
-        raise HTTPException(400, "encrypted_file_key and file_key_iv are required for ZK uploads")
-
-    # Validate base64 encoding
-    try:
-        base64.b64decode(encrypted_file_key)
-        base64.b64decode(file_key_iv)
-    except Exception as e:
-        logger.error(f"Invalid base64 encoding in ZK upload: {e}")
-        raise HTTPException(400, "Invalid base64 encoding for encrypted_file_key or file_key_iv")
-
-    # Security: Validate filename (no path traversal)
-    file_name = file_name.strip()
-    if '..' in file_name or '/' in file_name or '\\' in file_name:
-        raise HTTPException(400, "Invalid filename - path traversal not allowed")
-    if len(file_name) > 255:
-        raise HTTPException(400, "Filename too long (max 255 characters)")
-
-    # Size limits (10GB max)
-    MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
-    if file_size > MAX_FILE_SIZE:
-        raise HTTPException(413, f"File size exceeds maximum allowed size of {MAX_FILE_SIZE} bytes")
+    # Extract validated fields from Pydantic model
+    file_name = payload.file_name
+    file_size = payload.file_size
+    encrypted_file_key = payload.encrypted_file_key
+    file_key_iv = payload.file_key_iv
+    encryption_algorithm = payload.encryption_algorithm
+    mime_type = payload.mime_type
+    folder_id = payload.folder_id
 
     redis_client = await get_redis()
 
@@ -355,6 +335,12 @@ async def init_zk_upload(
         "encryption_algorithm": encryption_algorithm,
         "client_encrypted": True,  # Mark as client-encrypted
 
+        # ZK Thumbnail (client-side generated and encrypted)
+        "encrypted_thumbnail": payload.encrypted_thumbnail,
+        "thumbnail_iv": payload.thumbnail_iv,
+        "thumbnail_width": payload.thumbnail_width,
+        "thumbnail_height": payload.thumbnail_height,
+
         # Metadata
         "mime_type": mime_type,
         "compress": False,  # Never compress ZK files (already encrypted)
@@ -365,6 +351,7 @@ async def init_zk_upload(
     await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
 
     # Structured logging
+    has_thumbnail = payload.encrypted_thumbnail is not None
     logger.info(
         "ZK upload initialized",
         extra={
@@ -376,7 +363,8 @@ async def init_zk_upload(
             "storage_strategy": storage_strategy,
             "total_chunks": total_chunks,
             "encryption_algorithm": encryption_algorithm,
-            "mime_type": mime_type
+            "mime_type": mime_type,
+            "has_thumbnail": has_thumbnail
         }
     )
 
@@ -387,7 +375,8 @@ async def init_zk_upload(
     ).inc()
     active_uploads.inc()
 
-    print(f"🔐 ZK Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Client encrypted")
+    thumbnail_info = " + thumbnail" if has_thumbnail else ""
+    print(f"🔐 ZK Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Client encrypted{thumbnail_info}")
 
     return UploadInitResponse(
         upload_id=upload_id,
@@ -726,6 +715,17 @@ async def complete_upload(
             }
         )
 
+    # Build file_metadata including ZK thumbnail if present
+    file_metadata_dict = {"compressed": session.get("compress", False)}
+    if is_zk_mode and session.get("encrypted_thumbnail"):
+        file_metadata_dict["zk_thumbnail"] = {
+            "encrypted_thumbnail": session.get("encrypted_thumbnail"),
+            "thumbnail_iv": session.get("thumbnail_iv"),
+            "width": session.get("thumbnail_width"),
+            "height": session.get("thumbnail_height"),
+        }
+        logger.info(f"ZK thumbnail stored for file {session['name']}")
+
     # Create database record based on storage type
     if storage_strategy == "inline":
         file_obj = Object(
@@ -740,7 +740,7 @@ async def complete_upload(
             content_hash=session.get("hash", ""),
             encryption_key=session.get("key") if not is_zk_mode else None,
             storage_tier="cache",
-            file_metadata={"compressed": session.get("compress", False)},
+            file_metadata=file_metadata_dict,
             **zk_fields  # Add ZK fields if applicable
         )
     
@@ -757,7 +757,7 @@ async def complete_upload(
             content_hash=session.get("hash", ""),
             encryption_key=session.get("key") if not is_zk_mode else None,
             storage_tier="cache",
-            file_metadata={"compressed": session.get("compress", False)},
+            file_metadata=file_metadata_dict,
             **zk_fields  # Add ZK fields if applicable
         )
     
@@ -784,6 +784,7 @@ async def complete_upload(
                 "chunk_size": CHUNK_SIZE  # Store chunk size for download
             },
             storage_tier="cache",
+            file_metadata=file_metadata_dict,
             **zk_fields  # Add ZK fields if applicable
         )
     

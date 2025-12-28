@@ -10,7 +10,7 @@
  * - PDFs: First page (using pdf.js if available)
  */
 
-import { deriveThumbnailKey, encryptAESGCM, bytesToBase64 } from './zkCryptoV2.js';
+import { deriveThumbnailKey, encryptAESGCM, decryptAESGCM, bytesToBase64, base64ToBytes } from './zkCryptoV2.js';
 
 // Thumbnail configuration
 const THUMBNAIL_CONFIG = {
@@ -272,8 +272,6 @@ function calculateDimensions(srcWidth, srcHeight, maxWidth, maxHeight) {
  * @returns {Uint8Array} Decrypted thumbnail data (JPEG)
  */
 export function decryptThumbnail(encryptedThumbnailB64, ivB64, fileKey) {
-  const { base64ToBytes, decryptAESGCM } = require('./zkCryptoV2.js');
-
   const encrypted = base64ToBytes(encryptedThumbnailB64);
   const iv = base64ToBytes(ivB64);
   const thumbKey = deriveThumbnailKey(fileKey);

@@ -267,6 +267,12 @@ export async function initializeUpload(uploadData) {
     encryption_version: uploadData.encryptionVersion || 2, // Default to V2 (HKDF+AAD)
     chunk_size: uploadData.chunkSize,
     parent_folder_id: uploadData.parentFolderId || null,
+
+    // ZK Thumbnail (client-side generated and encrypted)
+    encrypted_thumbnail: uploadData.encryptedThumbnail || null,
+    thumbnail_iv: uploadData.thumbnailIV || null,
+    thumbnail_width: uploadData.thumbnailWidth || null,
+    thumbnail_height: uploadData.thumbnailHeight || null,
   };
 
   const response = await zkFetch(ZK_ENDPOINTS.UPLOAD_INIT, {

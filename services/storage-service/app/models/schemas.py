@@ -264,6 +264,12 @@ class ZKUploadInitRequest(BaseModel):
     file_key_iv: str  # Base64-encoded initialization vector
     encryption_algorithm: str = "AES-256-GCM"
 
+    # ZK Thumbnail fields (client-side generated, encrypted with derived key)
+    encrypted_thumbnail: Optional[str] = None  # Base64-encoded encrypted thumbnail
+    thumbnail_iv: Optional[str] = None  # Base64-encoded IV for thumbnail encryption
+    thumbnail_width: Optional[int] = None  # Thumbnail width in pixels
+    thumbnail_height: Optional[int] = None  # Thumbnail height in pixels
+
     @field_validator('encrypted_file_key', 'file_key_iv')
     @classmethod
     def validate_base64(cls, v):
@@ -276,6 +282,19 @@ class ZKUploadInitRequest(BaseModel):
             return v
         except Exception:
             raise ValueError('Invalid base64 encoding')
+
+    @field_validator('encrypted_thumbnail', 'thumbnail_iv')
+    @classmethod
+    def validate_thumbnail_base64(cls, v):
+        """Validate optional base64 encoding for thumbnail fields"""
+        if v is None:
+            return v
+        try:
+            import base64
+            base64.b64decode(v)
+            return v
+        except Exception:
+            raise ValueError('Invalid base64 encoding for thumbnail field')
 
     @field_validator('file_size')
     @classmethod

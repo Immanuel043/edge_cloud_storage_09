@@ -221,13 +221,24 @@ if settings.ENABLE_HTTPS:
 # Configure CORS
 default_origins = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3001"]
 allow_origins = getattr(settings, "CORS_ORIGINS", default_origins)
+# Note: With credentials=True, expose_headers=["*"] doesn't work for custom headers
+# Must explicitly list custom headers for JavaScript to access them
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=[
+        "Content-Length",
+        "Content-Type",
+        "Content-Disposition",
+        "X-Preview-Status",
+        "X-ZK-Encrypted",
+        "X-ZK-Thumbnail-IV",
+        "X-ZK-Thumbnail-Width",
+        "X-ZK-Thumbnail-Height",
+    ],
 )
 
 # Add Security Headers Middleware

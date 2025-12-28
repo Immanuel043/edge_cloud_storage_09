@@ -9,6 +9,7 @@ import * as zkAuthService from '../services/zkAuthService';
 import { bytesToBase64 } from '../utils/zkCrypto';
 import { getMigrationStats, needsMigration, formatMigrationStats } from '../utils/zkMigration';
 import { isZKModeActive, getFileService } from '../services/fileServiceRouter';
+import { generateEncryptedThumbnail, supportsThumbnail } from '../utils/zkThumbnails';
 
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -366,7 +367,21 @@ export const StorageProvider = ({ children }) => {
 
       console.log('[Storage] File encrypted, chunks:', encryptedData.totalChunks);
 
-      // Step 2: Initialize upload with ZK service
+      // Step 2: Generate encrypted thumbnail if file type is supported
+      let thumbnailData = null;
+      if (supportsThumbnail(file.type)) {
+        try {
+          console.log('[Storage] Generating encrypted thumbnail for:', file.name);
+          thumbnailData = await generateEncryptedThumbnail(file, encryptedData.fileKey);
+          if (thumbnailData) {
+            console.log('[Storage] Thumbnail generated:', thumbnailData.width, 'x', thumbnailData.height);
+          }
+        } catch (thumbError) {
+          console.warn('[Storage] Thumbnail generation failed (non-fatal):', thumbError.message);
+        }
+      }
+
+      // Step 3: Initialize upload with ZK service (including thumbnail if available)
       const initResult = await zkAuthService.initializeUpload({
         fileName: file.name,
         fileSize: file.size,
@@ -377,6 +392,11 @@ export const StorageProvider = ({ children }) => {
         encryptionVersion: 2, // V2 = HKDF+AAD enhanced encryption
         chunkSize: 64 * 1024 * 1024, // 64MB
         parentFolderId: currentFolder,
+        // Include encrypted thumbnail data
+        encryptedThumbnail: thumbnailData?.encryptedThumbnail || null,
+        thumbnailIV: thumbnailData?.iv || null,
+        thumbnailWidth: thumbnailData?.width || null,
+        thumbnailHeight: thumbnailData?.height || null,
       });
 
       console.log('[Storage] ZK upload initialized:', initResult);

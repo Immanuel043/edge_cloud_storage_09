@@ -444,6 +444,7 @@ export async function encryptFile(file, progressCallback = null) {
     encryptedChunks,
     encryptedFileKey,
     fileKeyIV,
+    fileKey,  // Include plaintext file key for thumbnail encryption
     fileHash,
     totalChunks,
     originalSize: file.size,
