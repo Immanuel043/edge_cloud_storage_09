@@ -282,15 +282,15 @@ export default function FileGrid({
             </div>
           </div>
 
-          <div className="flex flex-col items-center justify-center flex-1 mt-6 file-preview-area">
-            <div className="flex-1 w-full flex items-center justify-center">
+          <div className="flex flex-col items-center flex-1 mt-6 min-h-0 file-preview-area">
+            <div className="flex-1 w-full flex items-center justify-center min-h-0 overflow-hidden">
               <FileThumbnail
                 file={file}
                 size="large"
                 darkMode={darkMode}
               />
             </div>
-            <div className="w-full px-1 text-center mt-2">
+            <div className="w-full px-1 text-center mt-1 flex-shrink-0">
               <div className="flex items-center justify-center gap-1">
                 <p className={`text-xs font-medium truncate leading-tight ${
                   darkMode ? 'text-white' : 'text-gray-900'
