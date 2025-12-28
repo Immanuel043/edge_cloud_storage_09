@@ -41,8 +41,8 @@ class FileResponse(BaseModel):
     size: int
     mime_type: Optional[str]
     folder_id: Optional[str] = None
-    storage_tier: str = 'hot'
-    backup_status: str = 'none'
+    storage_tier: Optional[str] = 'hot'  # Optional for ZK files which may not have tiers
+    backup_status: Optional[str] = 'none'  # Optional for ZK files
     created_at: datetime
     last_accessed: Optional[datetime] = None
     updated_at: Optional[datetime] = None

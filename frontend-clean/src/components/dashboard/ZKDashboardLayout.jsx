@@ -3,6 +3,7 @@ import {
   Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home, Search,
   Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2
 } from 'lucide-react';
+import { API_URL } from '../../config/constants';
 import TrashView from './TrashView';
 import ZKStorageStats from './ZKStorageStats';
 import ZKEncryptionStatus from './ZKEncryptionStatus';
@@ -301,8 +302,28 @@ export default function ZKDashboardLayout({
   };
 
   const handleRenameFile = async (fileId, newName) => {
-    // TODO: Implement rename for ZK files
-    console.log('Rename ZK file:', fileId, newName);
+    try {
+      const response = await fetch(`${API_URL}/api/v1/files/${fileId}/rename`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ name: newName }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to rename file');
+      }
+
+      // Refresh file list to show updated name
+      await refreshFiles();
+      setRenameFile(null);
+    } catch (error) {
+      console.error('Rename failed:', error);
+      alert(`Failed to rename file: ${error.message}`);
+    }
   };
 
   // Drag and drop handlers
@@ -532,6 +553,8 @@ export default function ZKDashboardLayout({
                 <SearchBar
                   onSearch={setSearchResults}
                   darkMode={darkMode}
+                  zkMode={true}
+                  files={files}
                 />
               </div>
 

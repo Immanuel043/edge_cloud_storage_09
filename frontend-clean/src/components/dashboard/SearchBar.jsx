@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, X, Filter, Loader2, Sparkles, Zap } from 'lucide-react';
+import { Search, X, Filter, Loader2, Sparkles, Zap, Lock } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1';
 
-export default function SearchBar({ onSearch, darkMode }) {
+export default function SearchBar({ onSearch, darkMode, zkMode = false, files = [] }) {
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -65,6 +65,21 @@ export default function SearchBar({ onSearch, darkMode }) {
       return;
     }
 
+    // For ZK mode, generate suggestions from local file list
+    if (zkMode) {
+      const searchLower = searchQuery.toLowerCase();
+      const matchedNames = files
+        .filter(f => {
+          const name = (f.name || f.file_name || '').toLowerCase();
+          return name.includes(searchLower);
+        })
+        .map(f => f.name || f.file_name)
+        .slice(0, 5); // Limit to 5 suggestions
+      
+      setSuggestions(matchedNames);
+      return;
+    }
+
     try {
       const response = await fetch(
         `${API_URL}/api/v1/search/autocomplete?q=${encodeURIComponent(searchQuery)}`,
@@ -106,6 +121,57 @@ export default function SearchBar({ onSearch, darkMode }) {
     setShowSuggestions(false);
 
     try {
+      // For ZK users, perform client-side search on encrypted files
+      // Server cannot index encrypted file content
+      if (zkMode) {
+        const searchLower = searchQuery.toLowerCase();
+        const matchedFiles = files.filter(file => {
+          const fileName = (file.name || file.file_name || '').toLowerCase();
+          const mimeType = (file.mime_type || '').toLowerCase();
+          
+          // Match by filename
+          if (fileName.includes(searchLower)) return true;
+          
+          // Match by file extension
+          const ext = fileName.split('.').pop();
+          if (ext && ext.includes(searchLower)) return true;
+          
+          // Match by mime type keywords
+          if (mimeType.includes(searchLower)) return true;
+          
+          // Match common type keywords
+          if (searchLower === 'image' && mimeType.startsWith('image/')) return true;
+          if (searchLower === 'video' && mimeType.startsWith('video/')) return true;
+          if (searchLower === 'audio' && mimeType.startsWith('audio/')) return true;
+          if (searchLower === 'pdf' && mimeType === 'application/pdf') return true;
+          if (searchLower === 'document' && (mimeType.includes('document') || mimeType.includes('pdf') || mimeType.includes('text'))) return true;
+          
+          return false;
+        });
+
+        // Format results to match server response structure
+        const results = {
+          files: {
+            hits: matchedFiles.map(f => ({
+              id: f.id,
+              name: f.name || f.file_name,
+              size: f.size || f.file_size,
+              mime_type: f.mime_type,
+              created_at: f.created_at,
+              is_encrypted: true,
+              score: 1.0
+            })),
+            total: matchedFiles.length
+          },
+          mode: 'client-side',
+          semantic_enabled: false,
+          zk_mode: true
+        };
+        
+        onSearch(results);
+        return;
+      }
+
       // Use smart search endpoint if enabled, otherwise use regular search
       const endpoint = smartSearchEnabled ? `${API_URL}/api/v1/search/smart` : `${API_URL}/api/v1/search/`;
 
@@ -215,36 +281,49 @@ export default function SearchBar({ onSearch, darkMode }) {
             </button>
           )}
 
-          {/* Smart Search Toggle */}
-          <button
-            onClick={() => setSmartSearchEnabled(!smartSearchEnabled)}
-            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
-              smartSearchEnabled
-                ? 'bg-purple-500 text-white'
-                : darkMode
-                  ? 'hover:bg-gray-700 text-gray-400'
-                  : 'hover:bg-gray-200 text-gray-600'
-            }`}
-            title={smartSearchEnabled ? 'AI Smart Search enabled (click to disable)' : 'Enable AI Smart Search'}
-            disabled={smartSearchStatus && !smartSearchStatus.semantic_enabled}
-          >
-            <Sparkles size={16} />
-            {smartSearchEnabled && <span className="text-xs font-medium hidden sm:inline">AI</span>}
-          </button>
+          {/* ZK Mode Indicator or Smart Search Toggle */}
+          {zkMode ? (
+            <div
+              className="p-1.5 rounded bg-green-500 text-white flex items-center gap-1"
+              title="Zero-Knowledge Mode: Searching encrypted files locally"
+            >
+              <Lock size={16} />
+              <span className="text-xs font-medium hidden sm:inline">ZK</span>
+            </div>
+          ) : (
+            <button
+              onClick={() => setSmartSearchEnabled(!smartSearchEnabled)}
+              className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
+                smartSearchEnabled
+                  ? 'bg-purple-500 text-white'
+                  : darkMode
+                    ? 'hover:bg-gray-700 text-gray-400'
+                    : 'hover:bg-gray-200 text-gray-600'
+              }`}
+              title={smartSearchEnabled ? 'AI Smart Search enabled (click to disable)' : 'Enable AI Smart Search'}
+              disabled={smartSearchStatus && !smartSearchStatus.semantic_enabled}
+            >
+              <Sparkles size={16} />
+              {smartSearchEnabled && <span className="text-xs font-medium hidden sm:inline">AI</span>}
+            </button>
+          )}
 
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className={`p-1.5 rounded transition-colors ${
-              showFilters
-                ? 'bg-blue-500 text-white'
-                : darkMode
-                  ? 'hover:bg-gray-700 text-gray-400'
-                  : 'hover:bg-gray-200 text-gray-600'
-            }`}
-            title="Filters"
-          >
-            <Filter size={18} />
-          </button>
+          {/* Hide advanced filters in ZK mode - not applicable to client-side search */}
+          {!zkMode && (
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className={`p-1.5 rounded transition-colors ${
+                showFilters
+                  ? 'bg-blue-500 text-white'
+                  : darkMode
+                    ? 'hover:bg-gray-700 text-gray-400'
+                    : 'hover:bg-gray-200 text-gray-600'
+              }`}
+              title="Filters"
+            >
+              <Filter size={18} />
+            </button>
+          )}
         </div>
 
         {/* Autocomplete Suggestions */}

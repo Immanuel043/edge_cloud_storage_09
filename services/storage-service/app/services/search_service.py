@@ -13,6 +13,15 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
+
+def safe_isoformat(dt):
+    """Safely convert datetime to ISO format string, handling both datetime objects and strings."""
+    if dt is None:
+        return datetime.utcnow().isoformat()
+    if hasattr(dt, 'isoformat'):
+        return dt.isoformat()
+    return str(dt)
+
 class SearchService:
     def __init__(self):
         self.es_url = settings.ELASTICSEARCH_URL
@@ -152,8 +161,8 @@ class SearchService:
             "storage_tier": file_data.get('storage_tier', 'warm'),
             "folder_id": str(file_data['folder_id']) if file_data.get('folder_id') else None,
             "user_id": str(file_data['user_id']),
-            "created_at": file_data.get('created_at', datetime.utcnow()).isoformat(),
-            "updated_at": file_data.get('updated_at', datetime.utcnow()).isoformat(),
+            "created_at": safe_isoformat(file_data.get('created_at')),
+            "updated_at": safe_isoformat(file_data.get('updated_at')),
             "tags": file_data.get('tags', []),
             "description": file_data.get('description', '')
         }
@@ -195,8 +204,8 @@ class SearchService:
             "name": folder_data['name'],
             "parent_id": str(folder_data['parent_id']) if folder_data.get('parent_id') else None,
             "user_id": str(folder_data['user_id']),
-            "created_at": folder_data.get('created_at', datetime.utcnow()).isoformat(),
-            "updated_at": folder_data.get('updated_at', datetime.utcnow()).isoformat(),
+            "created_at": safe_isoformat(folder_data.get('created_at')),
+            "updated_at": safe_isoformat(folder_data.get('updated_at')),
             "path": folder_data.get('path', '')
         }
 
@@ -246,18 +255,55 @@ class SearchService:
             return {"files": {"total": 0, "hits": []}, "folders": {"total": 0, "hits": []}}
 
         try:
-            # Build search query
+            # Build search query with prioritized exact matches
             must_clauses = [
                 {"term": {"user_id": user_id}}
             ]
+            
+            # Should clauses for boosting (exact matches get higher scores)
+            should_clauses = []
 
             if query:
+                # 1. Exact match on filename (highest priority - 10x boost)
+                should_clauses.append({
+                    "term": {
+                        "name.keyword": {
+                            "value": query,
+                            "boost": 10.0
+                        }
+                    }
+                })
+                
+                # 2. Prefix match (starts with query - 5x boost)
+                should_clauses.append({
+                    "prefix": {
+                        "name": {
+                            "value": query.lower(),
+                            "boost": 5.0
+                        }
+                    }
+                })
+                
+                # 3. Wildcard match (contains query - 3x boost)
+                should_clauses.append({
+                    "wildcard": {
+                        "name": {
+                            "value": f"*{query.lower()}*",
+                            "boost": 3.0
+                        }
+                    }
+                })
+                
+                # 4. Fuzzy multi-match (typo tolerance - lower boost)
+                # Reduced fuzziness for more precise matches
+                fuzziness_value = "1" if fuzzy else "0"  # Max 1 character edit distance
                 search_clause = {
                     "multi_match": {
                         "query": query,
                         "fields": ["name^3", "original_name^2", "description"],
-                        "fuzziness": "AUTO" if fuzzy else 0,
-                        "prefix_length": 2
+                        "fuzziness": fuzziness_value,
+                        "prefix_length": 3,  # Increased from 2 for more precision
+                        "boost": 1.0
                     }
                 }
                 must_clauses.append(search_clause)
@@ -287,11 +333,13 @@ class SearchService:
                         date_range['lte'] = filters['date_to']
                     filter_clauses.append({"range": {"created_at": date_range}})
 
-            # Search files
+            # Search files - include should clauses for boosting exact matches
             files_query = {
                 "bool": {
                     "must": must_clauses,
-                    "filter": filter_clauses
+                    "should": should_clauses,
+                    "filter": filter_clauses,
+                    "minimum_should_match": 0  # Should clauses are optional boosters
                 }
             }
 
@@ -301,6 +349,7 @@ class SearchService:
                     "query": files_query,
                     "from": from_,
                     "size": size,
+                    "min_score": 0.5,  # Filter out results with less than 50% relevance
                     "highlight": {
                         "fields": {
                             "name": {},

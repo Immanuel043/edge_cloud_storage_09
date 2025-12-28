@@ -14,7 +14,9 @@ import {
   ChevronRight,
   HardDrive,
   Database,
-  Video
+  Video,
+  Search,
+  RefreshCw
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
@@ -78,6 +80,11 @@ export default function SettingsView({ darkMode }) {
   const [videoModeLoading, setVideoModeLoading] = useState(false);
   const [videoModeError, setVideoModeError] = useState('');
 
+  // Search indexing state
+  const [indexStatus, setIndexStatus] = useState(null);
+  const [isReindexing, setIsReindexing] = useState(false);
+  const [reindexResult, setReindexResult] = useState(null);
+
   // Fetch current video optimization setting
   useEffect(() => {
     const fetchVideoSettings = async () => {
@@ -95,6 +102,47 @@ export default function SettingsView({ darkMode }) {
     };
     fetchVideoSettings();
   }, []);
+
+  // Fetch search index status
+  useEffect(() => {
+    const fetchIndexStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/search/reindex/status`, {
+          credentials: 'include'
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setIndexStatus(data);
+        }
+      } catch (e) {
+        console.error('Failed to fetch index status:', e);
+      }
+    };
+    fetchIndexStatus();
+  }, [reindexResult]);
+
+  // Handle re-indexing
+  const handleReindex = async () => {
+    setIsReindexing(true);
+    setReindexResult(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/search/reindex`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setReindexResult(data);
+      } else {
+        const error = await response.json();
+        setReindexResult({ success: false, message: error.detail || 'Re-indexing failed' });
+      }
+    } catch (e) {
+      setReindexResult({ success: false, message: e.message });
+    } finally {
+      setIsReindexing(false);
+    }
+  };
 
   const handleVideoModeChange = async (newMode) => {
     setVideoModeLoading(true);
@@ -366,6 +414,101 @@ export default function SettingsView({ darkMode }) {
 
             {videoModeError && (
               <p className="text-red-500 text-sm mt-2">{videoModeError}</p>
+            )}
+          </div>
+        )}
+
+        {/* Search & Indexing Section - Only for non-ZK users */}
+        {!zkEnabled && (
+          <div className={`p-4 rounded-lg border ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-gray-50'}`}>
+            <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              <Search size={20} />
+              Search & Indexing
+            </h2>
+            <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              Manage search indexing for your files. Re-index if search is not finding your files.
+            </p>
+
+            {/* Index Status */}
+            {indexStatus && (
+              <div className={`p-3 rounded-lg mb-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className={darkMode ? 'text-gray-400' : 'text-gray-600'}>Elasticsearch Status:</span>
+                    <span className={`ml-2 font-medium ${
+                      indexStatus.elasticsearch_status === 'connected' 
+                        ? 'text-green-500' 
+                        : 'text-red-500'
+                    }`}>
+                      {indexStatus.elasticsearch_status === 'connected' ? '● Connected' : '● Disconnected'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className={darkMode ? 'text-gray-400' : 'text-gray-600'}>Sync Status:</span>
+                    <span className={`ml-2 font-medium ${
+                      indexStatus.sync_status === 'synced' 
+                        ? 'text-green-500' 
+                        : 'text-yellow-500'
+                    }`}>
+                      {indexStatus.sync_status === 'synced' ? '✓ Synced' : '⚠ Out of sync'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className={darkMode ? 'text-gray-400' : 'text-gray-600'}>Files in Database:</span>
+                    <span className={`ml-2 font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {indexStatus.database_files}
+                    </span>
+                  </div>
+                  <div>
+                    <span className={darkMode ? 'text-gray-400' : 'text-gray-600'}>Files Indexed:</span>
+                    <span className={`ml-2 font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {indexStatus.indexed_files}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Re-index Button */}
+            <button
+              onClick={handleReindex}
+              disabled={isReindexing}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                isReindexing
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : 'bg-blue-500 hover:bg-blue-600 text-white'
+              }`}
+            >
+              {isReindexing ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" />
+                  Re-indexing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw size={18} />
+                  Re-index All Files
+                </>
+              )}
+            </button>
+
+            {/* Re-index Result */}
+            {reindexResult && (
+              <div className={`mt-4 p-3 rounded-lg ${
+                reindexResult.success 
+                  ? darkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-50 text-green-700'
+                  : darkMode ? 'bg-red-900/30 text-red-400' : 'bg-red-50 text-red-700'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {reindexResult.success ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
+                  <span className="font-medium">{reindexResult.message}</span>
+                </div>
+                {reindexResult.success && (
+                  <div className="text-sm mt-1">
+                    Indexed: {reindexResult.indexed} | Failed: {reindexResult.failed} | Total: {reindexResult.total}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}
