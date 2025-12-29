@@ -656,6 +656,7 @@ export const AuthProvider = ({ children }) => {
   const lockSession = () => {
     lockZKSession();
     setZkSessionUnlocked(false);
+    setShowUnlockModal(true);
   };
 
   /**

@@ -1,12 +1,14 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home, Search,
-  Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2
+  Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
+  ArrowUpDown
 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import TrashView from './TrashView';
 import ZKStorageStats from './ZKStorageStats';
 import ZKEncryptionStatus from './ZKEncryptionStatus';
+import QuickFilters from './QuickFilters';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
 import UploadProgress from './UploadProgress';
@@ -22,6 +24,7 @@ import MigrationBanner from './MigrationBanner';
 import FileCorruptionModal from './FileCorruptionModal';
 import ShareOptionsModal from './ShareOptionsModal';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { getFileType } from '../../utils/helpers';
 
 /**
  * ZKDashboardLayout - Simplified dashboard for Zero-Knowledge encrypted users
@@ -72,6 +75,12 @@ export default function ZKDashboardLayout({
   const [viewMode, setViewMode] = useState('grid');
   const [searchResults, setSearchResults] = useState(null);
 
+  // Filter and sort state
+  const [quickFilter, setQuickFilter] = useState('all');
+  const [sortBy, setSortBy] = useState(() =>
+    localStorage.getItem('zk_sort_preference') || 'name'
+  );
+
   // Modal state
   const [previewFile, setPreviewFile] = useState(null);
   const [renameFile, setRenameFile] = useState(null);
@@ -92,6 +101,69 @@ export default function ZKDashboardLayout({
   // Refs
   const fileInputRef = useRef(null);
   const abortControllers = useRef({});
+
+  // Handle sort change with localStorage persistence
+  const handleSortChange = (e) => {
+    const newSort = e.target.value;
+    setSortBy(newSort);
+    localStorage.setItem('zk_sort_preference', newSort);
+  };
+
+  // Filter and sort files
+  const { filteredFolders, filteredFiles } = useMemo(() => {
+    let resultFolders = [...folders];
+    let resultFiles = [...files];
+
+    // Apply quick filter
+    switch (quickFilter) {
+      case 'all':
+        // Show all
+        break;
+      case 'recent':
+        // Files from last 7 days only, no folders
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        resultFiles = files.filter(f => {
+          const fileDate = new Date(f.last_accessed || f.updated_at || f.created_at);
+          return fileDate >= sevenDaysAgo;
+        });
+        resultFolders = [];
+        break;
+      case 'folders':
+        // Only folders, no files
+        resultFiles = [];
+        break;
+      case 'image':
+      case 'document':
+      case 'video':
+      case 'audio':
+        // Filter files by type, show all folders
+        resultFiles = files.filter(f => getFileType(f.name) === quickFilter);
+        break;
+      default:
+        break;
+    }
+
+    // Sort files
+    resultFiles.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'date':
+          return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at);
+        case 'size':
+          return (b.size || 0) - (a.size || 0);
+        case 'type':
+          return getFileType(a.name).localeCompare(getFileType(b.name));
+        default:
+          return 0;
+      }
+    });
+
+    // Sort folders by name (always)
+    resultFolders.sort((a, b) => a.name.localeCompare(b.name));
+
+    return { filteredFolders: resultFolders, filteredFiles: resultFiles };
+  }, [files, folders, quickFilter, sortBy]);
 
   // Setup keyboard shortcuts
   useKeyboardShortcuts({
@@ -412,8 +484,8 @@ export default function ZKDashboardLayout({
                 {/* Files and Folders */}
                 {viewMode === 'grid' ? (
                   <FileGrid
-                    folders={folders}
-                    files={files}
+                    folders={filteredFolders}
+                    files={filteredFiles}
                     selectedFiles={selectedFiles}
                     onFolderClick={navigateToFolder}
                     onFileClick={selectFile}
@@ -428,8 +500,8 @@ export default function ZKDashboardLayout({
                   />
                 ) : (
                   <FileList
-                    folders={folders}
-                    files={files}
+                    folders={filteredFolders}
+                    files={filteredFiles}
                     selectedFiles={selectedFiles}
                     onFolderClick={navigateToFolder}
                     onFileClick={selectFile}
@@ -444,7 +516,7 @@ export default function ZKDashboardLayout({
                   />
                 )}
 
-                {files.length === 0 && folders.length === 0 && (
+                {filteredFiles.length === 0 && filteredFolders.length === 0 && (
                   <div className="text-center py-12">
                     <div className="flex justify-center mb-4">
                       <div className={`p-4 rounded-full ${darkMode ? 'bg-green-900/30' : 'bg-green-100'}`}>
@@ -639,9 +711,19 @@ export default function ZKDashboardLayout({
             <MigrationBanner />
           )}
 
+          {/* Quick Filters */}
+          {activeView === 'cloud-drive' && (
+            <QuickFilters
+              activeFilter={quickFilter}
+              onFilterChange={setQuickFilter}
+              darkMode={darkMode}
+              isZK={true}
+            />
+          )}
+
           {/* Action Bar */}
           {activeView === 'cloud-drive' && (
-            <div className="flex gap-3 mb-6">
+            <div className="flex gap-3 mb-4 items-center">
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover:from-green-600 hover:to-emerald-700 transition-all shadow-lg"
@@ -662,6 +744,28 @@ export default function ZKDashboardLayout({
                 <FolderPlus size={20} />
                 New Folder
               </button>
+
+              {/* Spacer */}
+              <div className="flex-1" />
+
+              {/* Sort Dropdown */}
+              <div className="flex items-center gap-2">
+                <ArrowUpDown size={16} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                <select
+                  value={sortBy}
+                  onChange={handleSortChange}
+                  className={`px-3 py-1.5 rounded-lg border text-sm ${
+                    darkMode
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-700'
+                  }`}
+                >
+                  <option value="name">Name</option>
+                  <option value="date">Date Modified</option>
+                  <option value="size">Size</option>
+                  <option value="type">Type</option>
+                </select>
+              </div>
 
               <input
                 ref={fileInputRef}
@@ -716,6 +820,7 @@ export default function ZKDashboardLayout({
         <KeyboardShortcuts
           onClose={() => setShowShortcuts(false)}
           darkMode={darkMode}
+          isZK={true}
         />
       )}
 

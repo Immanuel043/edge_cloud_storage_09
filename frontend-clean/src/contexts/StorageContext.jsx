@@ -178,6 +178,10 @@ export const StorageProvider = ({ children }) => {
           storageService.getFolders(token, folderId),
           storageService.getStorageStats(token)
         ]);
+        // Always set files_count from the actual files array for accuracy
+        if (statsData) {
+          statsData.files_count = filesData.length;
+        }
       }
 
       setFiles(filesData);
@@ -226,7 +230,16 @@ export const StorageProvider = ({ children }) => {
           percentage_used: zkUsage.usage_percentage || (quotaBytes > 0 ? (usedBytes / quotaBytes * 100) : 0),
         } : { used: 0, total: 100 * 1024 * 1024 * 1024, quota: 100 * 1024 * 1024 * 1024, available: 100 * 1024 * 1024 * 1024, files_count: 0, percentage_used: 0 };
       } else {
-        stats = await storageService.getStorageStats(token);
+        // Fetch both stats and files count in parallel for accuracy
+        const [statsData, filesData] = await Promise.all([
+          storageService.getStorageStats(token),
+          storageService.getFiles(token, currentFolder)
+        ]);
+        stats = statsData;
+        // Always set files_count from the actual files fetch for accuracy
+        if (stats) {
+          stats.files_count = filesData?.length || 0;
+        }
       }
 
       setStorageStats(stats);

@@ -41,11 +41,11 @@ export default function FileGrid({
             e.stopPropagation();
             onFolderClick(folder.id, folder.name);
           }}
-          className={`group aspect-square p-3 rounded-xl cursor-pointer transition-all border ${
+          className={`group aspect-square p-3 rounded-xl cursor-pointer transition-all duration-200 border ${
             darkMode
-              ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
-              : 'bg-white hover:bg-blue-50/30 border-gray-200 hover:border-blue-200'
-          } ${selectedFiles.has(folder.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg`}
+              ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-blue-600'
+              : 'bg-white hover:bg-blue-50/30 border-gray-200 hover:border-blue-300'
+          } ${selectedFiles.has(folder.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg hover:scale-[1.02]`}
         >
           <div className="flex flex-col items-center justify-center h-full">
             <div className={`p-3 rounded-xl transition-colors ${
@@ -79,11 +79,11 @@ export default function FileGrid({
             e.stopPropagation();
             onFilePreview(file);
           }}
-          className={`aspect-square p-3 rounded-xl relative group transition-all border cursor-pointer flex flex-col ${
+          className={`aspect-square p-3 rounded-xl relative group transition-all duration-200 border cursor-pointer flex flex-col ${
             darkMode
-              ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-gray-600'
-              : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'
-          } ${selectedFiles.has(file.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg`}
+              ? 'bg-gray-800/50 hover:bg-gray-700/50 border-gray-700 hover:border-blue-600'
+              : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-blue-300'
+          } ${selectedFiles.has(file.id) ? 'ring-2 ring-blue-500 ring-offset-2' : ''} hover:shadow-lg hover:scale-[1.02]`}
         >
           {/* Favorite star - Always visible, top-left */}
           {onToggleFavorite && (

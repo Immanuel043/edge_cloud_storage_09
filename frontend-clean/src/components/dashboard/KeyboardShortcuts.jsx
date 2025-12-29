@@ -1,16 +1,30 @@
 import React from 'react';
 import { X } from 'lucide-react';
 
-export default function KeyboardShortcuts({ onClose, darkMode }) {
-  const shortcuts = [
+export default function KeyboardShortcuts({ onClose, darkMode, isZK = false }) {
+  // Base shortcuts available in both dashboards
+  const baseShortcuts = [
     { keys: 'Ctrl+U', description: 'Upload files' },
     { keys: 'Ctrl+N', description: 'New folder' },
-    { keys: 'Ctrl+F', description: 'Focus search' },
-    { keys: 'Ctrl+A', description: 'Select all files' },
-    { keys: 'Delete', description: 'Delete selected files' },
+    { keys: 'Ctrl+A', description: 'Select all' },
     { keys: 'Esc', description: 'Clear selection / Close modals' },
     { keys: 'Shift+?', description: 'Show keyboard shortcuts' },
   ];
+
+  // Additional shortcuts for non-ZK dashboard
+  const nonZKShortcuts = [
+    { keys: 'Ctrl+F', description: 'Focus search' },
+    { keys: 'Delete', description: 'Delete selected files' },
+    { keys: 'Ctrl+1', description: 'Go to Cloud Drive' },
+    { keys: 'Ctrl+2', description: 'Go to Recents' },
+    { keys: 'Ctrl+3', description: 'Go to Deduplication' },
+    { keys: 'Ctrl+4', description: 'Go to Favorites' },
+  ];
+
+  // Build shortcuts list based on mode
+  const shortcuts = isZK
+    ? baseShortcuts
+    : [...baseShortcuts.slice(0, 3), ...nonZKShortcuts.slice(0, 2), ...baseShortcuts.slice(3), ...nonZKShortcuts.slice(2)];
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

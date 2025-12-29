@@ -218,10 +218,14 @@ async def create_share_bundle(
     db.add(bundle)
     await db.flush()  # Get bundle ID
 
+    logger.info(f"Creating bundle {bundle.id} with {len(files_with_paths)} files")
+
     # Add files to bundle with folder paths
     seen_file_ids = set()  # Prevent duplicates
+    added_count = 0
     for idx, (file_obj, folder_path) in enumerate(files_with_paths):
         if file_obj.id in seen_file_ids:
+            logger.debug(f"Skipping duplicate file {file_obj.id}")
             continue
         seen_file_ids.add(file_obj.id)
 
@@ -232,6 +236,10 @@ async def create_share_bundle(
             folder_path=folder_path,
         )
         db.add(bundle_file)
+        added_count += 1
+        logger.info(f"  Added file {file_obj.id} ({file_obj.file_name}) to bundle")
+
+    logger.info(f"Bundle {bundle.id}: added {added_count} ShareBundleFile records")
 
     await db.commit()
     await db.refresh(bundle)
@@ -347,11 +355,15 @@ async def get_share_bundle(
     if not bundle:
         raise HTTPException(status_code=404, detail="Share bundle not found")
 
-    # Get files in bundle
+    # Get files in bundle (filter out deleted files)
     files_result = await db.execute(
         select(Object, ShareBundleFile)
-        .join(ShareBundleFile, ShareBundleFile.file_id == Object.id)
-        .filter(ShareBundleFile.bundle_id == bundle.id)
+        .select_from(ShareBundleFile)
+        .join(Object, ShareBundleFile.file_id == Object.id)
+        .filter(
+            ShareBundleFile.bundle_id == bundle.id,
+            Object.is_deleted == False
+        )
         .order_by(ShareBundleFile.display_order)
     )
     files_data = files_result.all()
@@ -681,14 +693,30 @@ async def get_public_bundle_info(
     bundle.last_accessed = datetime.utcnow()
     await db.commit()
 
-    # Get files
+    # First check how many ShareBundleFile records exist
+    bundle_files_check = await db.execute(
+        select(ShareBundleFile).filter(ShareBundleFile.bundle_id == bundle.id)
+    )
+    bundle_file_records = bundle_files_check.scalars().all()
+    logger.info(f"Bundle {bundle.id}: {len(bundle_file_records)} ShareBundleFile records exist")
+
+    for bf in bundle_file_records:
+        logger.info(f"  - ShareBundleFile: file_id={bf.file_id}, order={bf.display_order}")
+
+    # Get files (join ShareBundleFile to Object)
     files_result = await db.execute(
         select(Object, ShareBundleFile)
-        .join(ShareBundleFile, ShareBundleFile.file_id == Object.id)
-        .filter(ShareBundleFile.bundle_id == bundle.id)
+        .select_from(ShareBundleFile)
+        .join(Object, ShareBundleFile.file_id == Object.id)
+        .filter(
+            ShareBundleFile.bundle_id == bundle.id,
+            Object.is_deleted == False  # Don't show deleted files
+        )
         .order_by(ShareBundleFile.display_order)
     )
     files_data = files_result.all()
+
+    logger.info(f"Bundle {bundle.id}: found {len(files_data)} active files after join (bundle claims {bundle.file_count})")
 
     file_items = [
         ShareBundleFileItem(
@@ -768,12 +796,14 @@ async def stream_bundle_file(
     if not file_in_bundle.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="File not in bundle")
 
-    # Get file
-    file_result = await db.execute(select(Object).filter(Object.id == file_id))
+    # Get file (ensure it's not deleted)
+    file_result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.is_deleted == False)
+    )
     file_obj = file_result.scalar_one_or_none()
 
     if not file_obj:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="File not found or has been deleted")
 
     # Decrypt file key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
@@ -919,17 +949,21 @@ async def download_bundle_as_zip(
     if bundle.max_downloads and bundle.download_count >= bundle.max_downloads:
         raise HTTPException(status_code=403, detail="Download limit reached")
 
-    # Get all files in bundle
+    # Get all files in bundle (filter out deleted files)
     files_result = await db.execute(
         select(Object, ShareBundleFile)
-        .join(ShareBundleFile, ShareBundleFile.file_id == Object.id)
-        .filter(ShareBundleFile.bundle_id == bundle.id)
+        .select_from(ShareBundleFile)
+        .join(Object, ShareBundleFile.file_id == Object.id)
+        .filter(
+            ShareBundleFile.bundle_id == bundle.id,
+            Object.is_deleted == False
+        )
         .order_by(ShareBundleFile.display_order)
     )
     files_data = files_result.all()
 
     if not files_data:
-        raise HTTPException(status_code=404, detail="No files in bundle")
+        raise HTTPException(status_code=404, detail="No files in bundle (all files may have been deleted)")
 
     # Increment download count
     bundle.download_count += 1

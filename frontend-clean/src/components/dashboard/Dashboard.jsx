@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Upload, X, CheckCircle, AlertCircle, Cloud, HardDrive,
   Share2, Download, Trash2, FolderPlus, Folder, Sun, Moon,
   User, LogOut, Home, Search, Settings, ChevronRight, Grid,
   List, Filter, Eye, Copy, Wifi, WifiOff, Check, Info,
   Image, FileText, Video, Music, Archive, Code, Clock,
-  Zap, Lock
+  Zap, Lock, ArrowUpDown
 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RecentsView from './RecentsView';
@@ -22,6 +22,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
 import StorageStats from './StorageStats';
+import QuickFilters from './QuickFilters';
 import { API_URL } from '../../config/constants';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
@@ -31,7 +32,6 @@ import ShareOptionsModal from './ShareOptionsModal';
 import VersionHistory from './VersionHistory';
 import RenameModal from './RenameModal';
 import FileInfoPanel from './FileInfoPanel';
-import FilterPanel from './FilterPanel';
 import KeyboardShortcuts from './KeyboardShortcuts';
 import BulkActions from './BulkActions';
 import SearchBar from './SearchBar';
@@ -82,13 +82,13 @@ export default function Dashboard() {
   const [versionFile, setVersionFile] = useState(null);
   const [renameFile, setRenameFile] = useState(null);
   const [fileInfo, setFileInfo] = useState(null);
-  const [showFilters, setShowFilters] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [filters, setFilters] = useState({
-    type: 'all',
-    size: 'all',
-    date: 'all'
-  });
+
+  // Quick filter and sort state
+  const [quickFilter, setQuickFilter] = useState('all');
+  const [sortBy, setSortBy] = useState(() =>
+    localStorage.getItem('dashboard_sort_preference') || 'name'
+  );
 
   const fileInputRef = useRef(null);
   const searchInputRef = useRef(null);
@@ -542,40 +542,78 @@ export default function Dashboard() {
     files.forEach(handleFileUpload);
   };
 
-  // Filter files
-  const filteredFiles = files.filter(file => {
-    // Search filter
-    if (searchQuery && !file.name.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false;
+  // Handle sort change with localStorage persistence
+  const handleSortChange = (e) => {
+    const newSort = e.target.value;
+    setSortBy(newSort);
+    localStorage.setItem('dashboard_sort_preference', newSort);
+  };
+
+  // Filter and sort files
+  const { filteredFolders, filteredFiles } = useMemo(() => {
+    let resultFolders = [...folders];
+    let resultFiles = [...files];
+
+    // Apply search filter first
+    if (searchQuery) {
+      resultFiles = resultFiles.filter(f =>
+        f.name.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+      resultFolders = resultFolders.filter(f =>
+        f.name.toLowerCase().includes(searchQuery.toLowerCase())
+      );
     }
 
-    // Type filter
-    if (filters.type !== 'all') {
-      const fileType = getFileType(file.name);
-      if (fileType !== filters.type) return false;
+    // Apply quick filter
+    switch (quickFilter) {
+      case 'all':
+        // Show all
+        break;
+      case 'recent':
+        // Files from last 7 days only, no folders
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        resultFiles = resultFiles.filter(f => {
+          const fileDate = new Date(f.last_accessed || f.updated_at || f.created_at);
+          return fileDate >= sevenDaysAgo;
+        });
+        resultFolders = [];
+        break;
+      case 'folders':
+        // Only folders, no files
+        resultFiles = [];
+        break;
+      case 'image':
+      case 'document':
+      case 'video':
+      case 'audio':
+        // Filter files by type, show all folders
+        resultFiles = resultFiles.filter(f => getFileType(f.name) === quickFilter);
+        break;
+      default:
+        break;
     }
 
-    // Size filter
-    if (filters.size !== 'all') {
-      const size = file.size;
-      if (filters.size === 'small' && size >= 10 * 1024 * 1024) return false;
-      if (filters.size === 'medium' && (size < 10 * 1024 * 1024 || size >= 100 * 1024 * 1024)) return false;
-      if (filters.size === 'large' && size < 100 * 1024 * 1024) return false;
-    }
+    // Sort files
+    resultFiles.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'date':
+          return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at);
+        case 'size':
+          return (b.size || 0) - (a.size || 0);
+        case 'type':
+          return getFileType(a.name).localeCompare(getFileType(b.name));
+        default:
+          return 0;
+      }
+    });
 
-    // Date filter
-    if (filters.date !== 'all') {
-      const fileDate = new Date(file.created_at);
-      const now = new Date();
-      const dayDiff = (now - fileDate) / (1000 * 60 * 60 * 24);
+    // Sort folders by name (always)
+    resultFolders.sort((a, b) => a.name.localeCompare(b.name));
 
-      if (filters.date === 'today' && dayDiff > 1) return false;
-      if (filters.date === 'week' && dayDiff > 7) return false;
-      if (filters.date === 'month' && dayDiff > 30) return false;
-    }
-
-    return true;
-  });
+    return { filteredFolders: resultFolders, filteredFiles: resultFiles };
+  }, [files, folders, quickFilter, sortBy, searchQuery]);
 
   // Render main content based on active view
   const renderMainContent = () => {
@@ -754,7 +792,7 @@ export default function Dashboard() {
                     {/* Files and Folders */}
                     {viewMode === 'grid' ? (
                       <FileGrid
-                        folders={folders}
+                        folders={filteredFolders}
                         files={filteredFiles}
                         selectedFiles={selectedFiles}
                         onFolderClick={navigateToFolder}
@@ -772,7 +810,7 @@ export default function Dashboard() {
                       />
                     ) : (
                       <FileList
-                        folders={folders}
+                        folders={filteredFolders}
                         files={filteredFiles}
                         selectedFiles={selectedFiles}
                         onFolderClick={navigateToFolder}
@@ -790,7 +828,7 @@ export default function Dashboard() {
                       />
                     )}
 
-                    {files.length === 0 && folders.length === 0 && (
+                    {filteredFiles.length === 0 && filteredFolders.length === 0 && (
                       <div className="text-center py-12">
                         <Upload className="mx-auto mb-3 text-gray-400" size={48} />
                         <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
@@ -950,18 +988,19 @@ export default function Dashboard() {
             <MigrationBanner />
           )}
 
-          {/* Filter Panel */}
-          {showFilters && activeView === 'cloud-drive' && (
-            <FilterPanel
-              filters={filters}
-              setFilters={setFilters}
+          {/* Quick Filters */}
+          {activeView === 'cloud-drive' && (
+            <QuickFilters
+              activeFilter={quickFilter}
+              onFilterChange={setQuickFilter}
               darkMode={darkMode}
+              isZK={false}
             />
           )}
 
           {/* Action Bar - only show in cloud-drive view */}
           {activeView === 'cloud-drive' && (
-            <div className="flex gap-3 mb-6">
+            <div className="flex gap-3 mb-4 items-center">
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
@@ -990,6 +1029,28 @@ export default function Dashboard() {
                   darkMode={darkMode}
                 />
               )}
+
+              {/* Spacer */}
+              <div className="flex-1" />
+
+              {/* Sort Dropdown */}
+              <div className="flex items-center gap-2">
+                <ArrowUpDown size={16} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                <select
+                  value={sortBy}
+                  onChange={handleSortChange}
+                  className={`px-3 py-1.5 rounded-lg border text-sm ${
+                    darkMode
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-700'
+                  }`}
+                >
+                  <option value="name">Name</option>
+                  <option value="date">Date Modified</option>
+                  <option value="size">Size</option>
+                  <option value="type">Type</option>
+                </select>
+              </div>
 
               <input
                 ref={fileInputRef}

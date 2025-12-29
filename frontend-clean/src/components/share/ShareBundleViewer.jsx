@@ -172,7 +172,9 @@ export default function ShareBundleViewer() {
         url.searchParams.append('password', pwd || password);
       }
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), {
+        credentials: 'include'
+      });
 
       if (response.status === 401) {
         setRequiresPassword(true);
@@ -195,7 +197,17 @@ export default function ShareBundleViewer() {
       }
 
       const data = await response.json();
+
+      // Check if password is required (returned as 200 with requires_password=true)
+      if (data.requires_password && !data.files?.length) {
+        setRequiresPassword(true);
+        setBundleInfo(data); // Keep the basic info (name, file_count, etc.)
+        setLoading(false);
+        return;
+      }
+
       setBundleInfo(data);
+      setRequiresPassword(false); // Clear password requirement if we got full data
       setLoading(false);
     } catch (err) {
       console.error('Failed to load bundle info:', err);
@@ -213,7 +225,9 @@ export default function ShareBundleViewer() {
       const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/file/${file.id}/stream`);
       if (password) url.searchParams.append('password', password);
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), {
+        credentials: 'include'
+      });
       if (!response.ok) throw new Error('Download failed');
 
       const blob = await response.blob();
@@ -239,7 +253,9 @@ export default function ShareBundleViewer() {
       const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/download`);
       if (password) url.searchParams.append('password', password);
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), {
+        credentials: 'include'
+      });
       if (!response.ok) throw new Error('Download failed');
 
       const blob = await response.blob();
@@ -293,7 +309,7 @@ export default function ShareBundleViewer() {
   }
 
   // Password required state
-  if (requiresPassword && !bundleInfo) {
+  if (requiresPassword) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
@@ -306,6 +322,19 @@ export default function ShareBundleViewer() {
               <p className="text-sm text-gray-500">This bundle is protected</p>
             </div>
           </div>
+
+          {/* Show bundle info if available */}
+          {bundleInfo && (
+            <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-purple-100 to-pink-100">
+              <h2 className="font-semibold text-gray-900 mb-1">{bundleInfo.name}</h2>
+              <p className="text-sm text-gray-600">
+                {bundleInfo.file_count} files • {formatBytes(bundleInfo.total_size || 0)}
+              </p>
+              {bundleInfo.owner_name && (
+                <p className="text-xs text-gray-500 mt-1">Shared by {bundleInfo.owner_name}</p>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="mb-4 p-3 rounded-lg bg-red-100 text-red-700 text-sm flex items-center gap-2">
