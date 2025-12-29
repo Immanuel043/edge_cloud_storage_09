@@ -40,15 +40,24 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
   const totalFolders = filteredFolders.length;
   const totalResults = totalFiles + totalFolders;
 
-  // Normalize score to percentage (0-100) relative to max score
-  const normalizeScore = (score) => {
-    if (!score) return 0;
-    // For semantic/hybrid scores (0-1 range), multiply by 100
-    if (isSmartSearch && (searchMode === 'semantic' || searchMode === 'hybrid')) {
-      return Math.round(score * 100);
+  // Get a display-friendly relevance indicator
+  // Elasticsearch scores are unbounded (can be any positive number), so use qualitative labels
+  const getRelevanceDisplay = (score) => {
+    if (!score) return null;
+
+    // All search modes (keyword, semantic, hybrid) can return high unbounded scores
+    // Use qualitative labels that make sense to users
+    if (score >= 50) {
+      return { label: 'Exact Match', type: 'exact' };
+    } else if (score >= 10) {
+      return { label: 'High', type: 'high' };
+    } else if (score >= 3) {
+      return { label: 'Good', type: 'good' };
+    } else if (score >= 1) {
+      return { label: 'Relevant', type: 'fair' };
     }
-    if (!maxScore) return 0;
-    return Math.round((score / maxScore) * 100);
+    // For very low scores (< 1), don't show anything
+    return null;
   };
 
   // Get search mode display info
@@ -205,18 +214,26 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
                     )}
                   </div>
                 </div>
-                {getScore(file) > 0 && (
-                  <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
-                    file.semantic_score !== undefined || file.hybrid_score !== undefined
-                      ? darkMode ? 'bg-purple-900/20 text-purple-400' : 'bg-purple-50 text-purple-600'
-                      : darkMode ? 'bg-blue-900/20 text-blue-400' : 'bg-blue-50 text-blue-600'
-                  }`}>
-                    {(file.semantic_score !== undefined || file.hybrid_score !== undefined) && (
-                      <Sparkles size={12} />
-                    )}
-                    {normalizeScore(getScore(file))}%
-                  </div>
-                )}
+                {(() => {
+                  const relevance = getRelevanceDisplay(getScore(file));
+                  if (!relevance) return null;
+
+                  const isSemantic = file.semantic_score !== undefined || file.hybrid_score !== undefined;
+                  const bgClass = relevance.type === 'exact'
+                    ? darkMode ? 'bg-green-900/20 text-green-400' : 'bg-green-50 text-green-600'
+                    : relevance.type === 'high'
+                      ? darkMode ? 'bg-blue-900/20 text-blue-400' : 'bg-blue-50 text-blue-600'
+                      : isSemantic
+                        ? darkMode ? 'bg-purple-900/20 text-purple-400' : 'bg-purple-50 text-purple-600'
+                        : darkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600';
+
+                  return (
+                    <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${bgClass}`}>
+                      {isSemantic && <Sparkles size={12} />}
+                      {relevance.label}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

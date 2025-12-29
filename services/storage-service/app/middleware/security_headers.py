@@ -133,10 +133,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"] = ", ".join(permissions)
 
         # 8. Cross-Origin Policies
-        # Allow media downloads to be embedded cross-origin (used by frontend video tag)
+        # Allow media downloads and thumbnails to be embedded cross-origin (used by frontend)
         is_media_download = (
             (request.url.path.startswith("/api/v1/files/") and "/download" in request.url.path)
+            or (request.url.path.startswith("/api/v1/files/") and "/preview" in request.url.path)
             or (request.url.path.startswith("/api/v1/share/") and "/stream" in request.url.path)
+            or (request.url.path.startswith("/api/v1/share/") and "/thumbnail" in request.url.path)
         )
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"

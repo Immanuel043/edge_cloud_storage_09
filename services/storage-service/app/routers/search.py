@@ -411,7 +411,7 @@ async def smart_search(
             )
 
             keyword_hits = es_results.get('files', {}).get('hits', [])
-            
+
             # Database fallback if Elasticsearch returns no keyword results
             if not keyword_hits:
                 logger.info(f"Elasticsearch returned no keyword results for '{request.query}', using database")
@@ -425,21 +425,33 @@ async def smart_search(
                 results = db_results.get('files', {}).get('hits', [])
                 total = db_results.get('files', {}).get('total', 0)
             else:
-                # Step 2: Combine with semantic search
-                hybrid_results = await embedding_service.hybrid_search(
-                    db=db,
-                    keyword_results=keyword_hits,
-                    query=request.query,
-                    user_id=current_user.id,
-                    top_k=settings.SEMANTIC_SEARCH_TOP_K
-                )
+                # Optimization: Skip semantic search if we have high-confidence keyword matches
+                # High score (>5.0) indicates exact/near-exact filename match
+                top_score = keyword_hits[0].get('score', 0) if keyword_hits else 0
+                skip_semantic = top_score > 5.0 and len(keyword_hits) <= 10
 
-                # Paginate hybrid results
-                paginated = hybrid_results[from_:from_ + request.size]
+                if skip_semantic:
+                    # Fast path: Use keyword results directly (exact match found)
+                    logger.info(f"High-confidence keyword match (score={top_score}), skipping semantic search")
+                    paginated = keyword_hits[from_:from_ + request.size]
+                    results = paginated
+                    total = len(keyword_hits)
+                else:
+                    # Step 2: Combine with semantic search for conceptual queries
+                    hybrid_results = await embedding_service.hybrid_search(
+                        db=db,
+                        keyword_results=keyword_hits,
+                        query=request.query,
+                        user_id=current_user.id,
+                        top_k=settings.SEMANTIC_SEARCH_TOP_K
+                    )
 
-                # Enrich with metadata if needed
-                results = await _enrich_results_with_metadata(db, paginated, current_user.id)
-                total = len(hybrid_results)
+                    # Paginate hybrid results
+                    paginated = hybrid_results[from_:from_ + request.size]
+
+                    # Enrich with metadata if needed
+                    results = await _enrich_results_with_metadata(db, paginated, current_user.id)
+                    total = len(hybrid_results)
 
         return {
             "success": True,
@@ -515,10 +527,45 @@ async def _enrich_results_with_metadata(
     user_id
 ) -> List[dict]:
     """
-    Enrich search results with full file metadata from database
+    Enrich search results with full file metadata from database.
+    Uses batch fetching to avoid N+1 query problem.
     """
     from uuid import UUID
 
+    if not results:
+        return []
+
+    # Collect all file IDs for batch fetching
+    file_ids = []
+    results_by_id = {}
+    for r in results:
+        file_id = r.get('id') or r.get('file_id')
+        if file_id:
+            try:
+                if isinstance(file_id, str):
+                    file_id = UUID(file_id)
+                file_ids.append(file_id)
+                results_by_id[str(file_id)] = r
+            except Exception:
+                pass
+
+    if not file_ids:
+        return results
+
+    # Batch fetch all files in a single query
+    try:
+        batch_result = await db.execute(
+            select(Object).filter(
+                Object.id.in_(file_ids),
+                Object.user_id == user_id
+            )
+        )
+        files = {str(f.id): f for f in batch_result.scalars().all()}
+    except Exception as e:
+        logger.warning(f"Batch fetch failed: {e}")
+        return results
+
+    # Enrich results in original order
     enriched = []
     for r in results:
         file_id = r.get('id') or r.get('file_id')
@@ -526,35 +573,21 @@ async def _enrich_results_with_metadata(
             enriched.append(r)
             continue
 
-        try:
-            # Convert to UUID if string
-            if isinstance(file_id, str):
-                file_id = UUID(file_id)
+        file_id_str = str(file_id)
+        file_obj = files.get(file_id_str)
 
-            # Fetch file metadata
-            result = await db.execute(
-                select(Object).filter(
-                    Object.id == file_id,
-                    Object.user_id == user_id
-                )
-            )
-            file_obj = result.scalar_one_or_none()
-
-            if file_obj:
-                enriched_result = {
-                    'id': str(file_obj.id),
-                    'name': file_obj.file_name,
-                    'mime_type': file_obj.mime_type,
-                    'size': file_obj.file_size,
-                    'created_at': safe_isoformat(file_obj.created_at),
-                    'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                    **{k: v for k, v in r.items() if k not in ['file_id', 'id']}
-                }
-                enriched.append(enriched_result)
-            else:
-                enriched.append(r)
-        except Exception as e:
-            logger.warning(f"Failed to enrich result {file_id}: {e}")
+        if file_obj:
+            enriched_result = {
+                'id': str(file_obj.id),
+                'name': file_obj.file_name,
+                'mime_type': file_obj.mime_type,
+                'size': file_obj.file_size,
+                'created_at': safe_isoformat(file_obj.created_at),
+                'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
+                **{k: v for k, v in r.items() if k not in ['file_id', 'id']}
+            }
+            enriched.append(enriched_result)
+        else:
             enriched.append(r)
 
     return enriched

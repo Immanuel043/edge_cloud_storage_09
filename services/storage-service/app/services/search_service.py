@@ -264,45 +264,69 @@ class SearchService:
             should_clauses = []
 
             if query:
-                # 1. Exact match on filename (highest priority - 10x boost)
+                # 1. Exact match on filename (highest priority - 100x boost)
                 should_clauses.append({
                     "term": {
                         "name.keyword": {
                             "value": query,
-                            "boost": 10.0
+                            "boost": 100.0
                         }
                     }
                 })
-                
-                # 2. Prefix match (starts with query - 5x boost)
+
+                # 2. Case-insensitive exact match (50x boost)
+                should_clauses.append({
+                    "term": {
+                        "name.keyword": {
+                            "value": query.lower(),
+                            "boost": 50.0
+                        }
+                    }
+                })
+
+                # 3. Prefix match (starts with query - 20x boost)
                 should_clauses.append({
                     "prefix": {
                         "name": {
                             "value": query.lower(),
+                            "boost": 20.0
+                        }
+                    }
+                })
+
+                # 4. Phrase match - all words in order (10x boost)
+                # This matches "renewalpdf (Copy)" as a phrase, not individual words
+                should_clauses.append({
+                    "match_phrase": {
+                        "name": {
+                            "query": query,
+                            "boost": 10.0
+                        }
+                    }
+                })
+
+                # 5. Wildcard match (contains full query - 5x boost)
+                # Only if query doesn't contain special characters that break wildcard
+                safe_query = query.lower().replace("(", "\\(").replace(")", "\\)")
+                should_clauses.append({
+                    "wildcard": {
+                        "name": {
+                            "value": f"*{safe_query}*",
                             "boost": 5.0
                         }
                     }
                 })
-                
-                # 3. Wildcard match (contains query - 3x boost)
-                should_clauses.append({
-                    "wildcard": {
-                        "name": {
-                            "value": f"*{query.lower()}*",
-                            "boost": 3.0
-                        }
-                    }
-                })
-                
-                # 4. Fuzzy multi-match (typo tolerance - lower boost)
-                # Reduced fuzziness for more precise matches
-                fuzziness_value = "1" if fuzzy else "0"  # Max 1 character edit distance
+
+                # 6. Multi-match with AND operator (requires all terms)
+                # This ensures "renewalpdf Copy pdf" matches only files with ALL words
+                fuzziness_value = "1" if fuzzy else "0"
                 search_clause = {
                     "multi_match": {
                         "query": query,
                         "fields": ["name^3", "original_name^2", "description"],
                         "fuzziness": fuzziness_value,
-                        "prefix_length": 3,  # Increased from 2 for more precision
+                        "prefix_length": 3,
+                        "operator": "and",  # Require ALL terms to match
                         "boost": 1.0
                     }
                 }
@@ -349,7 +373,7 @@ class SearchService:
                     "query": files_query,
                     "from": from_,
                     "size": size,
-                    "min_score": 0.5,  # Filter out results with less than 50% relevance
+                    "min_score": 1.0,  # Filter out low-relevance results
                     "highlight": {
                         "fields": {
                             "name": {},

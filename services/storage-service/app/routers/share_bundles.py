@@ -1024,6 +1024,117 @@ async def download_bundle_as_zip(
     )
 
 
+@router.get("/share/bundle/{token}/file/{file_id}/thumbnail")
+async def get_bundle_file_thumbnail(
+    token: str,
+    file_id: str,
+    size: str = 'medium',
+    password: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get thumbnail for a file in a share bundle (public endpoint)"""
+    from ..services.preview_generator import preview_generator
+    from ..services.preview_optimizer import preview_optimizer
+    from ..services.encryption import encryption_service
+    import os
+
+    # Get bundle and verify access
+    result = await db.execute(
+        select(ShareBundle).filter(
+            ShareBundle.share_token == token,
+            ShareBundle.is_active == True
+        )
+    )
+    bundle = result.scalar_one_or_none()
+
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Share bundle not found")
+
+    # Check expiration
+    if bundle.expires_at and bundle.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Verify password
+    if bundle.password_hash:
+        if not password or not pwd_context.verify(password, bundle.password_hash):
+            raise HTTPException(status_code=401, detail="Password required")
+
+    # Check preview allowed
+    if not bundle.allow_preview:
+        raise HTTPException(status_code=403, detail="Preview not allowed")
+
+    # Verify file is in bundle
+    file_in_bundle = await db.execute(
+        select(ShareBundleFile).filter(
+            ShareBundleFile.bundle_id == bundle.id,
+            ShareBundleFile.file_id == file_id
+        )
+    )
+    if not file_in_bundle.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="File not in bundle")
+
+    # Get file
+    file_result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.is_deleted == False)
+    )
+    file_obj = file_result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Check if ZK encrypted (no thumbnails for ZK files in public shares)
+    if file_obj.is_encrypted or file_obj.encrypted_file_key:
+        raise HTTPException(status_code=404, detail="Thumbnails not available for encrypted files")
+
+    # Validate size
+    if size not in ['small', 'medium', 'large']:
+        size = 'medium'
+
+    temp_file_path = None
+    try:
+        # Download file content for preview generation
+        temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+            file_obj=file_obj,
+            encryption_service=encryption_service
+        )
+
+        if temp_file_path is None:
+            raise HTTPException(status_code=404, detail="Could not download file for thumbnail")
+
+        # Generate preview using the preview generator
+        preview_bytes, content_type = await preview_generator.generate_preview(
+            file_path=temp_file_path,
+            mime_type=file_obj.mime_type,
+            size=size,
+            file_name=file_obj.file_name
+        )
+
+        if preview_bytes:
+            return Response(
+                content=preview_bytes,
+                media_type=content_type or "image/jpeg",
+                headers={
+                    "Cache-Control": "public, max-age=86400",  # 1 day cache
+                    "X-Preview-Status": "generated"
+                }
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Could not generate thumbnail")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating thumbnail for file {file_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate thumbnail")
+    finally:
+        # Clean up temp file if created (and not using cached transcoded version)
+        if temp_file_path and temp_file_path.startswith('/tmp') and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================

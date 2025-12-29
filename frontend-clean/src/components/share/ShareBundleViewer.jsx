@@ -158,6 +158,26 @@ export default function ShareBundleViewer() {
     return url;
   };
 
+  // Build thumbnail URL for a file in the bundle
+  const getThumbnailUrl = (fileId, size = 'medium') => {
+    let url = `${API_URL}/api/v1/share/bundle/${token}/file/${fileId}/thumbnail?size=${size}`;
+    if (password) url += `&password=${encodeURIComponent(password)}`;
+    return url;
+  };
+
+  // Check if file can have a thumbnail
+  const canHaveThumbnail = (file) => {
+    if (!file) return false;
+    const mimeType = (file.mime_type || '').toLowerCase();
+    const extension = getFileExtension(file.name);
+    return (
+      mimeType.startsWith('image/') ||
+      mimeType.startsWith('video/') ||
+      mimeType === 'application/pdf' ||
+      ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'pdf', 'mp4', 'mov', 'avi', 'mkv', 'webm'].includes(extension)
+    );
+  };
+
   useEffect(() => {
     loadBundleInfo();
   }, [token]);
@@ -649,9 +669,9 @@ export default function ShareBundleViewer() {
                           <div className="flex flex-col items-center text-center">
                             {/* Thumbnail or Icon */}
                             <div className="w-full aspect-square flex items-center justify-center mb-3 rounded-lg bg-gray-50 overflow-hidden relative">
-                              {isImageFile(file) && (
+                              {canHaveThumbnail(file) && (
                                 <img
-                                  src={getStreamUrl(file.id)}
+                                  src={getThumbnailUrl(file.id, 'medium')}
                                   alt={file.name}
                                   className="w-full h-full object-cover"
                                   loading="lazy"
@@ -662,9 +682,15 @@ export default function ShareBundleViewer() {
                                   }}
                                 />
                               )}
-                              <div className={`fallback-icon ${isImageFile(file) ? 'hidden' : 'flex'} items-center justify-center w-full h-full absolute inset-0`}>
+                              <div className={`fallback-icon ${canHaveThumbnail(file) ? 'hidden' : 'flex'} items-center justify-center w-full h-full absolute inset-0`}>
                                 {getFileIcon(file)}
                               </div>
+                              {/* Video play indicator */}
+                              {isVideoFile(file) && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <Play size={32} className="text-white" fill="white" />
+                                </div>
+                              )}
                             </div>
                             <p className="font-medium text-gray-900 truncate w-full text-sm" title={file.name}>
                               {file.name}
@@ -715,9 +741,9 @@ export default function ShareBundleViewer() {
                         <div className="flex flex-col items-center text-center">
                           {/* Thumbnail or Icon */}
                           <div className="w-full aspect-square flex items-center justify-center mb-3 rounded-lg bg-gray-50 overflow-hidden relative">
-                            {isImageFile(file) && (
+                            {canHaveThumbnail(file) && (
                               <img
-                                src={getStreamUrl(file.id)}
+                                src={getThumbnailUrl(file.id, 'medium')}
                                 alt={file.name}
                                 className="w-full h-full object-cover"
                                 loading="lazy"
@@ -728,9 +754,15 @@ export default function ShareBundleViewer() {
                                 }}
                               />
                             )}
-                            <div className={`fallback-icon ${isImageFile(file) ? 'hidden' : 'flex'} items-center justify-center w-full h-full absolute inset-0`}>
+                            <div className={`fallback-icon ${canHaveThumbnail(file) ? 'hidden' : 'flex'} items-center justify-center w-full h-full absolute inset-0`}>
                               {getFileIcon(file)}
                             </div>
+                            {/* Video play indicator */}
+                            {isVideoFile(file) && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <Play size={32} className="text-white" fill="white" />
+                              </div>
+                            )}
                           </div>
                           <p className="font-medium text-gray-900 truncate w-full text-sm" title={file.name}>
                             {file.name}
