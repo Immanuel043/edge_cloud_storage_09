@@ -333,15 +333,27 @@ async def recover_with_phrase(
     5. Client re-encrypts master key with new password
     6. Server updates encrypted_master_key and password_hash
 
+    Security:
+    - Generic error messages to prevent email enumeration
+    - Constant-time operations to prevent timing attacks
+
     Args:
         request_data: Recovery data
 
     Returns:
         New access token
     """
+    import asyncio
+    import secrets
     from app.models.database import User
 
+    # Generic error message to prevent enumeration
+    GENERIC_RECOVERY_ERROR = "Recovery failed. Please check your email and recovery phrase."
+
     logger.info("account_recovery_attempt", email=request_data.email)
+
+    # Add random delay (100-300ms) to prevent timing attacks
+    await asyncio.sleep(0.1 + secrets.randbelow(200) / 1000)
 
     # Fetch user
     result = await db.execute(
@@ -349,25 +361,26 @@ async def recover_with_phrase(
     )
     user = result.scalar_one_or_none()
 
-    if not user:
-        logger.warning("recovery_failed_user_not_found", email=request_data.email)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
+    # Always validate phrase format to maintain constant timing
+    recovery_service = RecoveryPhraseService()
+    is_valid_format = recovery_service.validate_recovery_phrase(request_data.recovery_phrase)
 
-    if not user.recovery_phrase_enabled:
+    # If user doesn't exist or recovery not enabled, return generic error
+    if not user or not user.recovery_phrase_enabled:
+        logger.warning("recovery_failed", email=request_data.email, reason="user_not_found_or_recovery_disabled")
+        # Still compute hash to maintain constant timing
+        if is_valid_format:
+            _ = recovery_service.hash_recovery_phrase(request_data.recovery_phrase)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Recovery phrase not enabled for this account"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_RECOVERY_ERROR
         )
 
     # Rate limit recovery attempts
     await rate_limit_recovery(request, str(user.id))
 
-    # Validate recovery phrase
-    recovery_service = RecoveryPhraseService()
-    if not recovery_service.validate_recovery_phrase(request_data.recovery_phrase):
+    # Validate recovery phrase format
+    if not is_valid_format:
         # Log failed attempt
         attempt = RecoveryAttempt(
             id=uuid4(),
@@ -382,14 +395,15 @@ async def recover_with_phrase(
         await db.commit()
 
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid recovery phrase"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_RECOVERY_ERROR
         )
 
-    # Verify phrase hash
+    # Verify phrase hash using constant-time comparison
     phrase_hash = recovery_service.hash_recovery_phrase(request_data.recovery_phrase)
 
-    if phrase_hash != user.recovery_phrase_hash:
+    # Use secrets.compare_digest for constant-time comparison
+    if not secrets.compare_digest(phrase_hash.encode(), (user.recovery_phrase_hash or "").encode()):
         # Log failed attempt
         attempt = RecoveryAttempt(
             id=uuid4(),
@@ -406,7 +420,7 @@ async def recover_with_phrase(
         logger.warning("recovery_failed_invalid_phrase", user_id=str(user.id))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid recovery phrase"
+            detail=GENERIC_RECOVERY_ERROR
         )
 
     # Update password and encrypted master key
@@ -453,6 +467,7 @@ async def recover_with_phrase(
 @router.get("/recovery/info")
 async def get_recovery_info(
     email: str,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -460,41 +475,134 @@ async def get_recovery_info(
 
     Returns encrypted master key and KDF params so client can attempt recovery.
 
+    Security:
+    - Generic error messages to prevent email enumeration
+    - Constant-time delays to prevent timing attacks
+
     Args:
         email: User's email
 
     Returns:
         Recovery information
     """
+    import asyncio
+    import secrets
     from app.models.database import User
+
+    # Generic error message to prevent enumeration
+    GENERIC_RECOVERY_ERROR = "Recovery not available. Please check your email or contact support."
+
+    # Add random delay (100-300ms) to prevent timing attacks
+    await asyncio.sleep(0.1 + secrets.randbelow(200) / 1000)
 
     result = await db.execute(
         select(User).filter(User.email == email)
     )
     user = result.scalar_one_or_none()
 
-    if not user:
-        # Don't reveal if user exists
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-
-    if not user.recovery_phrase_enabled:
+    # Return generic error for both "user not found" and "recovery not enabled"
+    # This prevents attackers from enumerating valid email addresses
+    if not user or not user.recovery_phrase_enabled:
+        logger.info("recovery_info_request_failed", email=email, reason="user_not_found_or_recovery_disabled")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Recovery phrase not enabled for this account"
+            detail=GENERIC_RECOVERY_ERROR
         )
+
+    # Get recovery IV from the encrypted master key if not stored separately
+    recovery_iv = getattr(user, 'recovery_iv', None)
 
     return {
         "recovery_enabled": True,
         "recovery_encrypted_master_key": user.recovery_encrypted_master_key,
+        "recovery_iv": recovery_iv,
         "kdf_params": {
             "algorithm": user.kdf_algorithm,
             "iterations": user.kdf_iterations,
             "memory": user.kdf_memory,
             "parallelism": user.kdf_parallelism
         }
+    }
+
+
+# ========== RECOVERY PHRASE ROTATION ==========
+
+class RotateRecoveryPhraseRequest(BaseModel):
+    """Request to rotate recovery phrase"""
+    new_recovery_encrypted_master_key: str
+    new_recovery_phrase_hash: str = Field(..., min_length=64, max_length=64)
+
+
+@router.post("/recovery/rotate")
+async def rotate_recovery_phrase(
+    request_data: RotateRecoveryPhraseRequest,
+    request: Request,
+    user = Depends(get_current_zk_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Rotate (replace) the user's recovery phrase.
+
+    This allows users to generate a new recovery phrase if they believe
+    their old one has been compromised or want to refresh it periodically.
+
+    Client Flow:
+    1. Generate new BIP39 recovery phrase
+    2. Re-encrypt master key with new recovery phrase
+    3. Hash new phrase for verification
+    4. Send to server
+
+    The old recovery phrase becomes invalid immediately.
+
+    Args:
+        request_data: New recovery phrase configuration
+        user: Current ZK user (must be authenticated)
+
+    Returns:
+        Success message with rotation timestamp
+    """
+    if not user.recovery_phrase_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Recovery phrase is not enabled. Please enable it first."
+        )
+
+    logger.info("rotating_recovery_phrase", user_id=str(user.id))
+
+    # Store the old phrase hash for audit log (truncated for security)
+    old_phrase_hash_prefix = (user.recovery_phrase_hash or "")[:8]
+
+    # Update with new recovery phrase data
+    user.recovery_encrypted_master_key = request_data.new_recovery_encrypted_master_key
+    user.recovery_phrase_hash = request_data.new_recovery_phrase_hash
+    user.recovery_phrase_created_at = datetime.utcnow()
+    user.recovery_phrase_verified = False  # User should verify the new phrase
+
+    # Log rotation event
+    enrollment_log = ZKEnrollmentHistory(
+        id=uuid4(),
+        user_id=user.id,
+        action="upgraded",
+        recovery_methods_configured=["phrase_rotated"],
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        metadata={
+            "recovery_phrase_rotated": True,
+            "old_hash_prefix": old_phrase_hash_prefix,
+            "new_hash_prefix": request_data.new_recovery_phrase_hash[:8]
+        }
+    )
+    db.add(enrollment_log)
+
+    await db.commit()
+
+    logger.info("recovery_phrase_rotated", user_id=str(user.id))
+
+    return {
+        "message": "Recovery phrase rotated successfully",
+        "rotated_at": datetime.utcnow().isoformat(),
+        "verified": False,
+        "instructions": "Please verify your new recovery phrase by entering it to confirm."
     }
 
 

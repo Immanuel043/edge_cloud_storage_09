@@ -75,6 +75,9 @@ export const ZK_ENDPOINTS = Object.freeze({
   RECOVERY_ENABLE: `${ZK_SERVICE_URL}/api/v1/zk/recovery/enable`,
   RECOVERY_VERIFY: `${ZK_SERVICE_URL}/api/v1/zk/recovery/verify`,
   RECOVERY_RECOVER: `${ZK_SERVICE_URL}/api/v1/zk/recovery/recover`,
+  RECOVERY_USE: `${ZK_SERVICE_URL}/api/v1/zk/recovery/use`,
+  RECOVERY_INFO: `${ZK_SERVICE_URL}/api/v1/zk/recovery/info`,
+  RECOVERY_ROTATE: `${ZK_SERVICE_URL}/api/v1/zk/recovery/rotate`,
 
   // File Operations
   UPLOAD_INIT: `${ZK_SERVICE_URL}/api/v1/zk/upload/init`,

@@ -23,6 +23,7 @@ import { useStorage } from '../../contexts/StorageContext';
 import { generateZKRegistrationData, unlockZKSession } from '../../services/zkEncryptionService';
 import * as zkAuthService from '../../services/zkAuthService';
 import { ZK_STORAGE } from '../../config/constants';
+import RecoverySettings from '../settings/RecoverySettings';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -582,6 +583,11 @@ export default function SettingsView({ darkMode }) {
             </div>
           )}
         </div>
+
+        {/* Recovery Phrase Settings - Only for ZK users */}
+        {zkEnabled && (
+          <RecoverySettings />
+        )}
       </div>
 
       {/* Upgrade Modal */}

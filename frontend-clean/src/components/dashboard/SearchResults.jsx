@@ -8,7 +8,6 @@ export default function SearchResults({ results, onClose, onFileClick, onFolderC
   // Check if this is a smart search result (has mode property)
   const isSmartSearch = results.mode !== undefined;
   const searchMode = results.mode || 'keyword';
-  const semanticEnabled = results.semantic_enabled !== false;
 
   // Minimum relevance threshold (25% of max score) to filter out irrelevant results
   const RELEVANCE_THRESHOLD = 0.25;

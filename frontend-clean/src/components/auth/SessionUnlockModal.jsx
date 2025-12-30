@@ -1,25 +1,69 @@
-import React, { useState } from 'react';
-import { Lock, Unlock, AlertCircle, Key } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Lock, Unlock, AlertCircle, Key, ArrowLeft, Shield } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import RecoveryPhraseInput from './RecoveryPhraseInput';
+import {
+  verifyRecoveryPhrase,
+  recoverMasterKeyFromPhrase,
+} from '../../services/zkEncryptionService';
+import { getRecoveryInfo } from '../../services/zkAuthService';
 
 /**
  * SessionUnlockModal Component
  *
  * Shown when the user's ZK encryption session expires or is manually locked.
- * Requires password re-entry to unlock and decrypt the master key.
+ * Supports two unlock methods:
+ * 1. Password - Standard unlock with user password
+ * 2. Recovery Phrase - Emergency unlock using 24-word recovery phrase
  */
 export default function SessionUnlockModal({ isOpen, onClose }) {
   const { darkMode } = useTheme();
-  const { unlockSession, user } = useAuth();
+  const { unlockSession, user, zkRecoveryEnabled, checkZKStatus } = useAuth();
+
+  // Mode state: 'password' or 'recovery'
+  const [mode, setMode] = useState('password');
+
+  // Local recovery status (fetched when modal opens)
+  const [recoveryAvailable, setRecoveryAvailable] = useState(zkRecoveryEnabled);
+  const [checkingRecovery, setCheckingRecovery] = useState(false);
+
+  // Fetch recovery status when modal opens
+  useEffect(() => {
+    if (isOpen && !zkRecoveryEnabled) {
+      const fetchRecoveryStatus = async () => {
+        setCheckingRecovery(true);
+        try {
+          const status = await checkZKStatus?.();
+          if (status?.recovery_phrase_enabled) {
+            setRecoveryAvailable(true);
+          }
+        } catch (err) {
+          console.error('Failed to fetch recovery status:', err);
+        } finally {
+          setCheckingRecovery(false);
+        }
+      };
+      fetchRecoveryStatus();
+    } else if (zkRecoveryEnabled) {
+      setRecoveryAvailable(true);
+    }
+  }, [isOpen, zkRecoveryEnabled, checkZKStatus]);
+
+  // Password unlock state
   const [password, setPassword] = useState('');
+
+  // Recovery unlock state
+  const [recoveryWords, setRecoveryWords] = useState(Array(24).fill(''));
+
+  // Shared state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [unlocked, setUnlocked] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleUnlock = async (e) => {
+  const handlePasswordUnlock = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
@@ -29,9 +73,7 @@ export default function SessionUnlockModal({ isOpen, onClose }) {
       if (success) {
         setUnlocked(true);
         setTimeout(() => {
-          onClose();
-          setPassword('');
-          setUnlocked(false);
+          handleClose();
         }, 1000);
       } else {
         setError('Incorrect password. Please try again.');
@@ -43,9 +85,99 @@ export default function SessionUnlockModal({ isOpen, onClose }) {
     }
   };
 
+  const handleRecoveryUnlock = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      // Get recovery phrase as string
+      const recoveryPhrase = recoveryWords.join(' ').toLowerCase().trim();
+
+      // Validate recovery phrase format
+      const isValidPhrase = await verifyRecoveryPhrase(recoveryPhrase);
+      if (!isValidPhrase) {
+        setError('Invalid recovery phrase. Please check all words are correct.');
+        setLoading(false);
+        return;
+      }
+
+      // Get recovery info from backend
+      const email = user?.email;
+      if (!email) {
+        setError('Unable to determine user email.');
+        setLoading(false);
+        return;
+      }
+
+      const info = await getRecoveryInfo(email);
+
+      if (!info.recovery_enabled) {
+        setError('Recovery phrase is not enabled for this account.');
+        setLoading(false);
+        return;
+      }
+
+      // Try to recover master key client-side
+      const recovered = await recoverMasterKeyFromPhrase(
+        recoveryPhrase,
+        info.recovery_encrypted_master_key,
+        info.recovery_iv || info.kdf_params?.iv
+      );
+
+      if (!recovered) {
+        setError('Invalid recovery phrase. The phrase does not match this account.');
+        setLoading(false);
+        return;
+      }
+
+      // Session is now unlocked (master key is in session)
+      setUnlocked(true);
+      setTimeout(() => {
+        handleClose();
+      }, 1000);
+    } catch (err) {
+      console.error('Recovery unlock error:', err);
+      if (err.message.includes('not found') || err.message.includes('404')) {
+        setError('Unable to fetch recovery information.');
+      } else {
+        setError(err.message || 'Failed to unlock with recovery phrase.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClose = () => {
+    onClose();
+    // Reset state after close
+    setTimeout(() => {
+      setMode('password');
+      setPassword('');
+      setRecoveryWords(Array(24).fill(''));
+      setUnlocked(false);
+      setError('');
+    }, 300);
+  };
+
+  const switchToRecovery = () => {
+    setMode('recovery');
+    setError('');
+    setPassword('');
+  };
+
+  const switchToPassword = () => {
+    setMode('password');
+    setError('');
+    setRecoveryWords(Array(24).fill(''));
+  };
+
+  // Check if all recovery words are filled
+  const allWordsFilled = recoveryWords.every(word => word && word.trim().length > 0);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className={`w-full max-w-md rounded-2xl shadow-2xl border ${
+      <div className={`w-full ${mode === 'recovery' ? 'max-w-2xl' : 'max-w-md'} rounded-2xl shadow-2xl border transition-all duration-300 ${
         darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
       }`}>
         {/* Header */}
@@ -59,16 +191,21 @@ export default function SessionUnlockModal({ isOpen, onClose }) {
                 {unlocked ? 'Session Unlocked!' : 'Session Locked'}
               </h2>
               <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {unlocked ? 'Access granted' : 'Enter password to continue'}
+                {unlocked
+                  ? 'Access granted'
+                  : mode === 'password'
+                  ? 'Enter password to continue'
+                  : 'Enter recovery phrase to unlock'}
               </p>
             </div>
           </div>
         </div>
 
         {/* Content */}
-        <div className="p-6">
+        <div className={`p-6 ${mode === 'recovery' ? 'max-h-[70vh] overflow-y-auto' : ''}`}>
           {!unlocked ? (
             <>
+              {/* Warning Banner */}
               <div className={`mb-6 p-4 rounded-xl border ${
                 darkMode ? 'bg-yellow-900/20 border-yellow-600/40' : 'bg-yellow-50 border-yellow-300'
               }`}>
@@ -79,12 +216,15 @@ export default function SessionUnlockModal({ isOpen, onClose }) {
                       Your encryption session has been locked for security.
                     </p>
                     <p className={`text-xs mt-1 ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
-                      Enter your password to decrypt your files and continue working.
+                      {mode === 'password'
+                        ? 'Enter your password to decrypt your files and continue working.'
+                        : 'Enter your 24-word recovery phrase to unlock your session.'}
                     </p>
                   </div>
                 </div>
               </div>
 
+              {/* Error Display */}
               {error && (
                 <div className={`mb-6 p-4 rounded-xl border-2 ${
                   darkMode ? 'bg-red-900/20 border-red-600/40' : 'bg-red-50 border-red-400'
@@ -98,62 +238,125 @@ export default function SessionUnlockModal({ isOpen, onClose }) {
                 </div>
               )}
 
-              <form onSubmit={handleUnlock} className="space-y-4">
-                {user && (
-                  <div className={`p-3 rounded-lg ${darkMode ? 'bg-gray-900/50' : 'bg-gray-50'}`}>
-                    <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Logged in as
-                    </p>
-                    <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {user.email || user.username}
-                    </p>
-                  </div>
-                )}
-
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Password
-                  </label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 flex items-center pl-4 pointer-events-none">
-                      <Key className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={18} />
+              {/* Password Mode */}
+              {mode === 'password' && (
+                <form onSubmit={handlePasswordUnlock} className="space-y-4">
+                  {user && (
+                    <div className={`p-3 rounded-lg ${darkMode ? 'bg-gray-900/50' : 'bg-gray-50'}`}>
+                      <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                        Logged in as
+                      </p>
+                      <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {user.email || user.username}
+                      </p>
                     </div>
-                    <input
-                      type="password"
-                      placeholder="Enter your password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                  )}
+
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Password
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 flex items-center pl-4 pointer-events-none">
+                        <Key className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={18} />
+                      </div>
+                      <input
+                        type="password"
+                        placeholder="Enter your password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        disabled={loading}
+                        autoFocus
+                        required
+                        className={`w-full pl-11 pr-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
+                          darkMode
+                            ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
+                            : 'bg-gray-50 border border-gray-300 focus:bg-white'
+                        } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || !password}
+                    className={`w-full py-3 rounded-xl font-semibold text-white transition-all ${
+                      loading || !password
+                        ? 'bg-gray-600 cursor-not-allowed opacity-50'
+                        : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:scale-[1.02]'
+                    }`}
+                  >
+                    {loading ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        Unlocking...
+                      </div>
+                    ) : (
+                      'Unlock Session'
+                    )}
+                  </button>
+                </form>
+              )}
+
+              {/* Recovery Mode */}
+              {mode === 'recovery' && (
+                <form onSubmit={handleRecoveryUnlock} className="space-y-4">
+                  {/* Back button */}
+                  <button
+                    type="button"
+                    onClick={switchToPassword}
+                    className={`flex items-center gap-2 text-sm font-medium ${
+                      darkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <ArrowLeft size={16} />
+                    Back to password
+                  </button>
+
+                  {user && (
+                    <div className={`p-3 rounded-lg ${darkMode ? 'bg-gray-900/50' : 'bg-gray-50'}`}>
+                      <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                        Recovering session for
+                      </p>
+                      <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {user.email || user.username}
+                      </p>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      24-Word Recovery Phrase
+                    </label>
+                    <RecoveryPhraseInput
+                      value={recoveryWords}
+                      onChange={setRecoveryWords}
                       disabled={loading}
-                      autoFocus
-                      required
-                      className={`w-full pl-11 pr-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
-                        darkMode
-                          ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
-                          : 'bg-gray-50 border border-gray-300 focus:bg-white'
-                      } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      darkMode={darkMode}
+                      compact={true}
                     />
                   </div>
-                </div>
 
-                <button
-                  type="submit"
-                  disabled={loading || !password}
-                  className={`w-full py-3 rounded-xl font-semibold text-white transition-all ${
-                    loading || !password
-                      ? 'bg-gray-600 cursor-not-allowed opacity-50'
-                      : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:scale-[1.02]'
-                  }`}
-                >
-                  {loading ? (
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      Unlocking...
-                    </div>
-                  ) : (
-                    'Unlock Session'
-                  )}
-                </button>
-              </form>
+                  <button
+                    type="submit"
+                    disabled={loading || !allWordsFilled}
+                    className={`w-full py-3 rounded-xl font-semibold text-white transition-all ${
+                      loading || !allWordsFilled
+                        ? 'bg-gray-600 cursor-not-allowed opacity-50'
+                        : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:scale-[1.02]'
+                    }`}
+                  >
+                    {loading ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        Verifying...
+                      </div>
+                    ) : (
+                      'Unlock with Recovery Phrase'
+                    )}
+                  </button>
+                </form>
+              )}
             </>
           ) : (
             <div className="text-center py-8">
@@ -171,17 +374,48 @@ export default function SessionUnlockModal({ isOpen, onClose }) {
         </div>
 
         {/* Footer */}
-        {!unlocked && (
+        {!unlocked && mode === 'password' && (
           <div className={`p-6 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
             <div className="text-center">
               <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                 Can't remember your password?{' '}
-                <button
-                  type="button"
-                  className={`${darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'} font-medium`}
-                >
-                  Use recovery phrase
-                </button>
+                {checkingRecovery ? (
+                  <span className="text-gray-400">Checking recovery options...</span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={switchToRecovery}
+                      disabled={!recoveryAvailable}
+                      className={`font-medium ${
+                        recoveryAvailable
+                          ? darkMode
+                            ? 'text-blue-400 hover:text-blue-300'
+                            : 'text-blue-600 hover:text-blue-700'
+                          : 'text-gray-400 cursor-not-allowed'
+                      }`}
+                    >
+                      Use recovery phrase
+                    </button>
+                    {!recoveryAvailable && (
+                      <span className={`block mt-1 text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                        (Recovery phrase not set up)
+                      </span>
+                    )}
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Recovery Mode Footer */}
+        {!unlocked && mode === 'recovery' && (
+          <div className={`p-6 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+            <div className="flex items-start gap-2">
+              <Shield className={`flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} size={16} />
+              <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                Your recovery phrase is never sent to our servers. All decryption happens locally on your device.
               </p>
             </div>
           </div>

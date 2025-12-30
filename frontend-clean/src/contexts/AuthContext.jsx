@@ -777,7 +777,8 @@ export const AuthProvider = ({ children }) => {
       const status = await zkAuthService.getZKStatus();
 
       setZkEnabled(status.zk_enabled || false);
-      setZkRecoveryEnabled(status.recovery_enabled || false);
+      // Backend returns 'recovery_phrase_enabled', not 'recovery_enabled'
+      setZkRecoveryEnabled(status.recovery_phrase_enabled || false);
 
       return status;
     } catch (error) {

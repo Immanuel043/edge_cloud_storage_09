@@ -230,7 +230,7 @@ export async function verifyRecoveryPhrase(recoveryPhrase) {
 }
 
 /**
- * Recover account using recovery phrase
+ * Recover account using recovery phrase (legacy - use recoverAccountWithNewPassword instead)
  * @param {string} email - User email
  * @param {string} recoveryPhrase - Recovery phrase
  * @returns {Promise<Object>} { access_token, encrypted_master_key, recovery_encrypted_master_key }
@@ -242,6 +242,66 @@ export async function recoverAccount(email, recoveryPhrase) {
   };
 
   const response = await zkFetch(ZK_ENDPOINTS.RECOVERY_RECOVER, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  return response;
+}
+
+/**
+ * Get recovery information for a user (public endpoint for recovery flow)
+ * @param {string} email - User email
+ * @returns {Promise<Object>} { recovery_enabled, recovery_encrypted_master_key, kdf_params }
+ */
+export async function getRecoveryInfo(email) {
+  const url = `${ZK_ENDPOINTS.RECOVERY_INFO}?email=${encodeURIComponent(email)}`;
+
+  const response = await zkFetch(url);
+  return response;
+}
+
+/**
+ * Recover account with recovery phrase and set new password
+ * Full recovery flow that updates the user's password
+ * @param {Object} recoveryData - Recovery data
+ * @param {string} recoveryData.email - User email
+ * @param {string} recoveryData.recoveryPhrase - Recovery phrase
+ * @param {string} recoveryData.newPasswordHash - New password hash (SHA-256 of derived key)
+ * @param {string} recoveryData.newEncryptedMasterKey - Master key re-encrypted with new password
+ * @param {string} recoveryData.newKdfSalt - New KDF salt (hex)
+ * @returns {Promise<Object>} { message, access_token, token_type }
+ */
+export async function recoverAccountWithNewPassword(recoveryData) {
+  const payload = {
+    email: recoveryData.email,
+    recovery_phrase: recoveryData.recoveryPhrase,
+    new_password_hash: recoveryData.newPasswordHash,
+    new_encrypted_master_key: recoveryData.newEncryptedMasterKey,
+    new_kdf_salt: recoveryData.newKdfSalt,
+  };
+
+  const response = await zkFetch(ZK_ENDPOINTS.RECOVERY_USE, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  return response;
+}
+
+/**
+ * Rotate (replace) recovery phrase
+ * @param {string} newRecoveryEncryptedMasterKey - Master key re-encrypted with new recovery phrase
+ * @param {string} newRecoveryPhraseHash - Hash of new recovery phrase
+ * @returns {Promise<Object>} { message, rotated_at, verified, instructions }
+ */
+export async function rotateRecoveryPhrase(newRecoveryEncryptedMasterKey, newRecoveryPhraseHash) {
+  const payload = {
+    new_recovery_encrypted_master_key: newRecoveryEncryptedMasterKey,
+    new_recovery_phrase_hash: newRecoveryPhraseHash,
+  };
+
+  const response = await zkFetch(ZK_ENDPOINTS.RECOVERY_ROTATE, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -478,6 +538,9 @@ export default {
   enableRecoveryPhrase,
   verifyRecoveryPhrase,
   recoverAccount,
+  getRecoveryInfo,
+  recoverAccountWithNewPassword,
+  rotateRecoveryPhrase,
 
   // File Operations
   initializeUpload,

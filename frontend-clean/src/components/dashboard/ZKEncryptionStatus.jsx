@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Shield, ShieldCheck, Lock, Unlock, Key, ChevronDown, ChevronUp } from 'lucide-react';
+import { Shield, ShieldCheck, Lock, Unlock, Key, ChevronDown, ChevronUp, AlertTriangle, X } from 'lucide-react';
 import { ZK_STORAGE } from '../../config/constants';
 
 /**
@@ -19,6 +19,7 @@ export default function ZKEncryptionStatus({
   kdfMemory: propKdfMemory,
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showLockConfirm, setShowLockConfirm] = useState(false);
 
   // Get KDF info from localStorage if not provided as props
   const { kdfAlgorithm, kdfIterations, kdfMemory } = useMemo(() => {
@@ -132,11 +133,7 @@ export default function ZKEncryptionStatus({
           {/* Lock Session Button - only show when unlocked */}
           {isUnlocked && onLock && (
             <button
-              onClick={() => {
-                if (window.confirm('Lock your encryption session? You\'ll need your password to unlock it again.')) {
-                  onLock();
-                }
-              }}
+              onClick={() => setShowLockConfirm(true)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 darkMode
                   ? 'bg-yellow-900/30 hover:bg-yellow-900/50 text-yellow-400 border border-yellow-800/50'
@@ -176,6 +173,79 @@ export default function ZKEncryptionStatus({
               ? 'You can upload, download, and manage your encrypted files.'
               : 'Enter your password to access your encrypted files.'}
           </p>
+        </div>
+      )}
+
+      {/* Lock Session Confirmation Modal */}
+      {showLockConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className={`w-full max-w-sm rounded-2xl shadow-2xl border ${
+            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+          }`}>
+            {/* Header */}
+            <div className={`p-5 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-gradient-to-br from-yellow-500 to-orange-600">
+                    <Lock className="text-white" size={20} />
+                  </div>
+                  <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    Lock Session?
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setShowLockConfirm(false)}
+                  className={`p-1.5 rounded-lg transition-colors ${
+                    darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-500'
+                  }`}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-5">
+              <div className={`p-4 rounded-xl border ${
+                darkMode ? 'bg-yellow-900/20 border-yellow-700/40' : 'bg-yellow-50 border-yellow-200'
+              }`}>
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="text-yellow-500 flex-shrink-0 mt-0.5" size={18} />
+                  <div>
+                    <p className={`text-sm font-medium ${darkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>
+                      Your encryption keys will be cleared
+                    </p>
+                    <p className={`text-xs mt-1 ${darkMode ? 'text-yellow-400/80' : 'text-yellow-700'}`}>
+                      You'll need to enter your password to access your encrypted files again.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className={`p-5 border-t flex gap-3 ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+              <button
+                onClick={() => setShowLockConfirm(false)}
+                className={`flex-1 px-4 py-2.5 rounded-xl font-medium transition-colors ${
+                  darkMode
+                    ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowLockConfirm(false);
+                  onLock();
+                }}
+                className="flex-1 px-4 py-2.5 rounded-xl font-semibold text-white bg-gradient-to-r from-yellow-500 to-orange-600 hover:from-yellow-600 hover:to-orange-700 transition-all"
+              >
+                Lock Session
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

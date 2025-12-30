@@ -11,55 +11,12 @@ import { pbkdf2 } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 
-// ==================== BIP39 Lazy Loading ====================
-// bip39 requires Node.js Buffer which must be polyfilled before import.
-// Using dynamic import ensures Buffer is available at load time.
-// This prevents the "Illegal constructor" error in browser environments.
+// ==================== BIP39 (@scure/bip39) ====================
+// Using @scure/bip39 which is ESM-native and doesn't require Buffer polyfills.
+// This is from the same author as @noble/ciphers and @noble/hashes.
 
-let bip39Module = null;
-let bip39LoadPromise = null;
-
-/**
- * Lazily load bip39 module with Buffer polyfill
- * Uses singleton pattern to ensure single load and prevent race conditions
- * @returns {Promise<Object>} bip39 module exports
- */
-async function getBip39() {
-  // Return cached module if already loaded
-  if (bip39Module) {
-    return bip39Module;
-  }
-
-  // Return existing promise if load in progress (prevents race conditions)
-  if (bip39LoadPromise) {
-    return bip39LoadPromise;
-  }
-
-  // Start loading
-  bip39LoadPromise = (async () => {
-    try {
-      // Ensure Buffer polyfill is applied BEFORE importing bip39
-      if (typeof globalThis.Buffer === 'undefined') {
-        const bufferModule = await import('buffer');
-        globalThis.Buffer = bufferModule.Buffer;
-        if (typeof window !== 'undefined') {
-          window.Buffer = bufferModule.Buffer;
-        }
-      }
-
-      // Now safe to import bip39
-      const bip39 = await import('bip39');
-      bip39Module = bip39;
-      return bip39;
-    } catch (error) {
-      // Reset promise on failure to allow retry
-      bip39LoadPromise = null;
-      throw new Error(`Failed to load bip39 module: ${error.message}`);
-    }
-  })();
-
-  return bip39LoadPromise;
-}
+import { generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '@scure/bip39';
+import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english.js';
 
 // ==================== Constants ====================
 
@@ -371,32 +328,30 @@ export function decryptChunk(encryptedChunk, fileKey, ivOrChunkIndex) {
 
 /**
  * Generate a BIP39 recovery phrase (24 words)
- * @returns {Promise<string>} Space-separated 24-word mnemonic
+ * Using @scure/bip39 which is ESM-native and synchronous
+ * @returns {string} Space-separated 24-word mnemonic
  */
-export async function generateRecoveryPhrase() {
-  const { generateMnemonic } = await getBip39();
-  return generateMnemonic(ZK_CONSTANTS.RECOVERY_PHRASE_STRENGTH);
+export function generateRecoveryPhrase() {
+  // generateMnemonic takes strength in bits (256 = 24 words)
+  return generateMnemonic(englishWordlist, ZK_CONSTANTS.RECOVERY_PHRASE_STRENGTH);
 }
 
 /**
  * Validate a BIP39 recovery phrase
  * @param {string} phrase - Space-separated mnemonic
- * @returns {Promise<boolean>} True if valid
+ * @returns {boolean} True if valid
  */
-export async function validateRecoveryPhrase(phrase) {
-  const { validateMnemonic } = await getBip39();
-  return validateMnemonic(phrase);
+export function validateRecoveryPhrase(phrase) {
+  return validateMnemonic(phrase, englishWordlist);
 }
 
 /**
  * Derive a key from a recovery phrase
  * @param {string} phrase - Space-separated mnemonic
- * @returns {Promise<Uint8Array>} Derived key (32 bytes)
+ * @returns {Uint8Array} Derived key (32 bytes)
  */
-export async function deriveKeyFromRecoveryPhrase(phrase) {
-  const { validateMnemonic, mnemonicToSeedSync } = await getBip39();
-
-  if (!validateMnemonic(phrase)) {
+export function deriveKeyFromRecoveryPhrase(phrase) {
+  if (!validateMnemonic(phrase, englishWordlist)) {
     throw new Error('Invalid recovery phrase');
   }
 
@@ -421,10 +376,10 @@ export function hashRecoveryPhrase(phrase) {
  * Encrypt the master key with a recovery phrase-derived key
  * @param {Uint8Array} masterKey - Master key (32 bytes)
  * @param {string} recoveryPhrase - BIP39 mnemonic
- * @returns {Promise<Object>} { recoveryEncryptedMasterKey: string (base64), recoveryPhraseHash: string (hex) }
+ * @returns {Object} { recoveryEncryptedMasterKey: string (base64), recoveryPhraseHash: string (hex) }
  */
-export async function encryptMasterKeyWithRecovery(masterKey, recoveryPhrase) {
-  const recoveryKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase);
+export function encryptMasterKeyWithRecovery(masterKey, recoveryPhrase) {
+  const recoveryKey = deriveKeyFromRecoveryPhrase(recoveryPhrase);
   const { encryptedMasterKey, iv } = encryptMasterKey(masterKey, recoveryKey);
 
   return {

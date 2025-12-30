@@ -1,17 +1,35 @@
 import React, { useState, useRef } from 'react';
 import { Shield, Key, AlertCircle, RefreshCw, Check, X, Eye, EyeOff } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
+import RecoveryPhraseInput from './RecoveryPhraseInput';
+import {
+  verifyRecoveryPhrase,
+  recoverMasterKeyFromPhrase,
+  reEncryptMasterKeyWithNewPassword,
+} from '../../services/zkEncryptionService';
+import {
+  getRecoveryInfo,
+  recoverAccountWithNewPassword,
+} from '../../services/zkAuthService';
 
 /**
  * RecoveryModal Component
  *
  * Allows users to recover their ZK account using their 24-word recovery phrase.
  * This is shown when clicking "Forgot password?" on the login page.
+ *
+ * Recovery Flow:
+ * 1. User enters email and recovery phrase
+ * 2. Fetch recovery info (encrypted master key) from backend
+ * 3. Client decrypts master key using recovery phrase
+ * 4. User sets new password
+ * 5. Client re-encrypts master key with new password
+ * 6. Backend updates with new encrypted master key and password hash
  */
 export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
   const { darkMode } = useTheme();
   const [step, setStep] = useState(1); // 1: Enter phrase, 2: Enter new password, 3: Success
-  const [recoveryPhrase, setRecoveryPhrase] = useState('');
+  const [recoveryWords, setRecoveryWords] = useState(Array(24).fill(''));
   const [email, setEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -21,31 +39,80 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+  // Store recovery info for step 2
+  const [recoveryInfo, setRecoveryInfo] = useState(null);
+
   // Refs for focus management
   const emailRef = useRef(null);
-  const phraseRef = useRef(null);
   const newPasswordRef = useRef(null);
 
   if (!isOpen) return null;
 
-  const handlePhraseSubmit = (e) => {
+  const handlePhraseSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
-    // Validate recovery phrase (should be 24 words)
-    const words = recoveryPhrase.trim().split(/\s+/);
-    if (words.length !== 24) {
-      setError('Recovery phrase must contain exactly 24 words.');
-      return;
+    try {
+      // Get recovery phrase as string
+      const recoveryPhrase = recoveryWords.join(' ').toLowerCase().trim();
+
+      // Validate recovery phrase format (24 valid BIP39 words)
+      const isValidPhrase = await verifyRecoveryPhrase(recoveryPhrase);
+      if (!isValidPhrase) {
+        setError('Invalid recovery phrase. Please check all words are correct BIP39 words.');
+        setLoading(false);
+        return;
+      }
+
+      // Validate email
+      if (!email || !email.includes('@')) {
+        setError('Please enter a valid email address.');
+        setLoading(false);
+        return;
+      }
+
+      // Fetch recovery info from backend
+      const info = await getRecoveryInfo(email);
+
+      if (!info.recovery_enabled) {
+        setError('Recovery phrase is not enabled for this account.');
+        setLoading(false);
+        return;
+      }
+
+      // Try to recover master key client-side
+      const recovered = await recoverMasterKeyFromPhrase(
+        recoveryPhrase,
+        info.recovery_encrypted_master_key,
+        info.recovery_iv || info.kdf_params?.iv
+      );
+
+      if (!recovered) {
+        setError('Invalid recovery phrase. The phrase does not match this account.');
+        setLoading(false);
+        return;
+      }
+
+      // Store recovery info for step 2
+      setRecoveryInfo({
+        ...info,
+        recoveryPhrase,
+      });
+
+      setStep(2);
+    } catch (err) {
+      console.error('Recovery step 1 error:', err);
+      if (err.message.includes('not found') || err.message.includes('404')) {
+        setError('No account found with this email address.');
+      } else if (err.message.includes('not enabled')) {
+        setError('Recovery phrase is not enabled for this account.');
+      } else {
+        setError(err.message || 'Failed to verify recovery phrase. Please try again.');
+      }
+    } finally {
+      setLoading(false);
     }
-
-    // Validate email
-    if (!email || !email.includes('@')) {
-      setError('Please enter a valid email address.');
-      return;
-    }
-
-    setStep(2);
   };
 
   const handlePasswordSubmit = async (e) => {
@@ -66,39 +133,51 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
     setLoading(true);
 
     try {
-      // TODO: Call recovery API endpoint
-      // This should:
-      // 1. Derive master key from recovery phrase
-      // 2. Derive new encryption key from new password
-      // 3. Re-encrypt master key with new password
-      // 4. Update backend with new encrypted master key
+      // Re-encrypt master key with new password
+      // This generates new KDF salt and encrypts the master key
+      const newZkData = await reEncryptMasterKeyWithNewPassword(newPassword);
 
-      // Simulated recovery process
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Send recovery request to backend with new credentials
+      const result = await recoverAccountWithNewPassword({
+        email,
+        recoveryPhrase: recoveryInfo.recoveryPhrase,
+        newPasswordHash: newZkData.passwordHash,
+        newEncryptedMasterKey: newZkData.encryptedMasterKey,
+        newKdfSalt: newZkData.kdfSalt,
+      });
+
+      console.log('Account recovery successful:', result.message);
 
       setRecovered(true);
       setStep(3);
 
       // Auto-close and notify parent after 2 seconds
       setTimeout(() => {
-        onRecoveryComplete({ email, newPassword });
+        onRecoveryComplete?.({
+          email,
+          newPassword,
+          accessToken: result.access_token,
+        });
         handleClose();
       }, 2000);
     } catch (err) {
-      setError(err.message || 'Recovery failed. Please check your recovery phrase and try again.');
+      console.error('Recovery step 2 error:', err);
+      setError(err.message || 'Recovery failed. Please try again.');
+    } finally {
       setLoading(false);
     }
   };
 
   const handleClose = () => {
     setStep(1);
-    setRecoveryPhrase('');
+    setRecoveryWords(Array(24).fill(''));
     setEmail('');
     setNewPassword('');
     setConfirmPassword('');
     setError('');
     setRecovered(false);
     setLoading(false);
+    setRecoveryInfo(null);
     onClose();
   };
 
@@ -109,9 +188,12 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
     }
   };
 
+  // Check if all recovery words are filled
+  const allWordsFilled = recoveryWords.every(word => word && word.trim().length > 0);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className={`w-full max-w-lg rounded-2xl shadow-2xl border ${
+      <div className={`w-full max-w-2xl rounded-2xl shadow-2xl border ${
         darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
       }`}>
         {/* Header */}
@@ -152,7 +234,7 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
         </div>
 
         {/* Content */}
-        <div className="p-6">
+        <div className="p-6 max-h-[70vh] overflow-y-auto">
           {!recovered && (
             <>
               {/* Warning */}
@@ -163,7 +245,7 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                   <AlertCircle className="text-blue-500 flex-shrink-0" size={20} />
                   <p className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>
                     {step === 1
-                      ? 'Enter your 24-word recovery phrase to recover your account. Make sure you have it saved securely.'
+                      ? 'Enter your 24-word recovery phrase to recover your account. All decryption happens locally on your device.'
                       : 'Choose a strong password. You\'ll use this to access your encrypted files.'}
                   </p>
                 </div>
@@ -205,48 +287,48 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                       onChange={(e) => setEmail(e.target.value)}
                       required
                       autoFocus
+                      disabled={loading}
                       aria-label="Email address for account recovery"
                       className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none ${
                         darkMode
                           ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
                           : 'bg-gray-50 border border-gray-300 focus:bg-white'
-                      }`}
+                      } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
                     />
                   </div>
 
                   <div>
                     <label
-                      htmlFor="recovery-phrase"
                       className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
                     >
                       24-Word Recovery Phrase
                     </label>
-                    <textarea
-                      ref={phraseRef}
-                      id="recovery-phrase"
-                      placeholder="word1 word2 word3 ... word24"
-                      value={recoveryPhrase}
-                      onChange={(e) => setRecoveryPhrase(e.target.value)}
-                      required
-                      rows={4}
-                      aria-label="24-word recovery phrase"
-                      aria-describedby="phrase-count"
-                      className={`w-full px-4 py-3 rounded-xl transition-all focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm ${
-                        darkMode
-                          ? 'bg-gray-900 text-white border border-gray-700 focus:border-blue-500'
-                          : 'bg-gray-50 border border-gray-300 focus:bg-white'
-                      }`}
+                    <RecoveryPhraseInput
+                      value={recoveryWords}
+                      onChange={setRecoveryWords}
+                      disabled={loading}
+                      darkMode={darkMode}
+                      compact={false}
                     />
-                    <p id="phrase-count" className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      {recoveryPhrase.trim().split(/\s+/).filter(w => w).length} / 24 words entered
-                    </p>
                   </div>
 
                   <button
                     type="submit"
-                    className="w-full py-3 rounded-xl font-semibold text-white bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 transition-all hover:scale-[1.02]"
+                    disabled={loading || !allWordsFilled || !email}
+                    className={`w-full py-3 rounded-xl font-semibold text-white transition-all ${
+                      loading || !allWordsFilled || !email
+                        ? 'bg-gray-500 cursor-not-allowed opacity-50'
+                        : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:scale-[1.02]'
+                    }`}
                   >
-                    Continue
+                    {loading ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <RefreshCw className="animate-spin" size={18} />
+                        Verifying...
+                      </div>
+                    ) : (
+                      'Continue'
+                    )}
                   </button>
                 </form>
               )}
@@ -254,6 +336,15 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
               {/* Step 2: New Password */}
               {step === 2 && (
                 <form onSubmit={handlePasswordSubmit} className="space-y-4">
+                  <div className={`p-4 rounded-xl ${darkMode ? 'bg-green-900/20' : 'bg-green-50'}`}>
+                    <div className="flex items-center gap-2">
+                      <Check className="text-green-500" size={18} />
+                      <p className={`text-sm font-medium ${darkMode ? 'text-green-300' : 'text-green-800'}`}>
+                        Recovery phrase verified! Your master key has been recovered.
+                      </p>
+                    </div>
+                  </div>
+
                   <div>
                     <label
                       htmlFor="newPassword"
@@ -359,9 +450,9 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
                     </button>
                     <button
                       type="submit"
-                      disabled={loading}
+                      disabled={loading || newPassword.length < 8 || newPassword !== confirmPassword}
                       className={`flex-1 px-6 py-3 rounded-xl font-semibold text-white transition-all ${
-                        loading
+                        loading || newPassword.length < 8 || newPassword !== confirmPassword
                           ? 'bg-gray-600 cursor-not-allowed opacity-50'
                           : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:scale-[1.02]'
                       }`}
@@ -404,6 +495,7 @@ export default function RecoveryModal({ isOpen, onClose, onRecoveryComplete }) {
               <Shield className={`flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} size={16} />
               <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                 Your recovery phrase is never sent to our servers. All decryption happens on your device.
+                {step === 2 && ' Your new password will be used to re-encrypt your master key.'}
               </p>
             </div>
           </div>

@@ -283,17 +283,17 @@ export async function getPasswordHashForLogin(password, kdfSalt, kdfIterations =
 
 /**
  * Generate and encrypt master key with recovery phrase
- * @returns {Promise<Object>} { recoveryPhrase, recoveryEncryptedMasterKey, recoveryPhraseHash }
+ * @returns {Object} { recoveryPhrase, recoveryEncryptedMasterKey, recoveryPhraseHash }
  */
-export async function generateRecoveryPhraseData() {
+export function generateRecoveryPhraseData() {
   const masterKey = zkSession.getMasterKey();
 
-  // Generate BIP39 recovery phrase (now async due to lazy bip39 loading)
-  const recoveryPhrase = await generateRecoveryPhrase();
+  // Generate BIP39 recovery phrase (now synchronous with @scure/bip39)
+  const recoveryPhrase = generateRecoveryPhrase();
 
-  // Encrypt master key with recovery phrase (now async)
+  // Encrypt master key with recovery phrase
   const { recoveryEncryptedMasterKey, recoveryIV, recoveryPhraseHash } =
-    await encryptMasterKeyWithRecovery(masterKey, recoveryPhrase);
+    encryptMasterKeyWithRecovery(masterKey, recoveryPhrase);
 
   return {
     recoveryPhrase, // Show this to user ONCE
@@ -306,10 +306,10 @@ export async function generateRecoveryPhraseData() {
 /**
  * Verify recovery phrase
  * @param {string} recoveryPhrase - Recovery phrase entered by user
- * @returns {Promise<boolean>} True if valid
+ * @returns {boolean} True if valid
  */
-export async function verifyRecoveryPhrase(recoveryPhrase) {
-  return await validateRecoveryPhrase(recoveryPhrase);
+export function verifyRecoveryPhrase(recoveryPhrase) {
+  return validateRecoveryPhrase(recoveryPhrase);
 }
 
 /**
@@ -317,17 +317,17 @@ export async function verifyRecoveryPhrase(recoveryPhrase) {
  * @param {string} recoveryPhrase - Recovery phrase
  * @param {string} recoveryEncryptedMasterKey - Encrypted master key (base64)
  * @param {string} recoveryIV - Recovery IV (base64)
- * @returns {Promise<boolean>} True if recovery successful
+ * @returns {boolean} True if recovery successful
  */
-export async function recoverMasterKeyFromPhrase(recoveryPhrase, recoveryEncryptedMasterKey, recoveryIV) {
+export function recoverMasterKeyFromPhrase(recoveryPhrase, recoveryEncryptedMasterKey, recoveryIV) {
   try {
-    // Validate phrase first (now async)
-    if (!await validateRecoveryPhrase(recoveryPhrase)) {
+    // Validate phrase first
+    if (!validateRecoveryPhrase(recoveryPhrase)) {
       throw new Error('Invalid recovery phrase format');
     }
 
-    // Derive key from recovery phrase (now async)
-    const recoveryKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase);
+    // Derive key from recovery phrase
+    const recoveryKey = deriveKeyFromRecoveryPhrase(recoveryPhrase);
 
     // Decrypt master key
     const masterKey = decryptMasterKey(recoveryEncryptedMasterKey, recoveryKey, recoveryIV);
@@ -349,6 +349,48 @@ export async function recoverMasterKeyFromPhrase(recoveryPhrase, recoveryEncrypt
  */
 export function getRecoveryPhraseHash(recoveryPhrase) {
   return hashRecoveryPhrase(recoveryPhrase);
+}
+
+/**
+ * Re-encrypt the current session's master key with a new password
+ * Used after recovery to set a new password
+ * @param {string} newPassword - New password
+ * @returns {Promise<Object>} { passwordHash, encryptedMasterKey, kdfSalt, kdfAlgorithm, kdfIterations, kdfMemory, kdfParallelism, masterKeyIV }
+ */
+export async function reEncryptMasterKeyWithNewPassword(newPassword) {
+  const masterKey = zkSession.getMasterKey();
+  if (!masterKey) {
+    throw new Error('No master key in session. Recovery must be performed first.');
+  }
+
+  // Generate new salt for password derivation
+  const salt = generateSalt();
+
+  // Derive key from new password using Argon2id
+  const derivedKey = await deriveKeyArgon2id(newPassword, salt);
+
+  // Hash the derived key (server stores this)
+  const passwordHash = hashDerivedKey(derivedKey);
+
+  // Encrypt master key with new derived key
+  const { encryptedMasterKey, iv } = encryptMasterKey(masterKey, derivedKey);
+
+  // Update session with new derived key
+  zkSession.setDerivedKey(derivedKey);
+
+  // Get Argon2 parameters used
+  const argon2Memory = getArgon2Memory();
+
+  return {
+    passwordHash,
+    encryptedMasterKey,
+    kdfSalt: bytesToHexString(salt),
+    kdfAlgorithm: 'argon2id',
+    kdfIterations: ZK_CONSTANTS_V2.ARGON2_ITERATIONS,
+    kdfMemory: argon2Memory,
+    kdfParallelism: ZK_CONSTANTS_V2.ARGON2_PARALLELISM,
+    masterKeyIV: iv,
+  };
 }
 
 // ==================== File Encryption ====================
@@ -698,6 +740,7 @@ export default {
   verifyRecoveryPhrase,
   recoverMasterKeyFromPhrase,
   getRecoveryPhraseHash,
+  reEncryptMasterKeyWithNewPassword,
 
   // File Encryption
   prepareFileForEncryption,

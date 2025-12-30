@@ -306,8 +306,10 @@ class SearchService:
                 })
 
                 # 5. Wildcard match (contains full query - 5x boost)
-                # Only if query doesn't contain special characters that break wildcard
-                safe_query = query.lower().replace("(", "\\(").replace(")", "\\)")
+                # Escape Elasticsearch special characters for wildcard queries
+                safe_query = query.lower()
+                for char in ['\\', '(', ')', '[', ']', '{', '}', '^', '"', '~', '/', ':']:
+                    safe_query = safe_query.replace(char, f'\\{char}')
                 should_clauses.append({
                     "wildcard": {
                         "name": {
