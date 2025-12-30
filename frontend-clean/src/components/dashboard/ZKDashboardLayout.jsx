@@ -836,6 +836,7 @@ export default function ZKDashboardLayout({
           onClose={() => setFileInfo(null)}
           onRename={setRenameFile}
           darkMode={darkMode}
+          isZK={true}
         />
       )}
 

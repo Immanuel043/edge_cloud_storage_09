@@ -4,7 +4,7 @@ import FileDetailsTab from './FileDetailsTab';
 import FileActivityTab from './FileActivityTab';
 import FileSecurityTab from './FileSecurityTab';
 
-export default function FileInfoPanel({ file, onClose, onRename, darkMode }) {
+export default function FileInfoPanel({ file, onClose, onRename, darkMode, isZK = false }) {
   const [activeTab, setActiveTab] = useState('details');
 
   const tabs = [
@@ -83,7 +83,7 @@ export default function FileInfoPanel({ file, onClose, onRename, darkMode }) {
         {/* Tab Content */}
         <div className="overflow-y-auto h-[calc(100vh-130px)] p-6">
           {activeTab === 'details' && (
-            <FileDetailsTab file={file} onRename={onRename} darkMode={darkMode} />
+            <FileDetailsTab file={file} onRename={onRename} darkMode={darkMode} isZK={isZK} />
           )}
           {activeTab === 'activity' && (
             <FileActivityTab file={file} darkMode={darkMode} />

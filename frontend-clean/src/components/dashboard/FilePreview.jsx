@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, ZoomIn, ZoomOut, RotateCw, Download, Table, Shield, Lock, Loader } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Download, Table, Shield, Lock, Loader, Music } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
-import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS } from '../../utils/helpers';
+import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS, AUDIO_EXTENSIONS } from '../../utils/helpers';
 import SecureVideoPlayer from './SecureVideoPlayer';
 import { storageService } from '../../services/storageService';
 import { isZKSessionUnlocked } from '../../services/zkEncryptionService';
@@ -12,6 +12,7 @@ export default function FilePreview({ file, onClose, darkMode }) {
   const mimeType = (file.mime_type || file.type || '').toLowerCase();
   const extension = file.name?.split('.').pop()?.toLowerCase() || '';
   const isVideoFile = mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension);
+  const isAudioFile = mimeType.startsWith('audio/') || AUDIO_EXTENSIONS.includes(extension);
   const isPdfFile = mimeType === 'application/pdf' || extension === 'pdf';
   const isExcelFile = mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType === 'text/csv' || EXCEL_EXTENSIONS.includes(extension);
   const isXmlFile = mimeType.includes('xml') || XML_EXTENSIONS.includes(extension);
@@ -208,9 +209,9 @@ export default function FilePreview({ file, onClose, darkMode }) {
         return;
       }
 
-      // Check if file type is previewable (images, PDFs, text)
+      // Check if file type is previewable (images, audio, PDFs, text)
       const isImage = mimeType.startsWith('image/');
-      const canPreviewZK = isImage || isPdfFile || isTextFile || isXmlFile;
+      const canPreviewZK = isImage || isAudioFile || isPdfFile || isTextFile || isXmlFile;
 
       if (!canPreviewZK) {
         // Non-previewable ZK files (Excel, etc.) - show download prompt
@@ -578,6 +579,35 @@ export default function FilePreview({ file, onClose, darkMode }) {
                 </p>
               </div>
             )
+          ) : isAudioFile ? (
+            // Audio file - use HTML5 audio player
+            <div className={`flex flex-col items-center justify-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+              {isZKEncrypted && (
+                <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
+                  <Shield size={16} />
+                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
+                </div>
+              )}
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-pink-500/10' : 'bg-pink-50'}`}>
+                <Music size={64} className="text-pink-500" />
+              </div>
+              <div>
+                <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {file.name}
+                </h3>
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {file.mime_type || 'Audio file'}
+                </p>
+              </div>
+              <audio
+                controls
+                autoPlay={false}
+                className="w-full max-w-md"
+                src={isZKEncrypted && previewUrl ? previewUrl : streamUrl}
+              >
+                Your browser does not support the audio element.
+              </audio>
+            </div>
           ) : previewUrl ? (
             <div className="flex flex-col items-center">
               {isZKEncrypted && (
