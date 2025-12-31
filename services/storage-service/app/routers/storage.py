@@ -490,12 +490,11 @@ async def get_user_profile(
         "id": str(current_user.id),
         "email": current_user.email,
         "username": current_user.username,
-        "user_type": current_user.user_type,
+        "plan_type": current_user.plan_type,
         "storage_quota": storage_quota,
         "storage_used": storage_used,
         "theme": current_user.theme_preference,
         "created_at": current_user.created_at.isoformat(),
-        "zk_enabled": current_user.zk_enabled or False,
     }
 
 @router.put("/users/theme")

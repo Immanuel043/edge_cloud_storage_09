@@ -15,6 +15,7 @@ from ..dependencies import get_db, log_activity, get_current_user
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
 from ..services.download_optimizer import download_optimizer
+from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..models.database import User, Object, ActivityLog, Favorite
 from ..models.schemas import FileResponse
 from ..database import get_redis
@@ -29,6 +30,78 @@ from typing import Optional, Tuple, AsyncGenerator
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 USE_X_ACCEL = bool(os.environ.get("USE_X_ACCEL", False))
 NGINX_STORAGE_BASE = "/app/storage"  # must match nginx alias path
+
+
+async def throttled_download_generator(
+    user_id: str,
+    data_generator: AsyncGenerator[bytes, None],
+    file_size: int,
+    plan_type: str = "free",
+    db_bandwidth_override: int = None,
+    db_streams_override: int = None
+) -> AsyncGenerator[bytes, None]:
+    """
+    Wraps a download generator with bandwidth throttling and stream slot management.
+
+    - Acquires a stream slot before starting (plan-based limit)
+    - Applies per-user bandwidth limiting with token bucket algorithm
+    - Releases stream slot on completion or error
+    - Returns 429 if bandwidth limit causes long waits
+
+    Args:
+        user_id: User ID for throttling
+        data_generator: Original async generator yielding data chunks
+        file_size: Total file size (for logging)
+        plan_type: User's subscription plan tier (free, basic, pro, team)
+        db_bandwidth_override: Admin-set bandwidth override from User model
+        db_streams_override: Admin-set max streams override from User model
+    """
+    stream_acquired = False
+
+    # Get max streams for this user's plan (or override)
+    max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
+        user_id, plan_type, db_streams_override
+    )
+
+    try:
+        # Try to acquire stream slot (plan-based limit)
+        stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
+            user_id,
+            plan_type=plan_type,
+            db_streams_override=db_streams_override
+        )
+
+        if not stream_acquired:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many concurrent downloads. Maximum {max_streams} streams allowed for your plan.",
+                headers={"Retry-After": "10"}
+            )
+
+        logger.debug(f"Stream slot acquired for user {user_id} ({plan_type}), starting download ({file_size} bytes)")
+
+        # Stream data with bandwidth throttling (plan-aware)
+        async for chunk in bandwidth_throttle_service.throttled_transfer(
+            user_id=user_id,
+            data_generator=data_generator,
+            raise_on_long_wait=True,
+            plan_type=plan_type,
+            db_bandwidth_override=db_bandwidth_override
+        ):
+            yield chunk
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (429, etc.)
+        raise
+    except Exception as e:
+        logger.error(f"Error in throttled download for user {user_id}: {e}")
+        raise
+    finally:
+        # Always release stream slot
+        if stream_acquired:
+            await bandwidth_throttle_service.release_stream_slot(user_id)
+            logger.debug(f"Stream slot released for user {user_id}")
+
 
 class BulkDeleteRequest(BaseModel):
     file_ids: List[str]
@@ -648,16 +721,19 @@ async def download_file(
 
         # ---------- OPTIMIZED: encrypted or non-offloadable file: decrypt & stream in Python ----------
         # Use optimized streaming that never loads full file in memory
+        # Now with per-user bandwidth throttling and stream limiting
         was_compressed = file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False)
+        user_id_str = str(current_user.id)
 
         if parsed_range:
             start, end = parsed_range
+            content_length = end - start + 1
             headers = {
                 **base_headers,
                 "Content-Range": f"bytes {start}-{end}/{total_size}",
-                "Content-Length": str(end - start + 1),
+                "Content-Length": str(content_length),
             }
-            generator = download_optimizer.stream_single_file_optimized(
+            base_generator = download_optimizer.stream_single_file_optimized(
                 file_path=file_obj.object_path,
                 file_key=file_key,
                 encryption_service=encryption_service,
@@ -665,8 +741,17 @@ async def download_file(
                 end_byte=end,
                 compressed=was_compressed
             )
+            # Wrap with bandwidth throttling and stream limiting (plan-aware)
+            throttled_generator = throttled_download_generator(
+                user_id=user_id_str,
+                data_generator=base_generator,
+                file_size=content_length,
+                plan_type=current_user.plan_type,
+                db_bandwidth_override=current_user.bandwidth_limit_mbps,
+                db_streams_override=current_user.max_concurrent_streams
+            )
             return StreamingResponse(
-                generator,
+                throttled_generator,
                 status_code=206,
                 headers=headers,
                 media_type=mime_type
@@ -676,7 +761,7 @@ async def download_file(
                 **base_headers,
                 "Content-Length": str(total_size),
             }
-            generator = download_optimizer.stream_single_file_optimized(
+            base_generator = download_optimizer.stream_single_file_optimized(
                 file_path=file_obj.object_path,
                 file_key=file_key,
                 encryption_service=encryption_service,
@@ -684,13 +769,22 @@ async def download_file(
                 end_byte=total_size - 1,
                 compressed=was_compressed
             )
+            # Wrap with bandwidth throttling and stream limiting (plan-aware)
+            throttled_generator = throttled_download_generator(
+                user_id=user_id_str,
+                data_generator=base_generator,
+                file_size=total_size,
+                plan_type=current_user.plan_type,
+                db_bandwidth_override=current_user.bandwidth_limit_mbps,
+                db_streams_override=current_user.max_concurrent_streams
+            )
             return StreamingResponse(
-                generator,
+                throttled_generator,
                 status_code=200,
                 headers=headers,
                 media_type=mime_type
             )
-    
+
     # CHUNKED STORAGE (includes content_addressed and deduplicated_reference from deduplication)
     elif file_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
         # Validate that chunk_info exists
@@ -700,7 +794,10 @@ async def download_file(
                 detail="File deduplication is incomplete. Please re-upload the file."
             )
 
+        user_id_str = str(current_user.id)
+
         # OPTIMIZED: Use parallel chunk decryption (4x faster)
+        # Now with per-user bandwidth throttling and stream limiting
         if parsed_range:
             start, end = parsed_range
             content_length = end - start + 1
@@ -709,15 +806,24 @@ async def download_file(
                 "Content-Range": f"bytes {start}-{end}/{total_size}",
                 "Content-Length": str(content_length),
             }
-            generator = download_optimizer.stream_chunked_file_parallel(
+            base_generator = download_optimizer.stream_chunked_file_parallel(
                 file_obj=file_obj,
                 file_key=file_key,
                 encryption_service=encryption_service,
                 start_byte=start,
                 end_byte=end
             )
+            # Wrap with bandwidth throttling and stream limiting (plan-aware)
+            throttled_generator = throttled_download_generator(
+                user_id=user_id_str,
+                data_generator=base_generator,
+                file_size=content_length,
+                plan_type=current_user.plan_type,
+                db_bandwidth_override=current_user.bandwidth_limit_mbps,
+                db_streams_override=current_user.max_concurrent_streams
+            )
             return StreamingResponse(
-                generator,
+                throttled_generator,
                 status_code=206,
                 headers=headers,
                 media_type=mime_type
@@ -727,20 +833,29 @@ async def download_file(
                 **base_headers,
                 "Content-Length": str(total_size),
             }
-            generator = download_optimizer.stream_chunked_file_parallel(
+            base_generator = download_optimizer.stream_chunked_file_parallel(
                 file_obj=file_obj,
                 file_key=file_key,
                 encryption_service=encryption_service,
                 start_byte=0,
                 end_byte=total_size - 1
             )
+            # Wrap with bandwidth throttling and stream limiting (plan-aware)
+            throttled_generator = throttled_download_generator(
+                user_id=user_id_str,
+                data_generator=base_generator,
+                file_size=total_size,
+                plan_type=current_user.plan_type,
+                db_bandwidth_override=current_user.bandwidth_limit_mbps,
+                db_streams_override=current_user.max_concurrent_streams
+            )
             return StreamingResponse(
-                generator,
+                throttled_generator,
                 status_code=200,
                 headers=headers,
                 media_type=mime_type
             )
-    
+
     else:
         raise HTTPException(status_code=500, detail="Unknown storage type")
 

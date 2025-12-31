@@ -472,7 +472,7 @@ async def trigger_prediction_worker(
         Status message
     """
     # TODO: Add admin check
-    # if current_user.user_type != 'admin':
+    # if current_user.plan_type != 'admin':
     #     raise HTTPException(status_code=403, detail="Admin access required")
 
     try:

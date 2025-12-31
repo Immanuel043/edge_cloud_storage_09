@@ -2,7 +2,10 @@
 Database Connection Management
 
 Async SQLAlchemy setup for the ZK encryption service.
-Shares the same PostgreSQL database as storage-service for consistency.
+
+IMPORTANT: This is a SEPARATE database from the Storage Service.
+The ZK service uses its own PostgreSQL instance (ZK_DATABASE_URL)
+for complete isolation. No data is shared with Storage Service.
 """
 import structlog
 from typing import AsyncGenerator
@@ -16,7 +19,7 @@ logger = structlog.get_logger()
 
 # Create async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.ZK_DATABASE_URL,
     echo=settings.DEBUG,  # Log SQL queries in debug mode
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,

@@ -51,7 +51,7 @@ class BandwidthStats(BaseModel):
 
 async def require_admin(current_user: User = Depends(get_current_user)):
     """Require admin role"""
-    if not hasattr(current_user, 'user_type') or current_user.user_type != 'admin':
+    if not hasattr(current_user, 'plan_type') or current_user.plan_type != 'admin':
         raise HTTPException(
             status_code=403,
             detail="Admin access required"
@@ -291,4 +291,204 @@ async def get_bandwidth_usage_summary(
         "period_days": days,
         "total_users": len(users),
         "users": users,
+    }
+
+
+# ============================================================================
+# REAL-TIME MONITORING ENDPOINTS (NEW)
+# ============================================================================
+
+@router.get("/bandwidth/realtime")
+async def get_realtime_bandwidth_stats(
+    admin: User = Depends(require_admin),
+):
+    """
+    Get real-time bandwidth statistics from Redis.
+
+    Returns:
+        - All active users with current bandwidth usage
+        - Total active streams across system
+        - Users approaching or at their limits
+
+    Uses Redis SCAN for non-blocking O(1) per-call operation
+    (Fix #5: Avoids O(N) blocking KEYS command)
+
+    Requires admin role.
+    """
+    # Get all active users from bandwidth throttle service
+    all_stats = await bandwidth_throttle_service.get_all_active_users_stats()
+
+    if "error" in all_stats:
+        return {
+            "status": "error",
+            "message": all_stats["error"],
+            "active_users": 0,
+            "total_streams": 0,
+            "users": []
+        }
+
+    users = all_stats.get("users", {})
+
+    # Calculate totals
+    total_streams = sum(
+        user.get("stream_count", 0)
+        for user in users.values()
+    )
+
+    # Find users at high utilization (>80%)
+    high_utilization_users = [
+        user_id for user_id, stats in users.items()
+        if stats.get("utilization_percent", 0) > 80
+    ]
+
+    # Find users at stream limit
+    at_stream_limit = [
+        user_id for user_id, stats in users.items()
+        if stats.get("stream_count", 0) >= stats.get("max_streams", 5)
+    ]
+
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "active_users": all_stats.get("active_user_count", 0),
+        "total_streams": total_streams,
+        "high_utilization_users": high_utilization_users,
+        "users_at_stream_limit": at_stream_limit,
+        "users": users
+    }
+
+
+@router.get("/bandwidth/streams")
+async def get_active_streams(
+    admin: User = Depends(require_admin),
+):
+    """
+    Get all active upload/download streams across all users.
+
+    Returns:
+        - Per-user stream counts
+        - Total active streams
+        - Users near their stream limit
+
+    Requires admin role.
+    """
+    from ..database import get_redis
+
+    redis_client = await get_redis()
+    if not redis_client:
+        return {
+            "status": "error",
+            "message": "Redis unavailable",
+            "total_streams": 0,
+            "users": []
+        }
+
+    users_streams = {}
+    total_streams = 0
+
+    try:
+        # Use SCAN instead of KEYS (Fix #5)
+        async for key in redis_client.scan_iter("bandwidth:streams:*", count=100):
+            key_str = key.decode() if isinstance(key, bytes) else key
+            user_id = key_str.split(":")[-1]
+
+            stream_count = await redis_client.get(key)
+            if stream_count:
+                count = int(stream_count)
+                users_streams[user_id] = {
+                    "stream_count": count,
+                    "max_streams": 5,
+                    "at_limit": count >= 5
+                }
+                total_streams += count
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "total_streams": 0,
+            "users": {}
+        }
+
+    # Find users at limit
+    at_limit = [uid for uid, data in users_streams.items() if data["at_limit"]]
+
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "total_streams": total_streams,
+        "active_users": len(users_streams),
+        "users_at_limit": at_limit,
+        "users": users_streams
+    }
+
+
+@router.post("/bandwidth/limits/bulk")
+async def set_bulk_bandwidth_limits(
+    updates: List[BandwidthLimitUpdate],
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Set bandwidth limits for multiple users at once.
+
+    Args:
+        - updates: List of BandwidthLimitUpdate objects
+
+    Requires admin role.
+    """
+    results = []
+
+    for update in updates:
+        try:
+            # Validate user exists
+            result = await db.execute(
+                select(User).where(User.id == update.user_id)
+            )
+            user = result.scalar_one_or_none()
+
+            if not user:
+                results.append({
+                    "user_id": update.user_id,
+                    "status": "error",
+                    "message": "User not found"
+                })
+                continue
+
+            # Update database
+            user.bandwidth_limit_mbps = int(update.limit_mbps)
+            if update.burst_mbps:
+                user.bandwidth_burst_mbps = int(update.burst_mbps)
+            else:
+                user.bandwidth_burst_mbps = int(update.limit_mbps * 2)
+
+            # Update runtime limit in Redis
+            await bandwidth_throttle_service.set_user_limit(
+                update.user_id,
+                update.limit_mbps
+            )
+
+            results.append({
+                "user_id": update.user_id,
+                "status": "success",
+                "new_limit_mbps": update.limit_mbps
+            })
+
+        except Exception as e:
+            results.append({
+                "user_id": update.user_id,
+                "status": "error",
+                "message": str(e)
+            })
+
+    await db.commit()
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+
+    return {
+        "status": "complete",
+        "total_updates": len(updates),
+        "successful": success_count,
+        "failed": len(updates) - success_count,
+        "results": results
     }

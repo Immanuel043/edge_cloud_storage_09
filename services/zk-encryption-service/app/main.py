@@ -357,7 +357,7 @@ if settings.ENABLE_METRICS:
 # ========== ROUTER REGISTRATION ==========
 
 # Import routers
-from app.routers import auth_zk, keys, upload_zk, download_zk
+from app.routers import auth_zk, keys, upload_zk, download_zk, billing
 
 # Register routers with API prefix
 app.include_router(
@@ -382,6 +382,12 @@ app.include_router(
     download_zk.router,
     prefix=settings.API_PREFIX,
     tags=["Encrypted Download"]
+)
+
+app.include_router(
+    billing.router,
+    prefix=settings.API_PREFIX,
+    tags=["Billing & Subscriptions"]
 )
 
 

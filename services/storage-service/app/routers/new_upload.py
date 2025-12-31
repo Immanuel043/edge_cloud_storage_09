@@ -119,7 +119,7 @@ async def init_upload(
     await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
     
     upload_initiated.labels(
-        user_type=getattr(current_user, 'user_type', 'standard'),
+        plan_type=getattr(current_user, 'plan_type', 'free'),
         storage_strategy=storage_strategy
     ).inc()
     active_uploads.inc()
@@ -484,7 +484,7 @@ async def complete_upload(
     
     duration = (datetime.utcnow() - start_time).total_seconds()
     upload_completed.labels(
-        user_type=getattr(current_user, 'user_type', 'standard'),
+        plan_type=getattr(current_user, 'plan_type', 'free'),
         storage_strategy=storage_strategy,
         status="success"
     ).inc()

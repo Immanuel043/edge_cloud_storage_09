@@ -18,7 +18,7 @@ from ..services.auth import auth_service
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
 from ..models.database import User, Object, FileVersion
-from ..models.schemas import UploadInitResponse, UploadStatusResponse, ZKUploadInitRequest
+from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
 from ..config import settings
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
@@ -42,6 +42,7 @@ from ..services.dlp_service import get_dlp_service
 from ..services.audit_service import get_audit_service
 from ..services.video_optimizer import video_optimizer
 from ..services.video_ingestion_service import video_ingestion_service
+from ..services.bandwidth_throttle import bandwidth_throttle_service
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -230,7 +231,7 @@ async def init_upload(
     
     # Metrics
     upload_initiated.labels(
-        user_type=getattr(current_user, 'user_type', 'standard'),
+        plan_type=getattr(current_user, 'plan_type', 'free'),
         storage_strategy=storage_strategy
     ).inc()
     active_uploads.inc()
@@ -246,144 +247,17 @@ async def init_upload(
     )
 
 
-@router.post("/init/zk", response_model=UploadInitResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
-async def init_zk_upload(
-    request: Request,
-    payload: ZKUploadInitRequest = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
+@router.post("/init/zk")
+async def init_zk_upload(current_user: User = Depends(get_current_user)):
     """
-    Initialize Zero-Knowledge upload
-
-    This endpoint is for ZK-enabled users who encrypt files client-side.
-    The server will NOT re-encrypt the chunks - they're already encrypted.
-
-    Args:
-        payload: ZKUploadInitRequest containing:
-            - file_name: Original filename
-            - file_size: Total file size (before client encryption)
-            - encrypted_file_key: Base64-encoded file key encrypted with master key
-            - file_key_iv: Base64-encoded IV used for file key encryption
-            - encryption_algorithm: Encryption algorithm used (default: AES-256-GCM)
-            - mime_type: MIME type of the original file
-            - folder_id: Optional parent folder ID
-            - encrypted_thumbnail: Optional Base64-encoded encrypted thumbnail
-            - thumbnail_iv: Optional Base64-encoded IV for thumbnail
-            - thumbnail_width: Optional thumbnail width
-            - thumbnail_height: Optional thumbnail height
-
-    Returns:
-        UploadInitResponse with zk_mode metadata
+    Zero-Knowledge uploads are now handled by the dedicated ZK Private Vault service.
+    
+    This endpoint has been deprecated. Please use the ZK service at port 8002.
     """
-    # Extract validated fields from Pydantic model
-    file_name = payload.file_name
-    file_size = payload.file_size
-    encrypted_file_key = payload.encrypted_file_key
-    file_key_iv = payload.file_key_iv
-    encryption_algorithm = payload.encryption_algorithm
-    mime_type = payload.mime_type
-    folder_id = payload.folder_id
-
-    redis_client = await get_redis()
-
-    # Check storage quota
-    storage_info = await get_user_storage_info_fast(str(current_user.id), db, redis_client)
-    if storage_info['used'] + file_size > storage_info['quota']:
-        logger.warning(
-            f"ZK upload quota exceeded",
-            extra={
-                "user_id": str(current_user.id),
-                "current_usage": storage_info['used'],
-                "quota": storage_info['quota'],
-                "requested_size": file_size
-            }
-        )
-        raise HTTPException(status_code=413, detail="Storage quota exceeded")
-
-    # Determine storage strategy (same as standard upload)
-    if file_size < INLINE_THRESHOLD:
-        storage_strategy = "inline"
-        total_chunks = 0
-    elif file_size < SINGLE_OBJECT_THRESHOLD:
-        storage_strategy = "single"
-        total_chunks = 0
-    else:
-        storage_strategy = "chunked"
-        total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
-
-    upload_id = str(uuid.uuid4())
-
-    # ZK Mode: Do NOT generate file_key - client already did
-    # Store the encrypted file key from client instead
-    session_data = {
-        "id": upload_id,
-        "user": str(current_user.id),
-        "name": file_name,
-        "size": file_size,
-        "folder": folder_id,
-        "strategy": storage_strategy,
-        "chunks": total_chunks,
-        "done": [],
-        "hashes": [],
-        "chunk_paths": {},
-
-        # ZK-specific metadata
-        "zk_mode": True,  # Flag to skip server-side encryption
-        "encrypted_file_key": encrypted_file_key,  # Store encrypted file key
-        "file_key_iv": file_key_iv,  # Store IV
-        "encryption_algorithm": encryption_algorithm,
-        "client_encrypted": True,  # Mark as client-encrypted
-
-        # ZK Thumbnail (client-side generated and encrypted)
-        "encrypted_thumbnail": payload.encrypted_thumbnail,
-        "thumbnail_iv": payload.thumbnail_iv,
-        "thumbnail_width": payload.thumbnail_width,
-        "thumbnail_height": payload.thumbnail_height,
-
-        # Metadata
-        "mime_type": mime_type,
-        "compress": False,  # Never compress ZK files (already encrypted)
-        "start": datetime.utcnow().isoformat(),
-    }
-
-    # Store session in Redis
-    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
-
-    # Structured logging
-    has_thumbnail = payload.encrypted_thumbnail is not None
-    logger.info(
-        "ZK upload initialized",
-        extra={
-            "event": "zk_upload_init",
-            "user_id": str(current_user.id),
-            "upload_id": upload_id,
-            "filename": file_name,
-            "file_size": file_size,
-            "storage_strategy": storage_strategy,
-            "total_chunks": total_chunks,
-            "encryption_algorithm": encryption_algorithm,
-            "mime_type": mime_type,
-            "has_thumbnail": has_thumbnail
-        }
-    )
-
-    # Metrics
-    upload_initiated.labels(
-        user_type=getattr(current_user, 'user_type', 'standard'),
-        storage_strategy=f"zk_{storage_strategy}"  # Tag as ZK upload
-    ).inc()
-    active_uploads.inc()
-
-    thumbnail_info = " + thumbnail" if has_thumbnail else ""
-    print(f"🔐 ZK Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Client encrypted{thumbnail_info}")
-
-    return UploadInitResponse(
-        upload_id=upload_id,
-        storage_strategy=storage_strategy,
-        chunk_size=CHUNK_SIZE if storage_strategy == "chunked" else 0,
-        total_chunks=total_chunks,
-        direct_upload=storage_strategy != "chunked"
+    raise HTTPException(
+        status_code=410,  # Gone - indicates resource moved permanently
+        detail="Zero-Knowledge uploads have moved to the ZK Private Vault service. Please use the ZK service API.",
+        headers={"X-ZK-Service-URL": "http://localhost:8002/api/v1/zk"}
     )
 
 
@@ -396,61 +270,88 @@ async def upload_chunk(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Optimized chunk upload with smart compression"""
+    """Optimized chunk upload with smart compression and bandwidth throttling (plan-aware)"""
     redis_client = await get_redis()
-    
-    session_data = await redis_client.get(f"up:{upload_id}")
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Upload session not found")
+    user_id_str = str(current_user.id)
 
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
-    session = json.loads(session_data)
-    
-    if session["user"] != str(current_user.id):
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    
-    if chunk_index in session["done"]:
-        return {"status": "already_uploaded", "chunk_index": chunk_index}
-    
-    # Prepare storage path
-    storage_tier = "cache"
-    shard = f"{upload_id[:2]}"
-    storage_dir = f"/app/storage/{storage_tier}/{shard}"
+    # Get max streams for this user's plan (or override)
+    max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
+        user_id_str,
+        current_user.plan_type,
+        current_user.max_concurrent_streams
+    )
 
-    # Non-blocking directory creation
-    await asyncio.to_thread(os.makedirs, storage_dir, exist_ok=True)
-    storage_path = f"{storage_dir}/{upload_id}_chunk_{chunk_index}.enc"
-    
-    # Read chunk data
-    chunk_data = await chunk.read()
-
-    # Check if this is a ZK (Zero-Knowledge) upload
-    is_zk_mode = session.get("zk_mode", False)
-
-    if is_zk_mode:
-        # ZK Mode: Chunk is ALREADY encrypted by client
-        # Just store it directly, no server-side encryption
-        encrypted_chunk = chunk_data
-        chunk_hash = hashlib.sha256(chunk_data).hexdigest()
-
-        logger.debug(
-            f"ZK chunk uploaded (no server encryption)",
-            extra={
-                "upload_id": upload_id,
-                "chunk_index": chunk_index,
-                "chunk_size": len(chunk_data),
-                "zk_mode": True
-            }
+    # ============ BANDWIDTH THROTTLING: Acquire stream slot (plan-aware) ============
+    stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
+        user_id_str,
+        plan_type=current_user.plan_type,
+        db_streams_override=current_user.max_concurrent_streams
+    )
+    if not stream_acquired:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent uploads. Maximum {max_streams} streams allowed for your plan.",
+            headers={"Retry-After": "10"}
         )
 
-        # Write encrypted data directly (no re-encryption)
-        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
-            await f.write(encrypted_chunk)
-    else:
-        # Standard Mode: Server-side encryption (existing flow)
-        # Get encryption key
+    try:
+        # ============ BANDWIDTH THROTTLING: Check bandwidth limit (plan-aware) ============
+        # Use Content-Length header for size (Fix #3 from review)
+        chunk_size = int(request.headers.get("content-length", 0))
+        if chunk_size > 0:
+            allowed, wait_time = await bandwidth_throttle_service.can_transfer(
+                user_id_str,
+                chunk_size,
+                plan_type=current_user.plan_type,
+                db_bandwidth_override=current_user.bandwidth_limit_mbps
+            )
+            if not allowed:
+                if wait_time > 5.0:
+                    # Return 429 with Retry-After for long waits
+                    await bandwidth_throttle_service.release_stream_slot(user_id_str)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
+                        headers={"Retry-After": str(int(wait_time))}
+                    )
+                # Short wait - apply throttling
+                await asyncio.sleep(min(wait_time, 1.0))
+
+        session_data = await redis_client.get(f"up:{upload_id}")
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Upload session not found")
+
+        # Handle both bytes and string from Redis
+        if isinstance(session_data, bytes):
+            session_data = session_data.decode('utf-8')
+        session = json.loads(session_data)
+
+        if session["user"] != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        if chunk_index in session["done"]:
+            return {"status": "already_uploaded", "chunk_index": chunk_index}
+
+        # Prepare storage path
+        storage_tier = "cache"
+        shard = f"{upload_id[:2]}"
+        storage_dir = f"/app/storage/{storage_tier}/{shard}"
+
+        # Non-blocking directory creation
+        await asyncio.to_thread(os.makedirs, storage_dir, exist_ok=True)
+        storage_path = f"{storage_dir}/{upload_id}_chunk_{chunk_index}.enc"
+
+        # Read chunk data
+        chunk_data = await chunk.read()
+
+        # Reject ZK uploads - they should go to the separate ZK service
+        if session.get("zk_mode", False):
+            raise HTTPException(
+                status_code=400,
+                detail="Zero-Knowledge uploads are handled by the ZK Private Vault service."
+            )
+
+        # Server-side encryption
         file_key = encryption_service.decrypt_key(session["key"])
 
         # Process in thread pool (encryption + optional compression)
@@ -465,27 +366,30 @@ async def upload_chunk(
         # Write encrypted data asynchronously with larger buffer
         async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
             await f.write(encrypted_chunk)
-    
-    # Update session
-    session["done"].append(chunk_index)
-    session["hashes"].append(chunk_hash)
-    session["chunk_paths"][str(chunk_index)] = storage_path
-    
-    # Fire-and-forget Redis update
-    asyncio.create_task(
-        redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
-    )
-    
-    progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
 
-    return {
-        "status": "success",
-        "chunk_index": chunk_index,
-        "progress": round(progress, 1),
-        "encrypted": True,
-        "compressed": session.get("compress", False) if not is_zk_mode else False,
-        "zk_mode": is_zk_mode,  # Indicate if this is a ZK upload
-    }
+        # Update session
+        session["done"].append(chunk_index)
+        session["hashes"].append(chunk_hash)
+        session["chunk_paths"][str(chunk_index)] = storage_path
+
+        # Fire-and-forget Redis update
+        asyncio.create_task(
+            redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+        )
+
+        progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
+
+        return {
+            "status": "success",
+            "chunk_index": chunk_index,
+            "progress": round(progress, 1),
+            "encrypted": True,
+            "compressed": session.get("compress", False),
+        }
+
+    finally:
+        # ============ BANDWIDTH THROTTLING: Always release stream slot ============
+        await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
 @router.post("/direct/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def upload_direct(
@@ -495,79 +399,123 @@ async def upload_direct(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Direct upload for small and medium files with optimized processing"""
+    """Direct upload for small and medium files with optimized processing and bandwidth throttling (plan-aware)"""
     redis_client = await get_redis()
-    
-    session_data = await redis_client.get(f"up:{upload_id}")
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Upload session not found")
+    user_id_str = str(current_user.id)
 
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
-    session = json.loads(session_data)
-    
-    if session["user"] != str(current_user.id):
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    
-    # Read file data
-    file_data = await file.read()
-    
-    # Process in thread pool
-    loop = asyncio.get_event_loop()
-    file_key = encryption_service.decrypt_key(session["key"])
-    use_compression = session.get("compress", False)
-    
-    def process_file():
-        # Optional compression
-        if use_compression:
-            from ..utils.compression import compressor
-            file_data_processed = compressor.compress(file_data)
-        else:
-            file_data_processed = file_data
-        
-        # Encrypt
-        encrypted_data = encryption_service.encrypt_file(file_data_processed, file_key)
-        file_hash = hashlib.sha256(file_data).hexdigest()  # Hash of original data
-        return encrypted_data, file_hash
-    
-    encrypted_data, file_hash = await loop.run_in_executor(executor, process_file)
-    
-    # Determine storage location
-    file_id = session["id"]
-    storage_tier = "cache"
-    
-    if session["strategy"] == "inline":
-        # For inline, store in database
-        session["encrypted_data"] = base64.b64encode(encrypted_data).decode()
-        session["storage_type"] = "inline"
-    else:  # single
-        # For single files, store on disk
-        shard = "objects"
-        storage_dir = f"/app/storage/{storage_tier}/{shard}"
+    # Get max streams for this user's plan (or override)
+    max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
+        user_id_str,
+        current_user.plan_type,
+        current_user.max_concurrent_streams
+    )
 
-        # Non-blocking directory creation
-        await asyncio.to_thread(os.makedirs, storage_dir, exist_ok=True)
+    # ============ BANDWIDTH THROTTLING: Acquire stream slot (plan-aware) ============
+    stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
+        user_id_str,
+        plan_type=current_user.plan_type,
+        db_streams_override=current_user.max_concurrent_streams
+    )
+    if not stream_acquired:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent uploads. Maximum {max_streams} streams allowed for your plan.",
+            headers={"Retry-After": "10"}
+        )
 
-        storage_path = f"{storage_dir}/{file_id}.enc"
-        
-        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
-            await f.write(encrypted_data)
-        
-        session["storage_path"] = storage_path
-        session["storage_type"] = "single"
-    
-    session["hash"] = file_hash
-    
-    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
-    
-    return {
-        "status": "success",
-        "upload_id": upload_id,
-        "encrypted": True,
-        "compressed": use_compression,
-        "ready_for_completion": True
-    }
+    try:
+        # ============ BANDWIDTH THROTTLING: Check bandwidth limit (plan-aware) ============
+        file_size = int(request.headers.get("content-length", 0))
+        if file_size > 0:
+            allowed, wait_time = await bandwidth_throttle_service.can_transfer(
+                user_id_str,
+                file_size,
+                plan_type=current_user.plan_type,
+                db_bandwidth_override=current_user.bandwidth_limit_mbps
+            )
+            if not allowed:
+                if wait_time > 5.0:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
+                        headers={"Retry-After": str(int(wait_time))}
+                    )
+                await asyncio.sleep(min(wait_time, 1.0))
+
+        session_data = await redis_client.get(f"up:{upload_id}")
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Upload session not found")
+
+        # Handle both bytes and string from Redis
+        if isinstance(session_data, bytes):
+            session_data = session_data.decode('utf-8')
+        session = json.loads(session_data)
+
+        if session["user"] != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        # Read file data
+        file_data = await file.read()
+
+        # Process in thread pool
+        loop = asyncio.get_event_loop()
+        file_key = encryption_service.decrypt_key(session["key"])
+        use_compression = session.get("compress", False)
+
+        def process_file():
+            # Optional compression
+            if use_compression:
+                from ..utils.compression import compressor
+                file_data_processed = compressor.compress(file_data)
+            else:
+                file_data_processed = file_data
+
+            # Encrypt
+            encrypted_data = encryption_service.encrypt_file(file_data_processed, file_key)
+            file_hash = hashlib.sha256(file_data).hexdigest()  # Hash of original data
+            return encrypted_data, file_hash
+
+        encrypted_data, file_hash = await loop.run_in_executor(executor, process_file)
+
+        # Determine storage location
+        file_id = session["id"]
+        storage_tier = "cache"
+
+        if session["strategy"] == "inline":
+            # For inline, store in database
+            session["encrypted_data"] = base64.b64encode(encrypted_data).decode()
+            session["storage_type"] = "inline"
+        else:  # single
+            # For single files, store on disk
+            shard = "objects"
+            storage_dir = f"/app/storage/{storage_tier}/{shard}"
+
+            # Non-blocking directory creation
+            await asyncio.to_thread(os.makedirs, storage_dir, exist_ok=True)
+
+            storage_path = f"{storage_dir}/{file_id}.enc"
+
+            async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                await f.write(encrypted_data)
+
+            session["storage_path"] = storage_path
+            session["storage_type"] = "single"
+
+        session["hash"] = file_hash
+
+        await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+
+        return {
+            "status": "success",
+            "upload_id": upload_id,
+            "encrypted": True,
+            "compressed": use_compression,
+            "ready_for_completion": True
+        }
+
+    finally:
+        # ============ BANDWIDTH THROTTLING: Always release stream slot ============
+        await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
 @router.get("/status/{upload_id}")
 async def get_upload_status(
@@ -687,44 +635,33 @@ async def complete_upload(
     file_id = uuid.uuid4()
     mime_type = session.get("mime_type") or mimetypes.guess_type(session["name"])[0]
 
-    # Check if this is a ZK upload
+    # Check if this is a ZK upload - ZK is now a completely separate service
     is_zk_mode = session.get("zk_mode", False)
 
-    # Prepare ZK-specific fields if applicable
-    zk_fields = {}
     if is_zk_mode:
-        zk_fields = {
-            "is_encrypted": True,
-            "encrypted_file_key": session.get("encrypted_file_key"),
-            "file_key_iv": session.get("file_key_iv"),
-            "encryption_algorithm": session.get("encryption_algorithm", "AES-256-GCM"),
-            "uploaded_at": datetime.utcnow(),
-            "upload_id": upload_id,
-        }
-        logger.info(
-            "ZK upload completed",
-            extra={
-                "event": "zk_upload_complete",
-                "user_id": str(current_user.id),
-                "upload_id": upload_id,
-                "file_id": str(file_id),
-                "filename": session["name"],
-                "file_size": session["size"],
-                "storage_strategy": storage_strategy,
-                "encryption_algorithm": session.get("encryption_algorithm")
-            }
+        # ZK uploads should go to the dedicated ZK service (vault.yourservice.com)
+        raise HTTPException(
+            status_code=400,
+            detail="Zero-Knowledge uploads are handled by the ZK Private Vault service. "
+                   "Please use vault.yourservice.com for encrypted storage."
         )
 
-    # Build file_metadata including ZK thumbnail if present
+    # ============ QUOTA ENFORCEMENT ============
+    # Check quota BEFORE creating the file record
+    file_size = session["size"]
+    storage_quota = current_user.storage_quota or 0
+    storage_used = current_user.storage_used or 0
+
+    if storage_used + file_size > storage_quota:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Storage quota exceeded. Used: {storage_used / (1024**3):.2f} GB, "
+                   f"Limit: {storage_quota / (1024**3):.2f} GB, "
+                   f"File size: {file_size / (1024**2):.2f} MB"
+        )
+
+    # Build file metadata
     file_metadata_dict = {"compressed": session.get("compress", False)}
-    if is_zk_mode and session.get("encrypted_thumbnail"):
-        file_metadata_dict["zk_thumbnail"] = {
-            "encrypted_thumbnail": session.get("encrypted_thumbnail"),
-            "thumbnail_iv": session.get("thumbnail_iv"),
-            "width": session.get("thumbnail_width"),
-            "height": session.get("thumbnail_height"),
-        }
-        logger.info(f"ZK thumbnail stored for file {session['name']}")
 
     # Create database record based on storage type
     if storage_strategy == "inline":
@@ -738,10 +675,9 @@ async def complete_upload(
             storage_type="inline",
             storage_key=session.get("encrypted_data", ""),
             content_hash=session.get("hash", ""),
-            encryption_key=session.get("key") if not is_zk_mode else None,
+            encryption_key=session.get("key"),
             storage_tier="cache",
             file_metadata=file_metadata_dict,
-            **zk_fields  # Add ZK fields if applicable
         )
     
     elif storage_strategy == "single":
@@ -755,10 +691,9 @@ async def complete_upload(
             storage_type="single",
             object_path=session.get("storage_path", ""),
             content_hash=session.get("hash", ""),
-            encryption_key=session.get("key") if not is_zk_mode else None,
+            encryption_key=session.get("key"),
             storage_tier="cache",
             file_metadata=file_metadata_dict,
-            **zk_fields  # Add ZK fields if applicable
         )
     
     else:  # chunked
@@ -773,26 +708,24 @@ async def complete_upload(
             mime_type=mime_type,
             storage_type="chunked",
             content_hash=combined_hash,
-            encryption_key=session.get("key") if not is_zk_mode else None,
+            encryption_key=session.get("key"),
             chunk_info={
                 "chunks": session["hashes"],
                 "count": session["chunks"],
                 "paths": session.get("chunk_paths", {}),
                 "upload_id": upload_id,
                 "compressed": session.get("compress", False),
-                "zk_mode": is_zk_mode,  # Mark chunks as ZK-encrypted
                 "chunk_size": CHUNK_SIZE  # Store chunk size for download
             },
             storage_tier="cache",
             file_metadata=file_metadata_dict,
-            **zk_fields  # Add ZK fields if applicable
         )
     
     # Save to database with proper error handling
     try:
         db.add(file_obj)
 
-        # Update user storage
+        # Update user storage usage
         if hasattr(current_user, 'storage_used'):
             current_user.storage_used = (current_user.storage_used or 0) + session["size"]
 
@@ -1077,7 +1010,7 @@ async def complete_upload(
     # Metrics
     duration = (datetime.utcnow() - start_time).total_seconds()
     upload_completed.labels(
-        user_type=getattr(current_user, 'user_type', 'standard'),
+        plan_type=getattr(current_user, 'plan_type', 'free'),
         storage_strategy=storage_strategy,
         status="success"
     ).inc()

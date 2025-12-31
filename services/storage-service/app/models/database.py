@@ -22,22 +22,25 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     username = Column(String(100), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    user_type = Column(String(20), default="individual")
-    storage_quota = Column(BigInteger, default=107374182400)  # 100GB default
+    plan_type = Column(String(20), default="free")  # free, basic, pro, team
+
+    # Storage quota (Normal storage only - ZK is a separate service)
+    storage_quota = Column(BigInteger, default=5368709120)  # 5GB default (free tier)
     storage_used = Column(BigInteger, default=0)
+
+    # Bandwidth overrides (NULL = use plan default from PLAN_LIMITS)
+    bandwidth_limit_mbps = Column(Integer, nullable=True)
+    bandwidth_burst_mbps = Column(Integer, nullable=True)
+    max_concurrent_streams = Column(Integer, nullable=True)
+
     is_active = Column(Boolean, default=True)
     theme_preference = Column(String(10), default="light")
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Zero-Knowledge Encryption fields (added for dual-mode support)
-    zk_enabled = Column(Boolean, default=False)
-    encrypted_master_key = Column(Text, nullable=True)
-    kdf_salt = Column(BYTEA, nullable=True)
-    kdf_algorithm = Column(String(20), default='pbkdf2', nullable=True)
-    kdf_iterations = Column(Integer, default=600000, nullable=True)
-    recovery_phrase_enabled = Column(Boolean, default=False)
-    recovery_encrypted_master_key = Column(Text, nullable=True)
-    recovery_phrase_hash = Column(String(64), nullable=True)
+    # Stripe billing integration
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    billing_status = Column(String(20), default="active")  # active, past_due, canceled
 
     # Video optimization preferences
     # 'keep_both': Store original + optimized MP4 (default)
@@ -84,20 +87,10 @@ class Object(Base):
     is_deleted = Column(Boolean, default=False)  # Soft delete for trash functionality
     deleted_at = Column(DateTime, nullable=True)  # Timestamp when file was moved to trash
 
-    # Encryption mode to distinguish file types
-    # Values: 'none' (no encryption), 'server_side' (storage service encrypts), 'client_zk' (ZK client-side encryption)
+    # Encryption mode for server-side encryption
+    # Values: 'none' (no encryption), 'server_side' (storage service encrypts)
+    # Note: Client-side ZK encryption is handled by the separate ZK service
     encryption_mode = Column(String(20), default='none', nullable=False, index=True)
-
-    # Zero-Knowledge Encryption fields (for client-side encrypted files)
-    is_encrypted = Column(Boolean, default=False)  # True if client-side encrypted
-    encrypted_file_key = Column(Text, nullable=True)  # File key encrypted with user's master key
-    file_key_iv = Column(String(255), nullable=True)  # IV used for file key encryption
-    encryption_algorithm = Column(String(50), default="AES-256-GCM", nullable=True)
-    encryption_version = Column(Integer, default=1, nullable=True)  # 1=V1 (basic), 2=V2 (HKDF+AAD)
-    upload_status = Column(String(20), default="completed", nullable=True)  # pending, uploading, completed, failed
-    upload_id = Column(String(255), nullable=True)  # Upload session ID
-    uploaded_at = Column(DateTime, nullable=True)  # Timestamp when upload completed
-    file_hash = Column(String(128), nullable=True)  # Hash of encrypted file (client-computed)
 
     # Video processing status (for proactive optimization pipeline)
     # NULL: Not a video or not yet queued

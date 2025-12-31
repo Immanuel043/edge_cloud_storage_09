@@ -31,6 +31,9 @@ mnemonic==0.20
 httpx==0.25.1
 aiofiles==23.2.1
 
+# Billing
+stripe==7.0.0
+
 # Utilities
 python-dotenv==1.0.0
 pydantic==2.5.0

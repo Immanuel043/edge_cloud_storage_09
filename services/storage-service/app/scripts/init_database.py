@@ -161,7 +161,7 @@ async def create_initial_data():
         # You can add seed data here if needed
         # Example:
         # await conn.execute(text("""
-        #     INSERT INTO users (id, email, username, password_hash, user_type)
+        #     INSERT INTO users (id, email, username, password_hash, plan_type)
         #     VALUES (gen_random_uuid(), 'admin@example.com', 'admin', 'hashed_password', 'admin')
         #     ON CONFLICT DO NOTHING
         # """))

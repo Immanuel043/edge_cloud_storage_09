@@ -33,6 +33,7 @@ import httpx
 from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_zk_user
+from app.services.bandwidth_throttle import bandwidth_throttle_service
 
 logger = structlog.get_logger()
 
@@ -299,12 +300,34 @@ async def upload_chunk(
     """
     from app.models.database import StorageObject
 
-    logger.info(
-        "zk_chunk_upload",
-        user_id=str(user.id),
-        upload_id=upload_id,
-        chunk_index=chunk_index
+    user_id_str = str(user.id)
+
+    # ============ BANDWIDTH THROTTLING: Acquire stream slot ============
+    max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
+        user_id_str,
+        user.plan_type,
+        getattr(user, 'max_concurrent_streams', None)
     )
+
+    stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
+        user_id_str,
+        plan_type=user.plan_type,
+        db_streams_override=getattr(user, 'max_concurrent_streams', None)
+    )
+    if not stream_acquired:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent uploads ({max_streams} max). Please wait and retry.",
+            headers={"Retry-After": "10"}
+        )
+
+    try:
+        logger.info(
+            "zk_chunk_upload",
+            user_id=user_id_str,
+            upload_id=upload_id,
+            chunk_index=chunk_index
+        )
 
     # Verify upload exists
     result = await db.execute(
@@ -336,39 +359,62 @@ async def upload_chunk(
         )
         await db.commit()
 
-    # Read encrypted chunk
-    chunk_data = await chunk.read()
+        # Read encrypted chunk
+        chunk_data = await chunk.read()
+        
+        # ============ BANDWIDTH THROTTLING: Check bandwidth limit ============
+        chunk_size = len(chunk_data)
+        if chunk_size > 0:
+            allowed, wait_time = await bandwidth_throttle_service.can_transfer(
+                user_id_str,
+                chunk_size,
+                plan_type=user.plan_type,
+                db_bandwidth_override=getattr(user, 'bandwidth_limit_mbps', None)
+            )
+            if not allowed:
+                if wait_time > 5.0:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Bandwidth limit exceeded. Retry after {int(wait_time)} seconds.",
+                        headers={"Retry-After": str(int(wait_time))}
+                    )
+                import asyncio
+                await asyncio.sleep(min(wait_time, 1.0))
 
-    # TODO: Store chunk in object storage (S3, MinIO, local filesystem)
-    # For now, we'll use a simple file storage approach
-    # In production, integrate with your storage backend
+        # TODO: Store chunk in object storage (S3, MinIO, local filesystem)
+        # For now, we'll use a simple file storage approach
+        # In production, integrate with your storage backend
 
-    import os
-    from pathlib import Path
+        import os
+        from pathlib import Path
 
-    # Storage directory - use ZK-specific isolated path
-    storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
-    storage_dir.mkdir(parents=True, exist_ok=True)
+        # Storage directory - use ZK-specific isolated path
+        storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
+        storage_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write encrypted chunk
-    chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
-    with open(chunk_path, "wb") as f:
-        f.write(chunk_data)
+        # Write encrypted chunk
+        chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
+        with open(chunk_path, "wb") as f:
+            f.write(chunk_data)
 
-    logger.info(
-        "zk_chunk_stored",
-        user_id=str(user.id),
-        upload_id=upload_id,
-        chunk_index=chunk_index,
-        chunk_size=len(chunk_data)
-    )
+        logger.info(
+            "zk_chunk_stored",
+            user_id=user_id_str,
+            upload_id=upload_id,
+            chunk_index=chunk_index,
+            chunk_size=chunk_size
+        )
 
-    return {
-        "upload_id": upload_id,
-        "chunk_index": chunk_index,
-        "status": "uploaded",
-        "chunk_size": len(chunk_data)
-    }
+        return {
+            "upload_id": upload_id,
+            "chunk_index": chunk_index,
+            "status": "uploaded",
+            "chunk_size": chunk_size
+        }
+
+    finally:
+        # ============ BANDWIDTH THROTTLING: Always release stream slot ============
+        await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
 
 @router.post("/upload/complete/{upload_id}")

@@ -32,6 +32,7 @@ from sqlalchemy import select, update, func
 from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_zk_user
+from app.services.bandwidth_throttle import bandwidth_throttle_service
 
 logger = structlog.get_logger()
 
@@ -311,31 +312,67 @@ async def download_file(
     chunk_size = 1048576  # 1MB
     total_chunks = (file_obj.file_size + chunk_size - 1) // chunk_size
 
-    # Stream encrypted chunks
+    # ============ BANDWIDTH THROTTLING: Acquire stream slot ============
+    user_id_str = str(user.id)
+    
+    stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
+        user_id_str,
+        plan_type=user.plan_type,
+        db_streams_override=getattr(user, 'max_concurrent_streams', None)
+    )
+    if not stream_acquired:
+        max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
+            user_id_str, user.plan_type, getattr(user, 'max_concurrent_streams', None)
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent downloads ({max_streams} max). Please wait and retry.",
+            headers={"Retry-After": "10"}
+        )
+
+    # Stream encrypted chunks with throttling
     async def chunk_generator():
-        """Generate encrypted chunks for streaming"""
-        for chunk_index in range(total_chunks):
-            chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
+        """Generate encrypted chunks for streaming with bandwidth throttling"""
+        import asyncio
+        
+        try:
+            for chunk_index in range(total_chunks):
+                chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
 
-            if not chunk_path.exists():
-                logger.error(
-                    "missing_chunk",
-                    file_id=file_id,
-                    chunk_index=chunk_index
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Missing chunk {chunk_index}"
-                )
+                if not chunk_path.exists():
+                    logger.error(
+                        "missing_chunk",
+                        file_id=file_id,
+                        chunk_index=chunk_index
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Missing chunk {chunk_index}"
+                    )
 
-            # Read and yield encrypted chunk
-            with open(chunk_path, "rb") as f:
-                chunk_data = f.read()
+                # Read encrypted chunk
+                with open(chunk_path, "rb") as f:
+                    chunk_data = f.read()
+                
+                # ============ BANDWIDTH THROTTLING: Check bandwidth ============
+                chunk_size = len(chunk_data)
+                allowed, wait_time = await bandwidth_throttle_service.can_transfer(
+                    user_id_str,
+                    chunk_size,
+                    plan_type=user.plan_type,
+                    db_bandwidth_override=getattr(user, 'bandwidth_limit_mbps', None)
+                )
+                if not allowed:
+                    await asyncio.sleep(min(wait_time, 1.0))
+                
                 yield chunk_data
+        finally:
+            # ============ BANDWIDTH THROTTLING: Release stream slot ============
+            await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
     logger.info(
         "zk_download_started",
-        user_id=str(user.id),
+        user_id=user_id_str,
         file_id=file_id,
         filename=file_obj.file_name,
         total_chunks=total_chunks
@@ -410,23 +447,44 @@ async def download_chunk(
             detail=f"Chunk {chunk_index} not found"
         )
 
+    # ============ BANDWIDTH THROTTLING: Check bandwidth limit ============
+    user_id_str = str(user.id)
+    
     # Read encrypted chunk
     with open(chunk_path, "rb") as f:
         chunk_data = f.read()
+    
+    chunk_size = len(chunk_data)
+    if chunk_size > 0:
+        import asyncio
+        allowed, wait_time = await bandwidth_throttle_service.can_transfer(
+            user_id_str,
+            chunk_size,
+            plan_type=user.plan_type,
+            db_bandwidth_override=getattr(user, 'bandwidth_limit_mbps', None)
+        )
+        if not allowed:
+            if wait_time > 5.0:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Bandwidth limit exceeded. Retry after {int(wait_time)} seconds.",
+                    headers={"Retry-After": str(int(wait_time))}
+                )
+            await asyncio.sleep(min(wait_time, 1.0))
 
     logger.info(
         "zk_chunk_downloaded",
-        user_id=str(user.id),
+        user_id=user_id_str,
         file_id=file_id,
         chunk_index=chunk_index,
-        chunk_size=len(chunk_data)
+        chunk_size=chunk_size
     )
 
     return StreamingResponse(
         iter([chunk_data]),
         media_type="application/octet-stream",
         headers={
-            "Content-Length": str(len(chunk_data)),
+            "Content-Length": str(chunk_size),
             "X-Chunk-Index": str(chunk_index),
             "X-File-Encrypted": "true"
         }

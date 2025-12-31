@@ -9,13 +9,13 @@ from datetime import datetime
 upload_initiated = Counter(
     'storage_upload_initiated_total',
     'Total number of uploads initiated',
-    ['user_type', 'storage_strategy']
+    ['plan_type', 'storage_strategy']
 )
 
 upload_completed = Counter(
     'storage_upload_completed_total',
     'Total number of uploads completed',
-    ['user_type', 'storage_strategy', 'status']
+    ['plan_type', 'storage_strategy', 'status']
 )
 
 upload_duration = Histogram(
@@ -62,19 +62,19 @@ errors_total = Counter(
 url_upload_initiated = Counter(
     'storage_url_upload_initiated_total',
     'Total number of URL uploads initiated',
-    ['user_type']
+    ['plan_type']
 )
 
 url_upload_completed = Counter(
     'storage_url_upload_completed_total',
     'Total number of URL uploads completed',
-    ['user_type', 'status']
+    ['plan_type', 'status']
 )
 
 url_upload_failed = Counter(
     'storage_url_upload_failed_total',
     'Total number of URL uploads failed',
-    ['user_type', 'failure_reason']
+    ['plan_type', 'failure_reason']
 )
 
 url_upload_duration = Histogram(
@@ -86,7 +86,7 @@ url_upload_duration = Histogram(
 url_download_bytes = Counter(
     'storage_url_download_bytes_total',
     'Total bytes downloaded from URLs',
-    ['user_type']
+    ['plan_type']
 )
 
 url_upload_active = Gauge(
@@ -98,19 +98,19 @@ url_upload_active = Gauge(
 folder_upload_initiated = Counter(
     'storage_folder_upload_initiated_total',
     'Total number of folder uploads initiated',
-    ['user_type']
+    ['plan_type']
 )
 
 folder_upload_completed = Counter(
     'storage_folder_upload_completed_total',
     'Total number of folder uploads completed',
-    ['user_type', 'status']
+    ['plan_type', 'status']
 )
 
 folder_files_uploaded = Counter(
     'storage_folder_files_uploaded_total',
     'Total files uploaded in folder uploads',
-    ['user_type']
+    ['plan_type']
 )
 
 folder_upload_active = Gauge(

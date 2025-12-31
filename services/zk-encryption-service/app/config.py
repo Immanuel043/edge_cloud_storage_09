@@ -10,48 +10,101 @@ from pydantic import Field
 
 
 class Settings(BaseSettings):
-    """ZK Service Settings"""
+    """ZK Service Settings - Fully Independent from Storage Service"""
 
     # Service Info
     SERVICE_NAME: str = "zk-encryption-service"
-    VERSION: str = "1.0.0"
+    VERSION: str = "2.0.0"  # Major version bump for separation
     DEBUG: bool = Field(default=False, env="DEBUG")
 
     # API Settings
     API_PREFIX: str = "/api/v1/zk"
     ZK_SERVICE_PORT: int = Field(default=8002, env="ZK_SERVICE_PORT")
 
-    # Database
-    DATABASE_URL: str = Field(..., env="DATABASE_URL")
+    # Database - SEPARATE from Storage Service
+    # Uses its own PostgreSQL instance/database
+    # NOTE: Use ZK_DATABASE_URL to avoid conflict with storage service's DATABASE_URL
+    ZK_DATABASE_URL: str = Field(
+        default="postgresql+asyncpg://zk_admin:secure_password@zk-postgres:5432/zk_db",
+        env="ZK_DATABASE_URL"
+    )
+    
+    @property
+    def DATABASE_URL(self) -> str:
+        """Alias for backward compatibility"""
+        return self.ZK_DATABASE_URL
     DB_POOL_SIZE: int = Field(default=20, env="DB_POOL_SIZE")
     DB_MAX_OVERFLOW: int = Field(default=40, env="DB_MAX_OVERFLOW")
 
-    # Redis
-    REDIS_URL: str = Field(..., env="REDIS_URL")
+    # Redis (can be shared or separate)
+    # NOTE: Use ZK_REDIS_URL to avoid conflict with storage service's REDIS_URL
+    ZK_REDIS_URL: str = Field(
+        default="redis://redis:6379/1",  # Different DB number for isolation
+        env="ZK_REDIS_URL"
+    )
+    
+    @property
+    def REDIS_URL(self) -> str:
+        """Alias for backward compatibility"""
+        return self.ZK_REDIS_URL
     REDIS_SESSION_TTL: int = Field(default=3600, env="REDIS_SESSION_TTL")  # 1 hour
 
-    # Storage Settings
-    STORAGE_SERVICE_URL: str = Field(
-        default="http://storage-service:8000",
-        env="STORAGE_SERVICE_URL"
-    )
-    STORAGE_PATH: str = Field(
-        default="/app/storage",
-        env="STORAGE_PATH"
-    )
-    # ZK-specific storage path - isolated from normal storage
+    # Storage Settings - Completely isolated
     ZK_STORAGE_PATH: str = Field(
         default="/app/storage/zk",
         env="ZK_STORAGE_PATH"
     )
 
-    # JWT Settings (shared with storage service)
-    SECRET_KEY: str = Field(..., env="SECRET_KEY")
+    # JWT Settings (own auth, separate from storage service)
+    SECRET_KEY: str = Field(
+        default="zk-secret-key-change-in-production",
+        env="ZK_SECRET_KEY"
+    )
     ALGORITHM: str = Field(default="HS256", env="ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=120,
         env="ACCESS_TOKEN_EXPIRE_MINUTES"
     )
+
+    # Stripe Integration (separate from storage service)
+    STRIPE_SECRET_KEY: str = Field(default="", env="ZK_STRIPE_SECRET_KEY")
+    STRIPE_WEBHOOK_SECRET: str = Field(default="", env="ZK_STRIPE_WEBHOOK_SECRET")
+
+    # ZK Plan Limits - Independent pricing/quotas with bandwidth controls
+    PLAN_LIMITS: dict = {
+        "free": {
+            "name": "Free",
+            "storage_bytes": 1 * 1024**3,        # 1 GB
+            "bandwidth_mbps": 5,
+            "burst_mbps": 10,
+            "max_streams": 2,
+            "stripe_price_id": None,
+        },
+        "personal": {
+            "name": "Personal",
+            "storage_bytes": 50 * 1024**3,       # 50 GB
+            "bandwidth_mbps": 25,
+            "burst_mbps": 50,
+            "max_streams": 5,
+            "stripe_price_id": "price_zk_personal",
+        },
+        "professional": {
+            "name": "Professional",
+            "storage_bytes": 200 * 1024**3,      # 200 GB
+            "bandwidth_mbps": 100,
+            "burst_mbps": 200,
+            "max_streams": 10,
+            "stripe_price_id": "price_zk_professional",
+        },
+        "enterprise": {
+            "name": "Enterprise",
+            "storage_bytes": 1 * 1024**4,        # 1 TB
+            "bandwidth_mbps": 500,
+            "burst_mbps": 1000,
+            "max_streams": 25,
+            "stripe_price_id": "price_zk_enterprise",
+        },
+    }
 
     # ZK Encryption Settings
     DEFAULT_KDF_ALGORITHM: str = Field(default="pbkdf2", env="DEFAULT_KDF_ALGORITHM")

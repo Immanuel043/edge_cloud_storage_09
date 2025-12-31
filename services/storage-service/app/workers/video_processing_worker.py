@@ -245,17 +245,8 @@ class VideoProcessingWorker:
                         logger.warning(f"User not found: {user_id}")
                         return
 
-                    # Skip video optimization for ZK users - their files are encrypted
-                    # with client-side keys that the server cannot access
-                    if user.zk_enabled:
-                        logger.info(
-                            f"Skipping video optimization for ZK user: {file_name} "
-                            "(files encrypted with client-side key)"
-                        )
-                        file_obj.video_processing_status = 'skipped'
-                        file_obj.video_processing_error = 'ZK encryption - client-side decryption required'
-                        await db.commit()
-                        return
+                    # Note: ZK encrypted files are handled by the separate ZK service
+                    # and will never appear in this storage service
 
                     # Check if already processed (in case of duplicate messages)
                     if file_obj.video_processing_status in ('ready', 'skipped'):

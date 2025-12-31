@@ -52,12 +52,46 @@ class Settings:
     MAX_VERSIONS_PER_FILE = int(os.getenv("MAX_VERSIONS_PER_FILE", 50))
     AUTO_VERSION_ON_UPDATE = os.getenv("AUTO_VERSION_ON_UPDATE", "true").lower() == "true"
     
-    # User Storage Quotas
-    QUOTAS = {
-        "individual": 100 * 1024**3,  # 100GB
-        "business": 1024**4,          # 1TB
-        "enterprise": 10 * 1024**4,   # 10TB
+    # Plan Limits (Normal Storage Service only)
+    # Note: ZK storage is a completely separate service with its own plans
+    PLAN_LIMITS = {
+        "free": {
+            "name": "Free",
+            "storage_bytes": 5 * 1024**3,        # 5 GB
+            "bandwidth_mbps": 5,
+            "burst_mbps": 10,
+            "max_streams": 2,
+            "stripe_price_id": None,
+        },
+        "basic": {
+            "name": "Basic",
+            "storage_bytes": 200 * 1024**3,      # 200 GB
+            "bandwidth_mbps": 25,
+            "burst_mbps": 50,
+            "max_streams": 5,
+            "stripe_price_id": "price_normal_basic",
+        },
+        "pro": {
+            "name": "Pro",
+            "storage_bytes": 1 * 1024**4,        # 1 TB
+            "bandwidth_mbps": 100,
+            "burst_mbps": 200,
+            "max_streams": 10,
+            "stripe_price_id": "price_normal_pro",
+        },
+        "team": {
+            "name": "Team",
+            "storage_bytes": 5 * 1024**4,        # 5 TB
+            "bandwidth_mbps": 500,
+            "burst_mbps": 1000,
+            "max_streams": 25,
+            "stripe_price_id": "price_normal_team",
+        },
     }
+
+    # Stripe Configuration
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
     # URL Upload Configuration
     URL_UPLOAD_ENABLED: bool = os.getenv("URL_UPLOAD_ENABLED", "true").lower() == "true"

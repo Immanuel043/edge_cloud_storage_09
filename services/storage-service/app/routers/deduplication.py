@@ -242,7 +242,7 @@ async def run_garbage_collection(
     allowed_emails = [email.strip() for email in allowed_emails if email.strip()]
     
     # Allow admin users or emails in the allowed list
-    if current_user.user_type != "admin" and current_user.email not in allowed_emails:
+    if current_user.plan_type != "admin" and current_user.email not in allowed_emails:
         raise HTTPException(403, f"Access denied for {current_user.email}")
     
     # Run cleanup in background

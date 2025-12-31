@@ -10,7 +10,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     username: str
     password: str
-    user_type: str = "individual"
+    plan_type: str = "individual"
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -20,7 +20,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     username: str
-    user_type: str
+    plan_type: str
     storage_quota: int
     storage_used: int
     theme: str
@@ -250,85 +250,6 @@ class UploadStatusResponse(BaseModel):
     uploaded_chunks: List[int]
     missing_chunks: List[int]
     progress: float
-
-# Zero-Knowledge Upload Schemas
-class ZKUploadInitRequest(BaseModel):
-    """Request schema for ZK upload initialization"""
-    file_name: str
-    file_size: int
-    mime_type: Optional[str] = None
-    folder_id: Optional[str] = None
-
-    # ZK-specific fields
-    encrypted_file_key: str  # Base64-encoded encrypted file key
-    file_key_iv: str  # Base64-encoded initialization vector
-    encryption_algorithm: str = "AES-256-GCM"
-
-    # ZK Thumbnail fields (client-side generated, encrypted with derived key)
-    encrypted_thumbnail: Optional[str] = None  # Base64-encoded encrypted thumbnail
-    thumbnail_iv: Optional[str] = None  # Base64-encoded IV for thumbnail encryption
-    thumbnail_width: Optional[int] = None  # Thumbnail width in pixels
-    thumbnail_height: Optional[int] = None  # Thumbnail height in pixels
-
-    @field_validator('encrypted_file_key', 'file_key_iv')
-    @classmethod
-    def validate_base64(cls, v):
-        """Validate base64 encoding"""
-        if not v:
-            raise ValueError('Field cannot be empty')
-        try:
-            import base64
-            base64.b64decode(v)
-            return v
-        except Exception:
-            raise ValueError('Invalid base64 encoding')
-
-    @field_validator('encrypted_thumbnail', 'thumbnail_iv')
-    @classmethod
-    def validate_thumbnail_base64(cls, v):
-        """Validate optional base64 encoding for thumbnail fields"""
-        if v is None:
-            return v
-        try:
-            import base64
-            base64.b64decode(v)
-            return v
-        except Exception:
-            raise ValueError('Invalid base64 encoding for thumbnail field')
-
-    @field_validator('file_size')
-    @classmethod
-    def validate_file_size(cls, v):
-        """Validate file size (max 10GB)"""
-        MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
-        if v <= 0:
-            raise ValueError('File size must be greater than 0')
-        if v > MAX_FILE_SIZE:
-            raise ValueError(f'File size exceeds maximum allowed size of {MAX_FILE_SIZE} bytes')
-        return v
-
-    @field_validator('file_name')
-    @classmethod
-    def validate_filename(cls, v):
-        """Validate filename"""
-        if not v or not v.strip():
-            raise ValueError('Filename cannot be empty')
-        if len(v) > 255:
-            raise ValueError('Filename too long (max 255 characters)')
-        # Check for path traversal attempts
-        if '..' in v or '/' in v or '\\' in v:
-            raise ValueError('Invalid filename - path traversal not allowed')
-        return v.strip()
-
-class ZKUploadInitResponse(BaseModel):
-    """Response schema for ZK upload initialization"""
-    upload_id: str
-    storage_strategy: str
-    chunk_size: int
-    total_chunks: int
-    direct_upload: bool
-    zk_mode: bool = True
-    message: str = "ZK upload initialized - chunks will not be re-encrypted on server"
 
 # Token Schemas
 class Token(BaseModel):

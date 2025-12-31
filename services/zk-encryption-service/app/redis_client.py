@@ -37,7 +37,7 @@ async def init_redis():
     try:
         # Create connection pool
         pool = ConnectionPool.from_url(
-            settings.REDIS_URL,
+            settings.ZK_REDIS_URL,
             max_connections=50,
             decode_responses=True,  # Auto-decode bytes to str
         )
@@ -48,7 +48,7 @@ async def init_redis():
         # Test connection
         await _redis_client.ping()
 
-        logger.info("redis_initialized", url=settings.REDIS_URL)
+        logger.info("redis_initialized", url=settings.ZK_REDIS_URL)
 
     except Exception as e:
         logger.error("redis_init_failed", error=str(e), exc_info=True)

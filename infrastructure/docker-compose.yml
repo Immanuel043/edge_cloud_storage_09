@@ -38,6 +38,38 @@ services:
         reservations:
           memory: 1G
 
+  # ZK PostgreSQL Database (SEPARATE from Storage Service)
+  zk-postgres:
+    image: postgres:15-alpine
+    container_name: edge-zk-postgres
+    environment:
+      POSTGRES_DB: zk_db
+      POSTGRES_USER: zk_admin
+      POSTGRES_PASSWORD: zk_secure_password
+    command: >
+      postgres
+      -c max_connections=100
+      -c shared_buffers=256MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=512MB
+    ports:
+      - "5433:5432"
+    volumes:
+      - zk_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zk_admin -d zk_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
   # Redis Cache & Session Store
   redis:
     image: redis:7-alpine
@@ -283,6 +315,7 @@ services:
         hard: 65536
 
   # Zero-Knowledge Encryption Service (FastAPI)
+  # IMPORTANT: Uses SEPARATE database from Storage Service
   zk-encryption-service:
     build:
       context: ../services/zk-encryption-service
@@ -291,24 +324,24 @@ services:
     env_file:
       - .env
     depends_on:
-      postgres:
+      zk-postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
-      REDIS_URL: redis://redis:6379
-      STORAGE_SERVICE_URL: http://storage-service:8000
-      STORAGE_PATH: /app/storage
+      # SEPARATE DATABASE from Storage Service
+      ZK_DATABASE_URL: postgresql+asyncpg://zk_admin:zk_secure_password@zk-postgres:5432/zk_db
+      ZK_REDIS_URL: redis://redis:6379/1
       # ZK-specific storage path - isolated from normal storage
       ZK_STORAGE_PATH: /app/storage/zk
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
+      # Separate secret key for ZK auth
+      ZK_SECRET_KEY: ${ZK_SECRET_KEY:-zk-secret-key-change-in-production}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 120
       # ZK-specific settings
       ZK_SERVICE_PORT: 8002
       RP_ID: ${RP_ID:-localhost}
-      RP_NAME: ${RP_NAME:-EdgeCloud Storage}
+      RP_NAME: ${RP_NAME:-EdgeCloud Private Vault}
       RP_ORIGIN: ${RP_ORIGIN:-https://localhost}
       # Security settings
       PBKDF2_ITERATIONS: 600000
@@ -316,9 +349,12 @@ services:
       MAX_HARDWARE_KEYS_PER_USER: 5
       RATE_LIMIT_ENABLED: "true"
       RATE_LIMIT_REQUESTS_PER_MINUTE: 60
+      # Stripe for ZK billing (separate from Storage)
+      ZK_STRIPE_SECRET_KEY: ${ZK_STRIPE_SECRET_KEY:-}
+      ZK_STRIPE_WEBHOOK_SECRET: ${ZK_STRIPE_WEBHOOK_SECRET:-}
       # Cookie security (false for HTTP development, true for HTTPS production)
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      # CORS origins for frontend
+      # CORS origins for ZK frontend
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001"]'
       # Logging
       LOG_LEVEL: INFO
@@ -571,6 +607,8 @@ services:
 # Named volumes for data persistence
 volumes:
   postgres_data:
+    driver: local
+  zk_postgres_data:
     driver: local
   redis_data:
     driver: local

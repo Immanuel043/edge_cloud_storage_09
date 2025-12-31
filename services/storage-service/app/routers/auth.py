@@ -25,7 +25,7 @@ async def register(
     email: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
-    user_type: str = Form("individual"),
+    plan_type: str = Form("free"),
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new user - SECURITY FIX: Sets HTTP-only cookie + rate limiting"""
@@ -36,13 +36,16 @@ async def register(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="User already exists")
 
-    # Create user
+    # Get plan limits for the plan type (Normal storage only - ZK is separate service)
+    plan_limits = settings.PLAN_LIMITS.get(plan_type, settings.PLAN_LIMITS["free"])
+
+    # Create user with storage quota
     user = User(
         email=email,
         username=username,
         password_hash=auth_service.get_password_hash(password),
-        user_type=user_type,
-        storage_quota=settings.QUOTAS.get(user_type, settings.QUOTAS["individual"]),
+        plan_type=plan_type,
+        storage_quota=plan_limits["storage_bytes"],
     )
     db.add(user)
     await db.commit()
@@ -55,7 +58,7 @@ async def register(
     # Log activity
     await log_activity(
         db, user.id, "user_registered",
-        metadata={"user_type": user_type},
+        metadata={"plan_type": plan_type},
         request=request
     )
 
@@ -70,9 +73,10 @@ async def register(
             "id": str(user.id),
             "email": email,
             "username": username,
-            "user_type": user_type,
-            "storage_quota": settings.QUOTAS.get(user_type),
+            "plan_type": plan_type,
+            "storage_quota": plan_limits["storage_bytes"],
             "storage_used": 0,
+            "bandwidth_limit_mbps": plan_limits["bandwidth_mbps"],
             "theme": "light"
         },
     }
@@ -112,6 +116,9 @@ async def login(
 
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 
+    # Get plan limits for bandwidth info
+    plan_limits = settings.PLAN_LIMITS.get(user.plan_type, settings.PLAN_LIMITS["free"])
+
     response_data = {
         "access_token": access_token,
         "token_type": "bearer",
@@ -119,9 +126,10 @@ async def login(
             "id": str(user.id),
             "email": user.email,
             "username": user.username,
-            "user_type": user.user_type,
+            "plan_type": user.plan_type,
             "storage_quota": user.storage_quota,
             "storage_used": user.storage_used,
+            "bandwidth_limit_mbps": user.bandwidth_limit_mbps or plan_limits["bandwidth_mbps"],
             "theme": user.theme_preference,
         },
     }

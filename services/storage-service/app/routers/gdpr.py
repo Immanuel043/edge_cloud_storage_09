@@ -122,7 +122,7 @@ async def export_user_data(
         "id": str(current_user.id),
         "email": current_user.email,
         "username": current_user.username,
-        "user_type": current_user.user_type,
+        "plan_type": current_user.plan_type,
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
         "theme_preference": current_user.theme_preference,
         "storage_quota_gb": current_user.storage_quota / (1024**3) if current_user.storage_quota else 0,
@@ -468,7 +468,7 @@ async def get_profile_for_rectification(
         "user_id": str(current_user.id),
         "email": current_user.email,
         "username": current_user.username,
-        "user_type": current_user.user_type,
+        "plan_type": current_user.plan_type,
         "theme_preference": current_user.theme_preference,
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
         "is_active": current_user.is_active
