@@ -98,6 +98,30 @@ class LoginZKResponse(BaseModel):
 
 # ========== ENDPOINTS ==========
 
+@router.get("/me")
+async def get_current_user_info(
+    user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get current authenticated user's profile.
+
+    Used by frontend on page refresh to restore user session.
+    Returns user info without sensitive encryption keys.
+    """
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "username": user.username,
+        "plan_type": user.plan_type,
+        "storage_quota": user.storage_quota,
+        "storage_used": user.storage_used,
+        "zk_enabled": True,
+        "recovery_phrase_enabled": user.recovery_phrase_enabled,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
 @router.get("/kdf-params", response_model=KDFParamsResponse)
 async def get_kdf_params(
     email: EmailStr,
@@ -115,12 +139,12 @@ async def get_kdf_params(
     Returns:
         KDF parameters (salt, algorithm, iterations)
     """
-    # Import User model
-    from app.models.database import User
+    # Import ZKUser model
+    from app.models.database import ZKUser
 
     # Fetch user
     result = await db.execute(
-        select(User).filter(User.email == email)
+        select(ZKUser).filter(ZKUser.email == email)
     )
     user = result.scalar_one_or_none()
 
@@ -131,12 +155,6 @@ async def get_kdf_params(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
-        )
-
-    if not user.zk_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User does not have zero-knowledge encryption enabled"
         )
 
     # Return KDF parameters
@@ -177,15 +195,15 @@ async def register_zero_knowledge(
     Returns:
         Access token and user info
     """
-    # Import User model
-    from app.models.database import User
+    # Import ZKUser model
+    from app.models.database import ZKUser
 
     logger.info("zk_registration_attempt", email=request_data.email)
 
     # Check if user already exists
     result = await db.execute(
-        select(User).filter(
-            (User.email == request_data.email) | (User.username == request_data.username)
+        select(ZKUser).filter(
+            (ZKUser.email == request_data.email) | (ZKUser.username == request_data.username)
         )
     )
     existing_user = result.scalar_one_or_none()
@@ -217,12 +235,11 @@ async def register_zero_knowledge(
     bcrypt_hash = bcrypt.hashpw(password_hash_bytes, bcrypt.gensalt(rounds=12))
 
     # Create new user
-    new_user = User(
+    new_user = ZKUser(
         id=uuid4(),
         email=request_data.email,
         username=request_data.username,
         password_hash=bcrypt_hash.decode('utf-8'),
-        zk_enabled=True,
         zk_enrolled_at=datetime.utcnow(),
         encrypted_master_key=request_data.encrypted_master_key,
         master_key_iv=request_data.master_key_iv,
@@ -274,7 +291,6 @@ async def register_zero_knowledge(
             "id": str(new_user.id),
             "email": new_user.email,
             "username": new_user.username,
-            "zk_enabled": True,
             "recovery_phrase_enabled": new_user.recovery_phrase_enabled
         }
     }
@@ -317,14 +333,14 @@ async def login_zero_knowledge(
     Returns:
         Access token and encrypted master key
     """
-    # Import User model
-    from app.models.database import User
+    # Import ZKUser model
+    from app.models.database import ZKUser
 
     logger.info("zk_login_attempt", email=request_data.email)
 
     # Fetch user
     result = await db.execute(
-        select(User).filter(User.email == request_data.email)
+        select(ZKUser).filter(ZKUser.email == request_data.email)
     )
     user = result.scalar_one_or_none()
 
@@ -333,12 +349,6 @@ async def login_zero_knowledge(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
-        )
-
-    if not user.zk_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User does not have zero-knowledge encryption enabled. Use regular login."
         )
 
     if not user.is_active:
@@ -375,7 +385,6 @@ async def login_zero_knowledge(
             "id": str(user.id),
             "email": user.email,
             "username": user.username,
-            "zk_enabled": True,
             "recovery_phrase_enabled": user.recovery_phrase_enabled
         },
         "encrypted_master_key": user.encrypted_master_key,
@@ -487,16 +496,9 @@ async def upgrade_to_zero_knowledge(
     Returns:
         Success message and new access token
     """
-    from app.models.database import User
+    from app.models.database import ZKUser
 
     logger.info("zk_upgrade_attempt", user_id=str(current_user.id), email=current_user.email)
-
-    # Check if user already has ZK enabled
-    if current_user.zk_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Account already has zero-knowledge encryption enabled"
-        )
 
     # Decode salt (expecting hex string from frontend)
     try:
@@ -513,7 +515,6 @@ async def upgrade_to_zero_knowledge(
 
     # Update user with ZK credentials
     current_user.password_hash = bcrypt_hash.decode('utf-8')
-    current_user.zk_enabled = True
     current_user.zk_enrolled_at = datetime.utcnow()
     current_user.encrypted_master_key = request_data.encrypted_master_key
     current_user.master_key_iv = request_data.master_key_iv
@@ -558,7 +559,6 @@ async def upgrade_to_zero_knowledge(
             "id": str(current_user.id),
             "email": current_user.email,
             "username": current_user.username,
-            "zk_enabled": True,
             "recovery_phrase_enabled": False
         }
     }

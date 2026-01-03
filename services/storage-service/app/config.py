@@ -93,6 +93,20 @@ class Settings:
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
+    # Email Configuration (Mailgun API)
+    MAILGUN_ENABLED: bool = os.getenv("MAILGUN_ENABLED", "true").lower() == "true"
+    MAILGUN_API_KEY: str = os.getenv("MAILGUN_API_KEY", "")
+    MAILGUN_DOMAIN: str = os.getenv("MAILGUN_DOMAIN", "")  # e.g., "mg.yourdomain.com"
+    MAILGUN_API_URL: str = os.getenv("MAILGUN_API_URL", "https://api.mailgun.net/v3")
+    MAILGUN_FROM_EMAIL: str = os.getenv("MAILGUN_FROM_EMAIL", "noreply@yourdomain.com")
+    MAILGUN_FROM_NAME: str = os.getenv("MAILGUN_FROM_NAME", "Edge Cloud Storage")
+
+    # Email Verification Settings
+    VERIFICATION_CODE_LENGTH: int = 6
+    VERIFICATION_CODE_EXPIRY_MINUTES: int = 30
+    MAX_VERIFICATION_ATTEMPTS: int = 5
+    RESEND_CODE_COOLDOWN_SECONDS: int = 60  # 1 minute between resends
+
     # URL Upload Configuration
     URL_UPLOAD_ENABLED: bool = os.getenv("URL_UPLOAD_ENABLED", "true").lower() == "true"
     URL_UPLOAD_MAX_SIZE: int = int(os.getenv("URL_UPLOAD_MAX_SIZE", 5 * 1024**3))  # 5GB

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { FileText, Film, FileImage, Music, Archive, File, Table, FileCode, Code, Loader2, Lock } from 'lucide-react';
-import { API_URL } from '../../config/constants';
+import { API_URL, ZK_SERVICE_URL } from '../../config/constants';
 import {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
@@ -14,6 +14,7 @@ import {
 } from '../../utils/helpers';
 import { decryptThumbnail, createThumbnailUrl } from '../../utils/zkThumbnails';
 import { prepareFileForDecryption, isZKSessionUnlocked } from '../../services/zkEncryptionService';
+import { bytesToBase64 } from '../../utils/zkCryptoV2';
 
 // File type to icon mapping
 const getFileTypeIcon = (fileName, size = 48) => {
@@ -144,8 +145,16 @@ export default function FileThumbnail({
         // Add cache-busting for video files to ensure fresh thumbnails
         const cacheBuster = isVideoFile ? `&_t=${file.updated_at || Date.now()}` : '';
         const fileId = file.id || file.file_id;
+
+        // Determine if this is a ZK file (has encrypted_file_key)
+        const isZKFile = file.encrypted_file_key && file.file_key_iv;
+        const baseUrl = isZKFile ? ZK_SERVICE_URL : API_URL;
+        const apiPath = isZKFile ? '/api/v1/zk/files' : '/api/v1/files';
+
+        const fetchUrl = `${baseUrl}${apiPath}/${fileId}/preview?size=${size}${cacheBuster}`;
+
         const response = await fetch(
-          `${API_URL}/api/v1/files/${fileId}/preview?size=${size}${cacheBuster}`,
+          fetchUrl,
           {
             credentials: 'include',
             signal: controller.signal,
@@ -224,7 +233,6 @@ export default function FileThumbnail({
           // Handle ZK encrypted thumbnail - decrypt client-side
           try {
             if (!isZKSessionUnlocked()) {
-              console.log('ZK session not unlocked, cannot decrypt thumbnail');
               if (mounted) {
                 setLoading(false);
                 setError(false); // Show icon instead
@@ -239,11 +247,10 @@ export default function FileThumbnail({
 
             // Get encrypted thumbnail data
             const encryptedData = await response.arrayBuffer();
-            const encryptedBase64 = btoa(String.fromCharCode(...new Uint8Array(encryptedData)));
+            const encryptedBase64 = bytesToBase64(new Uint8Array(encryptedData));
 
             // Decrypt the file key first
             if (!file.encrypted_file_key || !file.file_key_iv) {
-              // File missing encryption keys - fall back to icon
               if (mounted) {
                 setLoading(false);
                 setError(false);
@@ -266,7 +273,7 @@ export default function FileThumbnail({
               setIsProcessing(false);
             }
           } catch (zkError) {
-            console.warn('ZK thumbnail decryption failed:', zkError.message, zkError);
+            console.warn('ZK thumbnail decryption failed:', zkError.message);
             if (mounted) {
               setLoading(false);
               setError(false); // Fall back to icon

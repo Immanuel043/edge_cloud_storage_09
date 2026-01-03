@@ -38,6 +38,12 @@ export default function SearchBar({ onSearch, darkMode, zkMode = false, files = 
 
   // Fetch smart search status on mount
   useEffect(() => {
+    // Skip smart search for ZK users (ZK service doesn't have smart search)
+    if (zkMode) {
+      setSmartSearchEnabled(false);
+      return;
+    }
+
     const fetchSmartSearchStatus = async () => {
       try {
         const response = await fetch(`${API_URL}/api/v1/search/smart/status`, {
@@ -56,7 +62,7 @@ export default function SearchBar({ onSearch, darkMode, zkMode = false, files = 
       }
     };
     fetchSmartSearchStatus();
-  }, []);
+  }, [zkMode]);
 
   // Fetch autocomplete suggestions
   const fetchSuggestions = async (searchQuery) => {

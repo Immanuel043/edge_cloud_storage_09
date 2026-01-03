@@ -11,12 +11,12 @@ import ShareBundleViewer from './components/share/ShareBundleViewer';
 import { useAuth } from './contexts/AuthContext';
 
 function ProtectedRoute({ children }) {
-  const { isAuthenticated, loading } = useAuth();  // Use 'isAuthenticated' instead
-  
+  const { isAuthenticated, loading } = useAuth();
+
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
-  
+
   return isAuthenticated ? children : <Navigate to="/auth" replace />;
 }
 

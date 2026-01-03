@@ -118,6 +118,10 @@ export const AuthProvider = ({ children }) => {
       const RETRY_DELAY = 2000; // 2 seconds between retries
       const REQUEST_TIMEOUT = 15000; // 15 seconds per request
 
+      // Check if this is a ZK user (stored in localStorage during login)
+      const isZKUser = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+      console.log('[Auth] Bootstrap - isZKUser:', isZKUser);
+
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         if (!mounted) return;
 
@@ -129,21 +133,49 @@ export const AuthProvider = ({ children }) => {
           const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
           try {
-            const userData = await loadUserDataWithSignal(null, controller.signal);
+            let userData;
+
+            if (isZKUser) {
+              // ZK users: Call ZK service /me endpoint
+              console.log('[Auth] Bootstrap - calling ZK service /me endpoint');
+              const { ZK_ENDPOINTS } = await import('../config/constants.js');
+              const response = await fetch(ZK_ENDPOINTS.ME, {
+                method: 'GET',
+                credentials: 'include',
+                signal: controller.signal,
+              });
+
+              if (!response.ok) {
+                throw new Error('ZK authentication failed');
+              }
+
+              userData = await response.json();
+              userData.zk_enabled = true; // Ensure ZK flag is set
+              setUser(userData);
+              setZkEnabled(true);
+            } else {
+              // Normal users: Call normal storage service
+              userData = await loadUserDataWithSignal(null, controller.signal);
+            }
+
             clearTimeout(timeoutId);
 
             if (!mounted) return;
 
             setIsAuthenticated(true);
-            await refreshSessionToken();
 
-            // Connect WebSocket (will use cookie or token from backend response)
-            try {
-              await websocketService.connect(null);
-              if (!mounted) return;
-              setupWebSocketListeners();
-            } catch (error) {
-              console.error('Failed to connect WebSocket on boot:', error);
+            // Skip session token refresh and WebSocket for ZK users
+            if (!isZKUser) {
+              await refreshSessionToken();
+
+              // Connect WebSocket (will use cookie or token from backend response)
+              try {
+                await websocketService.connect(null);
+                if (!mounted) return;
+                setupWebSocketListeners();
+              } catch (error) {
+                console.error('Failed to connect WebSocket on boot:', error);
+              }
             }
 
             // If user has ZK enabled, check session state and sync React state
@@ -480,15 +512,12 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
     localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
-    // Connect WebSocket after successful registration
-    try {
-      await websocketService.connect(null);
-      setupWebSocketListeners();
-    } catch (error) {
-      console.error('Failed to connect WebSocket after ZK registration:', error);
-    }
+    // Skip WebSocket for ZK users (ZK service doesn't have WebSocket support)
+    // WebSocket is only available on the normal storage service (port 8001)
+    // Note: ZK service uses HTTP-only APIs, no real-time updates via WebSocket
 
-    await refreshSessionToken();
+    // Skip session token refresh for ZK users (they use HTTP-only cookies, not tokens)
+    // The ZK service doesn't have a /session-token endpoint
 
     return data;
   };
@@ -560,15 +589,12 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
     localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
-    // Connect WebSocket after successful login
-    try {
-      await websocketService.connect(null);
-      setupWebSocketListeners();
-    } catch (error) {
-      console.error('Failed to connect WebSocket after ZK login:', error);
-    }
+    // Skip WebSocket for ZK users (ZK service doesn't have WebSocket support)
+    // WebSocket is only available on the normal storage service (port 8001)
+    // Note: ZK service uses HTTP-only APIs, no real-time updates via WebSocket
 
-    await refreshSessionToken();
+    // Skip session token refresh for ZK users (they use HTTP-only cookies, not tokens)
+    // The ZK service doesn't have a /session-token endpoint
 
     return data;
   };

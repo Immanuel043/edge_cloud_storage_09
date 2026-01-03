@@ -1,4 +1,4 @@
-import { API_URL, CHUNK_SIZE } from '../config/constants';
+import { API_URL, ZK_SERVICE_URL, CHUNK_SIZE, ZK_STORAGE } from '../config/constants';
 import { sanitizeInput, validateFileType, validateFileSize } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
@@ -417,10 +417,10 @@ class StorageService {
     const retryDelay = 1000; // 1 second base delay
 
     try {
-      // For ZK files, use the storage-service ZK endpoint (where chunks are stored)
-      // For regular files, use the standard download endpoint
+      // For ZK files, use the ZK service endpoint (port 8002)
+      // For regular files, use the storage service endpoint (port 8001)
       const endpoint = useZKService
-        ? `${API_URL}/api/v1/files/${fileId}/zk/chunk/${chunkIndex}`
+        ? `${ZK_SERVICE_URL}/api/v1/zk/files/${fileId}/chunk/${chunkIndex}`
         : `${API_URL}/api/v1/files/${fileId}/download/chunk/${chunkIndex}`;
 
       const chunkResponse = await fetch(endpoint, { credentials: 'include' });
@@ -883,7 +883,32 @@ class StorageService {
       
       if (!directResponse.ok) {
         const errorText = await directResponse.text();
-        throw new Error(`Direct upload failed: ${errorText}`);
+
+        // Parse error response for better user feedback
+        let errorMessage = `Direct upload failed: ${errorText}`;
+        let retryAfter = null;
+
+        try {
+          const errorJson = JSON.parse(errorText);
+          if (errorJson.detail) {
+            errorMessage = errorJson.detail;
+          }
+        } catch (e) {
+          // Not JSON, use text as-is
+        }
+
+        // Extract Retry-After header for 429 errors
+        if (directResponse.status === 429) {
+          retryAfter = directResponse.headers.get('Retry-After');
+          if (retryAfter) {
+            errorMessage = `${errorMessage} (Retry in ${retryAfter}s)`;
+          }
+        }
+
+        const error = new Error(errorMessage);
+        error.status = directResponse.status;
+        error.retryAfter = retryAfter;
+        throw error;
       }
       
       // Report progress for direct upload
@@ -1292,7 +1317,20 @@ async getFileActivity(fileId, limit = 50) {
 async getTrash() {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/api/v1/files/trash`, {
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
+  const useZKService = zkEnabled && zkSessionUnlocked;
+
+  // Use ZK service URL for ZK users, otherwise use normal storage service
+  const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
+  // ZK service uses /files endpoint with is_deleted query param (if supported)
+  // Otherwise fallback to normal trash endpoint
+  const endpoint = useZKService 
+    ? `${baseUrl}/api/v1/zk/files?is_deleted=true&limit=1000` 
+    : `${baseUrl}/api/v1/files/trash`;
+
+  const response = await fetch(endpoint, {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -1304,13 +1342,41 @@ async getTrash() {
     throw new Error('Failed to fetch trash');
   }
 
-  return await response.json();
+  const data = await response.json();
+
+  // ZK service returns { files: [...], total_files: ..., total_size: ... }
+  // Normal storage service returns array directly
+  // Normalize to always return an array
+  if (useZKService && data.files) {
+    return data.files;
+  }
+
+  // If it's already an array (normal service), return as-is
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  // Fallback: return empty array if format is unexpected
+  console.warn('Unexpected trash response format:', data);
+  return [];
 }
 
 async restoreFromTrash(fileId) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/restore`, {
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
+  const useZKService = zkEnabled && zkSessionUnlocked;
+
+  // Use ZK service URL for ZK users, otherwise use normal storage service
+  const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
+  // ZK service has dedicated restore endpoint
+  const endpoint = useZKService
+    ? `${baseUrl}/api/v1/zk/files/${fileId}/restore`
+    : `${baseUrl}/api/v1/files/trash/${fileId}/restore`;
+
+  const response = await fetch(endpoint, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -1329,7 +1395,19 @@ async restoreFromTrash(fileId) {
 async permanentDelete(fileId) {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/permanent`, {
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
+  const useZKService = zkEnabled && zkSessionUnlocked;
+
+  // Use ZK service URL for ZK users, otherwise use normal storage service
+  const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
+  // ZK service uses delete endpoint with permanent query param
+  const endpoint = useZKService
+    ? `${baseUrl}/api/v1/zk/files/${fileId}?permanent=true`
+    : `${baseUrl}/api/v1/files/trash/${fileId}/permanent`;
+
+  const response = await fetch(endpoint, {
     method: 'DELETE',
     credentials: 'include',
     headers: {
@@ -1348,7 +1426,20 @@ async permanentDelete(fileId) {
 async emptyTrash() {
   await rateLimiter.checkLimit();
 
-  const response = await fetch(`${API_URL}/api/v1/files/trash/empty`, {
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
+  const useZKService = zkEnabled && zkSessionUnlocked;
+
+  // Use ZK service URL for ZK users, otherwise use normal storage service
+  const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
+  // ZK service might not have empty-trash endpoint, so we'll use the normal one
+  // If it fails, we can implement client-side loop through trash and delete each
+  const endpoint = useZKService
+    ? `${baseUrl}/api/v1/zk/files/empty-trash` // This might not exist, will need backend support
+    : `${baseUrl}/api/v1/files/trash/empty`;
+
+  const response = await fetch(endpoint, {
     method: 'POST',
     credentials: 'include',
     headers: {

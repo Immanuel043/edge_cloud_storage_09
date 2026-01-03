@@ -8,6 +8,29 @@
 
 import { ZK_ENDPOINTS, ZK_ERRORS } from '../config/constants.js';
 
+// ==================== Custom Error Types ====================
+
+/**
+ * Upload error with specific error type for better handling
+ */
+export class UploadError extends Error {
+  constructor(message, type, details = {}) {
+    super(message);
+    this.name = 'UploadError';
+    this.type = type; // 'QUOTA_EXCEEDED', 'RATE_LIMITED', 'NETWORK', 'AUTH', 'UNKNOWN'
+    this.details = details;
+  }
+}
+
+export const UPLOAD_ERROR_TYPES = Object.freeze({
+  QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  NETWORK: 'NETWORK',
+  AUTH: 'AUTH',
+  CANCELLED: 'CANCELLED',
+  UNKNOWN: 'UNKNOWN',
+});
+
 // ==================== Helper Functions ====================
 
 /**
@@ -318,7 +341,9 @@ export async function rotateRecoveryPhrase(newRecoveryEncryptedMasterKey, newRec
  */
 export async function initializeUpload(uploadData) {
   const payload = {
-    filename: uploadData.fileName,
+    // Encrypted filename (client-side encrypted)
+    encrypted_file_name: uploadData.encryptedFileName,
+    file_name_iv: uploadData.fileNameIV,
     file_size: uploadData.fileSize,
     mime_type: uploadData.mimeType,
     encrypted_file_key: uploadData.encryptedFileKey,
@@ -344,14 +369,18 @@ export async function initializeUpload(uploadData) {
 }
 
 /**
- * Upload encrypted chunk
+ * Upload encrypted chunk with retry logic for rate limiting
  * @param {string} uploadId - Upload ID from initialization
  * @param {number} chunkIndex - Chunk index
  * @param {Uint8Array} encryptedChunk - Encrypted chunk data
  * @param {string} chunkIV - Chunk IV (base64) - IV is embedded in the encrypted chunk
+ * @param {number} retryCount - Current retry attempt (internal)
  * @returns {Promise<Object>} { message, chunk_index, status }
  */
-export async function uploadChunk(uploadId, chunkIndex, encryptedChunk, chunkIV) {
+export async function uploadChunk(uploadId, chunkIndex, encryptedChunk, chunkIV, retryCount = 0) {
+  const MAX_RETRIES = 5;
+  const BASE_DELAY_MS = 2000; // 2 seconds base delay
+
   // Create FormData for multipart upload (backend expects file upload)
   const formData = new FormData();
   formData.append('chunk_index', chunkIndex.toString());
@@ -370,9 +399,54 @@ export async function uploadChunk(uploadId, chunkIndex, encryptedChunk, chunkIV)
     // Note: Don't set Content-Type header - browser will set it with multipart boundary
   });
 
+  // Handle 429 Too Many Requests with retry
+  if (response.status === 429) {
+    if (retryCount >= MAX_RETRIES) {
+      throw new UploadError(
+        'Upload rate limit exceeded. Your plan limits have been reached. Please wait or upgrade your plan.',
+        UPLOAD_ERROR_TYPES.RATE_LIMITED,
+        { uploadId, chunkIndex, retryCount }
+      );
+    }
+
+    // Get Retry-After header or use exponential backoff
+    const retryAfter = response.headers.get('Retry-After');
+    const delayMs = retryAfter
+      ? parseInt(retryAfter, 10) * 1000
+      : BASE_DELAY_MS * Math.pow(2, retryCount);
+
+    console.log(`[Upload] Rate limited on chunk ${chunkIndex}, retrying in ${delayMs}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    return uploadChunk(uploadId, chunkIndex, encryptedChunk, chunkIV, retryCount + 1);
+  }
+
+  // Handle 413 Storage Quota Exceeded
+  if (response.status === 413) {
+    const errorData = await response.json().catch(() => ({ detail: 'Storage quota exceeded' }));
+    throw new UploadError(
+      errorData.detail || 'Storage quota exceeded. Please free up space or upgrade your plan.',
+      UPLOAD_ERROR_TYPES.QUOTA_EXCEEDED,
+      { uploadId, chunkIndex }
+    );
+  }
+
+  // Handle 401 Authentication errors
+  if (response.status === 401) {
+    throw new UploadError(
+      'Authentication expired. Please log in again.',
+      UPLOAD_ERROR_TYPES.AUTH,
+      { uploadId, chunkIndex }
+    );
+  }
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ detail: 'Chunk upload failed' }));
-    throw new Error(errorData.detail || errorData.message || 'Chunk upload failed');
+    throw new UploadError(
+      errorData.detail || errorData.message || 'Chunk upload failed',
+      UPLOAD_ERROR_TYPES.UNKNOWN,
+      { uploadId, chunkIndex, status: response.status }
+    );
   }
 
   return response.json();
@@ -474,6 +548,29 @@ export async function deleteFile(fileId) {
   return response;
 }
 
+// ==================== Upload Management ====================
+
+/**
+ * Cancel an in-progress upload and clean up server-side resources
+ * @param {string} uploadId - Upload ID to cancel
+ * @returns {Promise<Object>} { message, upload_id }
+ */
+export async function cancelUpload(uploadId) {
+  const url = `${ZK_ENDPOINTS.UPLOAD_CHUNK}/${uploadId}/cancel`;
+
+  try {
+    const response = await zkFetch(url, {
+      method: 'POST',
+    });
+    console.log(`[Upload] Cancelled upload ${uploadId}:`, response);
+    return response;
+  } catch (error) {
+    // Log but don't throw - cancellation is best-effort cleanup
+    console.warn(`[Upload] Failed to cancel upload ${uploadId}:`, error.message);
+    return { message: 'Cancel request sent', upload_id: uploadId };
+  }
+}
+
 // ==================== Health Check ====================
 
 /**
@@ -523,6 +620,10 @@ export async function upgradeToZK(upgradeData) {
 // ==================== Exports ====================
 
 export default {
+  // Error Types
+  UploadError,
+  UPLOAD_ERROR_TYPES,
+
   // KDF
   getKDFParams,
 
@@ -546,6 +647,7 @@ export default {
   initializeUpload,
   uploadChunk,
   completeUpload,
+  cancelUpload,
   listFiles,
   getFileMetadata,
   downloadChunk,

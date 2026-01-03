@@ -7,7 +7,7 @@
  * - Supports worker pool for parallel decryption
  */
 
-import { API_URL, CHUNK_SIZE } from '../../config/constants';
+import { ZK_SERVICE_URL, CHUNK_SIZE } from '../../config/constants';
 import { prepareFileForDecryption, decryptFileChunk } from '../zkEncryptionService';
 import { getWorkerPool } from '../zkDecryptWorkerPool';
 
@@ -88,6 +88,7 @@ export class ChunkManager {
     this.abortController = null;
     this.workerPool = null;
     this.useWorkerPool = options.useWorkerPool !== false;
+    this.isDestroyed = false;
   }
 
   /**
@@ -116,10 +117,12 @@ export class ChunkManager {
 
     // Decrypt file key with master key
     try {
-      this.fileKey = prepareFileForDecryption(
+      const decryptedFileKey = prepareFileForDecryption(
         this.metadata.encrypted_file_key,
         this.metadata.file_key_iv
       );
+      // Create defensive copy to ensure it's independent and won't be affected by external clearing
+      this.fileKey = new Uint8Array(decryptedFileKey);
       console.log('[ChunkManager] File key decrypted successfully');
     } catch (error) {
       console.error('[ChunkManager] Failed to decrypt file key:', error);
@@ -148,6 +151,11 @@ export class ChunkManager {
    * @returns {Promise<Uint8Array>} Decrypted chunk data
    */
   async getChunk(chunkIndex, signal = null) {
+    // Check if destroyed (React cleanup race condition)
+    if (this.isDestroyed) {
+      throw new Error('ChunkManager has been destroyed');
+    }
+
     // Check cache first
     const cached = this.cache.get(chunkIndex);
     if (cached) {
@@ -173,17 +181,54 @@ export class ChunkManager {
   }
 
   /**
+   * Ensure file key is valid, re-decrypt if needed
+   * @private
+   */
+  _ensureFileKey() {
+    if (!this.fileKey || this.fileKey.length !== 32) {
+      // Re-decrypt if cleared (but not if destroyed)
+      if (this.isDestroyed) {
+        throw new Error('ChunkManager has been destroyed');
+      }
+
+      try {
+        const decryptedFileKey = prepareFileForDecryption(
+          this.metadata.encrypted_file_key,
+          this.metadata.file_key_iv
+        );
+        // Create defensive copy
+        this.fileKey = new Uint8Array(decryptedFileKey);
+        console.log('[ChunkManager] File key re-decrypted successfully');
+      } catch (error) {
+        console.error('[ChunkManager] Failed to re-decrypt file key:', error);
+        throw new Error(
+          `File key was cleared and re-decryption failed: ${error.message}. ` +
+          'Make sure your ZK session is still unlocked.'
+        );
+      }
+    }
+  }
+
+  /**
    * Fetch encrypted chunk from backend and decrypt
    * @param {number} chunkIndex
    * @param {AbortSignal} signal
    * @returns {Promise<Uint8Array>}
    */
   async _fetchAndDecrypt(chunkIndex, signal = null) {
+    // Check if destroyed (React cleanup race condition)
+    if (this.isDestroyed) {
+      throw new Error('ChunkManager has been destroyed');
+    }
+
+    // Ensure file key is valid before attempting decryption
+    this._ensureFileKey();
+
     // Combine signals
     const combinedSignal = signal || this.abortController?.signal;
 
-    // Fetch encrypted chunk from storage-service (where ZK files are stored)
-    const url = `${API_URL}/api/v1/files/${this.fileId}/zk/chunk/${chunkIndex}`;
+    // Fetch encrypted chunk from ZK service (port 8002)
+    const url = `${ZK_SERVICE_URL}/api/v1/zk/files/${this.fileId}/chunk/${chunkIndex}`;
 
     const response = await fetch(url, {
       credentials: 'include',
@@ -196,6 +241,19 @@ export class ChunkManager {
 
     const encryptedData = await response.arrayBuffer();
     const encryptedChunk = new Uint8Array(encryptedData);
+
+    // Check again after async fetch (React cleanup race condition)
+    if (this.isDestroyed) {
+      throw new Error('ChunkManager was destroyed during fetch');
+    }
+
+    // Validate file key again before decryption (it could have been cleared during fetch)
+    if (!this.fileKey || this.fileKey.length !== 32) {
+      throw new Error(
+        `Invalid file key after fetch: expected 32 bytes, got ${this.fileKey?.length || 0}. ` +
+        'ChunkManager was cleared during async operation.'
+      );
+    }
 
     // Decrypt using worker pool or main thread
     let decrypted;
@@ -226,10 +284,17 @@ export class ChunkManager {
    * @returns {Promise<Uint8Array>} Concatenated decrypted data
    */
   async getChunks(startChunk, count) {
+    // Ensure file key is valid before starting multi-chunk fetch
+    this._ensureFileKey();
+
     const chunks = [];
     const endChunk = Math.min(startChunk + count, this.totalChunks);
 
     for (let i = startChunk; i < endChunk; i++) {
+      // Check before each chunk fetch (React cleanup race condition)
+      if (this.isDestroyed) {
+        throw new Error('ChunkManager was destroyed during multi-chunk fetch');
+      }
       const chunk = await this.getChunk(i);
       chunks.push(chunk);
     }
@@ -311,6 +376,7 @@ export class ChunkManager {
    * Destroy the chunk manager
    */
   destroy() {
+    this.isDestroyed = true;
     this.clear();
     this.abortController = null;
   }

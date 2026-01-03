@@ -574,10 +574,13 @@ export async function decryptFile(encryptedChunks, encryptedFileKey, fileKeyIV, 
 // Import V2 crypto for HKDF-based key derivation (ZK_CONSTANTS_V2 already imported at top)
 import {
   deriveMetadataKey,
+  deriveFilenameKey,
   encryptAESGCM as encryptAESGCMv2,
   decryptAESGCM as decryptAESGCMv2,
   bytesToBase64 as bytesToBase64v2,
   base64ToBytes as base64ToBytesv2,
+  encryptFilename as encryptFilenameV2,
+  decryptFilename as decryptFilenameV2,
 } from '../utils/zkCryptoV2.js';
 
 /**
@@ -653,6 +656,52 @@ export function prepareEncryptedMetadata(file, path = '/') {
   };
 
   return { encryptedMetadata, plaintextHints };
+}
+
+// ==================== Filename Encryption ====================
+
+/**
+ * Encrypt filename for ZK storage
+ * @param {string} filename - Plaintext filename
+ * @returns {Object} { encryptedFilename: string, filenameIV: string } - Base64 encoded
+ */
+export function encryptFilename(filename) {
+  const masterKey = zkSession.getMasterKey();
+  return encryptFilenameV2(filename, masterKey);
+}
+
+/**
+ * Decrypt filename from ZK storage
+ * @param {string} encryptedFilenameB64 - Base64 encoded encrypted filename
+ * @param {string} filenameIVB64 - Base64 encoded IV
+ * @returns {string} Decrypted filename
+ */
+export function decryptFilename(encryptedFilenameB64, filenameIVB64) {
+  const masterKey = zkSession.getMasterKey();
+  return decryptFilenameV2(encryptedFilenameB64, filenameIVB64, masterKey);
+}
+
+/**
+ * Safely decrypt filename, returning fallback if decryption fails
+ * Handles legacy files that have base64-encoded plaintext filenames
+ * @param {string} encryptedFilenameB64 - Base64 encoded encrypted filename
+ * @param {string} filenameIVB64 - Base64 encoded IV
+ * @param {string} fallback - Fallback value if decryption fails
+ * @returns {string} Decrypted filename or fallback
+ */
+export function decryptFilenameSafe(encryptedFilenameB64, filenameIVB64, fallback = 'Encrypted File') {
+  try {
+    if (!zkSession.isSessionUnlocked()) {
+      return fallback;
+    }
+    if (!encryptedFilenameB64 || !filenameIVB64) {
+      return fallback;
+    }
+    return decryptFilename(encryptedFilenameB64, filenameIVB64);
+  } catch (error) {
+    console.warn('Failed to decrypt filename:', error.message);
+    return fallback;
+  }
 }
 
 // ==================== Utility Functions ====================
@@ -756,6 +805,11 @@ export default {
   encryptMetadata,
   decryptMetadata,
   prepareEncryptedMetadata,
+
+  // Filename Encryption
+  encryptFilename,
+  decryptFilename,
+  decryptFilenameSafe,
 
   // Utilities
   getFileChunks,

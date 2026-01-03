@@ -60,6 +60,7 @@ export const HKDF_LABELS = {
   CHUNK: (index) => `chunk:${index}`,
   THUMBNAIL: 'thumb:v1',
   RECOVERY: 'recovery:v1',
+  FILENAME: 'filename:v1',
 };
 
 // ==================== Browser Detection ====================
@@ -316,6 +317,15 @@ export function deriveRecoveryKey(seed) {
   return deriveKeyHKDF(seed, HKDF_LABELS.RECOVERY);
 }
 
+/**
+ * Derive filename encryption key
+ * @param {Uint8Array} masterKey
+ * @returns {Uint8Array}
+ */
+export function deriveFilenameKey(masterKey) {
+  return deriveKeyHKDF(masterKey, HKDF_LABELS.FILENAME);
+}
+
 // ==================== AES-GCM Encryption with AAD ====================
 
 /**
@@ -521,6 +531,52 @@ export function decryptMetadata(encryptedMetadataB64, masterKey) {
   return JSON.parse(decoder.decode(plaintext));
 }
 
+// ==================== Filename Encryption ====================
+
+/**
+ * Encrypt filename for ZK storage
+ * @param {string} filename - Plaintext filename
+ * @param {Uint8Array} masterKey
+ * @returns {Object} { encryptedFilename: string, filenameIV: string } - Base64 encoded
+ */
+export function encryptFilename(filename, masterKey) {
+  const filenameKey = deriveFilenameKey(masterKey);
+  const plaintext = utf8ToBytes(filename);
+
+  const { ciphertext, iv, tag } = encryptAESGCM(plaintext, filenameKey);
+
+  // Combine ciphertext + tag
+  const combined = new Uint8Array(ciphertext.length + tag.length);
+  combined.set(ciphertext);
+  combined.set(tag, ciphertext.length);
+
+  return {
+    encryptedFilename: bytesToBase64(combined),
+    filenameIV: bytesToBase64(iv),
+  };
+}
+
+/**
+ * Decrypt filename from ZK storage
+ * @param {string} encryptedFilenameB64 - Base64 encoded encrypted filename
+ * @param {string} filenameIVB64 - Base64 encoded IV
+ * @param {Uint8Array} masterKey
+ * @returns {string} Decrypted filename
+ */
+export function decryptFilename(encryptedFilenameB64, filenameIVB64, masterKey) {
+  const encrypted = base64ToBytes(encryptedFilenameB64);
+  const iv = base64ToBytes(filenameIVB64);
+
+  const ciphertext = encrypted.slice(0, -ZK_CONSTANTS_V2.GCM_TAG_LENGTH);
+  const tag = encrypted.slice(-ZK_CONSTANTS_V2.GCM_TAG_LENGTH);
+
+  const filenameKey = deriveFilenameKey(masterKey);
+  const plaintext = decryptAESGCM(ciphertext, filenameKey, iv, tag);
+
+  const decoder = new TextDecoder();
+  return decoder.decode(plaintext);
+}
+
 // ==================== Version Detection ====================
 
 /**
@@ -611,6 +667,7 @@ export default {
   deriveChunkKey,
   deriveThumbnailKey,
   deriveRecoveryKey,
+  deriveFilenameKey,
   encryptAESGCM,
   decryptAESGCM,
   encryptChunkV2,
@@ -619,6 +676,8 @@ export default {
   decryptMasterKeyV2,
   encryptMetadata,
   decryptMetadata,
+  encryptFilename,
+  decryptFilename,
   detectEncryptionVersion,
   hashDerivedKey,
   bytesToBase64,

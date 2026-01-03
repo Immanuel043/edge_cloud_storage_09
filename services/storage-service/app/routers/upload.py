@@ -435,9 +435,13 @@ async def upload_direct(
             )
             if not allowed:
                 if wait_time > 5.0:
+                    # Get the effective bandwidth limit for debugging
+                    plan_limits = settings.PLAN_LIMITS.get(current_user.plan_type, settings.PLAN_LIMITS["free"])
+                    bandwidth_mbps = current_user.bandwidth_limit_mbps or plan_limits["bandwidth_mbps"]
+
                     raise HTTPException(
                         status_code=429,
-                        detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
+                        detail=f"Bandwidth limit exceeded ({bandwidth_mbps} Mbps for {current_user.plan_type} plan). Please wait {int(wait_time)} seconds or try logging out and back in if you recently upgraded.",
                         headers={"Retry-After": str(int(wait_time))}
                     )
                 await asyncio.sleep(min(wait_time, 1.0))

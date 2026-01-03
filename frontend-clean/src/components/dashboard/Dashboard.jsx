@@ -273,10 +273,48 @@ export default function Dashboard() {
           [uploadId]: { ...prev[uploadId], status: 'cancelled' }
         }));
       } else {
+        // Extract user-friendly error message
+        let errorMessage = error.message;
+
+        // For 429 errors, show specific guidance
+        if (error.status === 429) {
+          // Check if it's a bandwidth limit error
+          if (errorMessage.includes('Bandwidth limit exceeded')) {
+            // Show alert with guidance
+            const shouldLogout = window.confirm(
+              `Upload failed: ${errorMessage}\n\n` +
+              'If you recently upgraded your plan, please log out and log back in to refresh your session.\n\n' +
+              'Click OK to log out now, or Cancel to try again later.'
+            );
+
+            if (shouldLogout) {
+              // Trigger logout
+              window.location.href = '/login';
+              return;
+            }
+          } else {
+            // Generic rate limit error
+            alert(`Upload temporarily blocked: ${errorMessage}`);
+          }
+        }
+
         setUploads(prev => ({
           ...prev,
-          [uploadId]: { ...prev[uploadId], status: 'error', error: error.message }
+          [uploadId]: {
+            ...prev[uploadId],
+            status: 'error',
+            error: errorMessage
+          }
         }));
+
+        // Auto-clear failed upload after 10 seconds
+        setTimeout(() => {
+          setUploads(prev => {
+            const newUploads = { ...prev };
+            delete newUploads[uploadId];
+            return newUploads;
+          });
+        }, 10000);
       }
     } finally {
       delete abortControllers.current[uploadId];
@@ -1053,7 +1091,11 @@ export default function Dashboard() {
                 ref={fileInputRef}
                 type="file"
                 multiple
-                onChange={(e) => Array.from(e.target.files).forEach(handleFileUpload)}
+                onChange={(e) => {
+                  Array.from(e.target.files).forEach(handleFileUpload);
+                  // Reset input value to allow uploading the same file again
+                  e.target.value = '';
+                }}
                 className="hidden"
               />
             </div>
