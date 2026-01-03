@@ -229,8 +229,9 @@ class BandwidthThrottleService:
             else:
                 max_streams = self.MAX_STREAMS_PER_USER
 
-        redis_client = get_redis()
-        if not redis_client:
+        try:
+            redis_client = get_redis()
+        except RuntimeError:
             logger.warning("Redis not available, allowing stream slot")
             return True
 
@@ -260,8 +261,9 @@ class BandwidthThrottleService:
         Args:
             user_id: User identifier
         """
-        redis_client = get_redis()
-        if not redis_client:
+        try:
+            redis_client = get_redis()
+        except RuntimeError:
             return
 
         key = f"zk:bandwidth:streams:{user_id}"
@@ -309,8 +311,10 @@ class BandwidthThrottleService:
             else:
                 limit_mbps = self.default_limit_mbps
 
-        redis_client = get_redis()
-        if not redis_client:
+        try:
+            redis_client = get_redis()
+        except RuntimeError:
+            logger.warning("Redis not available, allowing transfer")
             return True, 0
 
         # Calculate token bucket parameters

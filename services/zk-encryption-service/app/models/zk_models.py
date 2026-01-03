@@ -50,7 +50,7 @@ class UserSubscription(Base):
     __tablename__ = 'user_subscriptions'
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(PGUUID(as_uuid=True), ForeignKey('zk_users.id', ondelete='CASCADE'), nullable=False)
     tier_id = Column(PGUUID(as_uuid=True), ForeignKey('subscription_tiers.id'), nullable=False)
     billing_cycle = Column(String(20), nullable=False, default='monthly')  # 'monthly' or 'yearly'
     status = Column(String(20), nullable=False, default='active')  # 'active', 'cancelled', 'expired'
@@ -83,7 +83,7 @@ class HardwareKey(Base):
     __tablename__ = 'hardware_keys'
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(PGUUID(as_uuid=True), ForeignKey('zk_users.id', ondelete='CASCADE'), nullable=False)
     key_name = Column(String(100), nullable=False)  # User-friendly name
     credential_id = Column(Text, nullable=False, unique=True)  # WebAuthn credential ID
     public_key = Column(Text, nullable=False)  # Public key for verification
@@ -113,7 +113,7 @@ class SocialRecoveryContact(Base):
     __tablename__ = 'social_recovery_contacts'
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(PGUUID(as_uuid=True), ForeignKey('zk_users.id', ondelete='CASCADE'), nullable=False)
     contact_email = Column(String(255), nullable=False)
     contact_name = Column(String(100), nullable=True)
     share_number = Column(Integer, nullable=False)  # 1-5
@@ -140,7 +140,7 @@ class RecoveryAttempt(Base):
     __tablename__ = 'recovery_attempts'
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(PGUUID(as_uuid=True), ForeignKey('zk_users.id', ondelete='CASCADE'), nullable=False)
     recovery_method = Column(String(50), nullable=False)  # 'phrase', 'hardware', 'social'
     success = Column(Boolean, nullable=False)
     ip_address = Column(String(45), nullable=True)
@@ -165,7 +165,7 @@ class ZKEnrollmentHistory(Base):
     __tablename__ = 'zk_enrollment_history'
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(PGUUID(as_uuid=True), ForeignKey('zk_users.id', ondelete='CASCADE'), nullable=False)
     action = Column(String(50), nullable=False)  # 'enabled', 'disabled', 'upgraded'
     from_tier = Column(String(50), nullable=True)
     to_tier = Column(String(50), nullable=True)

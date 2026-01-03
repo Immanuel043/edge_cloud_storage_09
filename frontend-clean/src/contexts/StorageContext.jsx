@@ -4,8 +4,9 @@ import { websocketService } from '../services/websocketService';
 import { useAuth } from './AuthContext';
 import { offlineDB } from '../utils/offlineStorage';
 import { requestCache } from '../utils/requestCache';
-import { encryptFile, isZKSessionUnlocked } from '../services/zkEncryptionService';
+import { encryptFile, isZKSessionUnlocked, encryptFilename, decryptFilenameSafe } from '../services/zkEncryptionService';
 import * as zkAuthService from '../services/zkAuthService';
+import { UploadError, cancelUpload as zkCancelUpload } from '../services/zkAuthService';
 import { bytesToBase64 } from '../utils/zkCrypto';
 import { getMigrationStats, needsMigration, formatMigrationStats } from '../utils/zkMigration';
 import { isZKModeActive, getFileService } from '../services/fileServiceRouter';
@@ -80,12 +81,9 @@ export const StorageProvider = ({ children }) => {
         // 2. ZK user with unlocked session
         const shouldLoad = !zkEnabled || zkSessionUnlocked;
         if (shouldLoad) {
-          console.log('[Storage] Loading files - zkEnabled:', zkEnabled, 'zkSessionUnlocked:', zkSessionUnlocked);
           loadFiles();
           loadStorageStats();
           loadDedupStats();
-        } else {
-          console.log('[Storage] Skipping file load - ZK session locked');
         }
       } else {
         loadOfflineData();
@@ -138,20 +136,30 @@ export const StorageProvider = ({ children }) => {
         // Use ZK service for encrypted files
         try {
           const zkFilesResponse = await zkAuthService.listFiles({ limit: 1000 });
-          filesData = (zkFilesResponse.files || zkFilesResponse || []).map(f => ({
-            id: f.file_id || f.id,
-            name: f.filename || f.file_name || f.name,
-            size: f.file_size || f.size,
-            mime_type: f.mime_type,
-            created_at: f.uploaded_at || f.created_at,
-            updated_at: f.uploaded_at || f.updated_at,
-            is_encrypted: f.is_encrypted !== undefined ? f.is_encrypted : true,
-            encryption_mode: 'client_zk',
-            encryption_version: f.encryption_version,
-            encrypted_file_key: f.encrypted_file_key,
-            file_key_iv: f.file_key_iv,
-            folder_id: f.folder_id,
-          }));
+          filesData = (zkFilesResponse.files || zkFilesResponse || []).map(f => {
+            // Decrypt filename if encrypted_file_name and file_name_iv are present
+            let decryptedName = f.filename || f.file_name || f.name || 'Encrypted File';
+            if (f.encrypted_file_name && f.file_name_iv) {
+              decryptedName = decryptFilenameSafe(f.encrypted_file_name, f.file_name_iv, 'Encrypted File');
+            }
+            return {
+              id: f.file_id || f.id,
+              name: decryptedName,
+              size: f.file_size || f.size,
+              mime_type: f.mime_type,
+              created_at: f.uploaded_at || f.created_at,
+              updated_at: f.uploaded_at || f.updated_at,
+              is_encrypted: f.is_encrypted !== undefined ? f.is_encrypted : true,
+              encryption_mode: 'client_zk',
+              encryption_version: f.encryption_version,
+              encrypted_file_key: f.encrypted_file_key,
+              file_key_iv: f.file_key_iv,
+              folder_id: f.folder_id,
+              // Store encrypted filename fields for re-encryption if needed
+              encrypted_file_name: f.encrypted_file_name,
+              file_name_iv: f.file_name_iv,
+            };
+          });
           // Get storage usage from ZK service
           const zkUsage = await zkAuthService.getStorageUsage().catch(() => null);
           const usedBytes = zkUsage?.total_used || 0;
@@ -164,7 +172,8 @@ export const StorageProvider = ({ children }) => {
             files_count: zkUsage.total_files || filesData.length,
             percentage_used: zkUsage.usage_percentage || (quotaBytes > 0 ? (usedBytes / quotaBytes * 100) : 0),
           } : { used: 0, total: 100 * 1024 * 1024 * 1024, quota: 100 * 1024 * 1024 * 1024, available: 100 * 1024 * 1024 * 1024, files_count: filesData.length, percentage_used: 0 };
-          foldersData = await storageService.getFolders(token, folderId).catch(() => []);
+          // For now, folders not implemented for ZK service
+          foldersData = [];
         } catch (zkError) {
           console.error('ZK loadFiles failed:', zkError);
           filesData = [];
@@ -257,6 +266,19 @@ export const StorageProvider = ({ children }) => {
   const loadDedupStats = async () => {
   if (!isAuthenticated) return;
 
+  // Skip dedup stats for ZK users (ZK service doesn't have deduplication)
+  const useZKService = zkEnabled && zkSessionUnlocked;
+  if (useZKService) {
+    setDedupStats({
+      logical_size: 0,
+      physical_size: 0,
+      saved_size: 0,
+      savings_percentage: 0,
+      storage_efficiency: 1
+    });
+    return;
+  }
+
   try {
     const stats = await storageService.getDedupSavings(); // No token needed - uses cookie
     setDedupStats(stats);
@@ -297,22 +319,32 @@ export const StorageProvider = ({ children }) => {
         try {
           const zkFilesResponse = await zkAuthService.listFiles({ limit: 1000 });
           // Transform ZK files response to match expected format
-          filesData = (zkFilesResponse.files || zkFilesResponse || []).map(f => ({
-            id: f.file_id || f.id,  // ZK API returns file_id
-            name: f.filename || f.file_name || f.name,  // ZK API returns filename
-            size: f.file_size || f.size,
-            mime_type: f.mime_type,
-            created_at: f.uploaded_at || f.created_at,  // ZK API returns uploaded_at
-            updated_at: f.uploaded_at || f.updated_at,
-            is_encrypted: f.is_encrypted !== undefined ? f.is_encrypted : true,
-            encryption_mode: 'client_zk',  // Mark as ZK client-side encrypted
-            encryption_version: f.encryption_version || 2,  // Default V2 for ZK files
-            encrypted_file_key: f.encrypted_file_key,
-            file_key_iv: f.file_key_iv,
-            folder_id: f.folder_id,
-          }));
-          // For now, folders from regular service (ZK folders to be implemented)
-          foldersData = await storageService.getFolders(token, folderId).catch(() => []);
+          filesData = (zkFilesResponse.files || zkFilesResponse || []).map(f => {
+            // Decrypt filename if encrypted_file_name and file_name_iv are present
+            let decryptedName = f.filename || f.file_name || f.name || 'Encrypted File';
+            if (f.encrypted_file_name && f.file_name_iv) {
+              decryptedName = decryptFilenameSafe(f.encrypted_file_name, f.file_name_iv, 'Encrypted File');
+            }
+            return {
+              id: f.file_id || f.id,  // ZK API returns file_id
+              name: decryptedName,
+              size: f.file_size || f.size,
+              mime_type: f.mime_type,
+              created_at: f.uploaded_at || f.created_at,  // ZK API returns uploaded_at
+              updated_at: f.uploaded_at || f.updated_at,
+              is_encrypted: f.is_encrypted !== undefined ? f.is_encrypted : true,
+              encryption_mode: 'client_zk',  // Mark as ZK client-side encrypted
+              encryption_version: f.encryption_version || 2,  // Default V2 for ZK files
+              encrypted_file_key: f.encrypted_file_key,
+              file_key_iv: f.file_key_iv,
+              folder_id: f.folder_id,
+              // Store encrypted filename fields for re-encryption if needed
+              encrypted_file_name: f.encrypted_file_name,
+              file_name_iv: f.file_name_iv,
+            };
+          });
+          // For now, folders not implemented for ZK service
+          foldersData = [];
         } catch (zkError) {
           console.error('ZK listFiles failed:', zkError);
           filesData = [];
@@ -380,7 +412,12 @@ export const StorageProvider = ({ children }) => {
 
       console.log('[Storage] File encrypted, chunks:', encryptedData.totalChunks);
 
-      // Step 2: Generate encrypted thumbnail if file type is supported
+      // Step 2: Encrypt the filename
+      console.log('[Storage] Encrypting filename:', file.name);
+      const { encryptedFilename: encryptedFileName, filenameIV } = encryptFilename(file.name);
+      console.log('[Storage] Filename encrypted successfully');
+
+      // Step 3: Generate encrypted thumbnail if file type is supported
       let thumbnailData = null;
       if (supportsThumbnail(file.type)) {
         try {
@@ -394,9 +431,11 @@ export const StorageProvider = ({ children }) => {
         }
       }
 
-      // Step 3: Initialize upload with ZK service (including thumbnail if available)
+      // Step 4: Initialize upload with ZK service (including encrypted filename and thumbnail if available)
       const initResult = await zkAuthService.initializeUpload({
-        fileName: file.name,
+        // Encrypted filename (server stores this directly)
+        encryptedFileName: encryptedFileName,
+        fileNameIV: filenameIV,
         fileSize: file.size,
         mimeType: file.type || 'application/octet-stream',
         encryptedFileKey: encryptedData.encryptedFileKey,
@@ -414,31 +453,51 @@ export const StorageProvider = ({ children }) => {
 
       console.log('[Storage] ZK upload initialized:', initResult);
 
-      // Step 3: Upload encrypted chunks
-      for (let i = 0; i < encryptedData.encryptedChunks.length; i++) {
-        const chunk = encryptedData.encryptedChunks[i];
+      // Step 3: Upload encrypted chunks with error handling
+      try {
+        for (let i = 0; i < encryptedData.encryptedChunks.length; i++) {
+          const chunk = encryptedData.encryptedChunks[i];
 
-        // Convert IV to base64 if it's a Uint8Array
-        const chunkIV = chunk.iv instanceof Uint8Array ? bytesToBase64(chunk.iv) : chunk.iv;
+          // Convert IV to base64 if it's a Uint8Array
+          const chunkIV = chunk.iv instanceof Uint8Array ? bytesToBase64(chunk.iv) : chunk.iv;
 
-        await zkAuthService.uploadChunk(
-          initResult.upload_id,
-          chunk.index,
-          chunk.data,
-          chunkIV
-        );
+          await zkAuthService.uploadChunk(
+            initResult.upload_id,
+            chunk.index,
+            chunk.data,
+            chunkIV
+          );
 
-        // Progress: 30-90% for chunk uploads
-        const uploadProgress = 30 + Math.round(((i + 1) / encryptedData.encryptedChunks.length) * 60);
-        if (onProgress) {
-          onProgress({
-            progress: uploadProgress,
-            status: 'uploading',
-            uploadId: initResult.upload_id,
-            chunk: i + 1,
-            totalChunks: encryptedData.encryptedChunks.length
-          });
+          // Progress: 30-90% for chunk uploads
+          const uploadProgress = 30 + Math.round(((i + 1) / encryptedData.encryptedChunks.length) * 60);
+          if (onProgress) {
+            onProgress({
+              progress: uploadProgress,
+              status: 'uploading',
+              uploadId: initResult.upload_id,
+              chunk: i + 1,
+              totalChunks: encryptedData.encryptedChunks.length
+            });
+          }
         }
+      } catch (chunkError) {
+        // Clean up the failed upload on the server
+        console.error('[Storage] Chunk upload failed, cleaning up:', chunkError);
+        try {
+          await zkCancelUpload(initResult.upload_id);
+          console.log('[Storage] Cleaned up failed upload:', initResult.upload_id);
+        } catch (cleanupError) {
+          console.warn('[Storage] Failed to clean up upload:', cleanupError.message);
+        }
+
+        // Re-throw with enhanced error info
+        if (chunkError instanceof UploadError) {
+          // Add file info to the error
+          chunkError.details.fileName = file.name;
+          chunkError.details.fileSize = file.size;
+          throw chunkError;
+        }
+        throw chunkError;
       }
 
       // Step 4: Complete upload

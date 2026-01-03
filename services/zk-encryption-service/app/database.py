@@ -57,7 +57,10 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.commit()
         except Exception as e:
             await session.rollback()
-            logger.error("database_error", error=str(e), exc_info=True)
+            # Don't log HTTPException as database errors - they're just passing through
+            from fastapi import HTTPException
+            if not isinstance(e, HTTPException):
+                logger.error("database_error", error=str(e), exc_info=True)
             raise
         finally:
             await session.close()

@@ -1,11 +1,11 @@
 // Networking
 export const API_URL =
   (import.meta.env.VITE_API_URL && import.meta.env.VITE_API_URL.replace(/\/+$/, "")) ||
-  "http://localhost:3001"; // no trailing slash
+  "http://localhost:8001"; // no trailing slash - Normal Storage Service
 
 export const WS_URL =
   (import.meta.env.VITE_WS_URL && import.meta.env.VITE_WS_URL.replace(/\/+$/, "")) ||
-  "ws://localhost:3001"; // no trailing slash
+  "ws://localhost:8001"; // no trailing slash - Normal Storage Service
 
 export const ZK_SERVICE_URL =
   (import.meta.env.VITE_ZK_SERVICE_URL && import.meta.env.VITE_ZK_SERVICE_URL.replace(/\/+$/, "")) ||
@@ -69,6 +69,7 @@ export const ZK_ENDPOINTS = Object.freeze({
   UPGRADE_TO_ZK: `${ZK_SERVICE_URL}/api/v1/zk/upgrade-to-zk`,
 
   // User & Status
+  ME: `${ZK_SERVICE_URL}/api/v1/zk/me`,
   STATUS: `${ZK_SERVICE_URL}/api/v1/zk/status`,
 
   // Recovery

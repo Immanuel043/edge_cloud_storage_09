@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column, String, Integer, DateTime, Boolean,
     ForeignKey, JSON, BigInteger, Text, UniqueConstraint, Index, Float, LargeBinary
 )
+from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB, BYTEA
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
@@ -47,6 +48,12 @@ class User(Base):
     # 'replace_original': Only keep optimized MP4 (saves storage)
     # 'no_optimization': Skip proactive video optimization
     video_optimization_mode = Column(String(20), default='keep_both', nullable=False)
+
+    # Email verification fields
+    email_verified = Column(Boolean, default=False, nullable=False)
+    verification_code = Column(String(6), nullable=True)
+    verification_code_expires_at = Column(DateTime(timezone=True), nullable=True)
+    verification_code_attempts = Column(Integer, default=0, nullable=False)
 
 class Folder(Base):
     __tablename__ = "folders"

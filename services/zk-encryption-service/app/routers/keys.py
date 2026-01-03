@@ -91,7 +91,8 @@ async def enable_zero_knowledge(
     Returns:
         Success message and ZK status
     """
-    if user.zk_enabled:
+    # In ZK service, all users are ZK users. Check if master key is already set.
+    if user.encrypted_master_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Zero-knowledge encryption already enabled"
@@ -113,7 +114,7 @@ async def enable_zero_knowledge(
     password_hash_bytes = request_data.password_hash.encode('utf-8')
     bcrypt_hash = bcrypt.hashpw(password_hash_bytes, bcrypt.gensalt(rounds=12))
 
-    user.zk_enabled = True
+    # In ZK service, setting encrypted_master_key indicates ZK is enabled
     user.zk_enrolled_at = datetime.utcnow()
     user.password_hash = bcrypt_hash.decode('utf-8')  # Replace old password hash
     user.encrypted_master_key = request_data.encrypted_master_key
@@ -176,16 +177,19 @@ async def get_zk_status(
     )
     social_contacts_count = len(social_contacts_result.scalars().all())
 
+    # In ZK service, all users are ZK users. ZK is "enabled" if encrypted_master_key is set.
+    zk_enabled = user.encrypted_master_key is not None
+
     return ZKStatusResponse(
-        zk_enabled=user.zk_enabled,
+        zk_enabled=zk_enabled,
         zk_enrolled_at=user.zk_enrolled_at,
-        kdf_algorithm=user.kdf_algorithm or "pbkdf2",
-        kdf_iterations=user.kdf_iterations or 600000,
-        recovery_phrase_enabled=user.recovery_phrase_enabled,
-        recovery_phrase_verified=user.recovery_phrase_verified,
+        kdf_algorithm=user.kdf_algorithm or "argon2id",
+        kdf_iterations=user.kdf_iterations or 3,
+        recovery_phrase_enabled=user.recovery_phrase_enabled or False,
+        recovery_phrase_verified=user.recovery_phrase_verified or False,
         hardware_keys_count=hardware_keys_count,
         social_recovery_enabled=social_contacts_count >= settings.SOCIAL_RECOVERY_THRESHOLD,
-        current_tier="pro" if user.zk_enabled else "free"  # TODO: Get actual tier
+        current_tier=user.plan_type or "free"
     )
 
 

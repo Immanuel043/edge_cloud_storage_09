@@ -190,9 +190,10 @@ async def list_files(
             updated_at=f.updated_at,
             path=f.object_path,
             is_favorite=(f.id in favorite_file_ids),
-            # ZK encryption fields
-            is_encrypted=f.is_encrypted or False,
-            encryption_version=f.encryption_version,
+            # Encryption mode (server-side encryption for normal storage)
+            # Note: ZK files are in a separate service
+            is_encrypted=(f.encryption_mode == 'server_side'),
+            encryption_version=getattr(f, 'encryption_version', None),
             encryption_mode=f.encryption_mode,
         )
         for f in files
@@ -987,37 +988,18 @@ async def get_file_preview(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Check if file is Zero-Knowledge encrypted
-    if file_obj.is_encrypted or file_obj.encrypted_file_key:
-        # Check if we have a client-generated encrypted thumbnail
-        file_metadata = file_obj.file_metadata or {}
-        zk_thumbnail = file_metadata.get("zk_thumbnail")
-        
-        if zk_thumbnail and zk_thumbnail.get("encrypted_thumbnail"):
-            # Return the encrypted thumbnail for client-side decryption
-            logger.info(f"🔐 Serving ZK encrypted thumbnail for {file_id}")
-            
-            # Decode base64 to raw bytes
-            encrypted_bytes = base64.b64decode(zk_thumbnail["encrypted_thumbnail"])
-            
-            return Response(
-                content=encrypted_bytes,
-                media_type='application/octet-stream',
-                headers={
-                    "Cache-Control": "public, max-age=2592000",  # 30 days
-                    "X-ZK-Encrypted": "1",  # Signal to frontend this is encrypted
-                    "X-ZK-Thumbnail-IV": zk_thumbnail.get("thumbnail_iv", ""),
-                    "X-ZK-Thumbnail-Width": str(zk_thumbnail.get("width", 0)),
-                    "X-ZK-Thumbnail-Height": str(zk_thumbnail.get("height", 0)),
-                    "X-Preview-Status": "zk-encrypted"
-                }
-            )
-        else:
-            # No thumbnail available for this ZK file
-            raise HTTPException(
-                status_code=404,
-                detail="Preview not available for this Zero-Knowledge encrypted file. No client-generated thumbnail was uploaded."
-            )
+    # Note: ZK files are now in a separate service (ZK Private Vault)
+    # Normal Storage service only handles server-side encrypted files
+    # Check if this is a server-side encrypted file (encryption_mode = 'server_side')
+    is_zk_encrypted = getattr(file_obj, 'encryption_mode', None) == 'client_side'
+
+    if is_zk_encrypted:
+        # This shouldn't happen in Normal Storage service, but handle gracefully
+        # ZK files should be in the ZK service now
+        raise HTTPException(
+            status_code=400,
+            detail="Zero-Knowledge encrypted files are not available in Normal Storage. Please use the ZK Private Vault service."
+        )
 
     # ============ CHECK BACKGROUND PREVIEW STATUS FOR LARGE VIDEOS ============
     # For large videos (>50MB), check if preview is being generated in background

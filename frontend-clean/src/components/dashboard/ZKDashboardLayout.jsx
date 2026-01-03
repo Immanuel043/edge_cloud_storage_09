@@ -5,6 +5,7 @@ import {
   ArrowUpDown, AlertTriangle
 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
+import { UploadError, UPLOAD_ERROR_TYPES } from '../../services/zkAuthService';
 import TrashView from './TrashView';
 import ZKStorageStats from './ZKStorageStats';
 import ZKEncryptionStatus from './ZKEncryptionStatus';
@@ -94,6 +95,7 @@ export default function ZKDashboardLayout({
   const [isDragging, setIsDragging] = useState(false);
   const [showUploadCompleteToast, setShowUploadCompleteToast] = useState(false);
   const [completedUploadCount, setCompletedUploadCount] = useState(0);
+  const [uploadError, setUploadError] = useState(null); // { type, message, fileName }
 
   // Download state
   const [downloads, setDownloads] = useState({});
@@ -252,10 +254,51 @@ export default function ZKDashboardLayout({
           [uploadId]: { ...prev[uploadId], status: 'cancelled' }
         }));
       } else {
+        // Determine error type and show appropriate toast
+        let errorType = 'unknown';
+        let errorMessage = error.message || 'Upload failed. Please try again.';
+
+        if (error instanceof UploadError) {
+          errorType = error.type;
+          switch (error.type) {
+            case UPLOAD_ERROR_TYPES.QUOTA_EXCEEDED:
+              errorMessage = 'Storage quota exceeded. Please free up space or upgrade your plan.';
+              break;
+            case UPLOAD_ERROR_TYPES.RATE_LIMITED:
+              errorMessage = 'Upload rate limit reached. Please wait a moment and try again.';
+              break;
+            case UPLOAD_ERROR_TYPES.AUTH:
+              errorMessage = 'Session expired. Please log in again.';
+              break;
+            default:
+              errorMessage = error.message;
+          }
+        }
+
+        // Update upload state
         setUploads(prev => ({
           ...prev,
-          [uploadId]: { ...prev[uploadId], status: 'error', error: error.message }
+          [uploadId]: { ...prev[uploadId], status: 'error', error: errorMessage }
         }));
+
+        // Show error toast
+        setUploadError({
+          type: errorType,
+          message: errorMessage,
+          fileName: file.name
+        });
+
+        // Auto-hide error toast after 8 seconds
+        setTimeout(() => setUploadError(null), 8000);
+
+        // Remove failed upload from list after delay
+        setTimeout(() => {
+          setUploads(prev => {
+            const newUploads = { ...prev };
+            delete newUploads[uploadId];
+            return newUploads;
+          });
+        }, 5000);
       }
     } finally {
       delete abortControllers.current[uploadId];
@@ -871,6 +914,50 @@ export default function ZKDashboardLayout({
             </div>
             <button
               onClick={() => setShowUploadCompleteToast(false)}
+              className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
+                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+              }`}
+            >
+              <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Error Toast */}
+      {uploadError && (
+        <div className="fixed top-4 right-4 z-50 animate-slide-in">
+          <div className={`flex items-start gap-3 px-6 py-4 rounded-xl shadow-2xl border max-w-md ${
+            darkMode
+              ? 'bg-gray-800 border-red-700/50'
+              : 'bg-white border-red-200'
+          }`}>
+            <div className="flex-shrink-0 mt-0.5">
+              <AlertTriangle size={24} className="text-red-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Upload Failed
+              </p>
+              <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'} truncate`} title={uploadError.fileName}>
+                {uploadError.fileName}
+              </p>
+              <p className={`text-sm mt-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
+                {uploadError.message}
+              </p>
+              {uploadError.type === UPLOAD_ERROR_TYPES.QUOTA_EXCEEDED && (
+                <p className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  Tip: Delete some files or upgrade your storage plan.
+                </p>
+              )}
+              {uploadError.type === UPLOAD_ERROR_TYPES.RATE_LIMITED && (
+                <p className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  Tip: Wait a few seconds before retrying.
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setUploadError(null)}
               className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
                 darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
               }`}

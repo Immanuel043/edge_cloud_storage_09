@@ -165,11 +165,23 @@ export class SecureMediaController {
         useWorkerPool: true,
       });
       await this.chunkManager.init();
+
+      // Check if destroyed during async operation (React cleanup race condition)
+      if (this.isDestroyed) {
+        console.log('[SecureMediaController] Aborted: controller destroyed during ChunkManager init');
+        return false;
+      }
       console.log('[SecureMediaController] Step 1 complete: ChunkManager initialized');
 
       // 2. Extract and parse header
       console.log('[SecureMediaController] Step 2: Extracting header...');
       await this._extractHeader();
+
+      // Check again after header extraction
+      if (this.isDestroyed) {
+        console.log('[SecureMediaController] Aborted: controller destroyed during header extraction');
+        return false;
+      }
       console.log('[SecureMediaController] Step 2 complete: Header extracted');
 
       // 3. Setup playback (MSE for fragmented MP4, blob for non-fragmented)
@@ -177,6 +189,11 @@ export class SecureMediaController {
         // Non-fragmented MP4: use blob-based playback
         console.log('[SecureMediaController] Step 3: Setting up blob playback (non-fragmented MP4)...');
         await this._setupBlobPlayback();
+
+        if (this.isDestroyed) {
+          console.log('[SecureMediaController] Aborted: controller destroyed during blob setup');
+          return false;
+        }
         console.log('[SecureMediaController] Step 3 complete: Blob playback ready');
 
         // 4. Attach basic event listeners for blob playback
@@ -189,6 +206,11 @@ export class SecureMediaController {
         // Fragmented MP4: use MSE
         console.log('[SecureMediaController] Step 3: Setting up MSE...');
         await this._setupMSE();
+
+        if (this.isDestroyed) {
+          console.log('[SecureMediaController] Aborted: controller destroyed during MSE setup');
+          return false;
+        }
         console.log('[SecureMediaController] Step 3 complete: MSE setup');
 
         // 4. Attach event listeners
@@ -199,6 +221,11 @@ export class SecureMediaController {
         // 5. Start initial buffering
         console.log('[SecureMediaController] Step 5: Initial buffering...');
         await this._bufferInitial();
+
+        if (this.isDestroyed) {
+          console.log('[SecureMediaController] Aborted: controller destroyed during initial buffering');
+          return false;
+        }
         console.log('[SecureMediaController] Step 5 complete: Initial buffering done');
       }
 
@@ -208,6 +235,11 @@ export class SecureMediaController {
 
       return true;
     } catch (error) {
+      // Don't emit error if controller was destroyed (expected during cleanup)
+      if (this.isDestroyed) {
+        console.log('[SecureMediaController] Init error after destroy (expected):', error.message);
+        return false;
+      }
       console.error('[SecureMediaController] Initialization failed:', error);
       this._emitError(MediaErrorCodes.FETCH_FAILED, error.message);
       return false;
@@ -257,11 +289,37 @@ export class SecureMediaController {
     if (!this.moovData.codecs && this.chunkManager.totalChunks > headerChunks) {
       console.warn('[SecureMediaController] moov atom not found in header, checking end of file...');
 
+      // Check if destroyed before making more requests (React cleanup race condition)
+      if (this.isDestroyed || !this.chunkManager) {
+        throw new Error('Controller destroyed during header extraction');
+      }
+
+      // Validate ChunkManager state and file key before long operation
+      if (!this.chunkManager.fileKey || this.chunkManager.fileKey.length !== 32) {
+        console.warn('[SecureMediaController] File key invalid before downloading all chunks, attempting to re-validate...');
+        try {
+          // Try to ensure file key is valid (will re-decrypt if needed)
+          this.chunkManager._ensureFileKey();
+        } catch (error) {
+          throw new Error(
+            `File key lost before downloading all chunks: ${error.message}. ` +
+            'Please ensure your ZK session is unlocked and try again.'
+          );
+        }
+      }
+
       // Download entire file to find moov (this is a fallback for non-optimized MP4s)
       const totalChunks = this.chunkManager.totalChunks;
       console.log(`[SecureMediaController] Downloading all ${totalChunks} chunks to find moov...`);
 
       headerData = await this.chunkManager.getChunks(0, totalChunks);
+
+      // Check again after potentially long download (React cleanup race condition)
+      if (this.isDestroyed) {
+        console.log('[SecureMediaController] Aborted: controller destroyed during full file download for moov');
+        throw new Error('Controller destroyed during moov search');
+      }
+
       this.moovData = parseMP4(headerData.buffer, this.chunkSize);
 
       if (!this.moovData.codecs) {
@@ -738,8 +796,13 @@ export class SecureMediaController {
       this.videoElement.load();
     }
 
-    // Clear all decrypted data
-    this.chunkManager?.clear();
+    // Clear all decrypted data - MUST set isDestroyed BEFORE clearing
+    // to prevent race conditions where code checks isDestroyed, passes,
+    // then finds fileKey is null
+    if (this.chunkManager) {
+      this.chunkManager.isDestroyed = true;
+      this.chunkManager.clear();
+    }
     this.appendQueue?.clear();
 
     // Zero out moov data and preloaded data

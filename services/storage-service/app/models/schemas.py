@@ -29,6 +29,41 @@ class UserResponse(BaseModel):
 class ThemeUpdate(BaseModel):
     theme: str
 
+# Email Verification Schemas
+class RegisterInitRequest(BaseModel):
+    """Request to start registration - sends verification code"""
+    email: EmailStr
+
+class RegisterVerifyRequest(BaseModel):
+    """Request to verify email code"""
+    email: EmailStr
+    verification_code: str
+    
+    @field_validator('verification_code')
+    @classmethod
+    def validate_code(cls, v):
+        """Validate verification code format"""
+        if not v or len(v) != 6 or not v.isdigit():
+            raise ValueError('Verification code must be 6 digits')
+        return v
+
+class RegisterCompleteRequest(BaseModel):
+    """Request to complete registration after email verification"""
+    email: EmailStr
+    username: str
+    password: str
+    verification_token: str  # Token from verify step
+
+class ResendCodeRequest(BaseModel):
+    """Request to resend verification code"""
+    email: EmailStr
+
+class VerificationResponse(BaseModel):
+    """Response after email verification"""
+    verified: bool
+    token: str
+    message: Optional[str] = None
+
 # File Schemas
 class FileUploadInit(BaseModel):
     file_name: str

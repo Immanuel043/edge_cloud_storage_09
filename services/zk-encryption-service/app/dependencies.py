@@ -142,11 +142,11 @@ async def get_current_user(
         )
 
     # Import here to avoid circular dependency
-    from app.models.database import User
+    from app.models.database import ZKUser
 
     # Fetch user from database
     result = await db.execute(
-        select(User).filter(User.id == user_id)
+        select(ZKUser).filter(ZKUser.id == user_id)
     )
     user = result.scalar_one_or_none()
 
@@ -175,15 +175,17 @@ async def get_current_zk_user(
         user: Current authenticated user
 
     Returns:
-        User object with zk_enabled=True
+        User object with ZK enabled
 
     Raises:
         HTTPException: If ZK not enabled for user
     """
-    if not user.zk_enabled:
+    # In ZK service, all users are ZK users by definition
+    # Check if user has completed ZK enrollment
+    if not user.zk_enrolled_at:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Zero-knowledge encryption not enabled for this user. Visit Settings to enable.",
+            detail="Zero-knowledge encryption not fully enrolled. Please complete setup.",
         )
 
     return user
@@ -230,10 +232,10 @@ async def get_optional_user(
         if user_id is None:
             return None
 
-        from app.models.database import User
+        from app.models.database import ZKUser
 
         result = await db.execute(
-            select(User).filter(User.id == user_id)
+            select(ZKUser).filter(ZKUser.id == user_id)
         )
         return result.scalar_one_or_none()
     except HTTPException:
@@ -352,9 +354,9 @@ async def require_pro_tier(user=Depends(get_current_user)):
     Raises:
         HTTPException: If user doesn't have required tier
     """
-    # TODO: Check user's subscription tier
-    # For now, allow if ZK is enabled (which requires Pro+)
-    if not user.zk_enabled:
+    # Check user's subscription tier
+    allowed_tiers = ['professional', 'enterprise', 'pro']
+    if user.plan_type.lower() not in allowed_tiers:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This feature requires Pro tier or higher. Upgrade your subscription.",

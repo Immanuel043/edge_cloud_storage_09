@@ -129,6 +129,17 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-ZK-Encrypted",
+        "X-ZK-Thumbnail-IV",
+        "X-ZK-File-Key",
+        "X-ZK-File-Key-IV",
+        "X-Encrypted-File-Name",
+        "X-File-Name-IV",
+        "Content-Disposition",
+        "Content-Length",
+        "Content-Type",
+    ],
 )
 
 # GZip Compression

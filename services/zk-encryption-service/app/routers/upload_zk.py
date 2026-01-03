@@ -44,7 +44,9 @@ router = APIRouter()
 
 class InitUploadRequest(BaseModel):
     """Request to initialize ZK upload"""
-    filename: str = Field(..., max_length=255)
+    # Encrypted filename (client-side encrypted with filename key derived from master key)
+    encrypted_file_name: str = Field(..., max_length=1024)  # Base64 encoded encrypted filename
+    file_name_iv: str = Field(..., max_length=64)  # Base64 encoded IV for filename encryption
     file_size: int = Field(..., gt=0)
     mime_type: str = Field(..., max_length=100)
     encrypted_file_key: str  # Base64 encoded - file key encrypted with master key
@@ -183,20 +185,20 @@ async def initialize_upload(
     Returns:
         Upload session information
     """
-    from app.models.database import StorageObject
+    from app.models.database import ZKObject
 
     logger.info(
         "zk_upload_init",
         user_id=str(user.id),
-        filename=request_data.filename,
-        file_size=request_data.file_size
+        file_size=request_data.file_size,
+        filename_encrypted=True  # Filename is now encrypted client-side
     )
 
     # Check storage quota
     total_usage = await db.scalar(
-        select(StorageObject.file_size).where(
-            StorageObject.user_id == user.id,
-            StorageObject.is_deleted == False
+        select(ZKObject.file_size).where(
+            ZKObject.user_id == user.id,
+            ZKObject.is_deleted == False
         )
     ) or 0
 
@@ -210,41 +212,52 @@ async def initialize_upload(
     file_id = uuid4()
     upload_id = uuid4()
 
-    # Build file_metadata with ZK thumbnail if provided
-    file_metadata = {}
+    # Use client-encrypted filename directly (proper ZK encryption)
+    encrypted_filename = request_data.encrypted_file_name
+    filename_iv = request_data.file_name_iv
+
+    # Build chunk_info with ZK thumbnail if provided
+    chunk_info = {}
     if request_data.encrypted_thumbnail:
-        file_metadata["zk_thumbnail"] = {
-            "encrypted_thumbnail": request_data.encrypted_thumbnail,
-            "thumbnail_iv": request_data.thumbnail_iv,
+        chunk_info["thumbnail"] = {
+            "encrypted_data": request_data.encrypted_thumbnail,
+            "iv": request_data.thumbnail_iv,
             "width": request_data.thumbnail_width,
             "height": request_data.thumbnail_height,
         }
         logger.info(
             "zk_thumbnail_received",
             user_id=str(user.id),
-            filename=request_data.filename
+            file_id=str(file_id)
         )
+        # Also store in separate columns for easier backend access
+        encrypted_thumbnail = request_data.encrypted_thumbnail
+        thumbnail_iv = request_data.thumbnail_iv
+    else:
+        encrypted_thumbnail = None
+        thumbnail_iv = None
 
-    new_file = StorageObject(
+    new_file = ZKObject(
         id=file_id,
         user_id=user.id,
-        file_name=request_data.filename,
+        encrypted_file_name=encrypted_filename,
+        file_name_iv=filename_iv,
         file_size=request_data.file_size,
         mime_type=request_data.mime_type,
         folder_id=request_data.parent_folder_id,
 
-        # Encryption mode - marks this as ZK client-side encrypted
-        encryption_mode="client_zk",
-
-        # ZK-specific fields
-        is_encrypted=True,
+        # File encryption key (already encrypted client-side)
         encrypted_file_key=request_data.encrypted_file_key,
         file_key_iv=request_data.file_key_iv,
         encryption_algorithm=request_data.encryption_algorithm,
-        encryption_version=request_data.encryption_version,  # Track V1 vs V2
+        encryption_version=request_data.encryption_version,
 
-        # File metadata with ZK thumbnail
-        file_metadata=file_metadata if file_metadata else None,
+        # Thumbnail (encrypted client-side)
+        encrypted_thumbnail=encrypted_thumbnail,
+        thumbnail_iv=thumbnail_iv,
+
+        # Chunk info with metadata
+        chunk_info=chunk_info if chunk_info else None,
 
         # Upload tracking
         upload_status="pending",
@@ -298,7 +311,7 @@ async def upload_chunk(
     Returns:
         Chunk upload confirmation
     """
-    from app.models.database import StorageObject
+    from app.models.database import ZKObject
 
     user_id_str = str(user.id)
 
@@ -329,39 +342,39 @@ async def upload_chunk(
             chunk_index=chunk_index
         )
 
-    # Verify upload exists
-    result = await db.execute(
-        select(StorageObject).where(
-            StorageObject.upload_id == upload_id,
-            StorageObject.user_id == user.id
+        # Verify upload exists
+        result = await db.execute(
+            select(ZKObject).where(
+                ZKObject.upload_id == upload_id,
+                ZKObject.user_id == user.id
+            )
         )
-    )
-    file_obj = result.scalar_one_or_none()
+        file_obj = result.scalar_one_or_none()
 
-    if not file_obj:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Upload session not found"
-        )
+        if not file_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Upload session not found"
+            )
 
-    if file_obj.upload_status == "completed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Upload already completed"
-        )
+        if file_obj.upload_status == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload already completed"
+            )
 
-    # Update status to uploading
-    if file_obj.upload_status == "pending":
-        await db.execute(
-            update(StorageObject)
-            .where(StorageObject.id == file_obj.id)
-            .values(upload_status="uploading")
-        )
-        await db.commit()
+        # Update status to uploading
+        if file_obj.upload_status == "pending":
+            await db.execute(
+                update(ZKObject)
+                .where(ZKObject.id == file_obj.id)
+                .values(upload_status="uploading")
+            )
+            await db.commit()
 
         # Read encrypted chunk
         chunk_data = await chunk.read()
-        
+
         # ============ BANDWIDTH THROTTLING: Check bandwidth limit ============
         chunk_size = len(chunk_data)
         if chunk_size > 0:
@@ -437,7 +450,7 @@ async def complete_upload(
     Returns:
         Upload completion confirmation
     """
-    from app.models.database import StorageObject
+    from app.models.database import ZKObject
 
     logger.info(
         "zk_upload_complete",
@@ -448,9 +461,9 @@ async def complete_upload(
 
     # Verify upload exists
     result = await db.execute(
-        select(StorageObject).where(
-            StorageObject.upload_id == upload_id,
-            StorageObject.user_id == user.id
+        select(ZKObject).where(
+            ZKObject.upload_id == upload_id,
+            ZKObject.user_id == user.id
         )
     )
     file_obj = result.scalar_one_or_none()
@@ -484,12 +497,12 @@ async def complete_upload(
 
     # Update file status
     await db.execute(
-        update(StorageObject)
-        .where(StorageObject.id == file_obj.id)
+        update(ZKObject)
+        .where(ZKObject.id == file_obj.id)
         .values(
             upload_status="completed",
             uploaded_at=datetime.utcnow(),
-            file_hash=request_data.file_hash
+            content_hash=request_data.file_hash
         )
     )
     await db.commit()
@@ -502,11 +515,13 @@ async def complete_upload(
         total_chunks=request_data.total_chunks
     )
 
+    # Return encrypted filename (client will decrypt)
     return {
         "message": "Upload completed successfully",
         "file_id": str(file_obj.id),
         "upload_id": upload_id,
-        "filename": file_obj.file_name,
+        "encrypted_file_name": file_obj.encrypted_file_name,
+        "file_name_iv": file_obj.file_name_iv,
         "file_size": file_obj.file_size,
         "total_chunks": request_data.total_chunks
     }
@@ -528,13 +543,13 @@ async def get_upload_status(
     Returns:
         Upload progress information
     """
-    from app.models.database import StorageObject
+    from app.models.database import ZKObject
 
     # Fetch upload
     result = await db.execute(
-        select(StorageObject).where(
-            StorageObject.upload_id == upload_id,
-            StorageObject.user_id == user.id
+        select(ZKObject).where(
+            ZKObject.upload_id == upload_id,
+            ZKObject.user_id == user.id
         )
     )
     file_obj = result.scalar_one_or_none()
@@ -590,15 +605,15 @@ async def cancel_upload(
     Returns:
         Cancellation confirmation
     """
-    from app.models.database import StorageObject
+    from app.models.database import ZKObject
 
     logger.info("zk_upload_cancel", user_id=str(user.id), upload_id=upload_id)
 
     # Fetch upload
     result = await db.execute(
-        select(StorageObject).where(
-            StorageObject.upload_id == upload_id,
-            StorageObject.user_id == user.id
+        select(ZKObject).where(
+            ZKObject.upload_id == upload_id,
+            ZKObject.user_id == user.id
         )
     )
     file_obj = result.scalar_one_or_none()

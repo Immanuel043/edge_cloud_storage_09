@@ -33,6 +33,7 @@ import { useAuth } from '../contexts/AuthContext';
 export function useSecureVideoPlayer(fileId, metadata) {
   const videoRef = useRef(null);
   const controllerRef = useRef(null);
+  const metadataRef = useRef(metadata);
 
   const { zkSessionUnlocked } = useAuth();
 
@@ -51,13 +52,25 @@ export function useSecureVideoPlayer(fileId, metadata) {
     error: null,
   });
 
+  // Update metadata ref when it changes (but don't trigger re-initialization)
+  useEffect(() => {
+    metadataRef.current = metadata;
+  }, [metadata]);
+
+  // Create stable metadata key to detect actual changes (not just reference changes)
+  // Only re-initialize if the key fields actually change
+  const metadataKey = useMemo(() => {
+    if (!metadata) return null;
+    return `${metadata.encrypted_file_key || ''}-${metadata.file_key_iv || ''}-${metadata.file_size || 0}`;
+  }, [metadata?.encrypted_file_key, metadata?.file_key_iv, metadata?.file_size]);
 
   // Initialize controller when video element and metadata are available
   useEffect(() => {
     console.log('[useSecureVideoPlayer] Effect triggered', {
       zkSessionUnlocked,
       fileId,
-      hasMetadata: !!metadata,
+      hasMetadata: !!metadataRef.current,
+      metadataKey,
       videoMounted,
       hasVideoRef: !!videoRef.current,
     });
@@ -69,10 +82,11 @@ export function useSecureVideoPlayer(fileId, metadata) {
       return;
     }
 
-    if (!fileId || !metadata || !videoMounted || !videoRef.current) {
+    if (!fileId || !metadataRef.current || !metadataKey || !videoMounted || !videoRef.current) {
       console.log('[useSecureVideoPlayer] Missing required props', {
         fileId: !!fileId,
-        metadata: !!metadata,
+        metadata: !!metadataRef.current,
+        metadataKey: !!metadataKey,
         videoMounted,
         videoRef: !!videoRef.current,
       });
@@ -114,12 +128,18 @@ export function useSecureVideoPlayer(fileId, metadata) {
       setState(s => ({ ...s, error }));
     });
 
+    // Use the ref for metadata to ensure we have the latest values
+    const currentMetadata = metadataRef.current;
+
     // Initialize
-    controller.init(fileId, videoRef.current, metadata).catch((error) => {
-      setState(s => ({
-        ...s,
-        error: { code: MediaErrorCodes.FETCH_FAILED, message: error.message },
-      }));
+    controller.init(fileId, videoRef.current, currentMetadata).catch((error) => {
+      // Only set error if controller wasn't destroyed (prevents error flash on cleanup)
+      if (!controller.isDestroyed) {
+        setState(s => ({
+          ...s,
+          error: { code: MediaErrorCodes.FETCH_FAILED, message: error.message },
+        }));
+      }
     });
 
     // Cleanup - bulletproof memory management
@@ -147,7 +167,7 @@ export function useSecureVideoPlayer(fileId, metadata) {
       controller.destroy();
       controllerRef.current = null;
     };
-  }, [fileId, metadata, zkSessionUnlocked, videoMounted]);
+  }, [fileId, metadataKey, zkSessionUnlocked, videoMounted]);
 
   // Handle session lock/unlock
   useEffect(() => {
