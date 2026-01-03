@@ -1,4 +1,4 @@
-import { API_URL, ZK_SERVICE_URL, CHUNK_SIZE } from '../config/constants';
+import { API_URL, ZK_SERVICE_URL, CHUNK_SIZE, ZK_STORAGE } from '../config/constants';
 import { sanitizeInput, validateFileType, validateFileSize } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
@@ -1317,9 +1317,9 @@ async getFileActivity(fileId, limit = 50) {
 async getTrash() {
   await rateLimiter.checkLimit();
 
-  // Check if ZK mode is active
-  const zkEnabled = localStorage.getItem('zkEnabled') === 'true';
-  const zkSessionUnlocked = sessionStorage.getItem('zkSessionUnlocked') === 'true';
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
   const useZKService = zkEnabled && zkSessionUnlocked;
 
   // Use ZK service URL for ZK users, otherwise use normal storage service
@@ -1342,15 +1342,31 @@ async getTrash() {
     throw new Error('Failed to fetch trash');
   }
 
-  return await response.json();
+  const data = await response.json();
+
+  // ZK service returns { files: [...], total_files: ..., total_size: ... }
+  // Normal storage service returns array directly
+  // Normalize to always return an array
+  if (useZKService && data.files) {
+    return data.files;
+  }
+
+  // If it's already an array (normal service), return as-is
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  // Fallback: return empty array if format is unexpected
+  console.warn('Unexpected trash response format:', data);
+  return [];
 }
 
 async restoreFromTrash(fileId) {
   await rateLimiter.checkLimit();
 
-  // Check if ZK mode is active
-  const zkEnabled = localStorage.getItem('zkEnabled') === 'true';
-  const zkSessionUnlocked = sessionStorage.getItem('zkSessionUnlocked') === 'true';
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
   const useZKService = zkEnabled && zkSessionUnlocked;
 
   // Use ZK service URL for ZK users, otherwise use normal storage service
@@ -1379,9 +1395,9 @@ async restoreFromTrash(fileId) {
 async permanentDelete(fileId) {
   await rateLimiter.checkLimit();
 
-  // Check if ZK mode is active
-  const zkEnabled = localStorage.getItem('zkEnabled') === 'true';
-  const zkSessionUnlocked = sessionStorage.getItem('zkSessionUnlocked') === 'true';
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
   const useZKService = zkEnabled && zkSessionUnlocked;
 
   // Use ZK service URL for ZK users, otherwise use normal storage service
@@ -1410,9 +1426,9 @@ async permanentDelete(fileId) {
 async emptyTrash() {
   await rateLimiter.checkLimit();
 
-  // Check if ZK mode is active
-  const zkEnabled = localStorage.getItem('zkEnabled') === 'true';
-  const zkSessionUnlocked = sessionStorage.getItem('zkSessionUnlocked') === 'true';
+  // Check if ZK mode is active - use proper ZK service functions
+  const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+  const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
   const useZKService = zkEnabled && zkSessionUnlocked;
 
   // Use ZK service URL for ZK users, otherwise use normal storage service

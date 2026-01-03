@@ -236,13 +236,17 @@ export default function FileGrid({
     setActiveFile(null);
   };
 
+  // Ensure folders and files are arrays
+  const safeFolders = Array.isArray(folders) ? folders : [];
+  const safeFiles = Array.isArray(files) ? files : [];
+
   return (
     <>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5">
         {/* Folders */}
-        {folders.map((folder, folderIndex) => (
+        {safeFolders.map((folder, folderIndex) => (
           <div
-            key={folder.id}
+            key={folder.id || `folder-${folderIndex}`}
             data-file-card="true"
             onClick={(e) => {
               // Single click selects folder
@@ -278,13 +282,13 @@ export default function FileGrid({
         ))}
 
         {/* Files */}
-        {files.map((file, fileIndex) => (
+        {safeFiles.map((file, fileIndex) => (
           <div
-            key={file.id}
+            key={file.id || `file-${fileIndex}`}
             data-file-card="true"
             onClick={(e) => {
               // Single click selects file, pass index for shift+click range selection
-              onFileClick(file.id, folders.length + fileIndex, e.shiftKey);
+              onFileClick(file.id, safeFolders.length + fileIndex, e.shiftKey);
             }}
             onDoubleClick={(e) => {
               // Double click opens preview

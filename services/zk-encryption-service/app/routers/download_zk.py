@@ -23,7 +23,7 @@ from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +82,7 @@ async def list_files(
     folder_id: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
+    is_deleted: Optional[bool] = Query(None, description="Filter by deleted status: true for trash, false for active files"),
     user=Depends(get_current_zk_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -95,6 +96,7 @@ async def list_files(
         folder_id: Optional folder filter
         limit: Max files to return
         offset: Pagination offset
+        is_deleted: Optional filter for deleted files (True for trash, False for active, None for all)
         user: Current authenticated user
 
     Returns:
@@ -102,20 +104,39 @@ async def list_files(
     """
     from app.models.database import ZKObject
 
+    # Log the received parameter value and type for debugging
     logger.info(
         "zk_list_files",
         user_id=str(user.id),
         folder_id=folder_id,
         limit=limit,
-        offset=offset
+        offset=offset,
+        is_deleted=is_deleted,
+        is_deleted_type=type(is_deleted).__name__
     )
 
     # Build query - ONLY return ZK-encrypted files (encryption_mode = 'client_zk')
     query = select(ZKObject).where(
         ZKObject.user_id == user.id,
-        ZKObject.is_deleted == False,
         ZKObject.upload_status == "completed",
     )
+
+    # Filter by is_deleted if provided, otherwise default to False (active files only)
+    # Handle string "true"/"false" from query params if needed
+    deleted_filter = None
+    if is_deleted is not None:
+        # Convert string to bool if needed (FastAPI should handle this, but be safe)
+        if isinstance(is_deleted, str):
+            deleted_filter = is_deleted.lower() in ('true', '1', 'yes')
+        else:
+            deleted_filter = bool(is_deleted)
+        query = query.where(ZKObject.is_deleted == deleted_filter)
+        logger.info(f"Filtering by is_deleted={deleted_filter} (received: {is_deleted}, type: {type(is_deleted).__name__})")
+    else:
+        # Default behavior: only return non-deleted files
+        deleted_filter = False
+        query = query.where(ZKObject.is_deleted == False)
+        logger.info("Using default filter: is_deleted=False (parameter not provided)")
 
     if folder_id:
         query = query.where(ZKObject.folder_id == folder_id)
@@ -123,9 +144,15 @@ async def list_files(
     # Get total count (only ZK files)
     count_query = select(func.count()).select_from(ZKObject).where(
         ZKObject.user_id == user.id,
-        ZKObject.is_deleted == False,
         ZKObject.upload_status == "completed",
     )
+    
+    # Apply same is_deleted filter to count query
+    if deleted_filter is not None:
+        count_query = count_query.where(ZKObject.is_deleted == deleted_filter)
+    else:
+        count_query = count_query.where(ZKObject.is_deleted == False)
+    
     if folder_id:
         count_query = count_query.where(ZKObject.folder_id == folder_id)
 
@@ -141,9 +168,15 @@ async def list_files(
     # Calculate total size (only ZK files)
     size_query = select(func.sum(ZKObject.file_size)).where(
         ZKObject.user_id == user.id,
-        ZKObject.is_deleted == False,
         ZKObject.upload_status == "completed",
     )
+    
+    # Apply same is_deleted filter to size query
+    if deleted_filter is not None:
+        size_query = size_query.where(ZKObject.is_deleted == deleted_filter)
+    else:
+        size_query = size_query.where(ZKObject.is_deleted == False)
+    
     total_size = await db.scalar(size_query) or 0
 
     # Build response
