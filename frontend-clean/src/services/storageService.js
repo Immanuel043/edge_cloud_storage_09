@@ -1348,7 +1348,43 @@ async getTrash() {
   // Normal storage service returns array directly
   // Normalize to always return an array
   if (useZKService && data.files) {
-    return data.files;
+    // Decrypt ZK file names for display
+    const decryptedFiles = data.files.map(file => {
+      try {
+        // Decrypt filename if encrypted
+        if (file.encrypted_file_name && file.file_name_iv) {
+          const decryptedName = zkEncryptionService.decryptFilename(
+            file.encrypted_file_name,
+            file.file_name_iv
+          );
+          return {
+            ...file,
+            id: file.file_id || file.id,
+            name: decryptedName,
+            size: file.file_size,
+            mimeType: file.mime_type,
+            uploadedAt: file.uploaded_at,
+            // Keep encrypted fields for operations
+            encrypted_file_name: file.encrypted_file_name,
+            file_name_iv: file.file_name_iv,
+            encrypted_file_key: file.encrypted_file_key,
+            file_key_iv: file.file_key_iv,
+            is_encrypted: true
+          };
+        }
+        return file;
+      } catch (error) {
+        console.error('[Trash] Failed to decrypt filename:', error);
+        return {
+          ...file,
+          id: file.file_id || file.id,
+          name: '[Encrypted File]',
+          size: file.file_size || 0,
+          mimeType: file.mime_type || 'application/octet-stream'
+        };
+      }
+    });
+    return decryptedFiles;
   }
 
   // If it's already an array (normal service), return as-is

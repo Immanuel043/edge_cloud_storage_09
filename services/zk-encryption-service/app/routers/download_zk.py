@@ -754,6 +754,82 @@ async def restore_file(
     }
 
 
+@router.post("/files/empty-trash")
+async def empty_trash(
+    user=Depends(get_current_zk_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Permanently delete all files in trash.
+
+    Args:
+        user: Current authenticated user
+
+    Returns:
+        Deletion summary
+    """
+    from app.models.database import ZKObject
+    from pathlib import Path
+    import shutil
+
+    logger.info("zk_empty_trash", user_id=str(user.id))
+
+    # Fetch all deleted files for this user
+    result = await db.execute(
+        select(ZKObject).where(
+            ZKObject.user_id == user.id,
+            ZKObject.is_deleted == True
+        )
+    )
+    deleted_files = result.scalars().all()
+
+    if not deleted_files:
+        return {
+            "message": "Trash is already empty",
+            "deleted_count": 0,
+            "freed_bytes": 0
+        }
+
+    total_size = 0
+    deleted_count = 0
+
+    # Delete each file permanently
+    for file_obj in deleted_files:
+        # Delete file data from storage
+        storage_dir = Path(settings.ZK_STORAGE_PATH) / str(user.id) / str(file_obj.id)
+        if storage_dir.exists():
+            try:
+                shutil.rmtree(storage_dir)
+                total_size += file_obj.file_size
+            except Exception as e:
+                logger.error(
+                    "zk_empty_trash_file_deletion_failed",
+                    user_id=str(user.id),
+                    file_id=str(file_obj.id),
+                    error=str(e)
+                )
+
+        # Delete database record
+        await db.delete(file_obj)
+        deleted_count += 1
+
+    # Commit all deletions
+    await db.commit()
+
+    logger.info(
+        "zk_trash_emptied",
+        user_id=str(user.id),
+        deleted_count=deleted_count,
+        freed_bytes=total_size
+    )
+
+    return {
+        "message": f"Successfully deleted {deleted_count} files",
+        "deleted_count": deleted_count,
+        "freed_bytes": total_size
+    }
+
+
 @router.get("/storage/usage")
 async def get_storage_usage(
     user=Depends(get_current_zk_user),

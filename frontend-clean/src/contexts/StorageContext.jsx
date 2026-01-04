@@ -598,7 +598,7 @@ export const StorageProvider = ({ children }) => {
     }
   };
 
-  const deleteFile = async (fileId) => {
+  const deleteFile = async (fileId, fileName = null) => {
     try {
       // Find the file to determine which service to use
       const file = files.find(f => f.id === fileId);
@@ -607,7 +607,7 @@ export const StorageProvider = ({ children }) => {
       let result;
       if (isZKFile) {
         // Use ZK service for client-side encrypted files
-        console.log('[Storage] Deleting ZK-encrypted file:', fileId);
+        console.log('[Storage] Deleting ZK-encrypted file:', fileId, fileName || '');
         result = await zkAuthService.deleteFile(fileId);
       } else {
         // Use regular storage service

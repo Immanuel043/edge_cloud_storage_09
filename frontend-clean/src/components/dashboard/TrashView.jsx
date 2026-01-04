@@ -1,8 +1,86 @@
 import React, { useState, useEffect } from 'react';
-import { Trash2, RefreshCw, RotateCcw, Trash } from 'lucide-react';
+import { Trash2, RefreshCw, RotateCcw, Trash, AlertTriangle, X } from 'lucide-react';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
 import { storageService } from '../../services/storageService';
+
+// Confirmation Modal Component
+function ConfirmDialog({ isOpen, onClose, onConfirm, title, message, confirmText, confirmButtonClass, darkMode, isProcessing }) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+      />
+
+      {/* Modal */}
+      <div className={`relative w-full max-w-md rounded-2xl shadow-2xl ${
+        darkMode ? 'bg-gray-800' : 'bg-white'
+      }`}>
+        {/* Close button */}
+        <button
+          onClick={onClose}
+          className={`absolute top-4 right-4 p-1 rounded-lg transition-colors ${
+            darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-500'
+          }`}
+        >
+          <X size={20} />
+        </button>
+
+        {/* Content */}
+        <div className="p-6">
+          {/* Icon */}
+          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 ${
+            darkMode ? 'bg-red-500/10' : 'bg-red-50'
+          }`}>
+            <AlertTriangle className="text-red-500" size={24} />
+          </div>
+
+          {/* Title */}
+          <h3 className={`text-xl font-semibold mb-2 ${
+            darkMode ? 'text-white' : 'text-gray-900'
+          }`}>
+            {title}
+          </h3>
+
+          {/* Message */}
+          <p className={`text-sm mb-6 ${
+            darkMode ? 'text-gray-300' : 'text-gray-600'
+          }`}>
+            {message}
+          </p>
+
+          {/* Actions */}
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              disabled={isProcessing}
+              className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-colors ${
+                darkMode
+                  ? 'bg-gray-700 hover:bg-gray-600 text-gray-200'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              } disabled:opacity-50`}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={isProcessing}
+              className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${
+                confirmButtonClass || 'bg-red-500 hover:bg-red-600 text-white'
+              }`}
+            >
+              {isProcessing ? 'Processing...' : confirmText || 'Confirm'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function TrashView({
   viewMode,
@@ -22,6 +100,8 @@ export default function TrashView({
   const [error, setError] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [emptying, setEmptying] = useState(false);
+  const [deleteModal, setDeleteModal] = useState({ isOpen: false, fileId: null, fileName: null });
+  const [emptyTrashModal, setEmptyTrashModal] = useState(false);
 
   const fetchTrashedFiles = async () => {
     try {
@@ -57,35 +137,37 @@ export default function TrashView({
     }
   };
 
-  const handlePermanentDelete = async (fileId) => {
-    if (!confirm('Are you sure you want to permanently delete this file? This action cannot be undone.')) {
-      return;
-    }
+  const handlePermanentDelete = (fileId, fileName) => {
+    setDeleteModal({ isOpen: true, fileId, fileName });
+  };
 
+  const confirmPermanentDelete = async () => {
     try {
-      await storageService.permanentDelete(fileId);
+      await storageService.permanentDelete(deleteModal.fileId);
       // Remove from trash list
-      setTrashedFiles(prev => prev.filter(f => f.id !== fileId));
+      setTrashedFiles(prev => prev.filter(f => f.id !== deleteModal.fileId));
+      setDeleteModal({ isOpen: false, fileId: null, fileName: null });
       if (onRefresh) onRefresh();
     } catch (err) {
       console.error('Failed to permanently delete file:', err);
-      alert(err.message || 'Failed to permanently delete file');
+      setError(err.message || 'Failed to permanently delete file');
     }
   };
 
-  const handleEmptyTrash = async () => {
-    if (!confirm('Are you sure you want to empty the entire trash? All files will be permanently deleted. This action cannot be undone.')) {
-      return;
-    }
+  const handleEmptyTrash = () => {
+    setEmptyTrashModal(true);
+  };
 
+  const confirmEmptyTrash = async () => {
     try {
       setEmptying(true);
       await storageService.emptyTrash();
       setTrashedFiles([]);
+      setEmptyTrashModal(false);
       if (onRefresh) onRefresh();
     } catch (err) {
       console.error('Failed to empty trash:', err);
-      alert(err.message || 'Failed to empty trash');
+      setError(err.message || 'Failed to empty trash');
     } finally {
       setEmptying(false);
     }
@@ -215,6 +297,32 @@ export default function TrashView({
           />
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmDialog
+        isOpen={deleteModal.isOpen}
+        onClose={() => setDeleteModal({ isOpen: false, fileId: null, fileName: null })}
+        onConfirm={confirmPermanentDelete}
+        title="Permanently Delete File?"
+        message={`Are you sure you want to permanently delete "${deleteModal.fileName || 'this file'}"? This action cannot be undone and the file will be lost forever.`}
+        confirmText="Delete Forever"
+        confirmButtonClass="bg-red-500 hover:bg-red-600 text-white"
+        darkMode={darkMode}
+        isProcessing={false}
+      />
+
+      {/* Empty Trash Confirmation Modal */}
+      <ConfirmDialog
+        isOpen={emptyTrashModal}
+        onClose={() => setEmptyTrashModal(false)}
+        onConfirm={confirmEmptyTrash}
+        title="Empty Trash?"
+        message={`Are you sure you want to permanently delete all ${trashedFiles.length} files in trash? This action cannot be undone and all files will be lost forever.`}
+        confirmText="Empty Trash"
+        confirmButtonClass="bg-red-500 hover:bg-red-600 text-white"
+        darkMode={darkMode}
+        isProcessing={emptying}
+      />
     </div>
   );
 }

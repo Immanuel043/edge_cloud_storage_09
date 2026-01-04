@@ -185,12 +185,16 @@ export default function FileList({
             {openMenuId === file.id && (
               <>
                 <div
-                  className="fixed inset-0 z-10"
+                  className="fixed inset-0"
+                  style={{ zIndex: 99998 }}
                   onClick={() => setOpenMenuId(null)}
                 />
-                <div className={`absolute right-0 top-10 z-20 w-52 rounded-xl shadow-2xl border overflow-hidden ${
-                  darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-                }`}>
+                <div
+                  className={`absolute right-0 top-10 w-52 rounded-xl shadow-2xl border overflow-hidden ${
+                    darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+                  }`}
+                  style={{ zIndex: 99999 }}
+                >
                   <div className="py-2">
                     <button
                       onClick={(e) => {
@@ -311,7 +315,7 @@ export default function FileList({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        onFileDelete(file.id);
+                        onFileDelete(file.id, file.name);
                         setOpenMenuId(null);
                       }}
                       className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
@@ -319,7 +323,7 @@ export default function FileList({
                       }`}
                     >
                       <Trash2 size={16} />
-                      <span className="font-medium">Delete</span>
+                      <span className="font-medium">{trashedView ? 'Delete Forever' : 'Delete'}</span>
                     </button>
                   </div>
                 </div>

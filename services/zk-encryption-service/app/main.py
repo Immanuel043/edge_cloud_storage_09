@@ -83,6 +83,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         await init_redis()
         logger.info("redis_ready")
 
+        # Start background cleanup tasks
+        import asyncio
+        from app.tasks.cleanup import run_cleanup_tasks
+        cleanup_task = asyncio.create_task(run_cleanup_tasks())
+        logger.info("cleanup_tasks_started")
+
         logger.info("zk_service_ready", status="healthy")
 
     except Exception as e:
@@ -90,6 +96,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         raise
 
     yield
+
+    # Cancel cleanup task on shutdown
+    if 'cleanup_task' in locals():
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
     # Shutdown
     logger.info("zk_service_shutdown")

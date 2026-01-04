@@ -13,7 +13,7 @@ function FileContextMenu({ file, isOpen, onClose, position, darkMode, onFilePrev
       {/* Backdrop */}
       <div
         className="fixed inset-0"
-        style={{ zIndex: 9998 }}
+        style={{ zIndex: 99998 }}
         onClick={onClose}
       />
       {/* Menu */}
@@ -22,7 +22,7 @@ function FileContextMenu({ file, isOpen, onClose, position, darkMode, onFilePrev
           darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
         }`}
         style={{
-          zIndex: 9999,
+          zIndex: 99999,
           top: position.top,
           left: position.left,
         }}
@@ -147,7 +147,7 @@ function FileContextMenu({ file, isOpen, onClose, position, darkMode, onFilePrev
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onFileDelete(file.id);
+              onFileDelete(file.id, file.name);
               onClose();
             }}
             className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
@@ -155,7 +155,7 @@ function FileContextMenu({ file, isOpen, onClose, position, darkMode, onFilePrev
             }`}
           >
             <Trash2 size={16} />
-            <span className="font-medium">Delete</span>
+            <span className="font-medium">{trashedView ? 'Delete Forever' : 'Delete'}</span>
           </button>
         </div>
       </div>
