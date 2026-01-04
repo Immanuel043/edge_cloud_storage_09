@@ -191,6 +191,7 @@ export default function FileGrid({
   const [activeFile, setActiveFile] = useState(null);
 
   const handleMenuOpen = (file, e) => {
+    e.preventDefault();
     e.stopPropagation();
 
     if (openMenuId === file.id) {
@@ -203,28 +204,42 @@ export default function FileGrid({
     const button = e.currentTarget;
     const rect = button.getBoundingClientRect();
     const menuWidth = 208; // w-52
-    const menuHeight = 380; // approximate menu height
+    const menuHeight = 400; // approximate menu height (increased for accuracy)
 
-    // Position menu below button, aligned to right edge of button
-    let left = rect.right - menuWidth;
+    // Calculate viewport dimensions
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+
+    // Position menu below and to the left of button
+    let left = rect.left;
     let top = rect.bottom + 8;
 
-    // Keep menu within viewport horizontally
+    // Adjust horizontal position to prevent overflow
+    if (left + menuWidth > viewportWidth - 16) {
+      // Align to right edge of button instead
+      left = rect.right - menuWidth;
+    }
+
+    // Ensure menu doesn't go off left edge
     if (left < 16) {
       left = 16;
     }
-    if (left + menuWidth > window.innerWidth - 16) {
-      left = window.innerWidth - menuWidth - 16;
-    }
 
-    // If menu would go below viewport, show it above the button
-    if (top + menuHeight > window.innerHeight - 16) {
+    // Adjust vertical position if menu would go below viewport
+    if (top + menuHeight > viewportHeight - 16) {
+      // Try to position above the button
       top = rect.top - menuHeight - 8;
-      // If still not enough space above, just position at top
-      if (top < 16) {
-        top = 16;
+
+      // If still not enough space, position at a safe spot
+      if (top < 80) {
+        // Position next to button instead
+        top = Math.min(rect.top, viewportHeight - menuHeight - 16);
       }
     }
+
+    // Final safety check - ensure menu is visible
+    top = Math.max(80, Math.min(top, viewportHeight - menuHeight - 16));
+    left = Math.max(16, Math.min(left, viewportWidth - menuWidth - 16));
 
     setMenuPosition({ top, left });
     setActiveFile(file);
