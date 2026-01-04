@@ -1539,13 +1539,13 @@ async def list_trash(
             updated_at=f.updated_at,
             path=f.object_path,
             is_favorite=(f.id in favorite_file_ids),
-            # ZK encryption fields
-            is_encrypted=f.is_encrypted,
-            encrypted_file_key=f.encrypted_file_key,
-            file_key_iv=f.file_key_iv,
-            encryption_algorithm=f.encryption_algorithm,
-            encryption_version=f.encryption_version,
-            encryption_mode=f.encryption_mode,
+            # ZK encryption fields - Not applicable for storage-service files
+            is_encrypted=False,
+            encrypted_file_key=None,
+            file_key_iv=None,
+            encryption_algorithm=None,
+            encryption_version=None,
+            encryption_mode=f.encryption_mode or 'none',
         )
         for f in files
     ]
@@ -1684,6 +1684,49 @@ async def permanent_delete(
         file_name = file_obj.file_name
         freed_space = file_obj.file_size
 
+        # Delete related records first to avoid FK constraint violations
+        # Only delete from tables that actually exist in the database
+        await db.execute(
+            text("DELETE FROM dlp_scan_logs WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM virus_scan_logs WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM favorites WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM file_versions WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM file_cluster_assignments WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM file_similarities WHERE file_id = :file_id OR similar_file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM share_bundle_files WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM file_embeddings WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM file_tags WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+        await db.execute(
+            text("DELETE FROM file_ocr WHERE file_id = :file_id"),
+            {"file_id": file_id}
+        )
+
         # Permanently delete the file object
         await db.delete(file_obj)
 
@@ -1773,6 +1816,55 @@ async def empty_trash(
 
             except Exception as e:
                 print(f"Failed to cleanup file {file_obj.id}: {e}")
+
+        # Delete related records first to avoid FK constraint violations
+        file_ids = [str(f.id) for f in files]
+
+        # Only delete from tables that actually exist in the database
+        await db.execute(
+            text("DELETE FROM dlp_scan_logs WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM virus_scan_logs WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM favorites WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM file_versions WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM file_cluster_assignments WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM file_similarities WHERE file_id = ANY(:file_ids) OR similar_file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM share_bundle_files WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM file_embeddings WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM file_tags WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM file_ocr WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
+        await db.execute(
+            text("DELETE FROM content_blocks WHERE file_id = ANY(:file_ids)"),
+            {"file_ids": file_ids}
+        )
 
         # Batch delete database records
         for file_obj in files:

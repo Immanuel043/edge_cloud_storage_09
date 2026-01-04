@@ -5,16 +5,16 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
+import structlog
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db_session
+from app.database import get_db_context
 from app.models.database import ZKObject
-from app.core.config import settings
-from app.core.logger import get_logger
+from app.config import settings
 
-logger = get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def cleanup_old_trash_files():
@@ -31,7 +31,7 @@ async def cleanup_old_trash_files():
     freed_bytes = 0
 
     try:
-        async for db in get_db_session():
+        async with get_db_context() as db:
             # Find files deleted more than 30 days ago
             result = await db.execute(
                 select(ZKObject).where(
