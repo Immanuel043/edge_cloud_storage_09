@@ -66,9 +66,33 @@ class Settings(BaseSettings):
         env="ACCESS_TOKEN_EXPIRE_MINUTES"
     )
 
+    # Payment Gateway Configuration
+    # Razorpay
+    RAZORPAY_KEY_ID: str = Field(default="", env="RAZORPAY_KEY_ID")
+    RAZORPAY_KEY_SECRET: str = Field(default="", env="RAZORPAY_KEY_SECRET")
+    RAZORPAY_WEBHOOK_SECRET: str = Field(default="", env="RAZORPAY_WEBHOOK_SECRET")
+    RAZORPAY_ENABLED: bool = Field(default=True, env="RAZORPAY_ENABLED")
+    RAZORPAY_CURRENCY: str = Field(default="INR", env="RAZORPAY_CURRENCY")
+    
     # Stripe Integration (separate from storage service)
     STRIPE_SECRET_KEY: str = Field(default="", env="ZK_STRIPE_SECRET_KEY")
+    STRIPE_PUBLISHABLE_KEY: str = Field(default="", env="ZK_STRIPE_PUBLISHABLE_KEY")
     STRIPE_WEBHOOK_SECRET: str = Field(default="", env="ZK_STRIPE_WEBHOOK_SECRET")
+    STRIPE_ENABLED: bool = Field(default=True, env="STRIPE_ENABLED")
+    
+    # Payment URLs
+    PAYMENT_SUCCESS_URL: str = Field(
+        default="http://localhost:3000/billing/success",
+        env="PAYMENT_SUCCESS_URL"
+    )
+    PAYMENT_FAILURE_URL: str = Field(
+        default="http://localhost:3000/billing/failure",
+        env="PAYMENT_FAILURE_URL"
+    )
+    DEFAULT_PAYMENT_GATEWAY: str = Field(
+        default="razorpay",
+        env="DEFAULT_PAYMENT_GATEWAY"
+    )
 
     # ZK Plan Limits - Independent pricing/quotas with bandwidth controls
     PLAN_LIMITS: dict = {
@@ -148,6 +172,9 @@ class Settings(BaseSettings):
     ENABLE_AUDIT_LOGGING: bool = Field(default=True, env="ENABLE_AUDIT_LOGGING")
     MAX_FAILED_LOGIN_ATTEMPTS: int = Field(default=5, env="MAX_FAILED_LOGIN_ATTEMPTS")
     LOGIN_LOCKOUT_DURATION_MINUTES: int = Field(default=15, env="LOGIN_LOCKOUT_DURATION_MINUTES")
+    
+    # Development Mode
+    DEV_MODE: bool = Field(default=False, env="DEV_MODE")
 
     class Config:
         env_file = ".env"

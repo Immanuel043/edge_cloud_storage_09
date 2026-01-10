@@ -14,7 +14,7 @@ from .database import init_redis, close_redis, engine, get_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations, favorites, oauth, gdpr, audit, performance, share_bundles, billing
+from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations, favorites, oauth, gdpr, audit, performance, share_bundles, billing_v2, subscription_helpers
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
@@ -33,6 +33,14 @@ async def lifespan(app: FastAPI):
     # Startup
     print("Starting Edge Storage Service...")
 
+    # Check DEV_MODE status (already validated in config.py, but log again for visibility)
+    if settings.DEV_MODE:
+        print("\n" + "=" * 80)
+        print("⚠️  WARNING: DEV_MODE IS ACTIVE")
+        print("⚠️  Payment verification is BYPASSED")
+        print("⚠️  This should NEVER be enabled in production")
+        print("=" * 80 + "\n")
+
     # Initialize Redis
     try:
         await init_redis()
@@ -44,6 +52,7 @@ async def lifespan(app: FastAPI):
     try:
         from fastapi_limiter import FastAPILimiter
         from redis.asyncio import Redis as AsyncRedis
+        from .middleware.rate_limiter import RateLimiter
 
         redis_client = await AsyncRedis.from_url(
             settings.REDIS_URL,
@@ -52,6 +61,10 @@ async def lifespan(app: FastAPI):
         )
         await FastAPILimiter.init(redis_client)
         print("FastAPILimiter initialized with Redis backend")
+
+        # Initialize custom RateLimiter for billing endpoints
+        app.state.rate_limiter = RateLimiter(redis_client)
+        print("Custom RateLimiter initialized for billing endpoints")
     except Exception as e:
         print(f"Failed to initialize FastAPILimiter: {e}")
 
@@ -287,7 +300,8 @@ app.include_router(gdpr.router)
 app.include_router(audit.router)
 app.include_router(performance.router)
 app.include_router(share_bundles.router)
-app.include_router(billing.router)
+app.include_router(billing_v2.router)  # Database-driven billing system
+app.include_router(subscription_helpers.router)  # Subscription UI helpers
 
 
 # Helper functions

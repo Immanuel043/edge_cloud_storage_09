@@ -16,7 +16,19 @@ export const formatBytes = (bytes) => {
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+
+  // Calculate the value in the current unit
+  const value = bytes / Math.pow(k, i);
+
+  // If we're in MB and the value is >= 1000 MB (close to 1 GB), show in GB instead
+  if (sizes[i] === 'MB' && value >= 1000) {
+    return `${parseFloat((bytes / Math.pow(k, 3)).toFixed(1))} GB`;
+  }
+
+  // Use 1 decimal place for better readability
+  // Show 2 decimals for very small values (< 10), otherwise 1 decimal
+  const decimals = value < 10 ? 2 : 1;
+  return `${parseFloat((value).toFixed(decimals))} ${sizes[i]}`;
 };
 
 export const formatDate = (dateString) => {

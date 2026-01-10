@@ -57,7 +57,13 @@ class ZKUser(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     last_login_at = Column(DateTime(timezone=True), nullable=True)
-    
+
+    # Email verification fields
+    email_verified = Column(Boolean, default=False, nullable=False)
+    verification_code = Column(String(6), nullable=True)
+    verification_code_expires_at = Column(DateTime(timezone=True), nullable=True)
+    verification_code_attempts = Column(Integer, default=0, nullable=False)
+
     # Zero-Knowledge Encryption Master Key
     # This is the user's master key encrypted with their password-derived key
     encrypted_master_key = Column(Text, nullable=True)

@@ -382,7 +382,7 @@ if settings.ENABLE_METRICS:
 # ========== ROUTER REGISTRATION ==========
 
 # Import routers
-from app.routers import auth_zk, keys, upload_zk, download_zk, billing
+from app.routers import auth_zk, keys, upload_zk, download_zk, billing, subscription_helpers
 
 # Register routers with API prefix
 app.include_router(
@@ -411,8 +411,14 @@ app.include_router(
 
 app.include_router(
     billing.router,
-    prefix=settings.API_PREFIX,
+    prefix="/api/v1/billing",
     tags=["Billing & Subscriptions"]
+)
+
+app.include_router(
+    subscription_helpers.router,
+    prefix="/api/v1/subscription-ui",
+    tags=["Subscription UI Helpers"]
 )
 
 

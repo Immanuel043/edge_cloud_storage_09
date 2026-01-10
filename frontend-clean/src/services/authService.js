@@ -25,7 +25,7 @@ class AuthService {
     return await response.json();
   }
 
-  async register(email, password, username, userType) {
+  async register(email, password, username, userType, planCode = null) {
     await rateLimiter.checkLimit();
 
     const formData = new FormData();
@@ -34,6 +34,13 @@ class AuthService {
     formData.append('username', sanitizeInput(username));
     formData.append('user_type', userType);
     formData.append('timestamp', Date.now());
+
+    // Add plan_type if planCode provided (extract from plan_code)
+    if (planCode) {
+      // Extract plan_type from plan_code (e.g., "normal_basic" -> "basic")
+      const planType = planCode.split('_')[1] || 'free';
+      formData.append('plan_type', planType);
+    }
 
     // SECURITY FIX: Include credentials to receive HTTP-only cookie
     const response = await fetch(`${API_URL}/api/v1/auth/register`, {

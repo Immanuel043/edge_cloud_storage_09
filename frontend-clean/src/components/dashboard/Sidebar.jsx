@@ -17,7 +17,8 @@ import {
   HardDrive,
   Menu,
   X,
-  Trash2
+  Trash2,
+  CreditCard
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -111,6 +112,11 @@ export default function Sidebar({
       id: 'analytics',
       label: 'Analytics',
       icon: BarChart3,
+    },
+    {
+      id: 'billing',
+      label: 'Billing & Plans',
+      icon: CreditCard,
     },
     {
       id: 'settings',

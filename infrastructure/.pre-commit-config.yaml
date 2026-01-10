@@ -1,0 +1,69 @@
+# Pre-commit hooks for security and code quality
+# Installation: pip install pre-commit && pre-commit install
+
+repos:
+  # Secret detection - prevents committing API keys, passwords, etc.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: |
+          (?x)(
+            package-lock.json|
+            yarn.lock|
+            \.secrets\.baseline|
+            .*\.example$|
+            SECURITY_ROTATION_REQUIRED\.md
+          )
+
+  # Prevent committing large files
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-json
+      - id: check-yaml
+        args: ['--unsafe']
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+
+  # Python specific
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-ast
+      - id: debug-statements
+
+  # Environment file protection
+  - repo: local
+    hooks:
+      - id: prevent-env-commit
+        name: Prevent .env file commits
+        entry: bash -c 'if git diff --cached --name-only | grep -E "^(.*/)?\\.env$"; then echo "ERROR: Attempting to commit .env file"; exit 1; fi'
+        language: system
+        stages: [commit]
+
+      - id: check-mailgun-key
+        name: Check for exposed Mailgun keys
+        entry: bash -c 'if git diff --cached -U0 | grep -E "MAILGUN_API_KEY=([a-f0-9]{32}-[a-f0-9]{8}-[a-f0-9]{8})"; then echo "ERROR: Mailgun API key detected"; exit 1; fi'
+        language: system
+        stages: [commit]
+
+      - id: check-stripe-secrets
+        name: Check for exposed Stripe secrets
+        entry: bash -c 'if git diff --cached -U0 | grep -E "(sk_live_|sk_test_|whsec_)"; then echo "ERROR: Stripe secret detected"; exit 1; fi'
+        language: system
+        stages: [commit]
+
+      - id: check-razorpay-secrets
+        name: Check for exposed Razorpay secrets
+        entry: bash -c 'if git diff --cached -U0 | grep -E "rzp_(live|test)_[A-Za-z0-9]{14}"; then echo "ERROR: Razorpay secret detected"; exit 1; fi'
+        language: system
+        stages: [commit]
+
+default_language_version:
+  python: python3.11

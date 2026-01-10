@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   Sun, Moon, Cloud, Shield, Zap, Database, Lock, Upload,
   Eye, EyeOff, ChevronRight, Check, Sparkles, Search,
   Share2, Activity, Info, AlertTriangle, ArrowRight,
-  Cpu, BarChart2, Globe, Server, Command, Link, Brain, Layers,
-  Gauge
+  Cpu, BarChart2, Globe, Server, Command, Link as LinkIcon, Brain, Layers,
+  Gauge, Crown
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -159,7 +159,26 @@ export default function AuthPage() {
     userType: 'individual'
   });
 
+  // URL parameter state for pre-selected plan
+  const [planFromUrl, setPlanFromUrl] = useState(null);
+
   const passwordStrength = formData.password ? validatePasswordStrength(formData.password) : null;
+
+  // Extract plan and service from URL parameters
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const plan = params.get('plan');
+    const service = params.get('service');
+
+    if (plan) {
+      setPlanFromUrl(plan);
+    }
+
+    // If service is 'zk', enable ZK encryption mode
+    if (service === 'zk') {
+      setEnableZK(true);
+    }
+  }, []);
 
   // Lockout timer
   useEffect(() => {
@@ -231,12 +250,16 @@ export default function AuthPage() {
         setFailedAttempts(0);
         navigate('/');
       } else {
+        // Use plan from URL, fallback to free plan
+        const planCode = planFromUrl || (enableZK ? 'zk_pro' : 'normal_free');
+
         if (enableZK) {
           await registerZK(
             formData.email,
             formData.password,
             formData.username,
-            formData.userType
+            formData.userType,
+            planCode
           );
           setLoading(false);
           await handleRecoveryPhraseSetup(true);
@@ -245,9 +268,20 @@ export default function AuthPage() {
             formData.email,
             formData.password,
             formData.username,
-            formData.userType
+            formData.userType,
+            planCode
           );
-          navigate('/');
+
+          // Redirect based on selected plan
+          const isPaidPlan = planCode && !planCode.includes('_free');
+          if (isPaidPlan) {
+            // Show message about payment
+            alert('Account created! Please complete payment to activate your plan.');
+            // Redirect to billing page to complete Stripe Checkout
+            navigate('/dashboard?view=billing');
+          } else {
+            navigate('/');
+          }
         }
       }
     } catch (err) {
@@ -336,7 +370,7 @@ export default function AuthPage() {
           : 'border-gray-200/80 bg-white/80 shadow-sm'
       }`}>
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/auth')}>
             <div className="relative">
               <div className={`absolute inset-0 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl blur-lg ${
                 darkMode ? 'opacity-50' : 'opacity-40'
@@ -345,18 +379,51 @@ export default function AuthPage() {
                 <Cloud className="text-white w-5 h-5" />
               </div>
             </div>
-            <span className={`font-bold text-lg tracking-tight ${darkMode ? 'text-white' : 'text-gray-900'}`}>Edge Cloud</span>
+            <span className={`font-bold text-lg tracking-tight ${darkMode ? 'text-white' : 'text-gray-900'}`}>Edge Cloud Storage</span>
           </div>
-          <button
-            onClick={toggleTheme}
-            className={`p-2.5 rounded-xl border transition-all ${
-              darkMode
-                ? 'hover:bg-white/5 border-white/10 hover:border-white/20 text-white'
-                : 'hover:bg-gray-50 border-gray-200 hover:border-gray-300 text-gray-700 shadow-sm hover:shadow'
-            }`}
-          >
-            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+          
+          <div className="flex items-center gap-4">
+            <Link
+              to="#"
+              className={`text-sm font-medium transition-colors ${
+                darkMode
+                  ? 'text-gray-300 hover:text-white'
+                  : 'text-gray-700 hover:text-gray-900'
+              }`}
+            >
+              About
+            </Link>
+            <Link
+              to="#"
+              className={`text-sm font-medium transition-colors ${
+                darkMode
+                  ? 'text-gray-300 hover:text-white'
+                  : 'text-gray-700 hover:text-gray-900'
+              }`}
+            >
+              Products
+            </Link>
+            <Link
+              to="/pricing"
+              className={`text-sm font-medium transition-colors ${
+                darkMode
+                  ? 'text-blue-400 hover:text-blue-300'
+                  : 'text-blue-600 hover:text-blue-700'
+              }`}
+            >
+              Pricing
+            </Link>
+            <button
+              onClick={toggleTheme}
+              className={`p-2.5 rounded-xl border transition-all ${
+                darkMode
+                  ? 'hover:bg-white/5 border-white/10 hover:border-white/20 text-white'
+                  : 'hover:bg-gray-50 border-gray-200 hover:border-gray-300 text-gray-700 shadow-sm hover:shadow'
+              }`}
+            >
+              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -602,6 +669,29 @@ export default function AuthPage() {
                         </button>
                       </div>
                       {fieldErrors.confirmPassword && <p className="text-red-400 text-xs mt-1 ml-1">{fieldErrors.confirmPassword}</p>}
+                    </div>
+                  )}
+
+                  {/* Pre-selected Plan Indicator (register only) */}
+                  {authMode === 'register' && planFromUrl && (
+                    <div className={`p-4 rounded-xl border ${
+                      darkMode
+                        ? 'bg-blue-500/10 border-blue-500/30'
+                        : 'bg-blue-50 border-blue-200'
+                    }`}>
+                      <p className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                        Selected plan: <strong className="font-semibold">
+                          {planFromUrl.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+                        </strong>
+                      </p>
+                      <Link
+                        to="/pricing"
+                        className={`text-sm underline mt-1 inline-block ${
+                          darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'
+                        }`}
+                      >
+                        Change plan
+                      </Link>
                     </div>
                   )}
 
@@ -866,7 +956,7 @@ export default function AuthPage() {
               <BentoCard
                 title="URL Upload"
                 description="Import files directly from any URL. No download required."
-                icon={Link}
+                icon={LinkIcon}
                 glowColor="orange"
                 darkMode={darkMode}
               />

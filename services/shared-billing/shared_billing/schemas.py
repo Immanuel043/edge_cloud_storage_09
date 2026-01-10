@@ -20,6 +20,7 @@ class SubscriptionPlanSchema(BaseModel):
     
     # Pricing
     price_monthly: Optional[Decimal] = None
+    price_six_months: Optional[Decimal] = None  # NEW: 6-month pricing
     price_yearly: Optional[Decimal] = None
     currency: str = "USD"
     
@@ -36,6 +37,8 @@ class SubscriptionPlanSchema(BaseModel):
     # Metadata
     is_active: bool
     is_default: bool
+    is_most_popular: bool = False  # NEW: Popular plan badge
+    category: str = "individual"  # NEW: individual/business/enterprise
     sort_order: int
     
     class Config:
@@ -52,6 +55,7 @@ class SubscriptionPlanSchema(BaseModel):
             display_name=plan.display_name,
             description=plan.description,
             price_monthly=plan.price_monthly,
+            price_six_months=plan.price_six_months,  # NEW
             price_yearly=plan.price_yearly,
             currency=plan.currency,
             storage_bytes=plan.storage_bytes,
@@ -62,6 +66,8 @@ class SubscriptionPlanSchema(BaseModel):
             features=plan.features or {},
             is_active=plan.is_active,
             is_default=plan.is_default,
+            is_most_popular=plan.is_most_popular,  # NEW
+            category=plan.category,  # NEW
             sort_order=plan.sort_order,
         )
 

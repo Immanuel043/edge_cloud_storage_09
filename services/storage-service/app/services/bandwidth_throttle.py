@@ -112,17 +112,47 @@ class BandwidthThrottleService:
         """
         Get bandwidth and storage limits for a subscription plan.
 
+        DEPRECATED: This method uses hardcoded fallback values.
+        Use async methods with database lookup instead (get_user_limit_with_plan).
+
         Args:
             plan_type: Plan tier (free, basic, pro, team)
 
         Returns:
-            Dictionary with plan limits:
+            Dictionary with plan limits (fallback hardcoded values):
             - storage_bytes: Storage quota
             - bandwidth_mbps: Bandwidth limit
             - burst_mbps: Burst bandwidth
             - max_streams: Maximum concurrent streams
         """
-        return settings.PLAN_LIMITS.get(plan_type, settings.PLAN_LIMITS["free"])
+        # Hardcoded fallback values (deprecated - database is source of truth)
+        FALLBACK_LIMITS = {
+            "free": {
+                "storage_bytes": 5 * 1024**3,
+                "bandwidth_mbps": 5,
+                "burst_mbps": 10,
+                "max_streams": 2,
+            },
+            "basic": {
+                "storage_bytes": 200 * 1024**3,
+                "bandwidth_mbps": 25,
+                "burst_mbps": 50,
+                "max_streams": 5,
+            },
+            "pro": {
+                "storage_bytes": 1 * 1024**4,
+                "bandwidth_mbps": 100,
+                "burst_mbps": 200,
+                "max_streams": 10,
+            },
+            "team": {
+                "storage_bytes": 5 * 1024**4,
+                "bandwidth_mbps": 500,
+                "burst_mbps": 1000,
+                "max_streams": 25,
+            },
+        }
+        return FALLBACK_LIMITS.get(plan_type, FALLBACK_LIMITS["free"])
 
     def get_max_streams_for_plan(self, plan_type: str) -> int:
         """

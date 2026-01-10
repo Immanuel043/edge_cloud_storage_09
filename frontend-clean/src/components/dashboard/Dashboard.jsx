@@ -18,9 +18,11 @@ import DeduplicationPanel from './DeduplicationPanel';
 import AutoOrganizeView from './AutoOrganizeView';
 import RecommendationsView from './RecommendationsView';
 import SettingsView from './SettingsView';
+import SubscriptionDashboard from '../subscription/SubscriptionDashboard';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
+import { useSubscription } from '../../contexts/SubscriptionContext';
 import StorageStats from './StorageStats';
 import QuickFilters from './QuickFilters';
 import { API_URL } from '../../config/constants';
@@ -86,6 +88,9 @@ export default function Dashboard() {
   const [showLockConfirm, setShowLockConfirm] = useState(false);
 
   // Quick filter and sort state
+  const handleUpgradeClick = () => {
+    setActiveView('billing');
+  };
   const [quickFilter, setQuickFilter] = useState('all');
   const [sortBy, setSortBy] = useState(() =>
     localStorage.getItem('dashboard_sort_preference') || 'name'
@@ -779,6 +784,11 @@ export default function Dashboard() {
           <SettingsView darkMode={darkMode} />
         );
 
+      case 'billing':
+        return (
+          <SubscriptionDashboard />
+        );
+
       case 'cloud-drive':
       default:
         return (
@@ -1015,7 +1025,11 @@ export default function Dashboard() {
         >
           {/* Storage Stats - only show in cloud-drive view */}
           {activeView === 'cloud-drive' && storageStats && (
-            <StorageStats stats={storageStats} darkMode={darkMode} />
+            <StorageStats
+              stats={storageStats}
+              darkMode={darkMode}
+              onUpgradeClick={handleUpgradeClick}
+            />
           )}
 
           {/* Migration Banner - show when V1 files need upgrade */}

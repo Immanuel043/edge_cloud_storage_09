@@ -13,13 +13,20 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY services/zk-encryption-service/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY ./app ./app
+# Copy and install shared-billing package
+COPY services/shared-billing /tmp/shared-billing
+RUN pip install --no-cache-dir -e /tmp/shared-billing
+
+# Copy alembic configuration
+COPY services/zk-encryption-service/alembic.ini .
+
+# Copy application code (includes app/alembic/ directory with migrations)
+COPY services/zk-encryption-service/app ./app
 
 # Create storage directory
 RUN mkdir -p /app/storage

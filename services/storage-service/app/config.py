@@ -1,11 +1,14 @@
 # services/storage-service/app/config.py
 import os
 import secrets
+import logging
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 class Settings:
     """Application configuration settings"""
-    
+
     # App
     APP_NAME: str = "Edge Cloud Storage"
     VERSION: str = "1.0.0"
@@ -51,47 +54,32 @@ class Settings:
     VERSION_RETENTION_DAYS = int(os.getenv("VERSION_RETENTION_DAYS", 90))
     MAX_VERSIONS_PER_FILE = int(os.getenv("MAX_VERSIONS_PER_FILE", 50))
     AUTO_VERSION_ON_UPDATE = os.getenv("AUTO_VERSION_ON_UPDATE", "true").lower() == "true"
-    
-    # Plan Limits (Normal Storage Service only)
-    # Note: ZK storage is a completely separate service with its own plans
-    PLAN_LIMITS = {
-        "free": {
-            "name": "Free",
-            "storage_bytes": 5 * 1024**3,        # 5 GB
-            "bandwidth_mbps": 5,
-            "burst_mbps": 10,
-            "max_streams": 2,
-            "stripe_price_id": None,
-        },
-        "basic": {
-            "name": "Basic",
-            "storage_bytes": 200 * 1024**3,      # 200 GB
-            "bandwidth_mbps": 25,
-            "burst_mbps": 50,
-            "max_streams": 5,
-            "stripe_price_id": "price_normal_basic",
-        },
-        "pro": {
-            "name": "Pro",
-            "storage_bytes": 1 * 1024**4,        # 1 TB
-            "bandwidth_mbps": 100,
-            "burst_mbps": 200,
-            "max_streams": 10,
-            "stripe_price_id": "price_normal_pro",
-        },
-        "team": {
-            "name": "Team",
-            "storage_bytes": 5 * 1024**4,        # 5 TB
-            "bandwidth_mbps": 500,
-            "burst_mbps": 1000,
-            "max_streams": 25,
-            "stripe_price_id": "price_normal_team",
-        },
-    }
 
+    # Plan Limits - DEPRECATED: Now using database-driven billing (subscription_plans table)
+    # This is kept for backward compatibility during transition only
+    # TODO: Remove after all references are migrated to shared_billing library
+
+    # Payment Gateway Configuration
+    # Razorpay
+    RAZORPAY_KEY_ID: str = os.getenv("RAZORPAY_KEY_ID", "")
+    RAZORPAY_KEY_SECRET: str = os.getenv("RAZORPAY_KEY_SECRET", "")
+    RAZORPAY_WEBHOOK_SECRET: str = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+    RAZORPAY_ENABLED: bool = os.getenv("RAZORPAY_ENABLED", "true").lower() == "true"
+    RAZORPAY_CURRENCY: str = os.getenv("RAZORPAY_CURRENCY", "INR")
+    
     # Stripe Configuration
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    STRIPE_ENABLED: bool = os.getenv("STRIPE_ENABLED", "true").lower() == "true"
+    
+    # Payment URLs
+    PAYMENT_SUCCESS_URL: str = os.getenv("PAYMENT_SUCCESS_URL", "http://localhost:3000/billing/success")
+    PAYMENT_FAILURE_URL: str = os.getenv("PAYMENT_FAILURE_URL", "http://localhost:3000/billing/failure")
+    DEFAULT_PAYMENT_GATEWAY: str = os.getenv("DEFAULT_PAYMENT_GATEWAY", "razorpay")
+    
+    # Development Mode
+    DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"
 
     # Email Configuration (Mailgun API)
     MAILGUN_ENABLED: bool = os.getenv("MAILGUN_ENABLED", "true").lower() == "true"
@@ -196,5 +184,31 @@ class Settings:
     def is_production(self) -> bool:
         """Check if running in production mode"""
         return os.getenv("ENVIRONMENT", "development").lower() == "production"
+
+    def __init__(self):
+        """Initialize settings with validation"""
+        self._validate_dev_mode()
+
+    def _validate_dev_mode(self):
+        """Validate DEV_MODE configuration"""
+        if self.DEV_MODE:
+            environment = os.getenv("ENVIRONMENT", "development").lower()
+
+            # CRITICAL: Prevent DEV_MODE in production
+            if environment == "production":
+                error_msg = (
+                    "CRITICAL SECURITY ERROR: DEV_MODE cannot be enabled in production environment. "
+                    "This bypasses all payment verification and poses a severe security risk. "
+                    "Please set DEV_MODE=false or remove the ENVIRONMENT=production setting."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Warning for non-production environments
+            logger.warning("=" * 80)
+            logger.warning("⚠️  DEV_MODE IS ENABLED - PAYMENT VERIFICATION BYPASSED!")
+            logger.warning("⚠️  This should NEVER be enabled in production")
+            logger.warning("⚠️  All payment requests will succeed without actual charges")
+            logger.warning("=" * 80)
 
 settings = Settings()

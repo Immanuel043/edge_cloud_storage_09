@@ -436,8 +436,17 @@ async def upload_direct(
             if not allowed:
                 if wait_time > 5.0:
                     # Get the effective bandwidth limit for debugging
-                    plan_limits = settings.PLAN_LIMITS.get(current_user.plan_type, settings.PLAN_LIMITS["free"])
-                    bandwidth_mbps = current_user.bandwidth_limit_mbps or plan_limits["bandwidth_mbps"]
+                    from shared_billing import BillingService
+                    billing = BillingService(db, service_type='normal')
+
+                    try:
+                        plan_code = f"normal_{current_user.plan_type}"
+                        plan = await billing.get_plan_by_code(plan_code)
+                        default_bandwidth = plan.bandwidth_mbps
+                    except Exception:
+                        default_bandwidth = 5  # 5 Mbps fallback
+
+                    bandwidth_mbps = current_user.bandwidth_limit_mbps or default_bandwidth
 
                     raise HTTPException(
                         status_code=429,

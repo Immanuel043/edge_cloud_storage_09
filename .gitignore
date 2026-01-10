@@ -29,6 +29,9 @@ wheels/
 .env.local
 .env.*.local
 *.local.json
+infrastructure/.env
+services/**/.env
+services/**/.env.local
 .vscode/
 .idea/
 *.swp

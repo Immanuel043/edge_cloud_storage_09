@@ -93,3 +93,45 @@ async def log_activity(
     )
     db.add(activity)
     await db.commit()
+
+
+async def get_user_subscription(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get current user's active subscription with plan details.
+
+    This is a dependency that can be injected into endpoints that need
+    subscription information. It ensures the subscription exists and is
+    eagerly loaded with plan details.
+
+    Usage:
+        @router.post("/upload")
+        async def upload(subscription = Depends(get_user_subscription)):
+            bandwidth_limit = subscription.plan.bandwidth_mbps
+    """
+    import sys
+    sys.path.insert(0, '/Users/immanraj/edge-cloud-storage-final-mvp/services')
+
+    from shared_billing import BillingService, SubscriptionNotFoundError
+
+    billing = BillingService(db, service_type='normal')
+
+    try:
+        subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
+        return subscription
+    except SubscriptionNotFoundError:
+        # User doesn't have subscription - create free tier
+        subscription = await billing.create_subscription(
+            user_id=current_user.id,
+            plan_code='normal_free',
+            billing_cycle=None
+        )
+
+        # Update user's quota
+        current_user.storage_quota = subscription.plan.storage_bytes
+        current_user.current_subscription_id = subscription.id
+        await db.commit()
+
+        return subscription

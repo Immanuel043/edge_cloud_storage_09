@@ -1,6 +1,7 @@
 import React from 'react';
-import { Cloud, HardDrive, FileText } from 'lucide-react';
+import { Cloud, HardDrive, FileText, Crown, Zap } from 'lucide-react';
 import { formatBytes } from '../../utils/helpers';
+import { useSubscription } from '../../contexts/SubscriptionContext';
 
 /**
  * StorageStats - Compact storage display for non-ZK users
@@ -9,17 +10,23 @@ import { formatBytes } from '../../utils/helpers';
  * Mobile: Stacked layout
  *
  * Shows:
+ * - Plan badge with upgrade button
  * - Used storage vs total quota
  * - Progress bar (inline on desktop)
  * - Cache/Warm/Cold distribution as badges
  * - File count
  */
-export default function StorageStats({ stats, darkMode }) {
+export default function StorageStats({ stats, darkMode, onUpgradeClick }) {
+  const { subscription, usage } = useSubscription();
+
   if (!stats) return null;
 
-  const used = stats.used || 0;
-  const total = stats.quota || 100 * 1024 * 1024 * 1024;
-  const percentage = stats.percentage_used || (total > 0 ? (used / total) * 100 : 0);
+  // Use subscription data if available, otherwise fall back to stats
+  const used = usage?.storage_used_bytes || stats.used || 0;
+  const total = subscription?.storage_quota_gb
+    ? subscription.storage_quota_gb * 1024 * 1024 * 1024
+    : stats.quota || 100 * 1024 * 1024 * 1024;
+  const percentage = usage?.storage_percent || stats.percentage_used || (total > 0 ? (used / total) * 100 : 0);
   const fileCount = stats.files_count || stats.fileCount || 0;
 
   const cacheSize = stats.distribution?.cache?.size || 0;
@@ -33,9 +40,34 @@ export default function StorageStats({ stats, darkMode }) {
     return 'bg-blue-500';
   };
 
+  // Show upgrade button when storage > 80%
+  const showUpgrade = percentage > 80;
+
   return (
-    <div className={`mb-3 p-3 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+    <div className={`mb-3 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+      {/* Plan Badge */}
+      {subscription && (
+        <div className={`px-3 pt-3 pb-2 flex items-center justify-between border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+          <div className="flex items-center gap-2">
+            <Crown className={`w-4 h-4 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+            <span className={`text-sm font-semibold ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+              {subscription.plan_name}
+            </span>
+          </div>
+          {showUpgrade && onUpgradeClick && (
+            <button
+              onClick={onUpgradeClick}
+              className="flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 rounded-md transition-all"
+            >
+              <Zap className="w-3 h-3" />
+              Upgrade
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Desktop: Horizontal layout */}
+      <div className="p-3">
       <div className="hidden sm:flex items-center justify-between gap-4">
         {/* Storage info */}
         <div className="flex items-center gap-3">
@@ -137,6 +169,7 @@ export default function StorageStats({ stats, darkMode }) {
             {fileCount} {fileCount === 1 ? 'file' : 'files'}
           </span>
         </div>
+      </div>
       </div>
     </div>
   );

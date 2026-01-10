@@ -16,7 +16,7 @@ from datetime import datetime
 
 # revision identifiers
 revision = 'create_subscription_tables'
-down_revision = 'separate_zk_cleanup'
+down_revision = 'add_email_verification_fields'
 branch_labels = None
 depends_on = None
 
@@ -101,7 +101,7 @@ def upgrade():
         sa.Column('next_payment_at', sa.DateTime(timezone=True)),
         
         # Metadata
-        sa.Column('metadata', postgresql.JSONB(), server_default='{}'),
+        sa.Column('extra_metadata', postgresql.JSONB(), server_default='{}'),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.func.now()),
         
@@ -138,7 +138,7 @@ def upgrade():
         sa.Column('notes', sa.Text()),
         
         # Metadata
-        sa.Column('metadata', postgresql.JSONB(), server_default='{}'),
+        sa.Column('extra_metadata', postgresql.JSONB(), server_default='{}'),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
         
         # Foreign Keys

@@ -2,7 +2,7 @@ import React, { useState, useRef, useMemo } from 'react';
 import {
   Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home, Search,
   Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
-  ArrowUpDown, AlertTriangle
+  ArrowUpDown, AlertTriangle, CreditCard
 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { UploadError, UPLOAD_ERROR_TYPES } from '../../services/zkAuthService';
@@ -20,11 +20,13 @@ import FileInfoPanel from './FileInfoPanel';
 import SearchBar from './SearchBar';
 import SearchResults from './SearchResults';
 import SettingsView from './SettingsView';
+import SubscriptionDashboard from '../subscription/SubscriptionDashboard';
 import KeyboardShortcuts from './KeyboardShortcuts';
 import MigrationBanner from './MigrationBanner';
 import FileCorruptionModal from './FileCorruptionModal';
 import ShareOptionsModal from './ShareOptionsModal';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { useSubscription } from '../../contexts/SubscriptionContext';
 import { getFileType } from '../../utils/helpers';
 
 /**
@@ -466,6 +468,10 @@ export default function ZKDashboardLayout({
       return <SettingsView darkMode={darkMode} />;
     }
 
+    if (activeView === 'billing') {
+      return <SubscriptionDashboard />;
+    }
+
     if (activeView === 'trash') {
       return (
         <TrashView
@@ -619,6 +625,18 @@ export default function ZKDashboardLayout({
           </button>
 
           <button
+            onClick={() => setActiveView('billing')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeView === 'billing'
+                ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg'
+                : darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-blue-50'
+            }`}
+          >
+            <CreditCard size={20} />
+            <span className="font-medium text-sm">Billing & Plans</span>
+          </button>
+
+          <button
             onClick={() => setActiveView('settings')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
               activeView === 'settings'
@@ -734,7 +752,11 @@ export default function ZKDashboardLayout({
         >
           {/* ZK Storage Stats */}
           {activeView === 'cloud-drive' && (
-            <ZKStorageStats stats={storageStats} darkMode={darkMode} />
+            <ZKStorageStats
+              stats={storageStats}
+              darkMode={darkMode}
+              onUpgradeClick={() => setActiveView('billing')}
+            />
           )}
 
           {/* ZK Encryption Status */}

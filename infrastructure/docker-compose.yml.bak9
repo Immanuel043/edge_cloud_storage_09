@@ -1,0 +1,676 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: edge-postgres
+    environment:
+      POSTGRES_DB: edge_cloud
+      POSTGRES_USER: edge_admin
+      POSTGRES_PASSWORD: secure_password
+    command: >
+      postgres
+      -c max_connections=200
+      -c max_locks_per_transaction=512
+      -c shared_buffers=512MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=1GB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c max_wal_size=2GB
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edge_admin -d edge_cloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  # ZK PostgreSQL Database (SEPARATE from Storage Service)
+  zk-postgres:
+    image: postgres:15-alpine
+    container_name: edge-zk-postgres
+    environment:
+      POSTGRES_DB: zk_db
+      POSTGRES_USER: zk_admin
+      POSTGRES_PASSWORD: zk_secure_password
+    command: >
+      postgres
+      -c max_connections=100
+      -c shared_buffers=256MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=512MB
+    ports:
+      - "5433:5432"
+    volumes:
+      - zk_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zk_admin -d zk_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Redis Cache & Session Store
+  redis:
+    image: redis:7-alpine
+    container_name: edge-redis
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+        reservations:
+          memory: 512M
+
+  # Elasticsearch for Search & Analytics
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: edge-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms768m -Xmx768m"  # Increased heap for stability
+    ports:
+      - "9200:9200"
+    # No volumes by default (non-persistent mode for development)
+    # For production with persistence, use docker-compose.persistent.yml override
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Give ES 2 minutes to start before healthchecks count
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G  # ES needs ~2x heap for native memory + overhead
+        reservations:
+          memory: 1G
+
+  # ClamAV Antivirus Scanner
+  clamav:
+    image: clamav/clamav:latest
+    platform: linux/amd64  # Force AMD64 for ARM Mac compatibility
+    container_name: edge-clamav
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    environment:
+      - CLAMAV_NO_FRESHCLAM=false
+    healthcheck:
+      test: ["CMD", "sh", "-c", "[ -S /tmp/clamd.sock ] || exit 1"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 300s  # Takes ~5 minutes to download virus definitions on first start
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G  # ClamAV needs significant memory for virus databases
+        reservations:
+          memory: 1G
+
+  # ClickHouse for Analytics
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.10
+    container_name: edge-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # Zookeeper for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: edge-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Kafka Message Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: edge-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG4J_LOGGERS: "kafka.controller=INFO,kafka.producer.async.DefaultEventHandler=INFO,state.change.logger=INFO"
+      KAFKAJS_NO_PARTITIONER_WARNING: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Storage Service (FastAPI) - THE MAIN FIX
+  storage-service:
+    build:
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
+    container_name: edge-storage-service
+    env_file:
+      - .env # Load environment variables from .env file
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      # clamav:
+      #   condition: service_healthy  # Disabled for ARM Mac compatibility
+    environment:
+      DB_HOST: postgres
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      KAFKA_BROKERS: kafka:9092
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      STORAGE_ROOT: /app/storage
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
+      # Database initialization mode
+      USE_FRESH_DB_INIT: ${USE_FRESH_DB_INIT:-false}
+      FORCE_RECREATE: ${FORCE_RECREATE:-false}
+      SKIP_SEED: ${SKIP_SEED:-false}
+      # CRITICAL: Reduce chunk size for memory management
+      CHUNK_SIZE: 33554432          # 32MB chunks instead of 64MB
+      MAX_FILE_SIZE: 21474836480    # 20GB
+      COMPRESSION_LEVEL: 3
+      BACKUP_ENABLED: "false"
+      USE_X_ACCEL: "1"
+      # Add memory management settings
+      PYTHONMALLOC: malloc
+      MALLOC_TRIM_THRESHOLD: 131072   # fixed env var name (no trailing underscore)
+
+      # Frontend URL for CSP headers
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+      
+      # Payment Gateway Configuration
+      # Razorpay
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      RAZORPAY_ENABLED: ${RAZORPAY_ENABLED:-true}
+      RAZORPAY_CURRENCY: ${RAZORPAY_CURRENCY:-INR}
+      
+      # Stripe
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_ENABLED: ${STRIPE_ENABLED:-true}
+      
+      # Payment URLs
+      PAYMENT_SUCCESS_URL: ${PAYMENT_SUCCESS_URL:-http://localhost:3000/billing/success}
+      PAYMENT_FAILURE_URL: ${PAYMENT_FAILURE_URL:-http://localhost:3000/billing/failure}
+      DEFAULT_PAYMENT_GATEWAY: ${DEFAULT_PAYMENT_GATEWAY:-razorpay}
+      
+      # Development Mode
+      DEV_MODE: ${DEV_MODE:-false}
+
+      # Video Transcoding Configuration
+      ENABLE_SMART_TRANSCODE: "true"
+      ENABLE_REMUX_OPTIMIZATION: "true"     # Fast copy for H.264+AAC in MOV containers (2-5s vs 8-12min)
+      ENABLE_STREAMING_DECRYPT: "false"  # Feature flag for streaming (default off)
+      TRANSCODE_MAX_DURATION_MINUTES: "30"
+      TRANSCODE_MAX_SIZE_GB: "2"
+      TRANSCODE_TIER1_MAX_SIZE_MB: "100"    # veryfast, CRF 23
+      TRANSCODE_TIER2_MAX_SIZE_MB: "1000"   # fast, CRF 24
+      TRANSCODE_TIER3_PRESET: "ultrafast"   # CRF 25 for >1GB
+      MAX_CONCURRENT_TRANSCODES: "2"
+      TRANSCODE_QUEUE_MAX_SIZE: "5"
+
+    ports:
+      - "8001:8000"
+    volumes:
+     - storage_data:/app/storage
+      # Add temp directory with size limit
+     - /tmp/upload_temp:/tmp/upload_temp
+      # Mount source code for development
+     - ../services/storage-service/app:/app/app
+    # Local docker-compose resource limits (works with many compose setups)
+    mem_limit: 8g
+    cpus: "4.0"
+    # CRITICAL: Add resource limits for Swarm (only used when using `docker stack deploy`)
+    deploy:
+      resources:
+        limits:
+          memory: 8G              # Allow up to 8GB for 100 concurrent uploads
+          cpus: '4.0'             # More CPU for parallel processing
+        reservations:
+          memory: 2G              # Reserve 2GB
+          cpus: '1.0'
+    # (removed invalid top-level memswap_limit — configure swap at daemon or use docker run flags)
+    # Better, simpler healthcheck (curl is more reliable & lighter weight)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    # Add ulimits for file handling
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # Zero-Knowledge Encryption Service (FastAPI)
+  # IMPORTANT: Uses SEPARATE database from Storage Service
+  zk-encryption-service:
+    build:
+      context: ..
+      dockerfile: services/zk-encryption-service/Dockerfile
+    container_name: edge-zk-service
+    env_file:
+      - .env
+    depends_on:
+      zk-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # SEPARATE DATABASE from Storage Service
+      ZK_DATABASE_URL: postgresql+asyncpg://zk_admin:zk_secure_password@zk-postgres:5432/zk_db
+      ZK_REDIS_URL: redis://redis:6379/1
+      # ZK-specific storage path - isolated from normal storage
+      ZK_STORAGE_PATH: /app/storage/zk
+      # Separate secret key for ZK auth
+      ZK_SECRET_KEY: ${ZK_SECRET_KEY:-zk-secret-key-change-in-production}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 120
+      # ZK-specific settings
+      ZK_SERVICE_PORT: 8002
+      RP_ID: ${RP_ID:-localhost}
+      RP_NAME: ${RP_NAME:-EdgeCloud Private Vault}
+      RP_ORIGIN: ${RP_ORIGIN:-https://localhost}
+      # Security settings
+      PBKDF2_ITERATIONS: 600000
+      MAX_RECOVERY_ATTEMPTS: 5
+      MAX_HARDWARE_KEYS_PER_USER: 5
+      
+      # Payment Gateway Configuration
+      # Razorpay
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      RAZORPAY_ENABLED: ${RAZORPAY_ENABLED:-true}
+      RAZORPAY_CURRENCY: ${RAZORPAY_CURRENCY:-INR}
+      
+      # Stripe
+      ZK_STRIPE_SECRET_KEY: ${ZK_STRIPE_SECRET_KEY:-}
+      ZK_STRIPE_PUBLISHABLE_KEY: ${ZK_STRIPE_PUBLISHABLE_KEY:-}
+      ZK_STRIPE_WEBHOOK_SECRET: ${ZK_STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_ENABLED: ${STRIPE_ENABLED:-true}
+      
+      # Payment URLs
+      PAYMENT_SUCCESS_URL: ${PAYMENT_SUCCESS_URL:-http://localhost:3000/billing/success}
+      PAYMENT_FAILURE_URL: ${PAYMENT_FAILURE_URL:-http://localhost:3000/billing/failure}
+      DEFAULT_PAYMENT_GATEWAY: ${DEFAULT_PAYMENT_GATEWAY:-razorpay}
+      
+      # Development Mode
+      DEV_MODE: ${DEV_MODE:-false}
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_REQUESTS_PER_MINUTE: 60
+
+      # Cookie security (false for HTTP development, true for HTTPS production)
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # CORS origins for ZK frontend
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:5173","http://127.0.0.1:3000","http://127.0.0.1:3001","http://127.0.0.1:5173"]'
+      # Logging
+      LOG_LEVEL: INFO
+      DEBUG: ${DEBUG:-false}
+      ENABLE_METRICS: "true"
+      ENABLE_AUDIT_LOGGING: "true"
+    ports:
+      - "8002:8002"
+    volumes:
+      - storage_data:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Web Service (Node.js)
+  web-service:
+    build:
+      context: ..services/web-service
+      dockerfile: Dockerfile
+    container_name: edge-web-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      storage-service:
+        condition: service_healthy
+      zk-encryption-service:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      DATABASE_URL: postgresql://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
+      STORAGE_SERVICE_URL: http://storage-service:8000
+      SESSION_SECRET: ${SESSION_SECRET:-your-session-secret-here}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+      KAFKAJS_NO_PARTITIONER_WARNING: 1
+    ports:
+      - "3001:3001"
+    volumes:
+      - ../services/web-service/public:/app/public
+      - ../services/web-service/src:/app/src
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s  # Increased: depends on storage-service & zk-service which need time
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  chunk-processor:
+    build:
+      context: ..services/storage-service
+      dockerfile: services/zk-encryption-service/Dockerfile
+    command: python -m app.workers.chunk_processor
+    deploy:
+      replicas: 2              # Reduce replicas to save memory
+      resources:
+        limits:
+          memory: 1G           # Limit each processor
+        reservations:
+          memory: 256M
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
+      CHUNK_SIZE: 33554432     # Same 32MB chunk size
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /tmp/chunks:/tmp/chunks
+
+  # Preview Processor Worker - Background video preview generation
+  preview-processor:
+    build:
+      context: ..services/storage-service
+      dockerfile: services/zk-encryption-service/Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "app.workers.preview_worker"]
+    deploy:
+      replicas: 2              # 2 workers for parallel preview generation
+      resources:
+        limits:
+          memory: 2G           # Higher limit for FFmpeg processing
+        reservations:
+          memory: 512M
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MAX_CONCURRENT_PREVIEWS: 2  # Limit concurrent FFmpeg processes per worker
+      STORAGE_ROOT: /app/storage
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      storage-service:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/storage
+      - /tmp/preview_temp:/tmp/preview_temp
+    restart: unless-stopped
+
+  # Embedding Processor Worker - Background semantic embedding generation
+  embedding-processor:
+    build:
+      context: ..services/storage-service
+      dockerfile: services/zk-encryption-service/Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "app.workers.embedding_worker"]
+    deploy:
+      replicas: 1              # 1 worker is enough for embeddings (model is single-threaded)
+      resources:
+        limits:
+          memory: 2G           # Memory for sentence-transformers model
+        reservations:
+          memory: 1G
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SEMANTIC_SEARCH_ENABLED: "true"
+      SEMANTIC_MODEL_NAME: all-MiniLM-L6-v2
+      EMBEDDING_BATCH_SIZE: 10
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # File Analysis Processor Worker - Background AI tagging, OCR, metadata extraction
+  file-analysis-processor:
+    build:
+      context: ..services/storage-service
+      dockerfile: services/zk-encryption-service/Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "app.workers.file_analysis_worker"]
+    deploy:
+      replicas: 1              # 1 worker for AI analysis (GPU-bound if available)
+      resources:
+        limits:
+          memory: 4G           # Higher memory for ViT, BART, OCR models
+        reservations:
+          memory: 2G
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      STORAGE_ROOT: /app/storage
+      ML_FEATURES_ENABLED: "true"
+      # AI Analysis settings
+      AI_TAGGING_ENABLED: "true"
+      OCR_ENABLED: "true"
+      METADATA_EXTRACTION_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      storage-service:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/storage
+    restart: unless-stopped
+
+  # Nginx reverse-proxy
+  nginx:
+    image: nginx:stable
+    container_name: edge-nginx
+    depends_on:
+      storage-service:
+        condition: service_healthy
+      web-service:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - storage_data:/app/storage:ro
+      # Create temp directory for uploads
+      - /tmp/nginx_uploads:/tmp/nginx_uploads
+      # SSL certificates (uncomment based on your setup)
+      # For self-signed certificates:
+      - ./ssl:/etc/nginx/ssl:ro
+      # For Let's Encrypt certificates:
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+      # Logs
+      - ./logs/nginx:/var/log/nginx
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    networks:
+      - default
+
+  # Certbot for Let's Encrypt SSL certificates (optional)
+  certbot:
+    image: certbot/certbot:latest
+    container_name: edge-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    restart: unless-stopped
+    profiles:
+      - production  # Only run in production (use: docker-compose --profile production up)
+    networks:
+      - default
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+  zk_postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+  clamav_data:
+    driver: local
+  clickhouse_data:
+    driver: local
+  zookeeper_data:
+    driver: local
+  zookeeper_logs:
+    driver: local
+  kafka_data:
+    driver: local
+  storage_data:
+    driver: local
+
+# Networks
+networks:
+  default:
+    name: edge-cloud-network
+    driver: bridge

@@ -1,0 +1,482 @@
+"""
+Comprehensive Audit Logging for Billing Operations
+
+Tracks all subscription changes, payment events, and administrative actions
+for compliance, debugging, and security monitoring.
+
+Compliance Requirements:
+- Financial data retention: 7 years
+- GDPR: Right to access, right to be forgotten
+- PCI DSS: Payment event logging
+- SOC 2: Access control and change tracking
+"""
+
+import logging
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from uuid import UUID, uuid4
+from enum import Enum
+
+from sqlalchemy import Column, String, Integer, DateTime, Text, Index, func, select, Boolean
+from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .models import Base
+
+logger = logging.getLogger(__name__)
+
+
+class AuditEventType(str, Enum):
+    """Types of auditable events in the billing system."""
+
+    # Subscription Events
+    SUBSCRIPTION_CREATED = "subscription.created"
+    SUBSCRIPTION_UPGRADED = "subscription.upgraded"
+    SUBSCRIPTION_DOWNGRADED = "subscription.downgraded"
+    SUBSCRIPTION_CANCELLED = "subscription.cancelled"
+    SUBSCRIPTION_RENEWED = "subscription.renewed"
+    SUBSCRIPTION_EXPIRED = "subscription.expired"
+    SUBSCRIPTION_REACTIVATED = "subscription.reactivated"
+
+    # Payment Events
+    PAYMENT_INITIATED = "payment.initiated"
+    PAYMENT_SUCCEEDED = "payment.succeeded"
+    PAYMENT_FAILED = "payment.failed"
+    PAYMENT_REFUNDED = "payment.refunded"
+    PAYMENT_PARTIALLY_REFUNDED = "payment.partially_refunded"
+
+    # Plan Events
+    PLAN_CREATED = "plan.created"
+    PLAN_UPDATED = "plan.updated"
+    PLAN_DEACTIVATED = "plan.deactivated"
+    PLAN_REACTIVATED = "plan.reactivated"
+
+    # Quota Events
+    QUOTA_INCREASED = "quota.increased"
+    QUOTA_DECREASED = "quota.decreased"
+    QUOTA_EXCEEDED = "quota.exceeded"
+
+    # Administrative Actions
+    ADMIN_SUBSCRIPTION_MODIFIED = "admin.subscription.modified"
+    ADMIN_REFUND_ISSUED = "admin.refund.issued"
+    ADMIN_QUOTA_ADJUSTED = "admin.quota.adjusted"
+    ADMIN_USER_SUSPENDED = "admin.user.suspended"
+    ADMIN_USER_UNSUSPENDED = "admin.user.unsuspended"
+
+    # Security Events
+    WEBHOOK_RECEIVED = "webhook.received"
+    WEBHOOK_FAILED = "webhook.failed"
+    RATE_LIMIT_EXCEEDED = "rate_limit.exceeded"
+    UNAUTHORIZED_ACCESS = "security.unauthorized_access"
+    SUSPICIOUS_ACTIVITY = "security.suspicious_activity"
+
+
+class AuditLog(Base):
+    """
+    Audit log for all billing and subscription events.
+
+    Stores immutable record of all changes for compliance and debugging.
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    event_type = Column(String(100), nullable=False, index=True)
+    event_timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    # Actor information
+    user_id = Column(PGUUID(as_uuid=True), nullable=True, index=True)
+    admin_id = Column(PGUUID(as_uuid=True), nullable=True, index=True)
+    actor_email = Column(String(255), nullable=True)
+    actor_ip = Column(String(45), nullable=True)
+
+    # Resource information
+    resource_type = Column(String(50), nullable=True)  # 'subscription', 'payment', 'plan', 'user'
+    resource_id = Column(String(255), nullable=True, index=True)
+
+    # Event details
+    event_data = Column(JSONB, nullable=True)  # Full details of the event
+    previous_state = Column(JSONB, nullable=True)  # State before change
+    new_state = Column(JSONB, nullable=True)  # State after change
+
+    # Context
+    gateway = Column(String(20), nullable=True)  # 'stripe', 'razorpay', 'manual'
+    service_type = Column(String(20), nullable=True)  # 'normal', 'zk'
+
+    # Status and notes
+    status = Column(String(20), nullable=False, default='success')  # 'success', 'failed', 'pending'
+    error_message = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    # Compliance flags
+    retention_required = Column(Boolean, default=True)  # If false, can be deleted
+    retention_years = Column(Integer, default=7)  # Financial data: 7 years
+
+    __table_args__ = (
+        Index('idx_audit_user_event', 'user_id', 'event_type'),
+        Index('idx_audit_resource', 'resource_type', 'resource_id'),
+        Index('idx_audit_timestamp', 'event_timestamp'),
+        Index('idx_audit_gateway', 'gateway'),
+        Index('idx_audit_status', 'status'),
+    )
+
+
+class AuditLogger:
+    """
+    Service for logging auditable events in the billing system.
+
+    Features:
+    - Structured logging with full context
+    - Immutable audit trail
+    - Compliance-ready (GDPR, PCI DSS, SOC 2)
+    - State change tracking
+    - Actor identification
+    """
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def log_event(
+        self,
+        event_type: AuditEventType,
+        user_id: Optional[UUID] = None,
+        admin_id: Optional[UUID] = None,
+        actor_email: Optional[str] = None,
+        actor_ip: Optional[str] = None,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        event_data: Optional[Dict[str, Any]] = None,
+        previous_state: Optional[Dict[str, Any]] = None,
+        new_state: Optional[Dict[str, Any]] = None,
+        gateway: Optional[str] = None,
+        service_type: Optional[str] = None,
+        status: str = 'success',
+        error_message: Optional[str] = None,
+        notes: Optional[str] = None,
+        retention_years: int = 7
+    ) -> AuditLog:
+        """
+        Log an auditable event.
+
+        Args:
+            event_type: Type of event (from AuditEventType enum)
+            user_id: User who performed action or was affected
+            admin_id: Admin who performed action (for admin actions)
+            actor_email: Email of actor
+            actor_ip: IP address of actor
+            resource_type: Type of resource ('subscription', 'payment', etc.)
+            resource_id: ID of affected resource
+            event_data: Complete event data
+            previous_state: State before change
+            new_state: State after change
+            gateway: Payment gateway ('stripe', 'razorpay', 'manual')
+            service_type: Service type ('normal', 'zk')
+            status: Event status ('success', 'failed', 'pending')
+            error_message: Error message if failed
+            notes: Additional notes
+            retention_years: Data retention period (default 7 years for financial)
+
+        Returns:
+            Created AuditLog record
+        """
+        audit_log = AuditLog(
+            event_type=event_type.value if isinstance(event_type, AuditEventType) else event_type,
+            user_id=user_id,
+            admin_id=admin_id,
+            actor_email=actor_email,
+            actor_ip=actor_ip,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            event_data=event_data or {},
+            previous_state=previous_state,
+            new_state=new_state,
+            gateway=gateway,
+            service_type=service_type,
+            status=status,
+            error_message=error_message,
+            notes=notes,
+            retention_years=retention_years
+        )
+
+        self.db.add(audit_log)
+        await self.db.commit()
+        await self.db.refresh(audit_log)
+
+        # Also log to application logger for immediate visibility
+        logger.info(
+            f"Audit: {event_type.value if isinstance(event_type, AuditEventType) else event_type}",
+            extra={
+                "event_type": event_type.value if isinstance(event_type, AuditEventType) else event_type,
+                "user_id": str(user_id) if user_id else None,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "status": status,
+                "gateway": gateway
+            }
+        )
+
+        return audit_log
+
+    async def log_subscription_change(
+        self,
+        event_type: AuditEventType,
+        user_id: UUID,
+        subscription_id: UUID,
+        old_plan_code: Optional[str],
+        new_plan_code: str,
+        old_status: Optional[str],
+        new_status: str,
+        reason: str,
+        actor_ip: Optional[str] = None,
+        gateway: Optional[str] = None,
+        service_type: str = 'normal'
+    ) -> AuditLog:
+        """
+        Log subscription change with full state tracking.
+
+        Convenience method for subscription events.
+        """
+        return await self.log_event(
+            event_type=event_type,
+            user_id=user_id,
+            resource_type='subscription',
+            resource_id=str(subscription_id),
+            actor_ip=actor_ip,
+            gateway=gateway,
+            service_type=service_type,
+            previous_state={
+                'plan_code': old_plan_code,
+                'status': old_status
+            } if old_plan_code else None,
+            new_state={
+                'plan_code': new_plan_code,
+                'status': new_status
+            },
+            event_data={
+                'reason': reason,
+                'plan_transition': f"{old_plan_code or 'none'} → {new_plan_code}"
+            }
+        )
+
+    async def log_payment_event(
+        self,
+        event_type: AuditEventType,
+        user_id: UUID,
+        payment_id: str,
+        amount: float,
+        currency: str,
+        gateway: str,
+        plan_code: str,
+        status: str = 'success',
+        error_message: Optional[str] = None,
+        actor_ip: Optional[str] = None,
+        service_type: str = 'normal'
+    ) -> AuditLog:
+        """
+        Log payment event.
+
+        Convenience method for payment events.
+        """
+        return await self.log_event(
+            event_type=event_type,
+            user_id=user_id,
+            resource_type='payment',
+            resource_id=payment_id,
+            actor_ip=actor_ip,
+            gateway=gateway,
+            service_type=service_type,
+            status=status,
+            error_message=error_message,
+            event_data={
+                'amount': amount,
+                'currency': currency,
+                'plan_code': plan_code,
+                'payment_id': payment_id
+            }
+        )
+
+    async def log_admin_action(
+        self,
+        event_type: AuditEventType,
+        admin_id: UUID,
+        admin_email: str,
+        user_id: Optional[UUID],
+        action: str,
+        details: Dict[str, Any],
+        actor_ip: Optional[str] = None
+    ) -> AuditLog:
+        """
+        Log administrative action.
+
+        All admin actions must be logged for security and compliance.
+        """
+        return await self.log_event(
+            event_type=event_type,
+            admin_id=admin_id,
+            user_id=user_id,
+            actor_email=admin_email,
+            actor_ip=actor_ip,
+            resource_type='admin_action',
+            event_data={
+                'action': action,
+                **details
+            },
+            notes=f"Admin action by {admin_email}"
+        )
+
+    async def get_user_audit_trail(
+        self,
+        user_id: UUID,
+        limit: int = 100,
+        event_types: Optional[List[str]] = None
+    ) -> List[AuditLog]:
+        """
+        Get complete audit trail for a user.
+
+        Required for GDPR compliance (right to access).
+        """
+        query = select(AuditLog).where(
+            AuditLog.user_id == user_id
+        ).order_by(AuditLog.event_timestamp.desc())
+
+        if event_types:
+            query = query.where(AuditLog.event_type.in_(event_types))
+
+        query = query.limit(limit)
+
+        result = await self.db.execute(query)
+        return result.scalars().all()
+
+    async def get_resource_history(
+        self,
+        resource_type: str,
+        resource_id: str,
+        limit: int = 50
+    ) -> List[AuditLog]:
+        """
+        Get complete history of a resource (subscription, payment, etc.).
+        """
+        result = await self.db.execute(
+            select(AuditLog).where(
+                AuditLog.resource_type == resource_type,
+                AuditLog.resource_id == resource_id
+            ).order_by(AuditLog.event_timestamp.desc()).limit(limit)
+        )
+        return result.scalars().all()
+
+    async def get_admin_actions(
+        self,
+        admin_id: Optional[UUID] = None,
+        limit: int = 100
+    ) -> List[AuditLog]:
+        """
+        Get all administrative actions.
+
+        For security monitoring and compliance audits.
+        """
+        query = select(AuditLog).where(
+            AuditLog.admin_id.isnot(None)
+        ).order_by(AuditLog.event_timestamp.desc())
+
+        if admin_id:
+            query = query.where(AuditLog.admin_id == admin_id)
+
+        query = query.limit(limit)
+
+        result = await self.db.execute(query)
+        return result.scalars().all()
+
+    async def get_failed_events(
+        self,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[AuditLog]:
+        """
+        Get recent failed events for monitoring.
+        """
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+        result = await self.db.execute(
+            select(AuditLog).where(
+                AuditLog.status == 'failed',
+                AuditLog.event_timestamp >= cutoff
+            ).order_by(AuditLog.event_timestamp.desc()).limit(limit)
+        )
+        return result.scalars().all()
+
+    async def export_user_data(
+        self,
+        user_id: UUID
+    ) -> Dict[str, Any]:
+        """
+        Export all audit data for a user.
+
+        Required for GDPR compliance (right to data portability).
+        """
+        logs = await self.get_user_audit_trail(user_id, limit=10000)
+
+        return {
+            'user_id': str(user_id),
+            'exported_at': datetime.utcnow().isoformat(),
+            'total_events': len(logs),
+            'events': [
+                {
+                    'timestamp': log.event_timestamp.isoformat(),
+                    'event_type': log.event_type,
+                    'resource_type': log.resource_type,
+                    'resource_id': log.resource_id,
+                    'gateway': log.gateway,
+                    'status': log.status,
+                    'event_data': log.event_data,
+                    'previous_state': log.previous_state,
+                    'new_state': log.new_state
+                }
+                for log in logs
+            ]
+        }
+
+    async def anonymize_user_data(
+        self,
+        user_id: UUID
+    ) -> int:
+        """
+        Anonymize audit logs for a user.
+
+        Required for GDPR compliance (right to be forgotten).
+        Retains financial data for compliance but removes PII.
+        """
+        result = await self.db.execute(
+            select(AuditLog).where(AuditLog.user_id == user_id)
+        )
+        logs = result.scalars().all()
+
+        anonymized_count = 0
+        for log in logs:
+            # Anonymize PII but keep financial data
+            log.actor_email = f"anonymized_{user_id}"
+            log.actor_ip = "0.0.0.0"
+
+            # Anonymize event_data PII
+            if log.event_data:
+                log.event_data = self._anonymize_dict(log.event_data)
+
+            anonymized_count += 1
+
+        await self.db.commit()
+
+        logger.info(f"Anonymized {anonymized_count} audit logs for user {user_id}")
+        return anonymized_count
+
+    def _anonymize_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively anonymize PII in dictionary."""
+        anonymized = {}
+        pii_fields = {'email', 'name', 'phone', 'address', 'ip_address'}
+
+        for key, value in data.items():
+            if key.lower() in pii_fields:
+                anonymized[key] = "[REDACTED]"
+            elif isinstance(value, dict):
+                anonymized[key] = self._anonymize_dict(value)
+            else:
+                anonymized[key] = value
+
+        return anonymized

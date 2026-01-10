@@ -1,9 +1,10 @@
 # services/storage-service/app/routers/auth.py
-from fastapi import APIRouter, Depends, HTTPException, Form, Request, Response, Body
+from fastapi import APIRouter, Depends, HTTPException, Form, Request, Response, Body, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
+import logging
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.auth import auth_service
 from ..services.email_service import email_service
@@ -17,6 +18,8 @@ from ..models.schemas import (
 from ..config import settings
 from ..utils.rate_limiter_v2 import auth_login_limiter, auth_register_limiter
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
 # SECURITY: Cookie configuration
@@ -26,7 +29,66 @@ COOKIE_SECURE = settings.is_production  # HTTPS only in production
 COOKIE_HTTPONLY = True  # Prevent JavaScript access (XSS protection)
 COOKIE_SAMESITE = "lax"  # CSRF protection
 
-@router.post("/register", response_model=Token, dependencies=[Depends(auth_register_limiter())])
+
+@router.get("/plans", response_model=dict)
+async def get_public_plans(
+    service_type: str = Query('normal', description="'normal' or 'zk'"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get available subscription plans (PUBLIC endpoint for registration).
+
+    Does not require authentication - used by registration flow.
+    Returns categorized plan catalog with pricing and features.
+    """
+    from shared_billing import BillingService
+
+    billing = BillingService(db, service_type=service_type)
+    plans = await billing.get_available_plans(active_only=True)
+
+    # Group plans by category
+    categorized = {"individual": [], "business": [], "enterprise": []}
+
+    for p in plans:
+        if not p.is_active:
+            continue
+
+        plan_data = {
+            "plan_code": p.plan_code,
+            "display_name": p.display_name,
+            "description": p.description or "",
+            "tier_name": p.tier_name,
+            "category": p.category,
+            "service_type": p.service_type,
+
+            # Storage and bandwidth
+            "storage_gb": float(p.storage_bytes / (1024**3)),
+            "storage_bytes": p.storage_bytes,
+            "bandwidth_mbps": p.bandwidth_mbps,
+            "bandwidth_burst_mbps": p.bandwidth_burst_mbps,
+            "max_concurrent_streams": p.max_concurrent_streams,
+
+            # Pricing (convert to cents for frontend)
+            "price_monthly": int(float(p.price_monthly) * 100) if p.price_monthly else None,
+            "price_six_months": int(float(p.price_six_months) * 100) if p.price_six_months else None,
+            "price_yearly": int(float(p.price_yearly) * 100) if p.price_yearly else None,
+
+            # Metadata
+            "features": p.features or {},
+            "is_most_popular": p.is_most_popular,
+            "is_default": p.is_default,
+            "is_active": p.is_active,
+        }
+
+        categorized[p.category].append(plan_data)
+
+    return {
+        "service_type": service_type,
+        "plans": categorized
+    }
+
+
+@router.post("/register", response_model=Token, dependencies=[Depends(auth_register_limiter())], deprecated=True)
 async def register(
     request: Request,
     email: str = Form(...),
@@ -35,7 +97,19 @@ async def register(
     plan_type: str = Form("free"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Register a new user - SECURITY FIX: Sets HTTP-only cookie + rate limiting"""
+    """
+    Register a new user - DEPRECATED
+
+    ⚠️ DEPRECATED: This endpoint bypasses email verification and is maintained for backward compatibility only.
+
+    Please use the 3-step email verification flow instead:
+    1. POST /register/init (send verification code)
+    2. POST /register/verify (validate code, get token)
+    3. POST /register/complete (create account)
+
+    This endpoint will be removed in a future version.
+    """
+    logger.warning(f"DEPRECATED /register endpoint used for {email}")
     # Check if user exists
     result = await db.execute(
         select(User).filter((User.email == email) | (User.username == username))
@@ -43,19 +117,45 @@ async def register(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="User already exists")
 
-    # Get plan limits for the plan type (Normal storage only - ZK is separate service)
-    plan_limits = settings.PLAN_LIMITS.get(plan_type, settings.PLAN_LIMITS["free"])
+    # Get plan limits from database (greenfield billing system)
+    from shared_billing import BillingService
+    billing = BillingService(db, service_type='normal')
+
+    try:
+        plan_code = f"normal_{plan_type}"  # Convert "free" -> "normal_free"
+        plan = await billing.get_plan_by_code(plan_code)
+        storage_quota = plan.storage_bytes
+    except Exception as e:
+        # Fallback to hardcoded value if plan not found
+        logger.warning(f"Plan {plan_type} not found in database, using fallback: {e}")
+        storage_quota = 5 * 1024**3  # 5GB default
 
     # Create user with storage quota
+    # NOTE: This old endpoint bypasses email verification for backward compatibility
+    # New registrations should use /register/init, /register/verify, /register/complete
     user = User(
         email=email,
         username=username,
         password_hash=auth_service.get_password_hash(password),
         plan_type=plan_type,
-        storage_quota=plan_limits["storage_bytes"],
+        storage_quota=storage_quota,
+        email_verified=True,  # Auto-verify for backward compatibility with old endpoint
+        is_active=True,
     )
     db.add(user)
     await db.commit()
+    await db.refresh(user)  # Get the user ID
+
+    # Create subscription in billing system
+    try:
+        subscription = await billing.create_subscription(
+            user_id=user.id,
+            plan_code=plan_code
+        )
+        logger.info(f"Created subscription {subscription.id} for user {user.id} on plan {plan_code}")
+    except Exception as e:
+        logger.error(f"Failed to create subscription for user {user.id}: {e}")
+        # Continue anyway - user can still use the service with default quotas
 
     # Create root folder
     root_folder = Folder(user_id=user.id, parent_id=None, name="/", path="/")
@@ -65,12 +165,18 @@ async def register(
     # Log activity
     await log_activity(
         db, user.id, "user_registered",
-        metadata={"plan_type": plan_type},
+        metadata={"plan_type": plan_type, "plan_code": plan_code},
         request=request
     )
 
     # Create token
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
+
+    # Get bandwidth limit from plan
+    try:
+        bandwidth_limit = plan.bandwidth_mbps
+    except Exception:
+        bandwidth_limit = 5  # 5 Mbps fallback
 
     # Still return token in response for backward compatibility (optional)
     response_data = {
@@ -81,15 +187,23 @@ async def register(
             "email": email,
             "username": username,
             "plan_type": plan_type,
-            "storage_quota": plan_limits["storage_bytes"],
+            "storage_quota": storage_quota,
             "storage_used": 0,
-            "bandwidth_limit_mbps": plan_limits["bandwidth_mbps"],
+            "bandwidth_limit_mbps": bandwidth_limit,
             "theme": "light"
         },
+        "deprecated": True,
+        "migration_message": "This endpoint will be removed. Use /register/init, /register/verify, /register/complete"
     }
 
     # SECURITY FIX: Set HTTP-only cookie (prevents XSS token theft)
     response = JSONResponse(content=response_data)
+
+    # Add deprecation headers
+    response.headers["X-API-Deprecated"] = "true"
+    response.headers["X-API-Deprecation-Date"] = "2026-02-01"
+    response.headers["X-API-Migration-Path"] = "/api/v1/auth/register/init"
+
     response.set_cookie(
         key=COOKIE_NAME,
         value=access_token,
@@ -130,8 +244,16 @@ async def login(
 
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 
-    # Get plan limits for bandwidth info
-    plan_limits = settings.PLAN_LIMITS.get(user.plan_type, settings.PLAN_LIMITS["free"])
+    # Get plan limits from database for bandwidth info
+    from shared_billing import BillingService
+    billing = BillingService(db, service_type='normal')
+
+    try:
+        plan_code = f"normal_{user.plan_type}"
+        plan = await billing.get_plan_by_code(plan_code)
+        default_bandwidth = plan.bandwidth_mbps
+    except Exception:
+        default_bandwidth = 5  # 5 Mbps fallback
 
     response_data = {
         "access_token": access_token,
@@ -143,7 +265,7 @@ async def login(
             "plan_type": user.plan_type,
             "storage_quota": user.storage_quota,
             "storage_used": user.storage_used,
-            "bandwidth_limit_mbps": user.bandwidth_limit_mbps or plan_limits["bandwidth_mbps"],
+            "bandwidth_limit_mbps": user.bandwidth_limit_mbps or default_bandwidth,
             "theme": user.theme_preference,
         },
     }
@@ -348,8 +470,19 @@ async def register_complete(
     await db.commit()
     await db.refresh(user)
 
-    # Get plan limits
-    plan_limits = settings.PLAN_LIMITS.get("free", settings.PLAN_LIMITS["free"])
+    # Get plan limits from database
+    from shared_billing import BillingService
+    billing = BillingService(db, service_type='normal')
+
+    try:
+        plan_code = payload.plan_code or "normal_free"
+        plan = await billing.get_plan_by_code(plan_code)
+        storage_quota = plan.storage_bytes
+        bandwidth_limit = plan.bandwidth_mbps
+    except Exception:
+        plan_code = "normal_free"
+        storage_quota = 5 * 1024**3  # 5GB fallback
+        bandwidth_limit = 5  # 5 Mbps fallback
 
     # Create root folder
     root_folder = Folder(user_id=user.id, parent_id=None, name="/", path="/")
@@ -359,7 +492,7 @@ async def register_complete(
     # Log activity
     await log_activity(
         db, user.id, "user_registered",
-        metadata={"plan_type": "free"},
+        metadata={"plan_code": plan_code},
         request=request
     )
 
@@ -374,9 +507,9 @@ async def register_complete(
             "email": email,
             "username": username,
             "plan_type": user.plan_type,
-            "storage_quota": plan_limits["storage_bytes"],
+            "storage_quota": storage_quota,
             "storage_used": 0,
-            "bandwidth_limit_mbps": plan_limits["bandwidth_mbps"],
+            "bandwidth_limit_mbps": bandwidth_limit,
             "theme": "light"
         },
     }

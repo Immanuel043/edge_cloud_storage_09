@@ -404,8 +404,8 @@ export const AuthProvider = ({ children }) => {
     return data;
   };
 
-  const register = async (email, password, username, userType) => {
-    const data = await authService.register(email, password, username, userType);
+  const register = async (email, password, username, userType, planCode = null) => {
+    const data = await authService.register(email, password, username, userType, planCode);
 
     setToken(data?.access_token || null);
     setUser(data.user);
@@ -471,7 +471,7 @@ export const AuthProvider = ({ children }) => {
    * @param {string} userType - User type
    * @returns {Promise<Object>} Registration result
    */
-  const registerZK = async (email, password, username, userType = 'individual') => {
+  const registerZK = async (email, password, username, userType = 'individual', planCode = null) => {
     // Generate ZK registration data (client-side encryption with Argon2id)
     const zkRegData = await generateZKRegistrationData(password);
 
@@ -487,6 +487,7 @@ export const AuthProvider = ({ children }) => {
       kdfIterations: zkRegData.kdfIterations,
       kdfMemory: zkRegData.kdfMemory,
       kdfParallelism: zkRegData.kdfParallelism,
+      planCode: planCode,  // Pass plan code for subscription creation
     });
 
     // Set user data and auth state

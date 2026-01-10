@@ -25,16 +25,20 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY services/storage-service/requirements.txt .
 
 # Install Python dependencies with extended timeout and retries for large packages
 RUN pip install --no-cache-dir --timeout=300 --retries=10 -r requirements.txt
 
+# Copy and install shared-billing package
+COPY services/shared-billing /tmp/shared-billing
+RUN pip install --no-cache-dir -e /tmp/shared-billing
+
 # Copy alembic configuration FILE (not directory)
-COPY alembic.ini .
+COPY services/storage-service/alembic.ini .
 
 # Copy application (this already includes app/alembic/ directory)
-COPY app/ ./app/
+COPY services/storage-service/app/ ./app/
 # REMOVED: COPY alembic/ ./alembic/  <-- This line was causing the error
 
 # Create storage directories

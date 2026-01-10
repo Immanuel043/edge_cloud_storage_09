@@ -40,9 +40,14 @@ class SubscriptionPlan(Base):
 
     # Pricing (nullable for Phase-1 placeholder billing)
     price_monthly = Column(Numeric(10, 2))
+    price_six_months = Column(Numeric(10, 2))  # NEW: 6-month pricing
     price_yearly = Column(Numeric(10, 2))
     stripe_price_id_monthly = Column(String(255))
+    stripe_price_id_six_months = Column(String(255))  # NEW: Stripe 6-month price ID
     stripe_price_id_yearly = Column(String(255))
+    razorpay_plan_id_monthly = Column(String(255))  # Razorpay plan ID for monthly
+    razorpay_plan_id_six_months = Column(String(255))  # Razorpay plan ID for 6-month
+    razorpay_plan_id_yearly = Column(String(255))  # Razorpay plan ID for yearly
     currency = Column(String(3), default='USD')
 
     # Quotas and Limits
@@ -57,6 +62,8 @@ class SubscriptionPlan(Base):
     # Metadata
     is_active = Column(Boolean, default=True, nullable=False)
     is_default = Column(Boolean, default=False, nullable=False)
+    is_most_popular = Column(Boolean, default=False, nullable=False)  # NEW: Popular plan badge
+    category = Column(String(20), default='individual', nullable=False)  # NEW: individual/business/enterprise
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -103,15 +110,22 @@ class UserSubscription(Base):
     cancelled_at = Column(DateTime(timezone=True))
     trial_ends_at = Column(DateTime(timezone=True))
 
-    # Stripe Integration (Phase-2, nullable for now)
+    # Payment Gateway Integration
+    payment_gateway = Column(String(20))  # 'razorpay' or 'stripe'
+    # Stripe Integration
     stripe_subscription_id = Column(String(255))
     stripe_customer_id = Column(String(255))
+    # Razorpay Integration
+    razorpay_subscription_id = Column(String(255))
+    razorpay_order_id = Column(String(255))
+    razorpay_payment_id = Column(String(255))
+    # Common Payment Fields
     payment_method = Column(String(50))
     last_payment_at = Column(DateTime(timezone=True))
     next_payment_at = Column(DateTime(timezone=True))
 
     # Metadata
-    metadata = Column(JSONB, default={})
+    extra_metadata = Column(JSONB, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -122,6 +136,8 @@ class UserSubscription(Base):
         Index('idx_subscriptions_user', 'user_id', 'service_type'),
         Index('idx_subscriptions_status', 'status'),
         Index('idx_subscriptions_stripe', 'stripe_subscription_id'),
+        Index('idx_subscriptions_razorpay', 'razorpay_subscription_id'),
+        Index('idx_subscriptions_payment_gateway', 'payment_gateway'),
         # One subscription per user per service
         {'comment': 'User subscriptions for both Normal and ZK services'}
     )
@@ -158,7 +174,7 @@ class SubscriptionHistory(Base):
     notes = Column(Text)
 
     # Metadata
-    metadata = Column(JSONB, default={})
+    extra_metadata = Column(JSONB, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

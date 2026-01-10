@@ -23,8 +23,8 @@ database_url = os.getenv(
     "ZK_DATABASE_URL",
     "postgresql+asyncpg://zk_admin:zk_secure_password@localhost:5433/zk_db"
 )
-# Convert async to sync for migrations
-sync_url = database_url.replace("+asyncpg", "")
+# Convert async to sync for migrations (replace asyncpg with psycopg2)
+sync_url = database_url.replace("+asyncpg", "+psycopg2")
 config.set_main_option("sqlalchemy.url", sync_url)
 
 # Interpret the config file for Python logging

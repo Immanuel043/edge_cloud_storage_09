@@ -225,8 +225,8 @@ services:
   # Storage Service (FastAPI) - THE MAIN FIX
   storage-service:
     build:
-      context: ../services/storage-service
-      dockerfile: Dockerfile
+      context: ../
+      dockerfile: services/storage-service/Dockerfile
     container_name: edge-storage-service
     env_file:
       - .env # Load environment variables from .env file
@@ -266,6 +266,28 @@ services:
 
       # Frontend URL for CSP headers
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+      
+      # Payment Gateway Configuration
+      # Razorpay
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      RAZORPAY_ENABLED: ${RAZORPAY_ENABLED:-true}
+      RAZORPAY_CURRENCY: ${RAZORPAY_CURRENCY:-INR}
+      
+      # Stripe
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_ENABLED: ${STRIPE_ENABLED:-true}
+      
+      # Payment URLs
+      PAYMENT_SUCCESS_URL: ${PAYMENT_SUCCESS_URL:-http://localhost:3000/billing/success}
+      PAYMENT_FAILURE_URL: ${PAYMENT_FAILURE_URL:-http://localhost:3000/billing/failure}
+      DEFAULT_PAYMENT_GATEWAY: ${DEFAULT_PAYMENT_GATEWAY:-razorpay}
+      
+      # Development Mode
+      DEV_MODE: ${DEV_MODE:-false}
 
       # Video Transcoding Configuration
       ENABLE_SMART_TRANSCODE: "true"
@@ -318,8 +340,8 @@ services:
   # IMPORTANT: Uses SEPARATE database from Storage Service
   zk-encryption-service:
     build:
-      context: ../services/zk-encryption-service
-      dockerfile: Dockerfile
+      context: ../
+      dockerfile: services/zk-encryption-service/Dockerfile
     container_name: edge-zk-service
     env_file:
       - .env
@@ -347,15 +369,35 @@ services:
       PBKDF2_ITERATIONS: 600000
       MAX_RECOVERY_ATTEMPTS: 5
       MAX_HARDWARE_KEYS_PER_USER: 5
+      
+      # Payment Gateway Configuration
+      # Razorpay
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      RAZORPAY_ENABLED: ${RAZORPAY_ENABLED:-true}
+      RAZORPAY_CURRENCY: ${RAZORPAY_CURRENCY:-INR}
+      
+      # Stripe
+      ZK_STRIPE_SECRET_KEY: ${ZK_STRIPE_SECRET_KEY:-}
+      ZK_STRIPE_PUBLISHABLE_KEY: ${ZK_STRIPE_PUBLISHABLE_KEY:-}
+      ZK_STRIPE_WEBHOOK_SECRET: ${ZK_STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_ENABLED: ${STRIPE_ENABLED:-true}
+      
+      # Payment URLs
+      PAYMENT_SUCCESS_URL: ${PAYMENT_SUCCESS_URL:-http://localhost:3000/billing/success}
+      PAYMENT_FAILURE_URL: ${PAYMENT_FAILURE_URL:-http://localhost:3000/billing/failure}
+      DEFAULT_PAYMENT_GATEWAY: ${DEFAULT_PAYMENT_GATEWAY:-razorpay}
+      
+      # Development Mode
+      DEV_MODE: ${DEV_MODE:-false}
       RATE_LIMIT_ENABLED: "true"
       RATE_LIMIT_REQUESTS_PER_MINUTE: 60
-      # Stripe for ZK billing (separate from Storage)
-      ZK_STRIPE_SECRET_KEY: ${ZK_STRIPE_SECRET_KEY:-}
-      ZK_STRIPE_WEBHOOK_SECRET: ${ZK_STRIPE_WEBHOOK_SECRET:-}
+
       # Cookie security (false for HTTP development, true for HTTPS production)
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       # CORS origins for ZK frontend
-      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001"]'
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:5173","http://127.0.0.1:3000","http://127.0.0.1:3001","http://127.0.0.1:5173"]'
       # Logging
       LOG_LEVEL: INFO
       DEBUG: ${DEBUG:-false}
@@ -429,8 +471,8 @@ services:
 
   chunk-processor:
     build:
-      context: ../services/storage-service
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
     command: python -m app.workers.chunk_processor
     deploy:
       replicas: 2              # Reduce replicas to save memory
@@ -457,8 +499,8 @@ services:
   # Preview Processor Worker - Background video preview generation
   preview-processor:
     build:
-      context: ../services/storage-service
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
     entrypoint: []
     command: ["python", "-m", "app.workers.preview_worker"]
     deploy:
@@ -491,8 +533,8 @@ services:
   # Embedding Processor Worker - Background semantic embedding generation
   embedding-processor:
     build:
-      context: ../services/storage-service
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
     entrypoint: []
     command: ["python", "-m", "app.workers.embedding_worker"]
     deploy:
@@ -521,8 +563,8 @@ services:
   # File Analysis Processor Worker - Background AI tagging, OCR, metadata extraction
   file-analysis-processor:
     build:
-      context: ../services/storage-service
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
     entrypoint: []
     command: ["python", "-m", "app.workers.file_analysis_worker"]
     deploy:
