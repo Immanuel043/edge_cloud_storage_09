@@ -37,6 +37,7 @@ class AuditEventType(str, Enum):
     SUBSCRIPTION_RENEWED = "subscription.renewed"
     SUBSCRIPTION_EXPIRED = "subscription.expired"
     SUBSCRIPTION_REACTIVATED = "subscription.reactivated"
+    SUBSCRIPTION_PLAN_CHANGE_CALCULATED = "subscription.plan_change.calculated"
 
     # Payment Events
     PAYMENT_INITIATED = "payment.initiated"
@@ -69,6 +70,10 @@ class AuditEventType(str, Enum):
     RATE_LIMIT_EXCEEDED = "rate_limit.exceeded"
     UNAUTHORIZED_ACCESS = "security.unauthorized_access"
     SUSPICIOUS_ACTIVITY = "security.suspicious_activity"
+
+    # System Events
+    SYSTEM_RECONCILIATION_COMPLETED = "system.reconciliation.completed"
+    SYSTEM_RECONCILIATION_FIX = "system.reconciliation.fix"
 
 
 class AuditLog(Base):

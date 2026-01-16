@@ -16,10 +16,14 @@ import {
   Database,
   Video,
   Search,
-  RefreshCw
+  RefreshCw,
+  Crown,
+  TrendingUp
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
+import { useSubscription } from '../../contexts/SubscriptionContext';
 import { generateZKRegistrationData, unlockZKSession } from '../../services/zkEncryptionService';
 import * as zkAuthService from '../../services/zkAuthService';
 import { ZK_STORAGE } from '../../config/constants';
@@ -63,8 +67,10 @@ function formatBytes(bytes, decimals = 2) {
 }
 
 export default function SettingsView({ darkMode }) {
+  const navigate = useNavigate();
   const { user, zkEnabled, refreshUser } = useAuth();
   const { storageStats } = useStorage();
+  const { subscription, loading: subscriptionLoading } = useSubscription();
 
   // ZK Upgrade state
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
@@ -588,6 +594,96 @@ export default function SettingsView({ darkMode }) {
         {zkEnabled && (
           <RecoverySettings />
         )}
+
+        {/* Billing & Plans Section */}
+        <div className={`p-6 rounded-lg ${
+          darkMode ? 'bg-gray-800' : 'bg-white'
+        } shadow-sm`}>
+          <h3 className={`text-lg font-semibold mb-4 ${
+            darkMode ? 'text-white' : 'text-gray-900'
+          }`}>
+            Billing & Plans
+          </h3>
+
+          {subscription && !subscriptionLoading ? (
+            <div className="space-y-4">
+              {/* Current Plan Card */}
+              <div className={`p-4 rounded-lg border-2 ${
+                darkMode
+                  ? 'bg-gray-700/50 border-blue-500/30'
+                  : 'bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200'
+              }`}>
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Crown className={`${
+                        subscription.plan?.tier_name === 'free'
+                          ? 'text-gray-500'
+                          : 'text-yellow-500'
+                      }`} size={20} />
+                      <h4 className={`font-semibold ${
+                        darkMode ? 'text-white' : 'text-gray-900'
+                      }`}>
+                        {subscription.plan?.display_name || subscription.plan_name || 'Free Plan'}
+                      </h4>
+                      {subscription.plan?.tier_name !== 'free' && (
+                        <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800 rounded-full">
+                          Active
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Storage Info */}
+                    <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      <p className="mb-1">
+                        <span className="font-medium">Storage:</span>{' '}
+                        {subscription.plan?.storage_gb
+                          ? subscription.plan.storage_gb >= 1024
+                            ? `${(subscription.plan.storage_gb / 1024).toFixed(0)} TB`
+                            : `${subscription.plan.storage_gb} GB`
+                          : '5 GB'}
+                      </p>
+
+                      {/* Billing Cycle for paid plans */}
+                      {subscription.billing_cycle && (
+                        <p className="mb-1">
+                          <span className="font-medium">Billing:</span>{' '}
+                          {subscription.billing_cycle.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                        </p>
+                      )}
+
+                      {/* Next payment for paid plans */}
+                      {subscription.next_payment_at && (
+                        <p className={`text-xs mt-2 ${
+                          darkMode ? 'text-gray-400' : 'text-gray-600'
+                        }`}>
+                          Next payment: {new Date(subscription.next_payment_at).toLocaleDateString('en-US', {
+                            month: 'long',
+                            day: 'numeric',
+                            year: 'numeric'
+                          })}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Upgrade Button */}
+              <button
+                onClick={() => navigate('/pricing')}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-lg font-medium transition-all shadow-sm"
+              >
+                <TrendingUp size={18} />
+                Upgrade Plans
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className={`animate-spin ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} size={24} />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Upgrade Modal */}

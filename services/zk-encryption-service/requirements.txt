@@ -17,6 +17,7 @@ hiredis==2.2.3
 
 # Authentication & Security
 pyjwt==2.8.0
+python-jose[cryptography]==3.3.0
 bcrypt==4.1.1
 cryptography==41.0.7
 pycryptodome==3.19.0
@@ -28,9 +29,10 @@ webauthn==1.11.1
 # BIP39 for Recovery Phrases
 mnemonic==0.20
 
-# HTTP Client
+# HTTP Client & Email Templates
 httpx==0.25.1
 aiofiles==23.2.1
+jinja2==3.1.2
 
 # Billing & Payments
 stripe==7.0.0

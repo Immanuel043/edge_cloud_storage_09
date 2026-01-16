@@ -83,6 +83,19 @@ class VerifyPaymentRequest(BaseModel):
     signature: Optional[str] = Field(None, description="Payment signature (for Razorpay)")
 
 
+class UpcomingPaymentResponse(BaseModel):
+    """Response schema for upcoming payment information."""
+    user_id: str
+    plan_code: str
+    plan_name: str
+    billing_cycle: str
+    payment_due_date: str  # ISO format
+    amount_due: float
+    currency: str
+    days_until_payment: int
+    status: str
+
+
 # ===== Helper Functions =====
 
 async def get_billing_service(db: AsyncSession) -> BillingService:
@@ -481,6 +494,75 @@ async def get_subscription_history(
     return SubscriptionHistoryResponse(
         history=[SubscriptionHistorySchema.from_orm(h) for h in history],
         total=total
+    )
+
+
+@router.get("/upcoming-payment", response_model=UpcomingPaymentResponse)
+async def get_upcoming_payment(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get upcoming payment information for dashboard banner.
+
+    Returns payment due date, amount, and days until payment.
+    Only returns data if payment is within 7 days.
+    Returns 404 if no upcoming payment or user is on free plan.
+    """
+    from datetime import datetime, timezone
+
+    billing = await get_billing_service(db)
+
+    try:
+        subscription = await billing.get_user_subscription(
+            current_user.id,
+            include_plan=True
+        )
+    except SubscriptionNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="No active subscription found"
+        )
+
+    # Check if user is on free plan (no payment required)
+    if not subscription.next_payment_at or subscription.billing_cycle is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No upcoming payment - free plan"
+        )
+
+    # Calculate days until payment
+    now = datetime.now(timezone.utc)
+    days_until = (subscription.next_payment_at - now).days
+
+    # Only return if within 7 days
+    if days_until > 7:
+        raise HTTPException(
+            status_code=404,
+            detail="No payment due within 7 days"
+        )
+
+    # Get amount for current billing cycle
+    plan = subscription.plan
+    if subscription.billing_cycle == 'monthly':
+        amount = float(plan.price_monthly) if plan.price_monthly else 0
+    elif subscription.billing_cycle == 'six_months':
+        amount = float(plan.price_six_months) if plan.price_six_months else 0
+    elif subscription.billing_cycle == 'yearly':
+        amount = float(plan.price_yearly) if plan.price_yearly else 0
+    else:
+        amount = 0
+
+    return UpcomingPaymentResponse(
+        user_id=str(current_user.id),
+        plan_code=plan.plan_code,
+        plan_name=plan.display_name,
+        billing_cycle=subscription.billing_cycle,
+        payment_due_date=subscription.next_payment_at.isoformat(),
+        amount_due=amount,
+        currency="INR",
+        days_until_payment=days_until,
+        status=subscription.status
     )
 
 

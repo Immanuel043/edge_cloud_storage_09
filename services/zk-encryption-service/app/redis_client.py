@@ -361,7 +361,8 @@ class RateLimitService:
             Tuple of (is_allowed: bool, remaining_requests: int)
         """
         key = RateLimitService._rate_limit_key(identifier, action)
-        redis = get_redis()
+        from app.database import get_redis as get_async_redis
+        redis = await get_async_redis()
 
         try:
             # Increment counter

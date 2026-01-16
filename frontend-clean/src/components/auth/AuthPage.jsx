@@ -16,6 +16,7 @@ import RecoveryPhraseSetup from './RecoveryPhraseSetup';
 import RecoveryPhraseConfirm from './RecoveryPhraseConfirm';
 import RecoveryModal from './RecoveryModal';
 import PasswordStrengthMeter from './PasswordStrengthMeter';
+import VerificationCodeInput from './VerificationCodeInput';
 
 // Enhanced Bento Grid Components
 const BentoGrid = ({ children, className = "" }) => {
@@ -131,6 +132,12 @@ export default function AuthPage() {
   const [enableZK, setEnableZK] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
 
+  // Email Verification State
+  const [registrationStep, setRegistrationStep] = useState('form'); // 'form' | 'verify'
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [verificationToken, setVerificationToken] = useState('');
+  const [pendingFormData, setPendingFormData] = useState(null);
+
   // Recovery phrase flow state
   const [recoveryPhrase, setRecoveryPhrase] = useState('');
   const [showRecoverySetup, setShowRecoverySetup] = useState(false);
@@ -156,7 +163,9 @@ export default function AuthPage() {
     password: '',
     confirmPassword: '',
     username: '',
-    userType: 'individual'
+    userType: 'individual',
+    planCode: null,  // Store selected plan
+    billingCycle: 'monthly'  // Store selected billing cycle
   });
 
   // URL parameter state for pre-selected plan
@@ -164,14 +173,21 @@ export default function AuthPage() {
 
   const passwordStrength = formData.password ? validatePasswordStrength(formData.password) : null;
 
-  // Extract plan and service from URL parameters
+  // Extract plan, service, and billing cycle from URL parameters
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const plan = params.get('plan');
     const service = params.get('service');
+    const billing = params.get('billing');
 
     if (plan) {
       setPlanFromUrl(plan);
+      // Store plan and billing cycle in formData so they persist through verification
+      setFormData(prev => ({
+        ...prev,
+        planCode: plan,
+        billingCycle: billing || 'monthly'  // Default to monthly if not specified
+      }));
     }
 
     // If service is 'zk', enable ZK encryption mode
@@ -208,96 +224,189 @@ export default function AuthPage() {
       return;
     }
 
+    // Validation
     if (!validateEmail(formData.email)) {
       setFieldErrors(prev => ({ ...prev, email: 'Please enter a valid email address' }));
       emailRef.current?.focus();
       return;
     }
 
-    if (!validatePassword(formData.password)) {
-      setFieldErrors(prev => ({ ...prev, password: 'Password must be at least 8 characters' }));
-      passwordRef.current?.focus();
-      return;
-    }
+    if (authMode === 'login') {
+      // LOGIN FLOW (unchanged)
+      if (!validatePassword(formData.password)) {
+        setFieldErrors(prev => ({ ...prev, password: 'Password must be at least 8 characters' }));
+        passwordRef.current?.focus();
+        return;
+      }
 
-    if (authMode === 'register') {
+      setLoading(true);
+      try {
+        if (enableZK) {
+          await loginZK(formData.email, formData.password);
+          console.log('ZK login complete - redirecting to homepage');
+          // Ensure localStorage flag is set before redirect
+          localStorage.setItem('zkEnabled', 'true');
+          console.log('zkEnabled flag set in localStorage:', localStorage.getItem('zkEnabled'));
+          // Wait for React state updates to complete before navigating
+          setTimeout(() => {
+            navigate('/');
+          }, 100);
+        } else {
+          await login(formData.email, formData.password, rememberMe);
+          console.log('Normal login complete - redirecting to homepage');
+          setTimeout(() => {
+            navigate('/');
+          }, 100);
+        }
+        setFailedAttempts(0);
+      } catch (err) {
+        const errorMessage = err.message || 'Invalid credentials';
+        setError(errorMessage);
+        setLoading(false);
+
+        const newFailedAttempts = failedAttempts + 1;
+        setFailedAttempts(newFailedAttempts);
+        if (newFailedAttempts >= 5) {
+          setLockoutUntil(Date.now() + 30000);
+          setError('Too many failed attempts. Please wait 30 seconds.');
+        }
+      }
+    } else {
+      // REGISTRATION FLOW - NEW 3-STEP PROCESS
+
+      // Validate all fields upfront
       if (formData.username.length < 3) {
         setFieldErrors(prev => ({ ...prev, username: 'Username must be at least 3 characters' }));
         usernameRef.current?.focus();
         return;
       }
+
+      if (!validatePassword(formData.password)) {
+        setFieldErrors(prev => ({ ...prev, password: 'Password must be at least 8 characters' }));
+        passwordRef.current?.focus();
+        return;
+      }
+
       if (passwordStrength && !passwordStrength.isValid) {
         setFieldErrors(prev => ({ ...prev, password: 'Password does not meet strength requirements' }));
         passwordRef.current?.focus();
         return;
       }
+
       if (formData.password !== formData.confirmPassword) {
         setFieldErrors(prev => ({ ...prev, confirmPassword: 'Passwords do not match' }));
         confirmPasswordRef.current?.focus();
         return;
       }
-    }
 
+      setLoading(true);
+
+      try {
+        // Step 1: Send verification code
+        const initMethod = enableZK ? 'registerZKInit' : 'registerInit';
+        await authService[initMethod](formData.email);
+
+        // Success - code sent
+        setVerificationEmail(formData.email);
+        setPendingFormData(formData);
+        setRegistrationStep('verify');
+        setLoading(false);
+
+      } catch (err) {
+        const errorMessage = err.message || 'Registration failed';
+        setError(errorMessage);
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleVerificationCode = async (code) => {
+    setError('');
     setLoading(true);
 
     try {
-      if (authMode === 'login') {
-        if (enableZK) {
-          await loginZK(formData.email, formData.password);
-        } else {
-          await login(formData.email, formData.password, rememberMe);
-        }
-        setFailedAttempts(0);
-        navigate('/');
-      } else {
-        // Use plan from URL, fallback to free plan
-        const planCode = planFromUrl || (enableZK ? 'zk_pro' : 'normal_free');
+      // Call verify endpoint to validate code and get token
+      const verifyMethod = enableZK ? 'registerZKVerify' : 'registerVerify';
+      const verifyResponse = await authService[verifyMethod](verificationEmail, code);
 
-        if (enableZK) {
-          await registerZK(
-            formData.email,
-            formData.password,
-            formData.username,
-            formData.userType,
-            planCode
-          );
-          setLoading(false);
-          await handleRecoveryPhraseSetup(true);
-        } else {
-          await register(
-            formData.email,
-            formData.password,
-            formData.username,
-            formData.userType,
-            planCode
-          );
-
-          // Redirect based on selected plan
-          const isPaidPlan = planCode && !planCode.includes('_free');
-          if (isPaidPlan) {
-            // Show message about payment
-            alert('Account created! Please complete payment to activate your plan.');
-            // Redirect to billing page to complete Stripe Checkout
-            navigate('/dashboard?view=billing');
-          } else {
-            navigate('/');
-          }
-        }
+      if (verifyResponse.verified && verifyResponse.token) {
+        setVerificationToken(verifyResponse.token);
+        // Auto-proceed to complete registration
+        await completeRegistration(verifyResponse.token);
       }
     } catch (err) {
-      const errorMessage = err.message || (authMode === 'login' ? 'Invalid credentials' : 'Registration failed');
-      setError(errorMessage);
+      setError(err.message || 'Invalid verification code');
       setLoading(false);
-
-      if (authMode === 'login') {
-        const newFailedAttempts = failedAttempts + 1;
-        setFailedAttempts(newFailedAttempts);
-        if (newFailedAttempts >= 5) {
-          setLockoutUntil(Date.now() + 30000);
-          setError('Too many failed attempts. Please wait 30 seconds before trying again.');
-        }
-      }
     }
+  };
+
+  const completeRegistration = async (token) => {
+    try {
+      // Step 3: Complete registration with verification token
+      // Use plan and billing cycle from pendingFormData (preserves selection through verification)
+      const planCode = pendingFormData.planCode || (enableZK ? 'zk_pro' : 'normal_free');
+      const billingCycle = pendingFormData.billingCycle || 'monthly';
+
+      if (enableZK) {
+        // Generate ZK registration data
+        const { generateZKRegistrationData } = await import('../../services/zkEncryptionService');
+        const zkData = await generateZKRegistrationData(pendingFormData.password, pendingFormData.email);
+
+        await authService.registerZKComplete(
+          pendingFormData.email,
+          pendingFormData.username,
+          zkData.passwordHash,
+          zkData,
+          token,
+          planCode,
+          billingCycle
+        );
+
+        // After successful registration, login to set up the session
+        // This will unlock the ZK session and set all AuthContext state
+        await loginZK(pendingFormData.email, pendingFormData.password);
+
+        setLoading(false);
+        await handleRecoveryPhraseSetup(true);
+      } else {
+        await authService.registerComplete(
+          pendingFormData.email,
+          pendingFormData.username,
+          pendingFormData.password,
+          token,
+          planCode,
+          billingCycle
+        );
+
+        // After successful registration, login to set up the session
+        await login(pendingFormData.email, pendingFormData.password);
+
+        setLoading(false);
+
+        console.log('Normal registration complete - redirecting to homepage');
+        // Use React Router navigate to avoid page reload
+        setTimeout(() => {
+          navigate('/');
+        }, 100);
+      }
+    } catch (err) {
+      setError(err.message || 'Registration failed');
+      setLoading(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    try {
+      const resendMethod = enableZK ? 'resendZKVerificationCode' : 'resendVerificationCode';
+      await authService[resendMethod](verificationEmail);
+    } catch (err) {
+      setError(err.message || 'Failed to resend code');
+    }
+  };
+
+  const handleBackToForm = () => {
+    setRegistrationStep('form');
+    setError('');
   };
 
   const handleRecoveryPhraseSetup = async (skipSessionCheck = false) => {
@@ -309,7 +418,7 @@ export default function AuthPage() {
       }
     } catch (err) {
       console.error('Failed to setup recovery phrase:', err);
-      navigate('/');
+      window.location.href = '/';
     }
   };
 
@@ -546,7 +655,21 @@ export default function AuthPage() {
                   </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="space-y-5">
+                {authMode === 'register' && registrationStep === 'verify' ? (
+                  // VERIFICATION CODE SCREEN
+                  <VerificationCodeInput
+                    email={verificationEmail}
+                    onVerify={handleVerificationCode}
+                    onResend={handleResendCode}
+                    onBack={handleBackToForm}
+                    darkMode={darkMode}
+                    loading={loading}
+                    error={error}
+                    expiryMinutes={30}
+                  />
+                ) : (
+                  // ORIGINAL FORM
+                  <form onSubmit={handleSubmit} className="space-y-5">
                   {/* Email */}
                   <div>
                     <label className={`block text-xs font-medium uppercase tracking-wider mb-2 ml-1 ${
@@ -764,6 +887,7 @@ export default function AuthPage() {
                     )}
                   </button>
                 </form>
+                )}
 
                 {/* Forgot Password */}
                 {authMode === 'login' && (
@@ -1255,7 +1379,10 @@ export default function AuthPage() {
           onSkip={() => {
             setShowRecoverySetup(false);
             setRecoveryPhrase('');
-            navigate('/');
+            console.log('ZK Registration skipped - redirecting to homepage');
+            setTimeout(() => {
+              navigate('/');
+            }, 100);
           }}
         />
       )}
@@ -1266,7 +1393,11 @@ export default function AuthPage() {
           onConfirm={() => {
             setShowRecoveryConfirm(false);
             setRecoveryPhrase('');
-            navigate('/');
+            console.log('ZK Registration complete - redirecting to homepage');
+            // Small delay to ensure state is saved
+            setTimeout(() => {
+              navigate('/');
+            }, 100);
           }}
           onCancel={() => {
             setShowRecoveryConfirm(false);

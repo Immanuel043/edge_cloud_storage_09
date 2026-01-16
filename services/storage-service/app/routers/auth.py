@@ -68,10 +68,10 @@ async def get_public_plans(
             "bandwidth_burst_mbps": p.bandwidth_burst_mbps,
             "max_concurrent_streams": p.max_concurrent_streams,
 
-            # Pricing (convert to cents for frontend)
-            "price_monthly": int(float(p.price_monthly) * 100) if p.price_monthly else None,
-            "price_six_months": int(float(p.price_six_months) * 100) if p.price_six_months else None,
-            "price_yearly": int(float(p.price_yearly) * 100) if p.price_yearly else None,
+            # Pricing (in rupees/dollars as stored in database)
+            "price_monthly": int(float(p.price_monthly)) if p.price_monthly else None,
+            "price_six_months": int(float(p.price_six_months)) if p.price_six_months else None,
+            "price_yearly": int(float(p.price_yearly)) if p.price_yearly else None,
 
             # Metadata
             "features": p.features or {},
@@ -456,21 +456,7 @@ async def register_complete(
     if existing_username.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already taken")
 
-    # Update user with username and password
-    from sqlalchemy import update
-    await db.execute(
-        update(User)
-        .where(User.id == user.id)
-        .values(
-            username=username,
-            password_hash=auth_service.get_password_hash(password),
-            is_active=True
-        )
-    )
-    await db.commit()
-    await db.refresh(user)
-
-    # Get plan limits from database
+    # Get plan info first
     from shared_billing import BillingService
     billing = BillingService(db, service_type='normal')
 
@@ -484,15 +470,44 @@ async def register_complete(
         storage_quota = 5 * 1024**3  # 5GB fallback
         bandwidth_limit = 5  # 5 Mbps fallback
 
+    # Determine plan_type from plan_code
+    plan_type = plan_code.replace('normal_', '')  # e.g., "normal_basic_200" -> "basic_200"
+    if '_' in plan_type:
+        # Extract tier name (e.g., "basic_200" -> "basic")
+        plan_type = plan_type.split('_')[0]
+
+    # Update user with username, password, and plan_type
+    from sqlalchemy import update
+    await db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(
+            username=username,
+            password_hash=auth_service.get_password_hash(password),
+            is_active=True,
+            plan_type=plan_type,
+            storage_quota=storage_quota
+        )
+    )
+    await db.commit()
+    await db.refresh(user)
+
     # Create root folder
     root_folder = Folder(user_id=user.id, parent_id=None, name="/", path="/")
     db.add(root_folder)
     await db.commit()
 
+    # Create subscription with selected plan and billing cycle
+    try:
+        billing_cycle = payload.billing_cycle if payload.billing_cycle else None
+        await billing.create_subscription(user.id, plan_code, billing_cycle=billing_cycle)
+    except Exception as e:
+        logger.warning(f"Failed to create subscription for user {user.id}: {e}")
+
     # Log activity
     await log_activity(
         db, user.id, "user_registered",
-        metadata={"plan_code": plan_code},
+        metadata={"plan_code": plan_code, "billing_cycle": payload.billing_cycle},
         request=request
     )
 

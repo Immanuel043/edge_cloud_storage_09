@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSubscription } from '../../contexts/SubscriptionContext';
-import PlanCard, { PlanCardSkeleton } from './PlanCard';
 import PlanChangeModal from './PlanChangeModal';
 import {
   Crown,
@@ -24,6 +24,7 @@ import {
  * - Subscription history
  */
 export default function SubscriptionDashboard() {
+  const navigate = useNavigate();
   const {
     subscription,
     availablePlans,
@@ -163,8 +164,10 @@ export default function SubscriptionDashboard() {
               <p className="text-2xl font-bold text-gray-900">
                 {subscription.price_display || 'Free'}
               </p>
-              {!subscription.plan_code.includes('free') && (
-                <p className="text-sm text-gray-600">per month</p>
+              {!subscription.plan_code.includes('free') && subscription.billing_cycle && (
+                <p className="text-sm text-gray-600">
+                  per {subscription.billing_cycle === 'six_months' ? '6 months' : subscription.billing_cycle.replace('_', ' ')}
+                </p>
               )}
             </div>
           </div>
@@ -280,19 +283,19 @@ export default function SubscriptionDashboard() {
         </div>
       )}
 
-      {/* Available Plans */}
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">Available Plans</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {availablePlans.map((plan) => (
-            <PlanCard
-              key={plan.plan_code}
-              plan={plan}
-              isCurrent={plan.plan_code === subscription?.plan_code}
-              onSelect={handlePlanSelect}
-            />
-          ))}
-        </div>
+      {/* Upgrade Plans Button */}
+      <div className="bg-white rounded-xl p-6 border border-gray-200">
+        <h2 className="text-2xl font-bold text-gray-900 mb-4">Upgrade Your Plan</h2>
+        <p className="text-gray-600 mb-6">
+          Explore our range of plans and upgrade to get more storage, bandwidth, and premium features.
+        </p>
+        <button
+          onClick={() => navigate('/pricing')}
+          className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-lg font-semibold transition-all shadow-sm"
+        >
+          <TrendingUp size={20} />
+          View All Plans
+        </button>
       </div>
 
       {/* Billing Portal Link (for Stripe customers) */}

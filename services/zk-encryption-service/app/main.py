@@ -63,8 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     Handles startup and shutdown events.
     """
     # Import database and Redis modules
-    from app.database import init_db, close_db
-    from app.redis_client import init_redis, close_redis
+    from app.database import init_db, close_db, init_redis, close_redis
 
     # Startup
     logger.info(
@@ -292,8 +291,7 @@ async def health_check():
     Returns:
         Service health status
     """
-    from app.database import engine
-    from app.redis_client import get_redis
+    from app.database import engine, get_redis
     import sqlalchemy as sa
 
     health_status = {
@@ -316,7 +314,7 @@ async def health_check():
 
     # Check Redis connection
     try:
-        redis = get_redis()
+        redis = await get_redis()
         await redis.ping()
         health_status["checks"]["redis"] = "healthy"
     except Exception as e:

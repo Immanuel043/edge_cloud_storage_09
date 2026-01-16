@@ -8,14 +8,18 @@ The ZK service uses its own PostgreSQL instance (ZK_DATABASE_URL)
 for complete isolation. No data is shared with Storage Service.
 """
 import structlog
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool, QueuePool
 from contextlib import asynccontextmanager
+import redis.asyncio as redis
 
 from app.config import settings
 
 logger = structlog.get_logger()
+
+# Redis client for caching and rate limiting
+_redis_client: Optional[redis.Redis] = None
 
 # Create async engine
 engine = create_async_engine(
@@ -117,6 +121,59 @@ async def close_db():
         logger.info("database_connections_closed")
     except Exception as e:
         logger.error("database_close_failed", error=str(e), exc_info=True)
+
+
+# ==================== Redis Functions ====================
+
+async def init_redis():
+    """
+    Initialize Redis connection.
+    Called on application startup.
+    """
+    global _redis_client
+    try:
+        _redis_client = redis.from_url(
+            settings.ZK_REDIS_URL,
+            encoding="utf-8",
+            decode_responses=True,
+            max_connections=50
+        )
+        # Test connection
+        await _redis_client.ping()
+        logger.info("redis_initialized", redis_url=settings.ZK_REDIS_URL)
+    except Exception as e:
+        logger.error("redis_init_failed", error=str(e), exc_info=True)
+        raise
+
+
+async def close_redis():
+    """
+    Close Redis connection.
+    Called on application shutdown.
+    """
+    global _redis_client
+    if _redis_client:
+        try:
+            await _redis_client.close()
+            logger.info("redis_connection_closed")
+        except Exception as e:
+            logger.error("redis_close_failed", error=str(e), exc_info=True)
+
+
+async def get_redis() -> redis.Redis:
+    """
+    Get Redis client instance.
+
+    Returns:
+        redis.Redis: Redis client
+
+    Raises:
+        RuntimeError: If Redis is not initialized
+    """
+    global _redis_client
+    if _redis_client is None:
+        raise RuntimeError("Redis client not initialized. Call init_redis() first.")
+    return _redis_client
 
 
 # Import sqlalchemy for SQL text

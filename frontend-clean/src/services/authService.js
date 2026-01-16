@@ -137,6 +137,211 @@ class AuthService {
     return await response.json();
   }
 
+  // ==================== Email Verification Registration Flow ====================
+
+  /**
+   * Step 1: Initialize registration - send verification code
+   */
+  async registerInit(email) {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/register/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: sanitizeInput(email) })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to send verification code');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Step 2: Verify email code
+   */
+  async registerVerify(email, code) {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/register/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: sanitizeInput(email),
+        verification_code: code
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Invalid verification code');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Step 3: Complete registration with username and password
+   */
+  async registerComplete(email, username, password, verificationToken, planCode = 'normal_free', billingCycle = 'monthly') {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/register/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: sanitizeInput(email),
+        username: sanitizeInput(username),
+        password,
+        verification_token: verificationToken,
+        plan_code: planCode,
+        billing_cycle: billingCycle
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Registration failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Resend verification code
+   */
+  async resendVerificationCode(email) {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/register/resend-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: sanitizeInput(email) })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to resend code');
+    }
+
+    return await response.json();
+  }
+
+  // ==================== ZK Email Verification Flow ====================
+
+  /**
+   * Step 1: Initialize ZK registration - send verification code
+   */
+  async registerZKInit(email) {
+    await rateLimiter.checkLimit();
+
+    const ZK_API_URL = import.meta.env.VITE_ZK_API_URL || 'http://localhost:8002';
+    const response = await fetch(`${ZK_API_URL}/api/v1/zk/register-zk/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: sanitizeInput(email) })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || error.message || 'Failed to send verification code');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Step 2: Verify ZK email code
+   */
+  async registerZKVerify(email, code) {
+    await rateLimiter.checkLimit();
+
+    const ZK_API_URL = import.meta.env.VITE_ZK_API_URL || 'http://localhost:8002';
+    const response = await fetch(`${ZK_API_URL}/api/v1/zk/register-zk/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: sanitizeInput(email),
+        verification_code: code
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || error.message || 'Invalid verification code');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Step 3: Complete ZK registration
+   */
+  async registerZKComplete(email, username, passwordHash, zkData, verificationToken, planCode = 'zk_pro', billingCycle = 'monthly') {
+    await rateLimiter.checkLimit();
+
+    const ZK_API_URL = import.meta.env.VITE_ZK_API_URL || 'http://localhost:8002';
+    const response = await fetch(`${ZK_API_URL}/api/v1/zk/register-zk/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: sanitizeInput(email),
+        username: sanitizeInput(username),
+        password_hash: passwordHash,
+        encrypted_master_key: zkData.encryptedMasterKey,
+        master_key_iv: zkData.masterKeyIV,
+        kdf_salt: zkData.kdfSalt,
+        kdf_algorithm: zkData.kdfAlgorithm,
+        kdf_iterations: zkData.kdfIterations,
+        kdf_memory: zkData.kdfMemory,
+        kdf_parallelism: zkData.kdfParallelism,
+        verification_token: verificationToken,
+        plan_code: planCode,
+        billing_cycle: billingCycle,
+        recovery_encrypted_master_key: zkData.recoveryEncryptedMasterKey,
+        recovery_phrase_hash: zkData.recoveryPhraseHash
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || error.message || 'Registration failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Resend ZK verification code
+   */
+  async resendZKVerificationCode(email) {
+    await rateLimiter.checkLimit();
+
+    const ZK_API_URL = import.meta.env.VITE_ZK_API_URL || 'http://localhost:8002';
+    const response = await fetch(`${ZK_API_URL}/api/v1/zk/register-zk/resend-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: sanitizeInput(email) })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || error.message || 'Failed to resend code');
+    }
+
+    return await response.json();
+  }
+
   // ==================== OAuth Methods ====================
 
   /**

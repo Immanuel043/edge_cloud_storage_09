@@ -206,6 +206,25 @@ class BillingService:
         except SubscriptionNotFoundError:
             pass  # Expected - user doesn't have subscription yet
         
+        # Calculate next payment date based on billing cycle
+        now = datetime.now(timezone.utc)
+        next_payment_at = None
+        current_period_start = now
+        current_period_end = None
+
+        if billing_cycle == 'monthly':
+            from dateutil.relativedelta import relativedelta
+            current_period_end = now + relativedelta(months=1)
+            next_payment_at = current_period_end
+        elif billing_cycle == 'six_months':
+            from dateutil.relativedelta import relativedelta
+            current_period_end = now + relativedelta(months=6)
+            next_payment_at = current_period_end
+        elif billing_cycle == 'yearly':
+            from dateutil.relativedelta import relativedelta
+            current_period_end = now + relativedelta(years=1)
+            next_payment_at = current_period_end
+
         # Create subscription
         subscription = UserSubscription(
             user_id=user_id,
@@ -213,7 +232,10 @@ class BillingService:
             plan_id=plan.id,
             status='active' if not stripe_subscription_id else 'pending_payment',
             billing_cycle=billing_cycle,
-            started_at=datetime.now(timezone.utc),
+            started_at=now,
+            current_period_start=current_period_start,
+            current_period_end=current_period_end,
+            next_payment_at=next_payment_at,
             stripe_subscription_id=stripe_subscription_id,
             stripe_customer_id=stripe_customer_id,
         )

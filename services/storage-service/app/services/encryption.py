@@ -15,19 +15,33 @@ logger = logging.getLogger(__name__)
 
 # --- Helper: master key retrieval ---
 def _get_master_key() -> bytes:
+    """
+    Retrieve or derive the master encryption key.
+
+    Priority:
+    1. ENCRYPTION_MASTER_KEY (if set) - base64-encoded 32 bytes
+    2. Derive from SECRET_KEY using SHA256 (fallback)
+
+    Returns:
+        32-byte master key for AES-256-GCM encryption
+    """
     mk_b64 = getattr(settings, "ENCRYPTION_MASTER_KEY", None)
     if mk_b64:
         try:
             mk = base64.b64decode(mk_b64)
             if len(mk) != 32:
                 raise ValueError("ENCRYPTION_MASTER_KEY must decode to 32 bytes")
+            logger.info("Using dedicated ENCRYPTION_MASTER_KEY")
             return mk
         except Exception as e:
             raise RuntimeError(f"Invalid ENCRYPTION_MASTER_KEY: {e}")
 
+    # Fallback: derive from SECRET_KEY
     secret = getattr(settings, "SECRET_KEY", None)
     if not secret:
         raise RuntimeError("No ENCRYPTION_MASTER_KEY or SECRET_KEY found in settings")
+
+    logger.warning("Deriving master key from SECRET_KEY (consider setting ENCRYPTION_MASTER_KEY)")
     return hashlib.sha256(secret.encode()).digest()
 
 MASTER_KEY = _get_master_key()

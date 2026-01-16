@@ -5,6 +5,7 @@ import {
   HardDrive, Gauge, Users, Crown, Zap, Lock
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 // Mock data structure matching the categorized plan format
 const mockPlansData = {
@@ -112,6 +113,60 @@ const mockPlansData = {
   zk_plans: {
     individual: [
       {
+        plan_code: 'zk_free',
+        display_name: 'ZK Free Tier',
+        description: 'Try zero-knowledge encryption for free',
+        price_monthly: null,
+        price_six_months: null,
+        price_yearly: null,
+        storage_gb: 2,
+        bandwidth_mbps: 5,
+        bandwidth_burst_mbps: 10,
+        max_concurrent_streams: 1,
+        features: { support: 'community', webauthn: true, encryption: 'zero_knowledge', versioning: 10, hardware_keys: 2, recovery_phrase: true },
+        is_default: true
+      },
+      {
+        plan_code: 'zk_personal',
+        display_name: 'ZK Personal',
+        description: 'Personal encrypted storage',
+        price_monthly: 9.99,
+        price_six_months: null,
+        price_yearly: 99.99,
+        storage_gb: 50,
+        bandwidth_mbps: 10,
+        bandwidth_burst_mbps: 20,
+        max_concurrent_streams: 3,
+        features: { support: 'standard', webauthn: true, encryption: 'zero_knowledge', versioning: 50, hardware_keys: 5, recovery_phrase: true }
+      },
+      {
+        plan_code: 'zk_business',
+        display_name: 'ZK Business',
+        description: 'Business-grade encrypted storage',
+        price_monthly: 29.99,
+        price_six_months: null,
+        price_yearly: 299.99,
+        storage_gb: 200,
+        bandwidth_mbps: 20,
+        bandwidth_burst_mbps: 40,
+        max_concurrent_streams: 5,
+        features: { support: 'priority', webauthn: true, encryption: 'zero_knowledge', versioning: 100, hardware_keys: 10, recovery_phrase: true },
+        is_most_popular: true
+      },
+      {
+        plan_code: 'zk_enterprise',
+        display_name: 'ZK Enterprise',
+        description: 'Enterprise zero-knowledge vault',
+        price_monthly: 99.99,
+        price_six_months: null,
+        price_yearly: 999.99,
+        storage_gb: 1024,
+        bandwidth_mbps: 50,
+        bandwidth_burst_mbps: 100,
+        max_concurrent_streams: 10,
+        features: { support: '24/7', webauthn: true, encryption: 'zero_knowledge', versioning: 'unlimited', hardware_keys: 25, recovery_phrase: true }
+      },
+      {
         plan_code: 'zk_pro',
         display_name: 'ZK Pro',
         description: '1TB zero-knowledge encrypted vault',
@@ -122,8 +177,7 @@ const mockPlansData = {
         bandwidth_mbps: 20,
         bandwidth_burst_mbps: 40,
         max_concurrent_streams: 5,
-        features: { support: 'priority', webauthn: true, encryption: 'zero_knowledge', versioning: true, hardware_keys: 10, recovery_phrase: true },
-        is_most_popular: true
+        features: { support: 'priority', webauthn: true, encryption: 'zero_knowledge', versioning: true, hardware_keys: 10, recovery_phrase: true }
       },
       {
         plan_code: 'zk_pro_plus',
@@ -171,15 +225,36 @@ const mockPlansData = {
 };
 
 function PlanCard({ plan, serviceType, darkMode, onSelect }) {
-  const [billingCycle, setBillingCycle] = useState('monthly');
-  
+  // Determine available billing cycles and default cycle
+  const hasMonthly = plan.price_monthly !== null;
+  const hasSixMonths = plan.price_six_months !== null;
+  const hasYearly = plan.price_yearly !== null;
+  const isFree = !hasMonthly && !hasSixMonths && !hasYearly;
+
+  // Default to the first available billing cycle
+  const getDefaultCycle = () => {
+    if (hasMonthly) return 'monthly';
+    if (hasSixMonths) return 'six_months';
+    if (hasYearly) return 'yearly';
+    return 'monthly'; // fallback for free plans
+  };
+
+  const [billingCycle, setBillingCycle] = useState(getDefaultCycle());
+
   const getPrice = () => {
-    if (plan.price_monthly === null) return 'Free';
+    if (isFree) return 'Free';
+
+    // For yearly-only plans, always show yearly price
+    if (!hasMonthly && !hasSixMonths && hasYearly) {
+      return `₹${plan.price_yearly}`;
+    }
+
+    // For plans with multiple billing options
     switch (billingCycle) {
-      case 'monthly': return `₹${plan.price_monthly}`;
-      case 'six_months': return `₹${plan.price_six_months}`;
-      case 'yearly': return `₹${plan.price_yearly}`;
-      default: return `₹${plan.price_monthly}`;
+      case 'monthly': return hasMonthly ? `₹${plan.price_monthly}` : `₹${plan.price_yearly}`;
+      case 'six_months': return hasSixMonths ? `₹${plan.price_six_months}` : `₹${plan.price_yearly}`;
+      case 'yearly': return hasYearly ? `₹${plan.price_yearly}` : `₹${plan.price_monthly}`;
+      default: return `₹${plan.price_monthly || plan.price_yearly}`;
     }
   };
 
@@ -253,30 +328,58 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }) {
         <div className={`text-4xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
           {getPrice()}
         </div>
-        {plan.price_monthly !== null && (
-          <div className="flex gap-2 mb-3">
-            {['monthly', 'six_months', 'yearly'].map((cycle) => (
-              <button
-                key={cycle}
-                onClick={() => setBillingCycle(cycle)}
-                className={`px-2 py-1 text-xs rounded ${
-                  billingCycle === cycle
-                    ? darkMode
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-blue-600 text-white'
-                    : darkMode
-                    ? 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {cycle === 'monthly' ? 'Mo' : cycle === 'six_months' ? '6Mo' : 'Yr'}
-              </button>
-            ))}
-          </div>
+
+        {/* Show billing cycle buttons only for plans with multiple options */}
+        {hasMonthly && (
+          <>
+            <div className="flex gap-2 mb-3">
+              {hasMonthly && (
+                <button
+                  onClick={() => setBillingCycle('monthly')}
+                  className={`px-2 py-1 text-xs rounded ${
+                    billingCycle === 'monthly'
+                      ? darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'
+                      : darkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  Mo
+                </button>
+              )}
+              {hasSixMonths && (
+                <button
+                  onClick={() => setBillingCycle('six_months')}
+                  className={`px-2 py-1 text-xs rounded ${
+                    billingCycle === 'six_months'
+                      ? darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'
+                      : darkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  6Mo
+                </button>
+              )}
+              {hasYearly && (
+                <button
+                  onClick={() => setBillingCycle('yearly')}
+                  className={`px-2 py-1 text-xs rounded ${
+                    billingCycle === 'yearly'
+                      ? darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'
+                      : darkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  Yr
+                </button>
+              )}
+            </div>
+            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              per {billingCycle === 'monthly' ? 'month' : billingCycle === 'six_months' ? '6 months' : 'year'}
+            </div>
+          </>
         )}
-        {plan.price_monthly !== null && (
-          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-            per {billingCycle === 'monthly' ? 'month' : billingCycle === 'six_months' ? '6 months' : 'year'}
+
+        {/* For yearly-only plans, show a label */}
+        {!hasMonthly && !hasSixMonths && hasYearly && (
+          <div className={`text-xs font-medium ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+            Billed Yearly
           </div>
         )}
       </div>
@@ -286,7 +389,11 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }) {
       }`}>
         <div className={`flex items-center gap-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
           <HardDrive className={`w-4 h-4 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
-          <span className="font-semibold">{plan.storage_gb} GB</span>
+          <span className="font-semibold">
+            {plan.storage_gb >= 1024
+              ? `${(plan.storage_gb / 1024).toFixed(0)} TB`
+              : `${plan.storage_gb} GB`}
+          </span>
           <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Storage</span>
         </div>
         <div className={`flex items-center gap-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
@@ -315,7 +422,7 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }) {
       </div>
 
       <button
-        onClick={() => onSelect(plan.plan_code, serviceType)}
+        onClick={() => onSelect(plan.plan_code, serviceType, billingCycle)}
         className={`
           w-full py-3 px-4 rounded-lg font-semibold transition-all duration-200
           flex items-center justify-center gap-2
@@ -335,6 +442,7 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }) {
 export default function PricingPage() {
   const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
+  const { isAuthenticated, user } = useAuth();
   const [edgeCategory, setEdgeCategory] = useState('individual');
   const [zkCategory, setZkCategory] = useState('individual');
 
@@ -381,8 +489,17 @@ export default function PricingPage() {
     fetchPlans();
   }, []);
 
-  const handlePlanSelect = (planCode, serviceType) => {
-    navigate(`/auth?plan=${planCode}&service=${serviceType}`);
+  const handlePlanSelect = (planCode, serviceType, billingCycle) => {
+    if (!isAuthenticated || !user) {
+      // Non-logged-in user: Redirect to auth with plan pre-selected
+      navigate(`/auth?plan=${planCode}&service=${serviceType}&billing=${billingCycle}`);
+      return;
+    }
+
+    // Logged-in user: Redirect to dashboard homepage
+    // They can access "Billing & Plans" from sidebar to complete the upgrade
+    // TODO: Integrate payment flow directly on pricing page
+    navigate('/');
   };
 
   const categories = ['individual', 'business', 'enterprise'];

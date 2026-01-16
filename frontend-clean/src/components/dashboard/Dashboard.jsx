@@ -41,6 +41,8 @@ import SearchResults from './SearchResults';
 import SessionUnlockModal from '../auth/SessionUnlockModal';
 import DownloadProgress from './DownloadProgress';
 import MigrationBanner from './MigrationBanner';
+import PaymentReminderBanner from './PaymentReminderBanner';
+import FreeAccountUpgradeBanner from './FreeAccountUpgradeBanner';
 import FileCorruptionModal from './FileCorruptionModal';
 import ShareBundleComposer from './ShareBundleComposer';
 import ZKDashboardLayout from './ZKDashboardLayout';
@@ -1030,6 +1032,14 @@ export default function Dashboard() {
               darkMode={darkMode}
               onUpgradeClick={handleUpgradeClick}
             />
+          )}
+
+          {/* Billing Banners */}
+          {activeView === 'cloud-drive' && (
+            <>
+              <PaymentReminderBanner darkMode={darkMode} />
+              <FreeAccountUpgradeBanner darkMode={darkMode} />
+            </>
           )}
 
           {/* Migration Banner - show when V1 files need upgrade */}

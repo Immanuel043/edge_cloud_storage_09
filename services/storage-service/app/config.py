@@ -2,6 +2,7 @@
 import os
 import secrets
 import logging
+import base64
 from typing import Optional, List
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,8 @@ class Settings:
     VERSION: str = "1.0.0"
     
     # Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY") or secrets.token_urlsafe(32)
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+    ENCRYPTION_MASTER_KEY: Optional[str] = os.getenv("ENCRYPTION_MASTER_KEY")  # Base64-encoded 32-byte key
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 120))  # 2 hours (was 30 min)
     ENABLE_HTTPS: bool = os.getenv("ENABLE_HTTPS", "false").lower() == "true"
@@ -187,7 +189,52 @@ class Settings:
 
     def __init__(self):
         """Initialize settings with validation"""
+        self._validate_encryption_keys()
         self._validate_dev_mode()
+
+    def _validate_encryption_keys(self):
+        """Validate encryption keys are properly configured"""
+        # Check if SECRET_KEY is set
+        if not self.SECRET_KEY:
+            error_msg = (
+                "CRITICAL SECURITY ERROR: SECRET_KEY environment variable is not set. "
+                "This key is required for JWT token signing and session management. "
+                "Generate one with: openssl rand -base64 32"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Warn if using default/weak SECRET_KEY
+        if self.SECRET_KEY in ["your-secret-key-here", "your-secret-key-here-generate-with-openssl"]:
+            error_msg = (
+                "CRITICAL SECURITY ERROR: SECRET_KEY is set to a default placeholder value. "
+                "You must generate a secure random key with: openssl rand -base64 32"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Check encryption master key
+        if not self.ENCRYPTION_MASTER_KEY:
+            logger.warning("=" * 80)
+            logger.warning("⚠️  ENCRYPTION_MASTER_KEY not set - deriving from SECRET_KEY")
+            logger.warning("⚠️  For better security, set a dedicated ENCRYPTION_MASTER_KEY")
+            logger.warning("⚠️  Generate with: openssl rand -base64 32")
+            logger.warning("=" * 80)
+        else:
+            # Validate it's valid base64 and correct length
+            try:
+                mk = base64.b64decode(self.ENCRYPTION_MASTER_KEY)
+                if len(mk) != 32:
+                    raise ValueError("must be 32 bytes when decoded")
+            except Exception as e:
+                error_msg = (
+                    f"CRITICAL SECURITY ERROR: ENCRYPTION_MASTER_KEY is invalid: {e}. "
+                    f"Generate a valid one with: openssl rand -base64 32"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            logger.info("✓ ENCRYPTION_MASTER_KEY validated successfully")
 
     def _validate_dev_mode(self):
         """Validate DEV_MODE configuration"""

@@ -101,7 +101,7 @@ class UserSubscription(Base):
     # Subscription State
     status = Column(String(20), nullable=False, default='active')
     # Status values: 'active', 'pending_payment', 'cancelled', 'expired', 'over_quota'
-    billing_cycle = Column(String(20))  # 'monthly', 'yearly', NULL for free
+    billing_cycle = Column(String(20))  # 'monthly', 'six_months', 'yearly', NULL for free
 
     # Dates
     started_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -190,3 +190,53 @@ class SubscriptionHistory(Base):
 
     def __repr__(self):
         return f"<SubscriptionHistory {self.event_type} user={self.user_id}>"
+
+
+class BillingNotification(Base):
+    """
+    Tracks billing notifications sent to users.
+
+    Used to prevent duplicate notifications and track notification history.
+    """
+    __tablename__ = 'billing_notifications'
+
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+
+    # Reference
+    user_id = Column(PGUUID(as_uuid=True), nullable=False)
+    service_type = Column(String(20), nullable=False)  # 'normal' or 'zk'
+    subscription_id = Column(PGUUID(as_uuid=True), ForeignKey('user_subscriptions.id'))
+
+    # Notification Details
+    notification_type = Column(String(50), nullable=False)
+    # Types: 'payment_reminder', 'payment_due', 'payment_overdue', 'renewal_reminder'
+    billing_cycle = Column(String(20))  # 'monthly', 'six_months', 'yearly'
+    days_before_payment = Column(Integer)  # How many days before payment date
+
+    # Payment Info
+    amount_due = Column(Numeric(10, 2))
+    currency = Column(String(3), default='INR')
+    payment_due_date = Column(DateTime(timezone=True))
+
+    # Status
+    status = Column(String(20), nullable=False, default='pending')
+    # Status: 'pending', 'sent', 'failed', 'cancelled'
+    sent_at = Column(DateTime(timezone=True))
+    error_message = Column(Text)
+
+    # Metadata
+    extra_metadata = Column(JSONB, default={})
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        Index('idx_notifications_user', 'user_id', 'service_type'),
+        Index('idx_notifications_subscription', 'subscription_id'),
+        Index('idx_notifications_status', 'status'),
+        Index('idx_notifications_due_date', 'payment_due_date'),
+        Index('idx_notifications_type', 'notification_type'),
+        {'comment': 'Billing notifications sent to users'}
+    )
+
+    def __repr__(self):
+        return f"<BillingNotification {self.notification_type} user={self.user_id} status={self.status}>"

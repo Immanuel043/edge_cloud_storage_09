@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { X, ArrowRight, HardDrive, Gauge, Check, AlertCircle, CreditCard } from 'lucide-react';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import subscriptionService from '../../services/subscriptionService';
@@ -21,6 +22,7 @@ import subscriptionService from '../../services/subscriptionService';
  * - targetPlan: Plan object to change to
  */
 export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
+  const navigate = useNavigate();
   const { subscription, upgrade, downgrade, previewChange, isUpgrade } = useSubscription();
 
   const [preview, setPreview] = useState(null);
@@ -92,9 +94,12 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
             selectedGateway
           );
 
-          // If free plan upgrade, close modal
+          // If free plan upgrade, close modal and redirect to dashboard
           if (paymentResult.free_plan) {
             onClose();
+            setTimeout(() => {
+              navigate('/');
+            }, 500);
             return;
           }
 
@@ -117,6 +122,10 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
           await downgrade(targetPlan.plan_code);
         }
         onClose();
+        // Redirect to dashboard after successful upgrade/downgrade
+        setTimeout(() => {
+          navigate('/');
+        }, 500);
       }
     } catch (err) {
       setError(err.message);

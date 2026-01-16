@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from jose import jwt, JWTError
 
 from app.config import settings
 
@@ -168,14 +169,393 @@ async def get_kdf_params(
     )
 
 
-@router.post("/register-zk", status_code=status.HTTP_201_CREATED)
+# ========== EMAIL VERIFICATION REGISTRATION ENDPOINTS ==========
+
+@router.post("/register-zk/init")
+async def register_zk_init(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Start ZK registration - send verification code to email.
+
+    Step 1 of 3-step ZK registration:
+    1. Init (this endpoint) - sends verification code
+    2. Verify - validates the code
+    3. Complete - creates ZK account with encryption keys
+    """
+    from app.models.schemas import RegisterZKInitRequest
+    from app.services.verification_service import verification_service
+    from app.services.email_service import email_service
+    from app.models.database import ZKUser
+
+    # Parse request body
+    try:
+        body = await request.json()
+        payload = RegisterZKInitRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
+
+    email = payload.email.lower().strip()
+
+    # Check if user already exists and is verified
+    result = await db.execute(
+        select(ZKUser).filter(ZKUser.email == email)
+    )
+    existing_user = result.scalar_one_or_none()
+
+    if existing_user and existing_user.email_verified and existing_user.password_hash:
+        raise HTTPException(status_code=400, detail="User already exists")
+
+    # Check resend cooldown (using Redis)
+    can_resend, cooldown_message = await verification_service.can_resend_code(email)
+    if not can_resend:
+        raise HTTPException(status_code=429, detail=cooldown_message)
+
+    # Get or create temporary ZK user
+    user = await verification_service.create_temp_user(db, email)
+
+    # Generate verification code
+    code = verification_service.generate_verification_code()
+
+    # Store code in database
+    await verification_service.store_verification_code(db, user, code)
+
+    # Send verification email
+    email_sent = await email_service.send_verification_code(email, code)
+    if not email_sent:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to send verification email. Please try again later."
+        )
+
+    logger.info("zk_registration_init", email=email, user_id=str(user.id))
+
+    return {
+        "message": "Verification code sent to your email",
+        "email": email
+    }
+
+
+@router.post("/register-zk/verify")
+async def register_zk_verify(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Verify email code - second step in ZK registration.
+
+    Validates the verification code and returns a temporary token
+    for completing registration.
+    """
+    from app.models.schemas import RegisterZKVerifyRequest, VerificationResponseZK
+    from app.services.verification_service import verification_service
+    from datetime import timedelta
+    from app.models.database import ZKUser
+
+    # Parse request body
+    try:
+        body = await request.json()
+        payload = RegisterZKVerifyRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
+
+    email = payload.email.lower().strip()
+    code = payload.verification_code
+
+    # Get user
+    result = await db.execute(
+        select(ZKUser).filter(ZKUser.email == email)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Registration not found. Please start registration again."
+        )
+
+    # Verify code
+    is_valid, message = await verification_service.verify_code(db, user, code)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=message)
+
+    # Create temporary token for registration completion (10 minutes)
+    verification_token = create_access_token(
+        data={"sub": str(user.id), "email": email, "type": "zk_registration"},
+        expires_delta=timedelta(minutes=10)
+    )
+
+    logger.info("zk_email_verified", email=email, user_id=str(user.id))
+
+    return VerificationResponseZK(
+        verified=True,
+        token=verification_token,
+        message="Email verified successfully. Please complete your registration."
+    )
+
+
+@router.post("/register-zk/complete", status_code=status.HTTP_201_CREATED)
+async def register_zk_complete(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Complete ZK registration - final step.
+
+    Creates the ZK user account with encryption keys.
+    Requires the verification token from the verify step.
+    """
+    from app.models.schemas import RegisterZKCompleteRequest
+    from app.models.database import ZKUser
+    from sqlalchemy import update
+
+    # Parse request body
+    try:
+        body = await request.json()
+        payload = RegisterZKCompleteRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
+
+    email = payload.email.lower().strip()
+    username = payload.username.strip()
+
+    # Verify the temporary token
+    try:
+        token_data = jwt.decode(
+            payload.verification_token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+
+        if token_data.get("type") != "zk_registration":
+            raise HTTPException(status_code=400, detail="Invalid verification token")
+
+        token_email = token_data.get("email")
+        if token_email != email:
+            raise HTTPException(status_code=400, detail="Email mismatch")
+
+    except JWTError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired verification token. Please verify your email again."
+        )
+
+    # Get user
+    result = await db.execute(
+        select(ZKUser).filter(ZKUser.email == email)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Registration not found")
+
+    # Check if email is verified
+    if not user.email_verified:
+        raise HTTPException(status_code=400, detail="Email not verified")
+
+    # Check if username is taken
+    result = await db.execute(
+        select(ZKUser).filter(ZKUser.username == username, ZKUser.id != user.id)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Username already taken")
+
+    # Decode KDF salt
+    try:
+        kdf_salt = bytes.fromhex(payload.kdf_salt)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid KDF salt format")
+
+    # Hash the password_hash with bcrypt
+    password_hash_bytes = payload.password_hash.encode('utf-8')
+    bcrypt_hash = bcrypt.hashpw(password_hash_bytes, bcrypt.gensalt(rounds=12))
+
+    # Update user with ZK credentials
+    await db.execute(
+        update(ZKUser)
+        .where(ZKUser.id == user.id)
+        .values(
+            username=username,
+            password_hash=bcrypt_hash.decode('utf-8'),
+            encrypted_master_key=payload.encrypted_master_key,
+            master_key_iv=payload.master_key_iv,
+            kdf_salt=kdf_salt,
+            kdf_algorithm=payload.kdf_algorithm,
+            kdf_iterations=payload.kdf_iterations,
+            kdf_memory=payload.kdf_memory,
+            kdf_parallelism=payload.kdf_parallelism,
+            recovery_encrypted_master_key=payload.recovery_encrypted_master_key,
+            recovery_phrase_hash=payload.recovery_phrase_hash,
+            recovery_phrase_enabled=(payload.recovery_phrase_hash is not None),
+            is_active=True,
+            zk_enrolled_at=datetime.utcnow()
+        )
+    )
+    await db.commit()
+    await db.refresh(user)
+
+    # Get plan limits (use shared_billing if available, fallback to settings)
+    try:
+        from shared_billing import BillingService
+        billing = BillingService(db, service_type='zk')
+        plan_code = payload.plan_code or "zk_pro"
+        plan = await billing.get_plan_by_code(plan_code)
+        storage_quota = plan.storage_bytes
+    except Exception:
+        storage_quota = 100 * 1024**3  # 100GB fallback
+
+    # Update storage quota
+    await db.execute(
+        update(ZKUser)
+        .where(ZKUser.id == user.id)
+        .values(storage_quota=storage_quota)
+    )
+    await db.commit()
+
+    # Create subscription with selected plan and billing cycle
+    try:
+        from shared_billing import BillingService
+        billing = BillingService(db, service_type='zk')
+        billing_cycle = payload.billing_cycle if payload.billing_cycle else None
+        await billing.create_subscription(user.id, plan_code, billing_cycle=billing_cycle)
+    except Exception as e:
+        logger.warning(f"Failed to create subscription for ZK user {user.id}: {e}")
+
+    # Log enrollment
+    enrollment_log = ZKEnrollmentHistory(
+        id=uuid4(),
+        user_id=user.id,
+        action="enabled",
+        to_tier="pro",
+        recovery_methods_configured=["phrase"] if payload.recovery_phrase_hash else [],
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        extra_metadata={"registration": True, "email_verified": True}
+    )
+    db.add(enrollment_log)
+    await db.commit()
+
+    logger.info(
+        "zk_registration_complete",
+        user_id=str(user.id),
+        email=email,
+        kdf_algorithm=user.kdf_algorithm
+    )
+
+    # Create access token
+    access_token = create_access_token(data={"sub": str(user.id)})
+
+    # Build response
+    response_data = {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "email": email,
+            "username": username,
+            "recovery_phrase_enabled": user.recovery_phrase_enabled,
+            "zk_enabled": True
+        }
+    }
+
+    # Set HTTP-only cookie
+    response = JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=access_token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=COOKIE_HTTPONLY,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/"
+    )
+
+    return response
+
+
+@router.post("/register-zk/resend-code")
+async def resend_zk_verification_code(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Resend verification code for ZK registration.
+
+    Rate limited to prevent abuse.
+    """
+    from app.models.schemas import ResendCodeRequestZK
+    from app.services.verification_service import verification_service
+    from app.services.email_service import email_service
+    from app.models.database import ZKUser
+
+    # Parse request body
+    try:
+        body = await request.json()
+        payload = ResendCodeRequestZK(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
+
+    email = payload.email.lower().strip()
+
+    # Check resend cooldown
+    can_resend, cooldown_message = await verification_service.can_resend_code(email)
+    if not can_resend:
+        raise HTTPException(status_code=429, detail=cooldown_message)
+
+    # Get user
+    result = await db.execute(
+        select(ZKUser).filter(ZKUser.email == email)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Registration not found. Please start registration again."
+        )
+
+    # Check if already verified
+    if user.email_verified and user.password_hash:
+        raise HTTPException(status_code=400, detail="Email already verified")
+
+    # Generate new code
+    code = verification_service.generate_verification_code()
+
+    # Store new code
+    await verification_service.store_verification_code(db, user, code)
+
+    # Send email
+    email_sent = await email_service.send_verification_code(email, code)
+    if not email_sent:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to send verification email. Please try again later."
+        )
+
+    logger.info("zk_verification_code_resent", email=email)
+
+    return {
+        "message": "Verification code resent to your email",
+        "email": email
+    }
+
+
+@router.post("/register-zk", status_code=status.HTTP_201_CREATED, deprecated=True)
 async def register_zero_knowledge(
     request_data: RegisterZKRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Register a new user with zero-knowledge encryption.
+    Register a new user with zero-knowledge encryption - DEPRECATED
+
+    ⚠️ DEPRECATED: This endpoint bypasses email verification and will be removed in a future version.
+
+    Please use the 3-step email verification flow instead:
+    1. POST /register-zk/init (send verification code)
+    2. POST /register-zk/verify (validate code, get token)
+    3. POST /register-zk/complete (create ZK account)
 
     The client must:
     1. Derive key from password (PBKDF2 600k iterations)

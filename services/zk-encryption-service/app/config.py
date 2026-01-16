@@ -158,6 +158,20 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(default=60, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
     RATE_LIMIT_RECOVERY_ATTEMPTS: int = Field(default=3, env="RATE_LIMIT_RECOVERY_ATTEMPTS")
 
+    # Email Configuration (Mailgun)
+    MAILGUN_ENABLED: bool = Field(default=True, env="MAILGUN_ENABLED")
+    MAILGUN_API_KEY: str = Field(default="", env="MAILGUN_API_KEY")
+    MAILGUN_DOMAIN: str = Field(default="", env="MAILGUN_DOMAIN")
+    MAILGUN_API_URL: str = Field(default="https://api.mailgun.net/v3", env="MAILGUN_API_URL")
+    MAILGUN_FROM_EMAIL: str = Field(default="noreply@yourdomain.com", env="MAILGUN_FROM_EMAIL")
+    MAILGUN_FROM_NAME: str = Field(default="Edge Cloud ZK Storage", env="MAILGUN_FROM_NAME")
+
+    # Email Verification Settings
+    VERIFICATION_CODE_LENGTH: int = 6
+    VERIFICATION_CODE_EXPIRY_MINUTES: int = 30
+    MAX_VERIFICATION_ATTEMPTS: int = 5
+    RESEND_CODE_COOLDOWN_SECONDS: int = 60
+
     # CORS Settings
     CORS_ORIGINS: list[str] = Field(
         default=["http://localhost:3000", "http://localhost:3001"],

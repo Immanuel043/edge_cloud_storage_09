@@ -6,7 +6,7 @@ Handles generation, storage, and validation of email verification codes.
 """
 import secrets
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
@@ -56,7 +56,7 @@ class VerificationService:
             True if stored successfully
         """
         try:
-            expiry_time = datetime.utcnow() + timedelta(minutes=self.expiry_minutes)
+            expiry_time = datetime.now(timezone.utc) + timedelta(minutes=self.expiry_minutes)
 
             await db.execute(
                 update(User)
@@ -99,7 +99,7 @@ class VerificationService:
             return False, "No verification code found. Please request a new code."
 
         # Check if code has expired
-        if user.verification_code_expires_at and user.verification_code_expires_at < datetime.utcnow():
+        if user.verification_code_expires_at and user.verification_code_expires_at < datetime.now(timezone.utc):
             return False, "Verification code has expired. Please request a new code."
 
         # Check if max attempts exceeded
@@ -159,13 +159,13 @@ class VerificationService:
 
             if last_sent:
                 # Check cooldown
-                time_since_last = datetime.utcnow().timestamp() - float(last_sent)
+                time_since_last = datetime.now(timezone.utc).timestamp() - float(last_sent)
                 if time_since_last < self.resend_cooldown:
                     remaining = int(self.resend_cooldown - time_since_last)
                     return False, f"Please wait {remaining} seconds before requesting a new code."
 
             # Update last sent time
-            await redis_client.setex(key, self.resend_cooldown, str(datetime.utcnow().timestamp()))
+            await redis_client.setex(key, self.resend_cooldown, str(datetime.now(timezone.utc).timestamp()))
             return True, None
 
         except Exception as e:

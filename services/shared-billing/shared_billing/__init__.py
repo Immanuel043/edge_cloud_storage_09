@@ -60,3 +60,39 @@ from .refund_manager import RefundManager, Refund, RefundReason, RefundStatus
 
 # Add to __all__
 __all__.extend(["RefundManager", "Refund", "RefundReason", "RefundStatus"])
+
+# Import reconciliation service
+from .reconciliation import (
+    ReconciliationService,
+    ReconciliationResult,
+    Discrepancy,
+    DiscrepancyType,
+    ReconciliationAction,
+    run_daily_reconciliation
+)
+
+# Add to __all__
+__all__.extend([
+    "ReconciliationService",
+    "ReconciliationResult",
+    "Discrepancy",
+    "DiscrepancyType",
+    "ReconciliationAction",
+    "run_daily_reconciliation"
+])
+
+# Import proration service
+from .proration import (
+    ProrationService,
+    ProrationCalculation,
+    ProrationStrategy,
+    BillingPeriod
+)
+
+# Add to __all__
+__all__.extend([
+    "ProrationService",
+    "ProrationCalculation",
+    "ProrationStrategy",
+    "BillingPeriod"
+])

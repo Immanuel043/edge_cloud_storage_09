@@ -54,6 +54,7 @@ class RegisterCompleteRequest(BaseModel):
     password: str
     verification_token: str  # Token from verify step
     plan_code: Optional[str] = "normal_free"  # Plan to subscribe to
+    billing_cycle: Optional[str] = "monthly"  # Billing cycle: 'monthly', 'six_months', 'yearly'
 
 class ResendCodeRequest(BaseModel):
     """Request to resend verification code"""

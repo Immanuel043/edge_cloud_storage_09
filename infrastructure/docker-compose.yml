@@ -74,7 +74,17 @@ services:
   redis:
     image: redis:7-alpine
     container_name: edge-redis
-    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --auto-aof-rewrite-percentage 100
+      --auto-aof-rewrite-min-size 64mb
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
     ports:
       - "6379:6379"
     volumes:
@@ -249,7 +259,8 @@ services:
       CLAMAV_HOST: clamav
       CLAMAV_PORT: 3310
       STORAGE_ROOT: /app/storage
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
+      SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY}
       # Database initialization mode
       USE_FRESH_DB_INIT: ${USE_FRESH_DB_INIT:-false}
       FORCE_RECREATE: ${FORCE_RECREATE:-false}
@@ -288,6 +299,13 @@ services:
       
       # Development Mode
       DEV_MODE: ${DEV_MODE:-false}
+
+      # Mailgun Configuration (Email Verification)
+      MAILGUN_ENABLED: ${MAILGUN_ENABLED:-true}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-noreply@yourdomain.com}
+      MAILGUN_FROM_NAME: ${MAILGUN_FROM_NAME:-Edge Cloud Storage}
 
       # Video Transcoding Configuration
       ENABLE_SMART_TRANSCODE: "true"
@@ -394,6 +412,13 @@ services:
       RATE_LIMIT_ENABLED: "true"
       RATE_LIMIT_REQUESTS_PER_MINUTE: 60
 
+      # Mailgun Configuration (Email Verification)
+      MAILGUN_ENABLED: ${MAILGUN_ENABLED:-true}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-noreply@yourdomain.com}
+      MAILGUN_FROM_NAME: ${MAILGUN_FROM_NAME:-Edge Cloud ZK Storage}
+
       # Cookie security (false for HTTP development, true for HTTPS production)
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       # CORS origins for ZK frontend
@@ -422,6 +447,88 @@ services:
         reservations:
           memory: 512M
           cpus: '0.5'
+
+  # Billing Notification Scheduler for Normal Storage
+  billing-scheduler:
+    build:
+      context: ../
+      dockerfile: services/storage-service/Dockerfile
+    container_name: edge-billing-scheduler
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      storage-service:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY}
+
+      # Mailgun Configuration (for sending notification emails)
+      MAILGUN_ENABLED: ${MAILGUN_ENABLED:-true}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-noreply@yourdomain.com}
+      MAILGUN_FROM_NAME: ${MAILGUN_FROM_NAME:-Edge Cloud Storage}
+
+      # Logging
+      LOG_LEVEL: INFO
+    entrypoint: ["python", "-m", "app.scheduler"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+
+  # Billing Notification Scheduler for ZK Service
+  zk-billing-scheduler:
+    build:
+      context: ../
+      dockerfile: services/zk-encryption-service/Dockerfile
+    container_name: edge-zk-billing-scheduler
+    env_file:
+      - .env
+    depends_on:
+      zk-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      zk-encryption-service:
+        condition: service_healthy
+    environment:
+      # SEPARATE DATABASE from Storage Service
+      ZK_DATABASE_URL: postgresql+asyncpg://zk_admin:zk_secure_password@zk-postgres:5432/zk_db
+      ZK_REDIS_URL: redis://redis:6379/1
+      ZK_SECRET_KEY: ${ZK_SECRET_KEY:-zk-secret-key-change-in-production}
+
+      # Mailgun Configuration (for sending notification emails)
+      MAILGUN_ENABLED: ${MAILGUN_ENABLED:-true}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-noreply@yourdomain.com}
+      MAILGUN_FROM_NAME: ${MAILGUN_FROM_NAME:-Edge Cloud ZK Storage}
+
+      # Logging
+      LOG_LEVEL: INFO
+    entrypoint: ["python", "-m", "app.scheduler"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
 
   # Web Service (Node.js)
   web-service:
