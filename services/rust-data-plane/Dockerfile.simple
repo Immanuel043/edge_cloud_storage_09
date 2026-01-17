@@ -1,0 +1,25 @@
+# Simple Dockerfile - uses pre-built binary
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y ca-certificates libssl3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create directories
+RUN mkdir -p /tmp/edge-storage
+
+# Copy pre-built binary from host
+COPY services/rust-data-plane/target/release/edge-storage-dataplane /usr/local/bin/edge-storage-dataplane
+
+# Make it executable
+RUN chmod +x /usr/local/bin/edge-storage-dataplane
+
+# Set environment defaults
+ENV SOCKET_PATH=/tmp/edge-storage-dataplane.sock
+ENV STORAGE_ROOT=/tmp/edge-storage
+ENV COMPRESSION_LEVEL=3
+ENV RUST_LOG=info
+ENV USE_SCM_RIGHTS=true
+
+CMD ["edge-storage-dataplane"]

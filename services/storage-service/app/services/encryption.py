@@ -241,6 +241,7 @@ class EncryptionService:
         Encrypt a chunk and bind its chunk_index as AAD. Returned: nonce + ciphertext.
 
         Uses hardware AES-NI acceleration when available (10-20x faster).
+        AAD uses Rust-compatible format (little-endian 8 bytes) for interoperability.
         """
         if isinstance(file_key, str):
             file_key = file_key.encode()
@@ -249,7 +250,9 @@ class EncryptionService:
                 file_key = base64.b64decode(file_key)
             except Exception:
                 pass
-        aad = str(chunk_index).encode()
+
+        # Use Rust-compatible AAD format: little-endian 8 bytes
+        aad = chunk_index.to_bytes(8, 'little')
         nonce = os.urandom(NONCE_SIZE)
 
         if self.using_hardware:
@@ -273,14 +276,29 @@ class EncryptionService:
                 file_key = base64.b64decode(file_key)
             except Exception:
                 pass
-        aad = str(chunk_index).encode()
+
+        # AAD format: Try Rust format (little-endian 8 bytes) first, fall back to legacy string format
+        # Rust uses: chunk_index.to_le_bytes() (8 bytes binary)
+        # Legacy Python uses: str(chunk_index).encode() (ASCII string)
+        aad_rust = chunk_index.to_bytes(8, 'little')
+
         nonce = encrypted_chunk[:NONCE_SIZE]
         ct = encrypted_chunk[NONCE_SIZE:]
 
         if self.using_hardware:
-            return self._decrypt_gcm_hardware(file_key, nonce, ct, aad)
+            try:
+                # Try Rust format first
+                return self._decrypt_gcm_hardware(file_key, nonce, ct, aad_rust)
+            except ValueError:
+                # Fall back to legacy string AAD for backward compatibility
+                aad_legacy = str(chunk_index).encode()
+                return self._decrypt_gcm_hardware(file_key, nonce, ct, aad_legacy)
         else:
-            return self._decrypt_gcm_software(file_key, nonce, ct, aad)
+            try:
+                return self._decrypt_gcm_software(file_key, nonce, ct, aad_rust)
+            except ValueError:
+                aad_legacy = str(chunk_index).encode()
+                return self._decrypt_gcm_software(file_key, nonce, ct, aad_legacy)
 
     # ---- Backwards-compatible aliases ----
     # Some older code expects `encrypt_data` / `decrypt_data` names (e.g. storage.retrieve_file).

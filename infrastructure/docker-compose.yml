@@ -232,6 +232,37 @@ services:
         reservations:
           memory: 512M
 
+  # Rust Data Plane Service
+  rust-dataplane:
+    build:
+      context: ../
+      dockerfile: services/rust-data-plane/Dockerfile
+    container_name: edge-rust-dataplane
+    environment:
+      RUST_LOG: info
+      STORAGE_ROOT: /app/storage
+      SOCKET_PATH: /tmp/edge-storage-dataplane.sock
+      USE_SCM_RIGHTS: "true"
+      COMPRESSION_LEVEL: 3
+    volumes:
+      # Shared socket volume with storage-service
+      - dataplane-socket:/tmp
+      # Shared storage for chunk files (same path as storage-service)
+      - storage_data:/app/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /tmp/edge-storage-dataplane.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+
   # Storage Service (FastAPI) - THE MAIN FIX
   storage-service:
     build:
@@ -240,6 +271,10 @@ services:
     container_name: edge-storage-service
     env_file:
       - .env # Load environment variables from .env file
+    cap_add:
+      - IPC_LOCK  # Required for memfd_create syscall
+    security_opt:
+      - seccomp:unconfined  # Allow memfd_create and other syscalls needed for Rust integration
 
     depends_on:
       postgres:
@@ -247,6 +282,8 @@ services:
       redis:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+      rust-dataplane:
         condition: service_healthy
       # clamav:
       #   condition: service_healthy  # Disabled for ARM Mac compatibility
@@ -325,6 +362,8 @@ services:
      - storage_data:/app/storage
       # Add temp directory with size limit
      - /tmp/upload_temp:/tmp/upload_temp
+      # Shared socket volume with rust-dataplane for full mode
+     - dataplane-socket:/tmp
       # Mount source code for development
      - ../services/storage-service/app:/app/app
     # Local docker-compose resource limits (works with many compose setups)
@@ -608,6 +647,8 @@ services:
     build:
       context: ..
       dockerfile: services/storage-service/Dockerfile
+    env_file:
+      - .env
     entrypoint: []
     command: ["python", "-m", "app.workers.preview_worker"]
     deploy:
@@ -623,6 +664,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       MAX_CONCURRENT_PREVIEWS: 2  # Limit concurrent FFmpeg processes per worker
       STORAGE_ROOT: /app/storage
+      SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY}
     depends_on:
       kafka:
         condition: service_healthy
@@ -774,6 +817,8 @@ volumes:
   kafka_data:
     driver: local
   storage_data:
+    driver: local
+  dataplane-socket:
     driver: local
 
 # Networks

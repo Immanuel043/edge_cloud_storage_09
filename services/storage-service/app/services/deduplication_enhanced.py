@@ -472,9 +472,31 @@ class EnhancedDeduplicationService:
                     if metadata.get('folder_id'):
                         existing_object.folder_id = metadata.get('folder_id')
 
-                await db.flush()
-                result_file = existing_object
-            else:
+                try:
+                    await db.flush()
+                    result_file = existing_object
+                except Exception as flush_error:
+                    # Handle stale data error - the object may have been deleted/modified
+                    logger.warning(f"Flush failed for existing object (likely deleted): {flush_error}")
+                    await db.rollback()
+                    # Refresh the query to get current state
+                    existing_object = await db.execute(
+                        select(Object).where(
+                            Object.content_hash == file_hash,
+                            Object.user_id == user_id
+                        )
+                    )
+                    existing_object = existing_object.scalars().first()
+
+                    if not existing_object:
+                        # Object was deleted, create a new one instead
+                        logger.info("Object was deleted, creating new one")
+                        # Set to None so we fall through to create new object
+                    else:
+                        result_file = existing_object
+
+            # Create new object if existing_object is None or was deleted
+            if not existing_object:
                 # Create new file object with dedup info
                 new_file = Object(
                     file_name=file_name,

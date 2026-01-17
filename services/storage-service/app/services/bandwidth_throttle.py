@@ -88,7 +88,7 @@ class BandwidthThrottleService:
 
     # Constants
     DEFAULT_LIMIT_MBPS = 10  # 10 Mbps default
-    BURST_MULTIPLIER = 2  # Allow 2x burst
+    BURST_MULTIPLIER = 4  # Allow 4x burst (increased from 2x to support large file uploads)
     REFILL_INTERVAL = 1.0  # Refill tokens every second
     MAX_STREAMS_PER_USER = 5  # Maximum concurrent streams
     STREAM_SLOT_TTL = 300  # 5 minutes TTL for stream slots

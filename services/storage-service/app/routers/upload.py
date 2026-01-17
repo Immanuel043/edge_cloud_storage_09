@@ -43,10 +43,15 @@ from ..services.audit_service import get_audit_service
 from ..services.video_optimizer import video_optimizer
 from ..services.video_ingestion_service import video_ingestion_service
 from ..services.bandwidth_throttle import bandwidth_throttle_service
+from ..services.rust_dataplane_client import get_rust_client
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
 logger = logging.getLogger(__name__)
+
+# Rust data plane client (lazy initialization)
+_rust_client_initialized = False
+_rust_client_available = False
 
 # Global resources
 kafka_producer = None
@@ -153,19 +158,53 @@ async def get_user_storage_info_fast(user_id: str, db: AsyncSession, redis_clien
 
     return storage_info
 
+async def check_rust_availability():
+    """
+    Check if Rust data plane is available and healthy.
+    Called once on first upload to determine availability.
+    """
+    global _rust_client_initialized, _rust_client_available
+
+    if _rust_client_initialized:
+        return _rust_client_available
+
+    if not settings.RUST_DATAPLANE_ENABLED:
+        logger.info("Rust data plane disabled by configuration")
+        _rust_client_initialized = True
+        _rust_client_available = False
+        return False
+
+    try:
+        rust_client = get_rust_client(settings.RUST_DATAPLANE_SOCKET)
+        await rust_client.health_check()
+        logger.info("✅ Rust data plane is available and healthy")
+        _rust_client_initialized = True
+        _rust_client_available = True
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Rust data plane unavailable: {e}")
+        if settings.RUST_DATAPLANE_FALLBACK_TO_PYTHON:
+            logger.info("Falling back to Python processing")
+        _rust_client_initialized = True
+        _rust_client_available = False
+        return False
+
 def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int, compress: bool = False):
-    """CPU-intensive operations in thread pool"""
+    """
+    CPU-intensive operations in thread pool (Python fallback).
+    This is used when Rust data plane is unavailable.
+    """
     # Hash calculation (before any processing)
     original_hash = hashlib.sha256(chunk_data).hexdigest()
-    
+
     # Optional compression (only for compressible files)
     if compress:
         from ..utils.compression import compressor
         chunk_data = compressor.compress(chunk_data)
-    
+
     # Encryption (AES-GCM is fast with hardware acceleration)
     encrypted_chunk = encryption_service.encrypt_chunk(chunk_data, file_key, chunk_index)
-    
+
     return encrypted_chunk, original_hash
 
 @router.post("/init", response_model=UploadInitResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
@@ -273,6 +312,7 @@ async def upload_chunk(
     """Optimized chunk upload with smart compression and bandwidth throttling (plan-aware)"""
     redis_client = await get_redis()
     user_id_str = str(current_user.id)
+    stream_slot_released = False  # Track if stream slot was already released
 
     # Get max streams for this user's plan (or override)
     max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
@@ -309,6 +349,7 @@ async def upload_chunk(
                 if wait_time > 5.0:
                     # Return 429 with Retry-After for long waits
                     await bandwidth_throttle_service.release_stream_slot(user_id_str)
+                    stream_slot_released = True  # Mark as released to prevent double-release
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
@@ -354,18 +395,97 @@ async def upload_chunk(
         # Server-side encryption
         file_key = encryption_service.decrypt_key(session["key"])
 
-        # Process in thread pool (encryption + optional compression)
-        loop = asyncio.get_event_loop()
+        # Check Rust availability (cached after first call)
         use_compression = session.get("compress", False)
+        rust_available = await check_rust_availability()
 
-        encrypted_chunk, chunk_hash = await loop.run_in_executor(
-            executor,
-            partial(process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression)
-        )
+        # Process chunk via Rust or Python
+        if rust_available:
+            try:
+                # Choose Rust mode based on configuration
+                rust_mode = settings.RUST_DATAPLANE_MODE
 
-        # Write encrypted data asynchronously with larger buffer
-        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
-            await f.write(encrypted_chunk)
+                if rust_mode == "full":
+                    # Full Rust processing: hash → compress → encrypt (requires SCM_RIGHTS)
+                    from ..services.rust_socket_client import get_rust_socket_client
+
+                    logger.debug(f"Using full Rust processing (Non-ZK mode) for chunk {chunk_index}")
+                    rust_socket_client = get_rust_socket_client(settings.RUST_DATAPLANE_SOCKET)
+
+                    result = await rust_socket_client.process_non_zk_with_scm_rights(
+                        chunk_data=chunk_data,
+                        file_key=file_key,
+                        file_id=upload_id,
+                        chunk_index=chunk_index,
+                        compress=use_compression,
+                        filename=session.get("filename"),
+                        file_size=session.get("size"),
+                    )
+
+                    chunk_hash = result.get("hash", "").replace("sha256:", "")
+
+                    # Rust has already encrypted - no Python encryption needed
+                    # Just verify the encrypted file exists
+                    encrypted_path = result.get("encrypted_chunk_path")
+                    if encrypted_path and os.path.exists(encrypted_path):
+                        # Copy to our storage path if different
+                        if encrypted_path != storage_path:
+                            async with aiofiles.open(encrypted_path, 'rb') as src:
+                                encrypted_chunk = await src.read()
+                            async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                                await f.write(encrypted_chunk)
+                    else:
+                        raise Exception(f"Rust encrypted chunk not found at {encrypted_path}")
+
+                    logger.info(f"Chunk {chunk_index} processed fully via Rust (hash + compress + encrypt)")
+
+                else:  # hybrid mode (default)
+                    # Hybrid: Rust does hashing, Python does encryption
+                    rust_client = get_rust_client(settings.RUST_DATAPLANE_SOCKET)
+
+                    logger.debug(f"Using hybrid Rust processing (ZK mode) for chunk {chunk_index}")
+                    result = await rust_client.process_zk_chunk(
+                        chunk_data=chunk_data,
+                        file_id=upload_id,
+                        chunk_index=chunk_index,
+                    )
+
+                    chunk_hash = result.get("hash", "").replace("sha256:", "")
+
+                    # Python still does encryption after Rust hashing
+                    from ..utils.compression import compressor
+                    if use_compression:
+                        chunk_data = compressor.compress(chunk_data)
+                    encrypted_chunk = encryption_service.encrypt_chunk(chunk_data, file_key, chunk_index)
+
+                    # Write encrypted data
+                    async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                        await f.write(encrypted_chunk)
+
+                    logger.debug(f"Chunk {chunk_index} processed via Rust (hash) + Python (compress + encrypt)")
+
+            except Exception as e:
+                logger.warning(f"Rust processing failed for chunk {chunk_index}: {e}")
+                if not settings.RUST_DATAPLANE_FALLBACK_TO_PYTHON:
+                    raise HTTPException(status_code=500, detail="Chunk processing failed")
+
+                # Fallback to Python processing
+                logger.info("Falling back to Python processing")
+                rust_available = False
+                # Continue to Python processing below
+
+        if not rust_available:
+            # Python processing (original code path)
+            loop = asyncio.get_event_loop()
+
+            encrypted_chunk, chunk_hash = await loop.run_in_executor(
+                executor,
+                partial(process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression)
+            )
+
+            # Write encrypted data asynchronously with larger buffer
+            async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                await f.write(encrypted_chunk)
 
         # Update session
         session["done"].append(chunk_index)
@@ -388,8 +508,9 @@ async def upload_chunk(
         }
 
     finally:
-        # ============ BANDWIDTH THROTTLING: Always release stream slot ============
-        await bandwidth_throttle_service.release_stream_slot(user_id_str)
+        # ============ BANDWIDTH THROTTLING: Release stream slot (if not already released) ============
+        if not stream_slot_released:
+            await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
 @router.post("/direct/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
 async def upload_direct(
@@ -402,6 +523,7 @@ async def upload_direct(
     """Direct upload for small and medium files with optimized processing and bandwidth throttling (plan-aware)"""
     redis_client = await get_redis()
     user_id_str = str(current_user.id)
+    stream_slot_released = False  # Track if stream slot was already released
 
     # Get max streams for this user's plan (or override)
     max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
@@ -448,6 +570,8 @@ async def upload_direct(
 
                     bandwidth_mbps = current_user.bandwidth_limit_mbps or default_bandwidth
 
+                    await bandwidth_throttle_service.release_stream_slot(user_id_str)
+                    stream_slot_released = True  # Mark as released to prevent double-release
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded ({bandwidth_mbps} Mbps for {current_user.plan_type} plan). Please wait {int(wait_time)} seconds or try logging out and back in if you recently upgraded.",
@@ -527,8 +651,9 @@ async def upload_direct(
         }
 
     finally:
-        # ============ BANDWIDTH THROTTLING: Always release stream slot ============
-        await bandwidth_throttle_service.release_stream_slot(user_id_str)
+        # ============ BANDWIDTH THROTTLING: Release stream slot (if not already released) ============
+        if not stream_slot_released:
+            await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
 @router.get("/status/{upload_id}")
 async def get_upload_status(

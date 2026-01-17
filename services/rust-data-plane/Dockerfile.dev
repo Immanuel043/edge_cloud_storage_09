@@ -1,0 +1,28 @@
+# Development Dockerfile for Rust Data Plane
+# Faster builds, includes dev tools
+FROM rust:1.75
+
+WORKDIR /app
+
+# Install development tools
+RUN cargo install cargo-watch
+
+# Create directories
+RUN mkdir -p /var/run /data/storage
+
+# Copy source (will be overridden by volume mount)
+COPY . .
+
+# Pre-build dependencies for faster subsequent builds
+RUN cargo build --release || true
+
+# Set environment
+ENV SOCKET_PATH=/var/run/dataplane.sock
+ENV STORAGE_ROOT=/data/storage
+ENV COMPRESSION_LEVEL=3
+ENV RUST_LOG=info,edge_storage_dataplane=debug
+
+EXPOSE 9090
+
+# Use cargo watch for auto-reload in development
+CMD ["cargo", "run", "--release"]

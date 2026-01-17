@@ -1,0 +1,104 @@
+version: '3.8'
+
+# Minimal Docker Compose for Rust Data Plane Development Testing
+# This gives you everything you need to test locally
+
+services:
+  # Rust Data Plane Service
+  rust-dataplane:
+    build:
+      context: ./services/rust-data-plane
+      dockerfile: Dockerfile.dev
+    container_name: rust-dataplane
+    environment:
+      - RUST_LOG=info,edge_storage_dataplane=debug
+      - SOCKET_PATH=/var/run/dataplane.sock
+      - STORAGE_ROOT=/data/storage
+      - COMPRESSION_LEVEL=3
+    volumes:
+      # Mount source code for live development
+      - ./services/rust-data-plane:/app
+      # Shared socket for FastAPI communication
+      - rust-socket:/var/run
+      # Persistent storage
+      - rust-storage:/data/storage
+    ports:
+      # Expose a port for health checks (optional)
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "test", "-S", "/var/run/dataplane.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - rust-dev
+
+  # PostgreSQL (for FastAPI integration testing)
+  postgres:
+    image: postgres:14-alpine
+    container_name: rust-dev-postgres
+    environment:
+      POSTGRES_DB: storage
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - rust-dev
+
+  # Redis (for FastAPI session management)
+  redis:
+    image: redis:7-alpine
+    container_name: rust-dev-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - rust-dev
+
+  # FastAPI Storage Service (optional - uncomment to test full integration)
+  # fastapi:
+  #   build:
+  #     context: ./services/storage-service
+  #     dockerfile: Dockerfile
+  #   container_name: rust-dev-fastapi
+  #   environment:
+  #     - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/storage
+  #     - REDIS_URL=redis://redis:6379
+  #     - RUST_DATAPLANE_ENABLED=true
+  #     - RUST_DATAPLANE_SOCKET=/var/run/dataplane.sock
+  #     - RUST_DATAPLANE_ROLLOUT_PERCENTAGE=100
+  #   volumes:
+  #     - ./services/storage-service:/app
+  #     - rust-socket:/var/run
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     rust-dataplane:
+  #       condition: service_healthy
+  #   networks:
+  #     - rust-dev
+
+volumes:
+  rust-socket:      # Shared Unix socket
+  rust-storage:     # Persistent storage for chunks
+  postgres-data:    # PostgreSQL data
+
+networks:
+  rust-dev:
+    driver: bridge

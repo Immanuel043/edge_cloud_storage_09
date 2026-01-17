@@ -1,0 +1,36 @@
+# Add this to your infrastructure/docker-compose.yml
+# Insert after the redis service, before storage-service
+
+  # Rust Data Plane Service (High-Performance Chunk Processing)
+  rust-dataplane:
+    build:
+      context: ../
+      dockerfile: services/rust-data-plane/Dockerfile.dev  # Use Dockerfile for production
+    container_name: edge-rust-dataplane
+    environment:
+      - RUST_LOG=info,edge_storage_dataplane=debug
+      - SOCKET_PATH=/var/run/dataplane.sock
+      - STORAGE_ROOT=/data/storage
+      - COMPRESSION_LEVEL=3
+    volumes:
+      # Shared socket for FastAPI communication
+      - rust-socket:/var/run
+      # Shared storage with storage-service
+      - storage_data:/data/storage
+      # Mount source code for development (comment out for production)
+      - ../services/rust-data-plane:/app
+    healthcheck:
+      test: ["CMD", "test", "-S", "/var/run/dataplane.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '4.0'
+        reservations:
+          memory: 512M
+          cpus: '2.0'

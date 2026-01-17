@@ -1,0 +1,1 @@
+Connection<tokio::net::UnixStream, service::util::ServiceFn<{closure@src/server/uds_server.rs:92:50: 92:60}, hyper::body::Incoming>>

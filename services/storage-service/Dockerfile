@@ -30,9 +30,9 @@ COPY services/storage-service/requirements.txt .
 # Install Python dependencies with extended timeout and retries for large packages
 RUN pip install --no-cache-dir --timeout=300 --retries=10 -r requirements.txt
 
-# Copy and install shared-billing package
-COPY services/shared-billing /tmp/shared-billing
-RUN pip install --no-cache-dir -e /tmp/shared-billing
+# Copy and install shared-billing package to permanent location
+COPY services/shared-billing /app/shared-billing
+RUN pip install --no-cache-dir -e /app/shared-billing
 
 # Copy alembic configuration FILE (not directory)
 COPY services/storage-service/alembic.ini .

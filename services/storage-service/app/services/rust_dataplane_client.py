@@ -1,0 +1,315 @@
+"""
+Rust Data Plane Client for FastAPI Integration
+
+This client communicates with the Rust data plane service over Unix Domain Socket
+for high-performance chunk processing (encryption, compression, storage).
+"""
+
+import os
+import socket
+import asyncio
+from typing import Optional, Dict, Any
+from urllib.parse import quote
+import httpx
+from httpx import AsyncClient, Timeout
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class RustDataPlaneClient:
+    """
+    Client for communicating with the Rust data plane service.
+
+    Features:
+    - Unix Domain Socket communication for low latency
+    - Non-ZK mode: Server-side encryption and compression
+    - ZK mode: Hash-only processing (client-side encrypted)
+    - Automatic connection pooling and retry
+    """
+
+    def __init__(
+        self,
+        socket_path: str = "/tmp/edge-storage-dataplane.sock",
+        timeout: float = 30.0,
+        max_retries: int = 3,
+    ):
+        """
+        Initialize the Rust data plane client.
+
+        Args:
+            socket_path: Path to Unix domain socket
+            timeout: Request timeout in seconds
+            max_retries: Maximum number of retries on failure
+        """
+        self.socket_path = socket_path
+        self.timeout = Timeout(timeout)
+        self.max_retries = max_retries
+
+        # Create transport for Unix socket
+        self.transport = httpx.AsyncHTTPTransport(uds=socket_path)
+        self.client = AsyncClient(
+            transport=self.transport,
+            timeout=self.timeout,
+            base_url="http://localhost",  # Required but not used for UDS
+        )
+
+        logger.info(f"Initialized Rust data plane client: socket={socket_path}")
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
+
+    async def close(self):
+        """Close the client and cleanup resources."""
+        await self.client.aclose()
+
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Check if the Rust service is healthy.
+
+        Returns:
+            Health status response
+
+        Raises:
+            Exception: If service is unavailable
+        """
+        try:
+            response = await self.client.get("/health")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            raise
+
+    async def process_non_zk_chunk(
+        self,
+        chunk_data: bytes,
+        file_id: str,
+        chunk_index: int,
+        compress: bool = False,
+        filename: Optional[str] = None,
+        file_size: Optional[int] = None,
+        key_fd: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Process a chunk in Non-ZK mode (server-side encryption).
+
+        Args:
+            chunk_data: Raw chunk data to process
+            file_id: File identifier for storage path
+            chunk_index: Index of this chunk
+            compress: Whether to compress the chunk
+            filename: Original filename (for format detection)
+            file_size: Total file size (for format detection)
+            key_fd: File descriptor for encryption key (via SCM_RIGHTS)
+
+        Returns:
+            Response containing:
+            - success: Whether operation succeeded
+            - hash: SHA-256 hash of original data
+            - original_size: Size before processing
+            - encrypted_size: Size after encryption
+            - compressed: Whether compression was applied
+            - compression_ratio: Compression ratio if compressed
+
+        Raises:
+            httpx.HTTPStatusError: On HTTP error
+            Exception: On processing failure
+        """
+        headers = {
+            "x-mode": "non-zk",
+            "x-file-id": file_id,
+            "x-chunk-index": str(chunk_index),
+            "x-should-compress": str(compress).lower(),
+        }
+
+        if filename:
+            headers["x-filename"] = filename
+
+        if file_size is not None:
+            headers["x-file-size"] = str(file_size)
+
+        # TODO: In production, pass key_fd via SCM_RIGHTS ancillary data
+        # For now, we pass it as a header (placeholder)
+        if key_fd is not None:
+            headers["x-file-key-fd"] = str(key_fd)
+
+        try:
+            response = await self.client.post(
+                "/upload",
+                content=chunk_data,
+                headers=headers,
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            logger.debug(
+                f"Non-ZK chunk processed: file_id={file_id}, "
+                f"chunk={chunk_index}, size={len(chunk_data)}, "
+                f"compressed={result.get('compressed', False)}"
+            )
+
+            return result
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Non-ZK chunk processing failed: {e.response.status_code} - {e.response.text}"
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Non-ZK chunk processing error: {e}")
+            raise
+
+    async def process_zk_chunk(
+        self,
+        chunk_data: bytes,
+        file_id: str,
+        chunk_index: int,
+    ) -> Dict[str, Any]:
+        """
+        Process a chunk in ZK mode (hash-only, no server-side encryption).
+
+        Args:
+            chunk_data: Pre-encrypted chunk data
+            file_id: File identifier for storage path
+            chunk_index: Index of this chunk
+
+        Returns:
+            Response containing:
+            - success: Whether operation succeeded
+            - hash: SHA-256 hash of chunk data
+
+        Raises:
+            httpx.HTTPStatusError: On HTTP error (403 if key leaked)
+            Exception: On processing failure
+        """
+        headers = {
+            "x-mode": "zk",
+            "x-file-id": file_id,
+            "x-chunk-index": str(chunk_index),
+        }
+
+        try:
+            response = await self.client.post(
+                "/upload",
+                content=chunk_data,
+                headers=headers,
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            logger.debug(
+                f"ZK chunk processed: file_id={file_id}, "
+                f"chunk={chunk_index}, size={len(chunk_data)}"
+            )
+
+            return result
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                logger.error("ZK mode security violation: encryption key leaked")
+            else:
+                logger.error(
+                    f"ZK chunk processing failed: {e.response.status_code} - {e.response.text}"
+                )
+            raise
+        except Exception as e:
+            logger.error(f"ZK chunk processing error: {e}")
+            raise
+
+    async def download_chunk(
+        self,
+        file_id: str,
+        chunk_index: int,
+        mode: str = "non-zk",
+        was_compressed: bool = False,
+        key_fd: Optional[int] = None,
+    ) -> bytes:
+        """
+        Download and decrypt a chunk.
+
+        Args:
+            file_id: File identifier
+            chunk_index: Index of chunk to download
+            mode: Processing mode ("zk" or "non-zk")
+            was_compressed: Whether chunk was compressed during upload
+            key_fd: File descriptor for decryption key (non-zk mode)
+
+        Returns:
+            Decrypted chunk data
+
+        Raises:
+            httpx.HTTPStatusError: On HTTP error
+            Exception: On download failure
+        """
+        headers = {
+            "x-mode": mode,
+            "x-file-id": file_id,
+            "x-chunk-index": str(chunk_index),
+            "x-was-compressed": str(was_compressed).lower(),
+        }
+
+        if key_fd is not None and mode == "non-zk":
+            headers["x-file-key-fd"] = str(key_fd)
+
+        try:
+            response = await self.client.get(
+                "/download",
+                headers=headers,
+            )
+            response.raise_for_status()
+
+            logger.debug(
+                f"Chunk downloaded: file_id={file_id}, "
+                f"chunk={chunk_index}, size={len(response.content)}"
+            )
+
+            return response.content
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Chunk download failed: {e.response.status_code} - {e.response.text}"
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Chunk download error: {e}")
+            raise
+
+
+# Global client instance (singleton pattern)
+_rust_client: Optional[RustDataPlaneClient] = None
+
+
+def get_rust_client(
+    socket_path: str = "/tmp/edge-storage-dataplane.sock",
+) -> RustDataPlaneClient:
+    """
+    Get or create the global Rust data plane client instance.
+
+    Args:
+        socket_path: Path to Unix domain socket
+
+    Returns:
+        RustDataPlaneClient instance
+    """
+    global _rust_client
+
+    if _rust_client is None:
+        socket_path = os.getenv("RUST_DATAPLANE_SOCKET", socket_path)
+        _rust_client = RustDataPlaneClient(socket_path=socket_path)
+
+    return _rust_client
+
+
+async def close_rust_client():
+    """Close the global Rust client instance."""
+    global _rust_client
+
+    if _rust_client is not None:
+        await _rust_client.close()
+        _rust_client = None

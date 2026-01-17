@@ -182,6 +182,18 @@ class Settings:
     VIRUS_SCANNING_ENABLED: bool = os.getenv("VIRUS_SCANNING_ENABLED", "true").lower() == "true"
     DLP_SCANNING_ENABLED: bool = os.getenv("DLP_SCANNING_ENABLED", "true").lower() == "true"
 
+    # Rust Data Plane Configuration (High-Performance Chunk Processing)
+    # Provides 3-4x performance improvement for encryption/compression operations
+    RUST_DATAPLANE_ENABLED: bool = os.getenv("RUST_DATAPLANE_ENABLED", "false").lower() == "true"
+    RUST_DATAPLANE_SOCKET: str = os.getenv("RUST_DATAPLANE_SOCKET", "/tmp/edge-storage-dataplane.sock")
+    RUST_DATAPLANE_TIMEOUT: int = int(os.getenv("RUST_DATAPLANE_TIMEOUT", 300))  # 5 minutes
+    RUST_DATAPLANE_ROLLOUT_PERCENTAGE: int = int(os.getenv("RUST_DATAPLANE_ROLLOUT_PERCENTAGE", 100))
+    RUST_DATAPLANE_FALLBACK_TO_PYTHON: bool = os.getenv("RUST_DATAPLANE_FALLBACK_TO_PYTHON", "true").lower() == "true"
+    # fsync modes: none (fastest), session (balanced), per-chunk (most durable)
+    RUST_DATAPLANE_FSYNC_MODE: str = os.getenv("RUST_DATAPLANE_FSYNC_MODE", "session")
+    # Mode: "hybrid" (ZK hash + Python encrypt) or "full" (SCM_RIGHTS Non-ZK - requires Phase 2)
+    RUST_DATAPLANE_MODE: str = os.getenv("RUST_DATAPLANE_MODE", "hybrid")  # hybrid | full
+
     @property
     def is_production(self) -> bool:
         """Check if running in production mode"""

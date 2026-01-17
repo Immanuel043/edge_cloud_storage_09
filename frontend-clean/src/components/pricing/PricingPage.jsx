@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useSubscription } from '../../contexts/SubscriptionContext';
+import PlanChangeModal from '../subscription/PlanChangeModal';
 
 // Mock data structure matching the categorized plan format
 const mockPlansData = {
@@ -443,6 +445,7 @@ export default function PricingPage() {
   const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
   const { isAuthenticated, user } = useAuth();
+  const { availablePlans } = useSubscription();
   const [edgeCategory, setEdgeCategory] = useState('individual');
   const [zkCategory, setZkCategory] = useState('individual');
 
@@ -451,6 +454,10 @@ export default function PricingPage() {
   const [zkPlans, setZkPlans] = useState({ individual: [], business: [], enterprise: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Plan change modal state
+  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
   // Fetch plans from API
   useEffect(() => {
@@ -496,10 +503,16 @@ export default function PricingPage() {
       return;
     }
 
-    // Logged-in user: Redirect to dashboard homepage
-    // They can access "Billing & Plans" from sidebar to complete the upgrade
-    // TODO: Integrate payment flow directly on pricing page
-    navigate('/');
+    // Logged-in user: Find the plan and open the modal
+    const plan = availablePlans.find(p => p.plan_code === planCode);
+    if (plan) {
+      setSelectedPlan(plan);
+      setModalOpen(true);
+    } else {
+      console.error('Plan not found:', planCode);
+      // Fallback: redirect to dashboard
+      navigate('/');
+    }
   };
 
   const categories = ['individual', 'business', 'enterprise'];
@@ -733,6 +746,13 @@ export default function PricingPage() {
           </section>
         </div>
       </main>
+
+      {/* Plan Change Modal */}
+      <PlanChangeModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        targetPlan={selectedPlan}
+      />
     </div>
   );
 }
