@@ -619,7 +619,10 @@ services:
     build:
       context: ..
       dockerfile: services/storage-service/Dockerfile
-    command: python -m app.workers.chunk_processor
+    env_file:
+      - .env
+    entrypoint: []
+    command: ["python", "-m", "app.workers.chunk_processor"]
     deploy:
       replicas: 2              # Reduce replicas to save memory
       resources:
@@ -641,6 +644,13 @@ services:
         condition: service_healthy
     volumes:
       - /tmp/chunks:/tmp/chunks
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'chunk_processor' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
   # Preview Processor Worker - Background video preview generation
   preview-processor:
@@ -661,6 +671,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
       REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       MAX_CONCURRENT_PREVIEWS: 2  # Limit concurrent FFmpeg processes per worker
       STORAGE_ROOT: /app/storage
@@ -678,6 +689,12 @@ services:
     volumes:
       - storage_data:/app/storage
       - /tmp/preview_temp:/tmp/preview_temp
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'preview_worker' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Embedding Processor Worker - Background semantic embedding generation
@@ -685,6 +702,8 @@ services:
     build:
       context: ..
       dockerfile: services/storage-service/Dockerfile
+    env_file:
+      - .env
     entrypoint: []
     command: ["python", "-m", "app.workers.embedding_worker"]
     deploy:
@@ -697,6 +716,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
       REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SEMANTIC_SEARCH_ENABLED: "true"
       SEMANTIC_MODEL_NAME: all-MiniLM-L6-v2
@@ -708,6 +728,15 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    volumes:
+      - storage_data:/app/storage
+      - /tmp/embedding_temp:/tmp/embedding_temp
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'embedding_worker' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # File Analysis Processor Worker - Background AI tagging, OCR, metadata extraction
@@ -715,6 +744,8 @@ services:
     build:
       context: ..
       dockerfile: services/storage-service/Dockerfile
+    env_file:
+      - .env
     entrypoint: []
     command: ["python", "-m", "app.workers.file_analysis_worker"]
     deploy:
@@ -727,6 +758,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://edge_admin:secure_password@postgres:5432/edge_cloud
       REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       STORAGE_ROOT: /app/storage
       ML_FEATURES_ENABLED: "true"
@@ -745,6 +777,13 @@ services:
         condition: service_healthy
     volumes:
       - storage_data:/app/storage
+      - /tmp/file_analysis_temp:/tmp/file_analysis_temp
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'file_analysis_worker' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Nginx reverse-proxy

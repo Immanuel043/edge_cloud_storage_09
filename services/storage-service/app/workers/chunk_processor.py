@@ -12,6 +12,11 @@ from ..database import get_redis
 
 class ChunkProcessor:
     def __init__(self):
+        self.consumer = None
+        self.producer = None
+
+    async def start(self):
+        # Initialize Kafka clients inside async context
         self.consumer = AIOKafkaConsumer(
             'chunk-processing',
             bootstrap_servers='kafka:9092',
@@ -24,8 +29,7 @@ class ChunkProcessor:
             bootstrap_servers='kafka:9092',
             value_serializer=lambda v: json.dumps(v).encode()
         )
-    
-    async def start(self):
+
         await self.consumer.start()
         await self.producer.start()
         

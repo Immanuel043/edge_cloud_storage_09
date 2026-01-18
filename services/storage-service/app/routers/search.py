@@ -86,7 +86,7 @@ async def database_fallback_search(
                     "mime_type": f.mime_type,
                     "created_at": safe_isoformat(f.created_at),
                     "storage_tier": f.storage_tier,
-                    "is_encrypted": f.is_encrypted,
+                    "is_encrypted": f.encryption_mode != 'none' if hasattr(f, 'encryption_mode') else False,
                     "score": 1.0,
                     "source": "database"
                 }
@@ -650,7 +650,7 @@ async def reindex_user_files(
                     'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
                     'created_at': safe_isoformat(file_obj.created_at),
                     'updated_at': safe_isoformat(file_obj.updated_at),
-                    'is_encrypted': file_obj.is_encrypted or False,
+                    'is_encrypted': file_obj.encryption_mode != 'none' if hasattr(file_obj, 'encryption_mode') else False,
                 }
                 
                 success = await search_service.index_file(file_data)

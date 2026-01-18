@@ -140,7 +140,7 @@ class SmartDeduplicationQueue:
 
     def __init__(
         self,
-        max_concurrent: int = 2,
+        max_concurrent: int = 4,  # Increased from 2 to 4 for better throughput
         max_queue_size: int = 10_000,
         max_per_user: int = 50
     ):

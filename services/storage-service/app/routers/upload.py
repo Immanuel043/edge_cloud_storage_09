@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks, Response, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from typing import Optional, AsyncGenerator
 import uuid
 import json
@@ -798,6 +798,39 @@ async def complete_upload(
                    f"File size: {file_size / (1024**2):.2f} MB"
         )
 
+    # ============ IDEMPOTENCY CHECK ============
+    # Check if this upload_id was already completed to prevent duplicates
+    if storage_strategy == "chunked":
+        # For chunked uploads, check by upload_id in chunk_info
+        existing_file_query = await db.execute(
+            select(Object).where(
+                and_(
+                    Object.chunk_info.op('->>')('upload_id') == upload_id,
+                    Object.user_id == current_user.id
+                )
+            )
+        )
+        existing_file = existing_file_query.scalar_one_or_none()
+
+        if existing_file:
+            logger.info(
+                f"✓ Upload {upload_id} already completed for file {existing_file.id} "
+                f"({existing_file.file_name}). Returning existing file (idempotent)."
+            )
+            # Clean up Redis session if still present
+            await redis_client.delete(f"up:{upload_id}")
+
+            return {
+                "file_id": str(existing_file.id),
+                "file_name": existing_file.file_name,
+                "size": existing_file.file_size,
+                "storage_type": existing_file.storage_type,
+                "mime_type": existing_file.mime_type,
+                "created_at": existing_file.created_at.isoformat(),
+                "status": "completed",
+                "already_exists": True  # Flag for client
+            }
+
     # Build file metadata
     file_metadata_dict = {"compressed": session.get("compress", False)}
 
@@ -959,21 +992,29 @@ async def complete_upload(
             enable_dedup = session["size"] > 10 * 1024 * 1024
 
     if enable_dedup:
-        priority = file_classification.priority if file_classification else 2
-        print(
-            f"📋 Queuing {session['name']} for background deduplication "
-            f"(priority={priority}, reason={file_classification.reason if file_classification else 'size-based'})"
-        )
-        # Queue job without awaiting - fire and forget
-        asyncio.create_task(
-            background_dedup_service.enqueue_for_dedup(
-                file_id=str(file_id),
-                upload_id=upload_id,
-                user_id=str(current_user.id),
-                session_data=session,
-                priority=priority  # Pass priority from classification
+        # Check if file exceeds 1GB limit - skip dedup for very large files
+        file_size = session.get("size", 0)
+        if file_size > 1024 * 1024 * 1024:  # 1GB
+            logger.info(
+                f"📦 Large file {session['name']} ({file_size/1024/1024/1024:.2f}GB) uploaded successfully. "
+                f"Deduplication skipped (> 1GB limit). Stored using efficient chunked storage."
             )
-        )
+        else:
+            priority = file_classification.priority if file_classification else 2
+            logger.info(
+                f"📋 Queuing {session['name']} for background deduplication "
+                f"(priority={priority}, reason={file_classification.reason if file_classification else 'size-based'})"
+            )
+            # Queue job without awaiting - fire and forget
+            asyncio.create_task(
+                background_dedup_service.enqueue_for_dedup(
+                    file_id=str(file_id),
+                    upload_id=upload_id,
+                    user_id=str(current_user.id),
+                    session_data=session,
+                    priority=priority  # Pass priority from classification
+                )
+            )
     elif file_classification and file_classification.dedup_mode == 'skip':
         logger.info(
             f"⏭️  Skipping dedup for {session['name']}: {file_classification.reason}"

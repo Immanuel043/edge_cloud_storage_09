@@ -46,8 +46,10 @@ class EnhancedDeduplicationService:
         # Size limits for deduplication
         self.max_dedup_size = 1024 * 1024 * 1024  # 1GB - skip dedup for larger files
 
-        # Thread pool for parallel hashing
-        self.hash_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hash_worker")
+        # Thread pool for parallel hashing (dynamic based on CPU cores)
+        max_workers = min(os.cpu_count() * 2, 16)  # 2x CPU cores, capped at 16
+        self.hash_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="hash_worker")
+        logger.info(f"Initialized hash executor with {max_workers} workers")
 
         # Bloom filter for quick duplicate detection (optional)
         self._init_bloom_filter()
@@ -72,20 +74,33 @@ class EnhancedDeduplicationService:
 
     async def calculate_hashes_parallel(self, chunks: List[bytes]) -> List[str]:
         """
-        Calculate SHA-256 hashes for multiple chunks in parallel using thread pool.
-        This significantly speeds up hashing for large files with many chunks.
+        Calculate SHA-256 hashes in batches with yielding to prevent blocking.
+        Processes 5000 chunks at a time to keep event loop responsive.
         """
         loop = asyncio.get_event_loop()
+        all_hashes = []
+        batch_size = 5000
 
-        # Create hash tasks for all chunks
-        hash_tasks = [
-            loop.run_in_executor(self.hash_executor, self.calculate_block_hash, chunk)
-            for chunk in chunks
-        ]
+        for batch_start in range(0, len(chunks), batch_size):
+            batch_end = min(batch_start + batch_size, len(chunks))
+            batch = chunks[batch_start:batch_end]
 
-        # Wait for all hashes to complete in parallel
-        hashes = await asyncio.gather(*hash_tasks)
-        return hashes
+            logger.info(f"Hashing batch {batch_start//batch_size + 1}/{(len(chunks) + batch_size - 1)//batch_size} ({len(batch)} chunks)")
+
+            # Create hash tasks for this batch
+            hash_tasks = [
+                loop.run_in_executor(self.hash_executor, self.calculate_block_hash, chunk)
+                for chunk in batch
+            ]
+
+            # Wait for batch to complete
+            batch_hashes = await asyncio.gather(*hash_tasks)
+            all_hashes.extend(batch_hashes)
+
+            # Yield to event loop after each batch
+            await asyncio.sleep(0)
+
+        return all_hashes
 
     def find_chunk_boundaries(self, data: bytes) -> List[int]:
         """
@@ -137,9 +152,10 @@ class EnhancedDeduplicationService:
 
         # Check size limit - skip dedup for very large files (>1GB)
         if total_size > self.max_dedup_size:
-            logger.warning(
-                f"File {file_name} ({total_size/1024/1024:.1f}MB) exceeds dedup limit "
-                f"({self.max_dedup_size/1024/1024:.1f}MB) - skipping deduplication"
+            logger.info(
+                f"⏭️ Skipping deduplication for large file {file_name} "
+                f"({total_size/1024/1024/1024:.2f}GB > {self.max_dedup_size/1024/1024/1024:.0f}GB limit). "
+                f"File stored efficiently using chunked storage (no dedup needed)."
             )
             return None  # Signal to caller to use regular storage
 
@@ -185,6 +201,8 @@ class EnhancedDeduplicationService:
                 query = query.join(Object).where(Object.user_id == user_id)
 
             result = await db.execute(query)
+            await asyncio.sleep(0)  # Yield after database query
+
             existing_blocks = result.scalars().all()
 
             # Add to hash map of existing blocks
@@ -192,6 +210,8 @@ class EnhancedDeduplicationService:
                 # Keep first (oldest) block for each hash
                 if existing_block.block_hash not in existing_block_map:
                     existing_block_map[existing_block.block_hash] = existing_block
+
+            await asyncio.sleep(0)  # Yield after processing batch
 
         # Process each chunk with its pre-calculated hash
         start = 0
@@ -239,6 +259,11 @@ class EnhancedDeduplicationService:
             })
 
             start = boundary
+
+            # Yield control every 1000 chunks to prevent blocking
+            if i % 1000 == 0 and i > 0:
+                await asyncio.sleep(0)
+                logger.debug(f"Processed {i}/{len(block_hashes)} chunks, yielding to event loop")
 
         # Batch increment reference counts for all duplicate blocks
         if duplicate_block_ids:

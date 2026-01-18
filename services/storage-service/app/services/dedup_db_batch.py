@@ -147,7 +147,7 @@ class BatchedDeduplicationWriter:
         chunks: List[Dict],
         file_id: str,
         db: AsyncSession,
-        timeout_seconds: int = 300
+        timeout_seconds: int = 60  # Reduced from 300s to 60s - fail fast if database is slow
     ) -> int:
         """
         Store chunks with timeout protection
@@ -156,7 +156,7 @@ class BatchedDeduplicationWriter:
             chunks: List of chunk dicts
             file_id: UUID of the file
             db: Database session
-            timeout_seconds: Max time to wait (default 5 minutes)
+            timeout_seconds: Max time to wait (default 1 minute)
 
         Returns:
             Number of chunks stored
