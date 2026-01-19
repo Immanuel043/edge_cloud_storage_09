@@ -23,13 +23,15 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc && vite build",
     "preview": "vite preview",
     "start": "vite preview",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
-    "test:watch": "vitest --watch"
+    "test:watch": "vitest --watch",
+    "type-check": "tsc --noEmit",
+    "generate-types": "openapi-typescript http://localhost:8001/openapi.json -o src/types/api-generated.ts"
   },
   "eslintConfig": {
     "extends": [
@@ -50,13 +52,19 @@
     ]
   },
   "devDependencies": {
+    "@types/bip39": "^2.4.2",
+    "@types/node": "^25.0.9",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.1",
     "@vitest/coverage-v8": "^1.6.0",
     "@vitest/ui": "^1.6.0",
     "autoprefixer": "^10.4.21",
     "jsdom": "^24.0.0",
+    "openapi-typescript": "^7.10.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
     "vite": "^5.4.6",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.5.0",
