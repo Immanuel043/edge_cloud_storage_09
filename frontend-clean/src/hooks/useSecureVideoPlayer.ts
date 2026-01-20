@@ -7,40 +7,68 @@
  * - Error handling
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type RefCallback } from 'react';
 import { SecureMediaController, MediaErrorCodes } from '../services/secureMedia/SecureMediaController';
 import { useAuth } from '../contexts/AuthContext';
+import type { SecureVideoState, SecureVideoMetadata, MediaStats } from '../types/hooks.types';
 
-/**
- * Hook state interface
- * @typedef {Object} SecureVideoState
- * @property {boolean} isReady - True when playback is ready
- * @property {boolean} isPlaying - True when video is playing
- * @property {boolean} isBuffering - True when buffering
- * @property {boolean} isLocked - True when session is locked
- * @property {number} currentTime - Current playback time in seconds
- * @property {number} duration - Total duration in seconds
- * @property {number} buffered - Buffered time ahead in seconds
- * @property {Object|null} error - Error object if any
- */
+// Type guard for SecureVideoMetadata
+function isSecureVideoMetadata(data: unknown): data is SecureVideoMetadata {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'encrypted_file_key' in data &&
+    typeof (data as Record<string, unknown>).encrypted_file_key === 'string' &&
+    'file_key_iv' in data &&
+    typeof (data as Record<string, unknown>).file_key_iv === 'string' &&
+    'file_size' in data &&
+    typeof (data as Record<string, unknown>).file_size === 'number'
+  );
+}
+
+// Progress callback type from SecureMediaController (matches ProgressInfo)
+interface MediaProgress {
+  currentTime: number;
+  duration: number;
+  buffered: number;
+  bufferedRanges?: [number, number][];
+}
+
+export interface UseSecureVideoPlayerReturn extends SecureVideoState {
+  videoRef: RefCallback<HTMLVideoElement | null>;
+  videoElement: HTMLVideoElement | null;
+  progress: number;
+  bufferProgress: number;
+  play: () => Promise<void>;
+  pause: () => void;
+  seek: (time: number) => void;
+  togglePlay: () => Promise<void>;
+  lock: () => void;
+  getStats: () => MediaStats | null;
+  clearError: () => void;
+  canPlay: boolean;
+}
 
 /**
  * useSecureVideoPlayer hook
- * @param {string} fileId - ZK file ID
- * @param {Object} metadata - File metadata with encrypted_file_key, file_key_iv, file_size
- * @returns {Object} Hook return value
+ * @param fileId - ZK file ID
+ * @param metadata - File metadata with encrypted_file_key, file_key_iv, file_size
+ * @returns Hook return value
  */
-export function useSecureVideoPlayer(fileId, metadata) {
-  const videoRef = useRef(null);
-  const controllerRef = useRef(null);
-  const metadataRef = useRef(metadata);
+export function useSecureVideoPlayer(
+  fileId: string | null | undefined,
+  metadata: SecureVideoMetadata | null | undefined
+): UseSecureVideoPlayerReturn {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const controllerRef = useRef<SecureMediaController | null>(null);
+  const metadataRef = useRef<SecureVideoMetadata | null | undefined>(metadata);
 
   const { zkSessionUnlocked } = useAuth();
 
   // Track when video element is mounted
-  const [videoMounted, setVideoMounted] = useState(false);
+  const [videoMounted, setVideoMounted] = useState<boolean>(false);
 
-  const [state, setState] = useState({
+  const [state, setState] = useState<SecureVideoState>({
     isReady: false,
     isPlaying: false,
     isBuffering: false,
@@ -59,7 +87,7 @@ export function useSecureVideoPlayer(fileId, metadata) {
 
   // Create stable metadata key to detect actual changes (not just reference changes)
   // Only re-initialize if the key fields actually change
-  const metadataKey = useMemo(() => {
+  const metadataKey = useMemo<string | null>(() => {
     if (!metadata) return null;
     return `${metadata.encrypted_file_key || ''}-${metadata.file_key_iv || ''}-${metadata.file_size || 0}`;
   }, [metadata?.encrypted_file_key, metadata?.file_key_iv, metadata?.file_size]);
@@ -78,7 +106,7 @@ export function useSecureVideoPlayer(fileId, metadata) {
     if (!zkSessionUnlocked) {
       // Session is locked - don't initialize
       console.log('[useSecureVideoPlayer] Session is locked - skipping initialization');
-      setState(s => ({ ...s, isLocked: true, isReady: false }));
+      setState((s) => ({ ...s, isLocked: true, isReady: false }));
       return;
     }
 
@@ -93,6 +121,19 @@ export function useSecureVideoPlayer(fileId, metadata) {
       return;
     }
 
+    // Validate metadata before use (ZK safety)
+    if (!isSecureVideoMetadata(metadataRef.current)) {
+      console.error('[useSecureVideoPlayer] Invalid metadata format');
+      setState((s) => ({
+        ...s,
+        error: {
+          code: MediaErrorCodes.FETCH_FAILED,
+          message: 'Invalid metadata: missing required encryption fields',
+        },
+      }));
+      return;
+    }
+
     console.log('[useSecureVideoPlayer] Starting controller initialization...');
 
     // Create and initialize controller
@@ -101,41 +142,45 @@ export function useSecureVideoPlayer(fileId, metadata) {
 
     // Setup callbacks
     controller.onReady(() => {
-      setState(s => ({
+      const stats = controller.getStats();
+      setState((s) => ({
         ...s,
         isReady: true,
         isLocked: false,
-        duration: controller.getStats().duration,
+        duration: stats?.duration || 0,
       }));
     });
 
-    controller.onProgress((progress) => {
-      setState(s => ({
+    controller.onProgress((progress: MediaProgress) => {
+      setState((s) => ({
         ...s,
         currentTime: progress.currentTime,
         duration: progress.duration,
         buffered: progress.buffered,
-        bufferedRanges: progress.bufferedRanges,
+        bufferedRanges: progress.bufferedRanges || s.bufferedRanges,
       }));
     });
 
-    controller.onBuffering((isBuffering) => {
-      setState(s => ({ ...s, isBuffering }));
+    controller.onBuffering((isBuffering: boolean) => {
+      setState((s) => ({ ...s, isBuffering }));
     });
 
-    controller.onError((error) => {
+    controller.onError((error: { code: string; message: string }) => {
       console.error('[useSecureVideoPlayer] Error:', error);
-      setState(s => ({ ...s, error }));
+      setState((s) => ({ ...s, error }));
     });
 
     // Use the ref for metadata to ensure we have the latest values
     const currentMetadata = metadataRef.current;
 
     // Initialize
-    controller.init(fileId, videoRef.current, currentMetadata).catch((error) => {
+    let isControllerDestroyed = false;
+    controller.init(fileId, videoRef.current, currentMetadata).catch((err: unknown) => {
+      const error = err instanceof Error ? err : new Error(String(err));
       // Only set error if controller wasn't destroyed (prevents error flash on cleanup)
-      if (!controller.isDestroyed) {
-        setState(s => ({
+      // Check if controller ref still points to the same controller
+      if (!isControllerDestroyed && controllerRef.current === controller) {
+        setState((s) => ({
           ...s,
           error: { code: MediaErrorCodes.FETCH_FAILED, message: error.message },
         }));
@@ -164,6 +209,7 @@ export function useSecureVideoPlayer(fileId, metadata) {
       }
 
       // Then destroy the controller (which also cleans up workers, buffers, etc.)
+      isControllerDestroyed = true;
       controller.destroy();
       controllerRef.current = null;
     };
@@ -173,7 +219,7 @@ export function useSecureVideoPlayer(fileId, metadata) {
   useEffect(() => {
     if (!zkSessionUnlocked && controllerRef.current) {
       controllerRef.current.lock();
-      setState(s => ({ ...s, isLocked: true, isReady: false }));
+      setState((s) => ({ ...s, isLocked: true, isReady: false }));
     }
   }, [zkSessionUnlocked]);
 
@@ -182,9 +228,9 @@ export function useSecureVideoPlayer(fileId, metadata) {
     const video = videoRef.current;
     if (!video) return;
 
-    const handlePlay = () => setState(s => ({ ...s, isPlaying: true }));
-    const handlePause = () => setState(s => ({ ...s, isPlaying: false }));
-    const handleEnded = () => setState(s => ({ ...s, isPlaying: false }));
+    const handlePlay = (): void => setState((s) => ({ ...s, isPlaying: true }));
+    const handlePause = (): void => setState((s) => ({ ...s, isPlaying: false }));
+    const handleEnded = (): void => setState((s) => ({ ...s, isPlaying: false }));
 
     video.addEventListener('play', handlePlay);
     video.addEventListener('pause', handlePause);
@@ -198,21 +244,24 @@ export function useSecureVideoPlayer(fileId, metadata) {
   }, []);
 
   // Playback controls
-  const play = useCallback(async () => {
+  const play = useCallback(async (): Promise<void> => {
     if (controllerRef.current) {
       await controllerRef.current.play();
     }
   }, []);
 
-  const pause = useCallback(() => {
+  const pause = useCallback((): void => {
     controllerRef.current?.pause();
   }, []);
 
-  const seek = useCallback((time) => {
-    controllerRef.current?.seek(time);
-  }, []);
+  const seek = useCallback(
+    (time: number): void => {
+      controllerRef.current?.seek(time);
+    },
+    []
+  );
 
-  const togglePlay = useCallback(async () => {
+  const togglePlay = useCallback(async (): Promise<void> => {
     if (state.isPlaying) {
       pause();
     } else {
@@ -221,37 +270,41 @@ export function useSecureVideoPlayer(fileId, metadata) {
   }, [state.isPlaying, play, pause]);
 
   // Lock session manually
-  const lock = useCallback(() => {
+  const lock = useCallback((): void => {
     controllerRef.current?.lock();
-    setState(s => ({ ...s, isLocked: true }));
+    setState((s) => ({ ...s, isLocked: true }));
   }, []);
 
   // Get stats
-  const getStats = useCallback(() => {
-    return controllerRef.current?.getStats() || null;
+  const getStats = useCallback((): MediaStats | null => {
+    const stats = controllerRef.current?.getStats();
+    return stats || null;
   }, []);
 
   // Clear error
-  const clearError = useCallback(() => {
-    setState(s => ({ ...s, error: null }));
+  const clearError = useCallback((): void => {
+    setState((s) => ({ ...s, error: null }));
   }, []);
 
   // Computed values
-  const progress = useMemo(() => {
+  const progress = useMemo<number>(() => {
     if (state.duration === 0) return 0;
     return (state.currentTime / state.duration) * 100;
   }, [state.currentTime, state.duration]);
 
-  const bufferProgress = useMemo(() => {
+  const bufferProgress = useMemo<number>(() => {
     if (state.duration === 0) return 0;
     return ((state.currentTime + state.buffered) / state.duration) * 100;
   }, [state.currentTime, state.buffered, state.duration]);
 
   // Callback ref that triggers re-render when video element mounts
-  const videoRefCallback = useCallback((node) => {
-    videoRef.current = node;
-    setVideoMounted(!!node);
-  }, []);
+  const videoRefCallback = useCallback<RefCallback<HTMLVideoElement | null>>(
+    (node: HTMLVideoElement | null) => {
+      videoRef.current = node;
+      setVideoMounted(!!node);
+    },
+    []
+  );
 
   return {
     // Callback ref for video element - use as ref={videoRef}

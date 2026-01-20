@@ -9,6 +9,7 @@ export * from './crypto.types';
 export * from './subscription.types';
 export * from './api.types';
 export * from './frontend.types';
+export * from './hooks.types';
 
 // Note: api-generated.ts will be created by running: npm run generate-types
 // It contains auto-generated types from the FastAPI OpenAPI schema
