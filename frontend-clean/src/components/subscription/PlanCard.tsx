@@ -1,5 +1,6 @@
-import React from 'react';
+import { type ReactElement } from 'react';
 import { Check, Crown, HardDrive, Gauge } from 'lucide-react';
+import type { PlanCardProps, FeatureObject } from '../../types/subscription-components.types';
 
 /**
  * PlanCard
@@ -12,7 +13,12 @@ import { Check, Crown, HardDrive, Gauge } from 'lucide-react';
  * - onSelect: Callback when plan is selected
  * - disabled: Whether the card is disabled
  */
-export default function PlanCard({ plan, isCurrent = false, onSelect, disabled = false }) {
+export default function PlanCard({
+  plan,
+  isCurrent = false,
+  onSelect,
+  disabled = false,
+}: PlanCardProps): ReactElement {
   const {
     plan_code,
     display_name,
@@ -22,38 +28,49 @@ export default function PlanCard({ plan, isCurrent = false, onSelect, disabled =
     bandwidth_mbps,
     features = [],
     badge = null,
-    is_most_popular = false
+    is_most_popular = false,
   } = plan;
 
   // Determine button text and style
-  const getButtonConfig = () => {
+  const getButtonConfig = (): {
+    text: string;
+    className: string;
+    disabled: boolean;
+  } => {
     if (isCurrent) {
       return {
         text: 'Current Plan',
         className: 'bg-gray-100 text-gray-600 cursor-not-allowed',
-        disabled: true
+        disabled: true,
       };
     }
 
     const isFree = plan_code.includes('free');
-    const isUpgrade = plan.tier > 0; // Assuming tier property exists
+    const planTier = (plan as { tier?: number }).tier ?? 0;
+    const isUpgrade = planTier > 0;
 
     if (isFree) {
       return {
         text: 'Downgrade',
         className: 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50',
-        disabled: false
+        disabled: false,
       };
     }
 
     return {
       text: isUpgrade ? 'Upgrade' : 'Select Plan',
       className: 'bg-blue-600 text-white hover:bg-blue-700',
-      disabled: false
+      disabled: false,
     };
   };
 
   const buttonConfig = getButtonConfig();
+
+  const handleClick = (): void => {
+    if (!buttonConfig.disabled && !disabled) {
+      onSelect(plan_code);
+    }
+  };
 
   return (
     <div
@@ -92,7 +109,7 @@ export default function PlanCard({ plan, isCurrent = false, onSelect, disabled =
           </p>
         )}
         <div className="text-3xl font-bold text-gray-900">
-          {price_display}
+          {price_display || 'Free'}
         </div>
         {!plan_code.includes('free') && (
           <div className="text-sm text-gray-500 mt-1">
@@ -123,15 +140,16 @@ export default function PlanCard({ plan, isCurrent = false, onSelect, disabled =
         <div className="space-y-2 mb-6">
           {features.map((feature, index) => {
             // Handle both string features and object features
-            let featureText;
+            let featureText: string;
             let isAvailable = true;
 
             if (typeof feature === 'string') {
               featureText = feature;
             } else if (feature && typeof feature === 'object') {
               // Extract description from feature object (backend sends {name, description, available, tooltip})
-              featureText = feature.description || feature.name || 'Feature';
-              isAvailable = feature.available !== false;
+              const featureObj = feature as FeatureObject;
+              featureText = featureObj.description || featureObj.name || 'Feature';
+              isAvailable = featureObj.available !== false;
             } else {
               featureText = 'Feature';
             }
@@ -150,7 +168,7 @@ export default function PlanCard({ plan, isCurrent = false, onSelect, disabled =
 
       {/* Action Button */}
       <button
-        onClick={() => !buttonConfig.disabled && !disabled && onSelect(plan_code)}
+        onClick={handleClick}
         disabled={buttonConfig.disabled || disabled}
         className={`
           w-full py-3 px-4 rounded-lg font-semibold
@@ -169,7 +187,7 @@ export default function PlanCard({ plan, isCurrent = false, onSelect, disabled =
  *
  * Loading skeleton for PlanCard
  */
-export function PlanCardSkeleton() {
+export function PlanCardSkeleton(): ReactElement {
   return (
     <div className="border-2 border-gray-200 rounded-xl p-6 bg-white animate-pulse">
       <div className="text-center mb-4">

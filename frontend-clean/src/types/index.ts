@@ -7,6 +7,7 @@ export * from './user.types';
 export * from './file.types';
 export * from './crypto.types';
 export * from './subscription.types';
+export * from './subscription-components.types';
 export * from './pricing.types';
 export * from './api.types';
 export * from './frontend.types';

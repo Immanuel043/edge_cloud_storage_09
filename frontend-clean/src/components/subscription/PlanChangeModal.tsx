@@ -1,8 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, ArrowRight, HardDrive, Gauge, Check, AlertCircle, CreditCard } from 'lucide-react';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import subscriptionService from '../../services/subscriptionService';
+import type { PlanChangeModalProps, PaymentGatewayInfo, FeatureObject, PlanDisplay } from '../../types/subscription-components.types';
+import type { PreviewChangeResponse } from '../../services/subscriptionService';
+import type { PricingPlan } from '../../types/pricing.types';
+import { isPaymentGatewayInfo } from '../../types/subscription-components.types';
 
 /**
  * PlanChangeModal
@@ -15,68 +19,77 @@ import subscriptionService from '../../services/subscriptionService';
  * - Shows pricing changes
  * - Handles Stripe redirect for paid plans
  * - Preview API call before confirmation
- *
- * Props:
- * - isOpen: Whether modal is visible
- * - onClose: Close handler
- * - targetPlan: Plan object to change to
  */
-export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
+export default function PlanChangeModal({
+  isOpen,
+  onClose,
+  targetPlan,
+}: PlanChangeModalProps): ReactElement | null {
   const navigate = useNavigate();
   const { subscription, upgrade, downgrade, previewChange, isUpgrade } = useSubscription();
 
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [confirming, setConfirming] = useState(false);
-  const [paymentGateways, setPaymentGateways] = useState([]);
-  const [selectedGateway, setSelectedGateway] = useState('');
-  const [selectedBillingCycle, setSelectedBillingCycle] = useState('monthly');
-  const [loadingGateways, setLoadingGateways] = useState(false);
+  const [preview, setPreview] = useState<PreviewChangeResponse | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<boolean>(false);
+  const [paymentGateways, setPaymentGateways] = useState<PaymentGatewayInfo[]>([]);
+  const [selectedGateway, setSelectedGateway] = useState<string>('');
+  const [selectedBillingCycle, setSelectedBillingCycle] = useState<'monthly' | 'six_months' | 'yearly'>('monthly');
+  const [loadingGateways, setLoadingGateways] = useState<boolean>(false);
 
   // Load preview and payment gateways when modal opens
   useEffect(() => {
     if (isOpen && targetPlan) {
-      loadPreview();
-      loadPaymentGateways();
+      void loadPreview();
+      void loadPaymentGateways();
     }
   }, [isOpen, targetPlan]);
 
-  const loadPreview = async () => {
+  const loadPreview = useCallback(async (): Promise<void> => {
+    if (!targetPlan) return;
+
     try {
       setLoading(true);
       setError(null);
       const data = await previewChange(targetPlan.plan_code);
       setPreview(data);
-    } catch (err) {
-      setError(err.message);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      setError(error.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [targetPlan, previewChange]);
 
-  const loadPaymentGateways = async () => {
+  const loadPaymentGateways = useCallback(async (): Promise<void> => {
     try {
       setLoadingGateways(true);
-      const data = await subscriptionService.getAvailablePaymentGateways();
-      setPaymentGateways(data.gateways || []);
-      if (data.gateways && data.gateways.length > 0) {
-        setSelectedGateway(data.gateways[0].id);
+      const data: unknown = await subscriptionService.getAvailablePaymentGateways();
+      
+      if (Array.isArray(data)) {
+        const gateways = data.filter((item): item is PaymentGatewayInfo => isPaymentGatewayInfo(item));
+        setPaymentGateways(gateways);
+        if (gateways.length > 0) {
+          setSelectedGateway(gateways[0].id || gateways[0].name);
+        }
       }
-    } catch (err) {
-      console.error('Failed to load payment gateways:', err);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error('Failed to load payment gateways:', error);
     } finally {
       setLoadingGateways(false);
     }
-  };
+  }, []);
 
-  const handleConfirm = async () => {
+  const handleConfirm = useCallback(async (): Promise<void> => {
+    if (!targetPlan) return;
+
     try {
       setConfirming(true);
       setError(null);
 
       const isUpgrading = isUpgrade(targetPlan.plan_code);
-      const planPrice = targetPlan.price_monthly || targetPlan.price_yearly || 0;
+      const planPrice = targetPlan.price_monthly ?? targetPlan.price_yearly ?? 0;
 
       // Check if plan is paid
       if (isUpgrading && planPrice > 0) {
@@ -88,10 +101,14 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
         }
 
         try {
+          // Find the gateway object to get the gateway type
+          const gateway = paymentGateways.find((g) => (g.id || g.name) === selectedGateway);
+          const gatewayType = gateway?.gateway || 'stripe';
+
           const paymentResult = await subscriptionService.createPayment(
             targetPlan.plan_code,
             selectedBillingCycle,
-            selectedGateway
+            gatewayType
           );
 
           // If free plan upgrade, close modal and redirect to dashboard
@@ -107,10 +124,12 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
           // For Stripe, redirect happens automatically
           if (paymentResult.payment_url) {
             // Redirect will happen automatically
+            window.location.href = paymentResult.payment_url;
             return;
           }
-        } catch (paymentErr) {
-          setError(paymentErr.message);
+        } catch (paymentErr: unknown) {
+          const error = paymentErr instanceof Error ? paymentErr : new Error(String(paymentErr));
+          setError(error.message);
           setConfirming(false);
           return;
         }
@@ -127,17 +146,39 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
           navigate('/');
         }, 500);
       }
-    } catch (err) {
-      setError(err.message);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      setError(error.message);
     } finally {
       setConfirming(false);
     }
-  };
+  }, [targetPlan, isUpgrade, selectedGateway, selectedBillingCycle, paymentGateways, upgrade, downgrade, onClose, navigate]);
 
   if (!isOpen || !targetPlan || !subscription) return null;
 
   const isUpgrading = isUpgrade(targetPlan.plan_code);
   const changeType = isUpgrading ? 'Upgrade' : 'Downgrade';
+
+  // Helper to get price display
+  const getPriceDisplay = (plan: PricingPlan | PlanDisplay | null): string => {
+    if (!plan) return 'Free';
+    const planDisplay = plan as PlanDisplay;
+    if (planDisplay.price_display) return planDisplay.price_display;
+    if (planDisplay.price_monthly !== null && planDisplay.price_monthly !== undefined) {
+      return `₹${planDisplay.price_monthly}`;
+    }
+    if (planDisplay.price_yearly !== null && planDisplay.price_yearly !== undefined) {
+      return `₹${planDisplay.price_yearly}`;
+    }
+    return 'Free';
+  };
+
+  // Helper to get plan name
+  const getPlanName = (plan: PricingPlan | PlanDisplay | null): string => {
+    if (!plan) return 'Unknown';
+    const planDisplay = plan as PlanDisplay;
+    return planDisplay.display_name || planDisplay.plan_name || 'Unknown';
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
@@ -150,6 +191,7 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"
+            aria-label="Close modal"
           >
             <X className="w-6 h-6" />
           </button>
@@ -180,8 +222,12 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                   {/* Current Plan */}
                   <div className="text-center">
                     <p className="text-sm text-gray-600 mb-2">Current Plan</p>
-                    <p className="text-lg font-bold text-gray-900">{subscription.plan_name}</p>
-                    <p className="text-sm text-gray-600 mt-1">{subscription.price_display || 'Free'}</p>
+                    <p className="text-lg font-bold text-gray-900">
+                      {(subscription as { plan_name?: string }).plan_name || subscription.plan_code}
+                    </p>
+                    <p className="text-sm text-gray-600 mt-1">
+                      {(subscription as { price_display?: string }).price_display || 'Free'}
+                    </p>
                   </div>
 
                   {/* Arrow */}
@@ -192,8 +238,8 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                   {/* New Plan */}
                   <div className="text-center">
                     <p className="text-sm text-gray-600 mb-2">New Plan</p>
-                    <p className="text-lg font-bold text-blue-600">{targetPlan.display_name}</p>
-                    <p className="text-sm text-gray-600 mt-1">{targetPlan.price_display}</p>
+                    <p className="text-lg font-bold text-blue-600">{getPlanName(targetPlan)}</p>
+                    <p className="text-sm text-gray-600 mt-1">{getPriceDisplay(targetPlan)}</p>
                   </div>
                 </div>
               </div>
@@ -210,7 +256,7 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                     <p className="text-sm text-gray-600 mt-1">
                       {subscription.storage_quota_gb} GB → {targetPlan.storage_gb} GB
                       <span className={`ml-2 font-semibold ${isUpgrading ? 'text-green-600' : 'text-orange-600'}`}>
-                        ({isUpgrading ? '+' : ''}{targetPlan.storage_gb - subscription.storage_quota_gb} GB)
+                        ({isUpgrading ? '+' : ''}{Number(targetPlan.storage_gb) - Number(subscription.storage_quota_gb)} GB)
                       </span>
                     </p>
                   </div>
@@ -224,23 +270,31 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                     <p className="text-sm text-gray-600 mt-1">
                       {subscription.bandwidth_quota_mbps} Mbps → {targetPlan.bandwidth_mbps} Mbps
                       <span className={`ml-2 font-semibold ${isUpgrading ? 'text-green-600' : 'text-orange-600'}`}>
-                        ({isUpgrading ? '+' : ''}{targetPlan.bandwidth_mbps - subscription.bandwidth_quota_mbps} Mbps)
+                        ({isUpgrading ? '+' : ''}{Number(targetPlan.bandwidth_mbps) - Number(subscription.bandwidth_quota_mbps)} Mbps)
                       </span>
                     </p>
                   </div>
                 </div>
 
                 {/* Features */}
-                {targetPlan.features && targetPlan.features.length > 0 && (
+                {targetPlan.features && Array.isArray(targetPlan.features) && targetPlan.features.length > 0 && (
                   <div className="p-4 bg-purple-50 rounded-lg">
                     <p className="font-medium text-gray-900 mb-2">Features included:</p>
                     <div className="space-y-1">
                       {targetPlan.features.map((feature, index) => {
                         // Handle both string features and object features
-                        const featureText = typeof feature === 'string'
-                          ? feature
-                          : (feature?.description || feature?.name || 'Feature');
-                        const isAvailable = typeof feature === 'string' || feature?.available !== false;
+                        let featureText: string;
+                        let isAvailable = true;
+
+                        if (typeof feature === 'string') {
+                          featureText = feature;
+                        } else if (feature && typeof feature === 'object') {
+                          const featureObj = feature as FeatureObject;
+                          featureText = featureObj.description || featureObj.name || 'Feature';
+                          isAvailable = featureObj.available !== false;
+                        } else {
+                          featureText = 'Feature';
+                        }
 
                         return (
                           <div key={index} className="flex items-start gap-2">
@@ -257,7 +311,7 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
               </div>
 
               {/* Payment Gateway Selection (for paid upgrades) */}
-              {isUpgrading && targetPlan.price_monthly > 0 && (
+              {isUpgrading && (targetPlan.price_monthly ?? 0) > 0 && (
                 <div className="bg-white border border-gray-200 rounded-lg p-4 mb-6">
                   <h3 className="font-semibold text-gray-900 text-lg mb-4 flex items-center gap-2">
                     <CreditCard className="w-5 h-5" />
@@ -270,9 +324,10 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                       Billing Cycle
                     </label>
                     <div className="grid grid-cols-3 gap-2">
-                      {['monthly', 'six_months', 'yearly'].map((cycle) => {
+                      {(['monthly', 'six_months', 'yearly'] as const).map((cycle) => {
                         const priceKey = cycle === 'six_months' ? 'price_six_months' : `price_${cycle}`;
-                        const price = targetPlan[priceKey] || 0;
+                        const planRecord = targetPlan as unknown as Record<string, unknown>;
+                        const price = (planRecord[priceKey] as number | null | undefined) ?? 0;
                         return (
                           <button
                             key={cycle}
@@ -285,7 +340,7 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                           >
                             <div className="text-sm font-medium capitalize">{cycle.replace('_', '-')}</div>
                             <div className="text-xs text-gray-600 mt-1">
-                              ${price.toFixed(2)}
+                              ₹{price.toFixed(2)}
                             </div>
                           </button>
                         );
@@ -305,22 +360,27 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
                         Payment Method
                       </label>
                       <div className="grid grid-cols-2 gap-2">
-                        {paymentGateways.map((gateway) => (
-                          <button
-                            key={gateway.id}
-                            onClick={() => setSelectedGateway(gateway.id)}
-                            className={`px-4 py-3 rounded-lg border-2 transition-colors text-left ${
-                              selectedGateway === gateway.id
-                                ? 'border-blue-600 bg-blue-50'
-                                : 'border-gray-200 bg-white hover:border-gray-300'
-                            }`}
-                          >
-                            <div className="font-medium text-gray-900">{gateway.name}</div>
-                            <div className="text-xs text-gray-600 mt-1">
-                              {gateway.supported_methods.join(', ')}
-                            </div>
-                          </button>
-                        ))}
+                        {paymentGateways.map((gateway) => {
+                          const gatewayId = gateway.id || gateway.name;
+                          return (
+                            <button
+                              key={gatewayId}
+                              onClick={() => setSelectedGateway(gatewayId)}
+                              className={`px-4 py-3 rounded-lg border-2 transition-colors text-left ${
+                                selectedGateway === gatewayId
+                                  ? 'border-blue-600 bg-blue-50'
+                                  : 'border-gray-200 bg-white hover:border-gray-300'
+                              }`}
+                            >
+                              <div className="font-medium text-gray-900">{gateway.name}</div>
+                              {gateway.supported_methods && Array.isArray(gateway.supported_methods) && gateway.supported_methods.length > 0 && (
+                                <div className="text-xs text-gray-600 mt-1">
+                                  {gateway.supported_methods.map(String).join(', ')}
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : (
@@ -332,11 +392,11 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
               )}
 
               {/* Pricing Info */}
-              {preview && preview.prorated_charge && (
+              {preview && (preview as unknown as { prorated_charge?: number }).prorated_charge !== undefined && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
                   <p className="text-sm font-medium text-yellow-900">Prorated Charge</p>
                   <p className="text-sm text-yellow-700 mt-1">
-                    You'll be charged ${preview.prorated_charge.toFixed(2)} today for the remainder of this billing period.
+                    You'll be charged ₹{((preview as unknown as { prorated_charge: number }).prorated_charge).toFixed(2)} today for the remainder of this billing period.
                   </p>
                 </div>
               )}
@@ -376,7 +436,7 @@ export default function PlanChangeModal({ isOpen, onClose, targetPlan }) {
             Cancel
           </button>
           <button
-            onClick={handleConfirm}
+            onClick={() => void handleConfirm()}
             disabled={confirming || loading || !!error}
             className={`
               px-6 py-2 rounded-lg font-medium text-white transition-colors
