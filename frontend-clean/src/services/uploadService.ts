@@ -11,8 +11,10 @@
  */
 
 import * as zkEncryptionService from './zkEncryptionService';
+import { API_URL } from '../config/constants';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Use centralized API URL from constants (type-safe, no import.meta issues)
+const API_BASE_URL = API_URL;
 
 // ==================== Type Definitions ====================
 
