@@ -1,0 +1,24 @@
+/**
+ * Application Entry Point
+ *
+ * CRITICAL: Polyfills must be imported FIRST before any other modules
+ * This ensures Buffer is available for libraries like bip39
+ */
+import './polyfills';
+
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+const rootElement = document.getElementById('root');
+
+if (!rootElement) {
+  throw new Error('Root element not found. Make sure there is a <div id="root"></div> in your HTML.');
+}
+
+ReactDOM.createRoot(rootElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

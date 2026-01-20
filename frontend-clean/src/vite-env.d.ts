@@ -16,3 +16,13 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// Global type declarations for polyfills
+interface Window {
+  Buffer: typeof import('buffer').Buffer;
+  argon2WasmPath?: string;
+}
+
+declare global {
+  var Buffer: typeof import('buffer').Buffer;
+}
