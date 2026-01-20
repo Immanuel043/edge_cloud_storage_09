@@ -558,7 +558,7 @@ export default function PricingPage(): ReactElement {
       
       try {
         // Import API config dynamically
-        const API_CONFIG = (await import('../../config/api.js')).default;
+        const API_CONFIG = (await import('../../config/api')).default;
 
         // Fetch Normal Storage plans
         const edgeResponse = await fetch(

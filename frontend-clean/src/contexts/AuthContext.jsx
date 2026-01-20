@@ -138,7 +138,7 @@ export const AuthProvider = ({ children }) => {
             if (isZKUser) {
               // ZK users: Call ZK service /me endpoint
               console.log('[Auth] Bootstrap - calling ZK service /me endpoint');
-              const { ZK_ENDPOINTS } = await import('../config/constants.js');
+              const { ZK_ENDPOINTS } = await import('../config/constants');
               const response = await fetch(ZK_ENDPOINTS.ME, {
                 method: 'GET',
                 credentials: 'include',
