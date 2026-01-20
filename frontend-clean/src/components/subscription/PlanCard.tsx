@@ -26,10 +26,13 @@ export default function PlanCard({
     price_display,
     storage_gb,
     bandwidth_mbps,
-    features = [],
+    features: rawFeatures,
     badge = null,
     is_most_popular = false,
   } = plan;
+
+  // Normalize features to always be an array
+  const features: (string | FeatureObject)[] = Array.isArray(rawFeatures) ? rawFeatures : [];
 
   // Determine button text and style
   const getButtonConfig = (): {

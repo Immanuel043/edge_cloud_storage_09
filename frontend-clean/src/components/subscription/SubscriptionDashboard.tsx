@@ -14,13 +14,11 @@ import {
 } from 'lucide-react';
 import type {
   PlanDisplay,
-  SubscriptionDisplay,
-  UsageDisplay,
   SubscriptionWarning,
   SubscriptionRecommendation,
   FeatureObject,
 } from '../../types/subscription-components.types';
-import { isPlanDisplay, isSubscriptionDisplay, isUsageDisplay } from '../../types/subscription-components.types';
+import { isSubscriptionDisplay, isUsageDisplay } from '../../types/subscription-components.types';
 
 /**
  * SubscriptionDashboard
@@ -143,9 +141,13 @@ export default function SubscriptionDashboard(): ReactElement {
     );
   }
 
-  // Type-safe subscription and usage
-  const subscriptionDisplay = subscription && isSubscriptionDisplay(subscription) ? subscription : null;
-  const usageDisplay = usage && isUsageDisplay(usage) ? usage : null;
+  // Type-safe subscription and usage - explicit cast after type guard to avoid index signature issues
+  const subscriptionDisplay = subscription && isSubscriptionDisplay(subscription) 
+    ? (subscription as unknown as import('../../types/subscription-components.types').SubscriptionDisplay)
+    : null;
+  const usageDisplay = usage && isUsageDisplay(usage) 
+    ? (usage as unknown as import('../../types/subscription-components.types').UsageDisplay)
+    : null;
 
   return (
     <div className="max-w-7xl mx-auto p-6 space-y-8">

@@ -5,7 +5,6 @@
  * These types extend the base subscription types with component-specific structures.
  */
 
-import type { PreviewChangeResponse } from '../services/subscriptionService';
 import type { PricingPlan } from './pricing.types';
 
 /**
@@ -49,7 +48,7 @@ export interface PlanDisplay {
   price_display?: string;
   
   /** Plan tier (for upgrade/downgrade logic) */
-  tier?: number;
+  tier?: number | undefined;
   
   /** Badge text (e.g., "Most Popular") */
   badge?: string | null;
@@ -92,8 +91,7 @@ export interface SubscriptionDisplay {
   storage_quota_gb: number;
   bandwidth_quota_mbps: number;
   next_billing_date?: string | null;
-  tier?: number;
-  [key: string]: unknown;
+  tier?: number | undefined;
 }
 
 /**
@@ -107,7 +105,6 @@ export interface UsageDisplay {
   bandwidth_used_display?: string;
   bandwidth_quota_display?: string;
   bandwidth_percent?: number;
-  [key: string]: unknown;
 }
 
 /**

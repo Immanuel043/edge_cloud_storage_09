@@ -15,6 +15,7 @@ interface Subscription {
   plan_code: string;
   tier: number;
   storage_quota_gb: number;
+  bandwidth_quota_mbps?: number;
   [key: string]: unknown;
 }
 

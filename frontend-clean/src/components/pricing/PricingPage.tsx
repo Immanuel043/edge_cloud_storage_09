@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, type ReactElement } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Cloud, Shield, Check, ArrowRight, Sun, Moon,
-  HardDrive, Gauge, Users, Crown, Zap, Lock
+  HardDrive, Gauge, Crown, Zap
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -11,7 +11,6 @@ import PlanChangeModal from '../subscription/PlanChangeModal';
 import type {
   PricingPlan,
   CategorizedPlans,
-  PlansResponse,
   BillingCycle,
   ServiceType,
   PlanCategory,

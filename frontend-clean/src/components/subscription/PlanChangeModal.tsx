@@ -69,8 +69,9 @@ export default function PlanChangeModal({
       if (Array.isArray(data)) {
         const gateways = data.filter((item): item is PaymentGatewayInfo => isPaymentGatewayInfo(item));
         setPaymentGateways(gateways);
-        if (gateways.length > 0) {
-          setSelectedGateway(gateways[0].id || gateways[0].name);
+        const firstGateway = gateways[0];
+        if (firstGateway) {
+          setSelectedGateway(firstGateway.id ?? firstGateway.name);
         }
       }
     } catch (err: unknown) {
