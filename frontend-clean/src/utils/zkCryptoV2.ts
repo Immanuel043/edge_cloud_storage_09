@@ -158,7 +158,6 @@ interface Argon2Result {
 
 declare global {
   interface Window {
-    argon2?: Argon2Module;
     MSStream?: unknown;
   }
 }
@@ -167,42 +166,31 @@ let argon2Module: Argon2Module | null = null;
 let argon2LoadPromise: Promise<Argon2Module> | null = null;
 
 /**
- * Load Argon2 via script tag (more reliable than ES module import)
+ * Load Argon2 via ES module import (consistent with web worker implementation)
  */
 async function getArgon2(): Promise<Argon2Module> {
   if (argon2Module) return argon2Module;
   if (argon2LoadPromise) return argon2LoadPromise;
 
-  argon2LoadPromise = new Promise((resolve, reject) => {
-    // Check if already loaded globally
-    if (typeof window !== 'undefined' && window.argon2) {
-      argon2Module = window.argon2;
-      console.log('[ZK] Argon2 already loaded globally');
-      resolve(argon2Module);
-      return;
-    }
-
-    // Load via script tag
-    const script = document.createElement('script');
-    script.src = '/argon2-bundled.min.js';
-    script.async = true;
-
-    script.onload = () => {
-      if (window.argon2 && typeof window.argon2.hash === 'function') {
-        argon2Module = window.argon2;
-        console.log('[ZK] Argon2 loaded via script');
-        resolve(argon2Module);
-      } else {
-        reject(new Error('Argon2 script loaded but hash function not found'));
+  argon2LoadPromise = (async () => {
+    try {
+      // Dynamic import for better code splitting and tree-shaking
+      const argon2 = await import('argon2-browser');
+      
+      // Handle both default and named exports (consistent with worker implementation)
+      argon2Module = (argon2 as { default?: Argon2Module }).default ?? (argon2 as unknown as Argon2Module);
+      
+      if (!argon2Module || typeof argon2Module.hash !== 'function') {
+        throw new Error('Argon2 module loaded but hash function not found');
       }
-    };
-
-    script.onerror = () => {
-      reject(new Error('Failed to load Argon2 script'));
-    };
-
-    document.head.appendChild(script);
-  });
+      
+      console.log('[ZK] Argon2 loaded via ES module import');
+      return argon2Module;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to load Argon2 module: ${errorMessage}`);
+    }
+  })();
 
   return argon2LoadPromise;
 }
