@@ -2,18 +2,24 @@
 // This runs in a separate thread to avoid blocking the main UI
 // Uses native Web Crypto API (works in workers, no external dependencies)
 
+import type { WorkerRequestMessage, WorkerResponseMessage, DecryptChunkMessage, DecryptSuccessMessage, DecryptErrorMessage } from './types';
+
 // AES-GCM constants
 const GCM_IV_LENGTH = 12; // 96 bits
 const GCM_TAG_LENGTH = 16; // 128 bits
 
 /**
  * Decrypt a chunk using AES-256-GCM via Web Crypto API
- * @param {Uint8Array} encryptedChunk - The encrypted chunk (IV + ciphertext + tag)
- * @param {Uint8Array} fileKey - The 256-bit file key
- * @param {number} chunkIndex - Chunk index for verification
- * @returns {Promise<Uint8Array>} Decrypted plaintext
+ * @param encryptedChunk - The encrypted chunk (IV + ciphertext + tag)
+ * @param fileKey - The 256-bit file key
+ * @param chunkIndex - Chunk index for verification
+ * @returns Decrypted plaintext
  */
-async function decryptChunk(encryptedChunk, fileKey, chunkIndex) {
+async function decryptChunk(
+  encryptedChunk: Uint8Array,
+  fileKey: Uint8Array,
+  chunkIndex: number
+): Promise<Uint8Array> {
   try {
     // Extract IV from the beginning of encrypted chunk (first 12 bytes)
     const iv = encryptedChunk.slice(0, GCM_IV_LENGTH);
@@ -44,22 +50,25 @@ async function decryptChunk(encryptedChunk, fileKey, chunkIndex) {
 
     return new Uint8Array(decryptedBuffer);
 
-  } catch (error) {
+  } catch (error: unknown) {
     // Provide more helpful error messages
-    if (error.name === 'OperationError') {
+    const errorObj = error as { name?: string; message?: string };
+    if (errorObj.name === 'OperationError') {
       throw new Error(`Chunk ${chunkIndex} decryption failed: Invalid key or corrupted data (authentication failed)`);
     }
-    throw new Error(`Chunk ${chunkIndex} decryption failed: ${error.message}`);
+    const errorMessage = errorObj.message || String(error);
+    throw new Error(`Chunk ${chunkIndex} decryption failed: ${errorMessage}`);
   }
 }
 
 // Listen for messages from main thread
-self.addEventListener('message', async (event) => {
-  const { type, data } = event.data;
+self.addEventListener('message', async (event: MessageEvent<WorkerRequestMessage>) => {
+  const message = event.data;
 
   try {
-    if (type === 'DECRYPT_CHUNK') {
-      const { encryptedChunk, fileKey, chunkIndex, jobId } = data;
+    if (message.type === 'DECRYPT_CHUNK') {
+      const decryptMessage = message as DecryptChunkMessage;
+      const { encryptedChunk, fileKey, chunkIndex, jobId } = decryptMessage.data;
 
       // Convert arrays back to Uint8Array (transferred as ArrayBuffer)
       const encryptedChunkArray = new Uint8Array(encryptedChunk);
@@ -69,30 +78,33 @@ self.addEventListener('message', async (event) => {
       const decryptedChunk = await decryptChunk(encryptedChunkArray, fileKeyArray, chunkIndex);
 
       // Send result back to main thread
-      self.postMessage({
+      const successMessage: DecryptSuccessMessage = {
         type: 'DECRYPT_SUCCESS',
         data: {
           jobId,
           chunkIndex,
           decryptedChunk: decryptedChunk.buffer // Transfer as ArrayBuffer
         }
-      }, [decryptedChunk.buffer]); // Transfer ownership for performance
+      };
+      self.postMessage(successMessage, [decryptedChunk.buffer]); // Transfer ownership for performance
 
-    } else if (type === 'PING') {
+    } else if (message.type === 'PING') {
       // Health check
       self.postMessage({ type: 'PONG' });
     }
 
-  } catch (error) {
+  } catch (error: unknown) {
     // Send error back to main thread
-    self.postMessage({
+    const errorObj = error as { message?: string };
+    const errorMessage: DecryptErrorMessage = {
       type: 'DECRYPT_ERROR',
       data: {
-        jobId: data?.jobId,
-        chunkIndex: data?.chunkIndex,
-        error: error.message
+        jobId: message.type === 'DECRYPT_CHUNK' ? message.data.jobId : undefined,
+        chunkIndex: message.type === 'DECRYPT_CHUNK' ? message.data.chunkIndex : undefined,
+        error: errorObj.message || String(error)
       }
-    });
+    };
+    self.postMessage(errorMessage);
   }
 });
 

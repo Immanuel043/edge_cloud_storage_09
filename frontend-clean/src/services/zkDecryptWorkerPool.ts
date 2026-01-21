@@ -5,6 +5,8 @@
  * improving performance for large file downloads.
  */
 
+import type { WorkerResponseMessage } from '../workers/types';
+
 // ==================== Type Definitions ====================
 
 interface JobInfo {
@@ -23,16 +25,6 @@ interface QueuedJob {
 interface DecryptResult {
   chunkIndex: number;
   decryptedChunk: Uint8Array;
-}
-
-interface WorkerMessage {
-  type: 'WORKER_READY' | 'DECRYPT_SUCCESS' | 'DECRYPT_ERROR';
-  data?: {
-    jobId?: number;
-    chunkIndex?: number;
-    decryptedChunk?: ArrayBuffer;
-    error?: string;
-  };
 }
 
 interface DecryptChunkInput {
@@ -98,10 +90,14 @@ class ZKDecryptWorkerPool {
     for (let i = 0; i < this.poolSize; i++) {
       const workerPromise = new Promise<Worker>((resolve, reject) => {
         try {
-          const worker = new Worker('/zkDecryptWorker.js');
+          // Use Vite's worker import syntax
+          const worker = new Worker(
+            new URL('../workers/zkDecryptWorker.ts', import.meta.url),
+            { type: 'module' }
+          );
 
           // Handle worker ready event
-          const readyHandler = (event: MessageEvent<WorkerMessage>) => {
+          const readyHandler = (event: MessageEvent<WorkerResponseMessage>) => {
             if (event.data.type === 'WORKER_READY') {
               worker.removeEventListener('message', readyHandler);
               this.workers.push(worker);
@@ -141,31 +137,31 @@ class ZKDecryptWorkerPool {
   /**
    * Handle messages from workers
    */
-  private _handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
-    const { type, data } = event.data;
+  private _handleWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
+    const message = event.data;
 
-    if (type === 'DECRYPT_SUCCESS') {
-      const { jobId, chunkIndex, decryptedChunk } = data!;
-      const job = this.jobs.get(jobId!);
+    if (message.type === 'DECRYPT_SUCCESS') {
+      const { jobId, chunkIndex, decryptedChunk } = message.data;
+      const job = this.jobs.get(jobId);
 
       if (job) {
         job.resolve({
-          chunkIndex: chunkIndex!,
-          decryptedChunk: new Uint8Array(decryptedChunk!),
+          chunkIndex: chunkIndex,
+          decryptedChunk: new Uint8Array(decryptedChunk),
         });
-        this.jobs.delete(jobId!);
+        this.jobs.delete(jobId);
       }
 
       // Return worker to available pool
       this.availableWorkers.push(event.target as Worker);
       this._processQueue();
-    } else if (type === 'DECRYPT_ERROR') {
-      const { jobId, chunkIndex, error } = data!;
-      const job = this.jobs.get(jobId!);
+    } else if (message.type === 'DECRYPT_ERROR') {
+      const { jobId, chunkIndex, error } = message.data;
+      const job = this.jobs.get(jobId || -1);
 
       if (job) {
-        job.reject(new Error(`Chunk ${chunkIndex} decryption failed: ${error}`));
-        this.jobs.delete(jobId!);
+        job.reject(new Error(`Chunk ${chunkIndex || 'unknown'} decryption failed: ${error}`));
+        this.jobs.delete(jobId || -1);
       }
 
       // Return worker to available pool
@@ -233,7 +229,12 @@ class ZKDecryptWorkerPool {
         worker.postMessage(
           {
             type: 'DECRYPT_CHUNK',
-            data: job,
+            data: {
+              encryptedChunk: job.encryptedChunk,
+              fileKey: job.fileKey,
+              chunkIndex: job.chunkIndex,
+              jobId: job.jobId,
+            },
           },
           [job.encryptedChunk, job.fileKey]
         );

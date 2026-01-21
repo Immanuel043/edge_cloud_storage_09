@@ -1,4 +1,21 @@
-# services/web-service/Dockerfile
+# Build stage
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install ALL dependencies (including devDependencies for TypeScript)
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Compile TypeScript to JavaScript
+RUN npm run build
+
+# Production stage
 FROM node:18-alpine
 
 # Install curl for healthcheck
@@ -6,20 +23,19 @@ RUN apk add --no-cache curl
 
 WORKDIR /app
 
-# Copy package files first (leverages build cache)
+# Copy package files
 COPY package*.json ./
 
 # Install only production dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
-# Copy application code (everything since no .dockerignore)
-COPY . .
+# Copy compiled JavaScript from builder
+COPY --from=builder /app/dist ./dist
 
 # Create logs directory
 RUN mkdir -p logs
 
-# Expose port (optional: if your server listens on 3000)
 EXPOSE 3000
 
-# Run application
-CMD ["node", "src/server.js"]
+# Run compiled JavaScript
+CMD ["node", "dist/server.js"]
