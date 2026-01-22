@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { storageService } from '../services/storageService';
 import { websocketService } from '../services/websocketService';
 import { useAuth } from './AuthContext';
@@ -158,6 +158,10 @@ export const StorageProvider: React.FC<StorageProviderProps> = ({ children }) =>
   const [migrationInProgress, setMigrationInProgress] = useState<boolean>(false);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress>({ current: 0, total: 0, currentFile: null });
 
+  // Debounce ref for refreshFiles to prevent flickering
+  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isRefreshingRef = useRef<boolean>(false);
+
   useEffect(() => {
     const handleOnline = (): void => setIsOnline(true);
     const handleOffline = (): void => setIsOnline(false);
@@ -171,6 +175,25 @@ export const StorageProvider: React.FC<StorageProviderProps> = ({ children }) =>
     };
   }, []);
 
+  // Debounced refresh function to prevent flickering
+  const debouncedRefresh = useCallback(() => {
+    // Clear any pending refresh
+    if (refreshDebounceRef.current) {
+      clearTimeout(refreshDebounceRef.current);
+    }
+    // Don't queue another refresh if one is in progress
+    if (isRefreshingRef.current) {
+      return;
+    }
+    // Debounce by 500ms to batch multiple events
+    refreshDebounceRef.current = setTimeout(() => {
+      isRefreshingRef.current = true;
+      refreshFiles().finally(() => {
+        isRefreshingRef.current = false;
+      });
+    }, 500);
+  }, []);
+
   // Also add a WebSocket listener for file_uploaded events
   useEffect(() => {
     if (!websocketService || !isAuthenticated) return;
@@ -178,16 +201,20 @@ export const StorageProvider: React.FC<StorageProviderProps> = ({ children }) =>
     // Listen for file upload events from WebSocket
     const handleFileUploaded = (data: unknown): void => {
       console.log('WebSocket: file uploaded event', data);
-      // Refresh files when we get a file uploaded event
-      refreshFiles();
+      // Use debounced refresh to prevent flickering
+      debouncedRefresh();
     };
 
     const unsubscribe = websocketService.on('file_uploaded', handleFileUploaded);
 
     return () => {
       if (unsubscribe) unsubscribe();
+      // Clear debounce on cleanup
+      if (refreshDebounceRef.current) {
+        clearTimeout(refreshDebounceRef.current);
+      }
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, debouncedRefresh]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -209,15 +236,15 @@ export const StorageProvider: React.FC<StorageProviderProps> = ({ children }) =>
   }, [isAuthenticated, currentFolder, isOnline, zkEnabled, zkSessionUnlocked]);
 
   useEffect(() => {
-    // WebSocket event listeners
+    // WebSocket event listeners - use debounced refresh to prevent flickering
     const handleWSFileUploaded = (event: Event): void => {
       console.log('File uploaded event received:', (event as CustomEvent).detail);
-      refreshFiles();
+      debouncedRefresh();
     };
 
     const handleWSFileDeleted = (event: Event): void => {
       console.log('File deleted event received:', (event as CustomEvent).detail);
-      refreshFiles();
+      debouncedRefresh();
     };
 
     const handleWSStorageUpdate = (event: Event): void => {
@@ -239,7 +266,7 @@ export const StorageProvider: React.FC<StorageProviderProps> = ({ children }) =>
       window.removeEventListener('ws-file-deleted', handleWSFileDeleted);
       window.removeEventListener('ws-storage-update', handleWSStorageUpdate);
     };
-  }, [token]);
+  }, [token, debouncedRefresh]);
 
   const loadFiles = async (folderId: string | null = currentFolder): Promise<void> => {
     // Check if we should use ZK service

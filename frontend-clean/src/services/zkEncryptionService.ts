@@ -289,74 +289,92 @@ export async function generateZKRegistrationData(password: string): Promise<ZKRe
   };
 }
 
+// In-flight promise guard to prevent duplicate Argon2 execution
+let unlockInFlight: Promise<boolean> | null = null;
+
 /**
  * Unlock ZK session after login (async)
  * Supports Argon2id (primary) and PBKDF2 (low-memory device fallback)
+ * 
+ * Includes guards to prevent:
+ * - Re-unlocking an already unlocked session
+ * - Concurrent unlock attempts (shares single Argon2 execution)
  *
  * @param password - User password
  * @param zkData - ZK data from backend (kdfSalt, encryptedMasterKey, kdfAlgorithm, etc.)
  * @returns True if unlock successful
  */
 export async function unlockZKSession(password: string, zkData: ZKData): Promise<boolean> {
-  try {
-    console.log('[ZK] unlockZKSession called');
-
-    const {
-      kdfSalt,
-      encryptedMasterKey,
-      kdfAlgorithm = 'argon2id', // Default to argon2id (primary algorithm)
-      kdfIterations = ZK_CONSTANTS.KDF_ITERATIONS,
-    } = zkData;
-
-    console.log('[ZK] KDF Algorithm:', kdfAlgorithm);
-
-    if (!kdfSalt) {
-      throw new Error('KDF salt is missing');
-    }
-    if (!encryptedMasterKey) {
-      throw new Error('Encrypted master key is missing');
-    }
-
-    // Derive key from password using appropriate algorithm
-    let derivedKey: Uint8Array;
-    if (kdfAlgorithm === 'argon2id') {
-      // Use Argon2id (primary - memory-hard, GPU-resistant)
-      console.log('[ZK] Using Argon2id for key derivation...');
-      const saltBytes =
-        typeof kdfSalt === 'string'
-          ? new Uint8Array(
-              (kdfSalt.match(/.{1,2}/g) || []).map((byte) => parseInt(byte, 16))
-            )
-          : kdfSalt;
-      derivedKey = await deriveKeyArgon2id(password, saltBytes);
-    } else {
-      // Use PBKDF2 (fallback for low-memory devices)
-      console.log('[ZK] Using PBKDF2 for key derivation (low-memory fallback)...');
-      derivedKey = deriveKeyFromPassword(password, kdfSalt, kdfIterations);
-    }
-    console.log('[ZK] Derived key length:', derivedKey.length);
-
-    // Extract IV
-    const iv = zkData.masterKeyIV || zkData.kdf_iv;
-    if (!iv) {
-      throw new Error('Master key IV is missing');
-    }
-
-    // Decrypt master key
-    console.log('[ZK] Decrypting master key...');
-    const masterKey = decryptMasterKey(encryptedMasterKey, derivedKey, iv);
-    console.log('[ZK] Master key decrypted successfully');
-
-    // Store in session
-    zkSession.setMasterKey(masterKey);
-    zkSession.setDerivedKey(derivedKey);
-
-    console.log('[ZK] Session unlocked successfully!');
+  // Guard 1: Already unlocked - skip expensive Argon2
+  if (zkSession.isSessionUnlocked()) {
+    console.log('[ZK] Session already unlocked, skipping duplicate unlock');
     return true;
-  } catch (error) {
-    console.error('[ZK] Failed to unlock ZK session:', (error as Error).message);
-    return false;
   }
+
+  // Guard 2: Unlock already in progress - share the promise
+  if (unlockInFlight) {
+    console.log('[ZK] Unlock already in progress, waiting for existing operation');
+    return unlockInFlight;
+  }
+
+  // Start the unlock operation
+  unlockInFlight = (async () => {
+    try {
+      console.log('[ZK] Starting session unlock...');
+
+      const {
+        kdfSalt,
+        encryptedMasterKey,
+        kdfAlgorithm = 'argon2id',
+        kdfIterations = ZK_CONSTANTS.KDF_ITERATIONS,
+      } = zkData;
+
+      if (!kdfSalt) {
+        throw new Error('KDF salt is missing');
+      }
+      if (!encryptedMasterKey) {
+        throw new Error('Encrypted master key is missing');
+      }
+
+      // Derive key from password using appropriate algorithm
+      let derivedKey: Uint8Array;
+      if (kdfAlgorithm === 'argon2id') {
+        const saltBytes =
+          typeof kdfSalt === 'string'
+            ? new Uint8Array(
+                (kdfSalt.match(/.{1,2}/g) || []).map((byte) => parseInt(byte, 16))
+              )
+            : kdfSalt;
+        derivedKey = await deriveKeyArgon2id(password, saltBytes);
+      } else {
+        derivedKey = deriveKeyFromPassword(password, kdfSalt, kdfIterations);
+      }
+
+      // Extract IV
+      const iv = zkData.masterKeyIV || zkData.kdf_iv;
+      if (!iv) {
+        throw new Error('Master key IV is missing');
+      }
+
+      // Decrypt master key
+      const masterKey = decryptMasterKey(encryptedMasterKey, derivedKey, iv);
+
+      // Store in session
+      zkSession.setMasterKey(masterKey);
+      zkSession.setDerivedKey(derivedKey);
+
+      console.log('[ZK] Session unlocked successfully');
+      return true;
+    } catch (error) {
+      console.error('[ZK] Failed to unlock ZK session:', (error as Error).message);
+      return false;
+    } finally {
+      // Clear the in-flight guard
+      unlockInFlight = null;
+    }
+  })();
+
+  return unlockInFlight;
 }
 
 /**

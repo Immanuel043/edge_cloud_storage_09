@@ -547,9 +547,17 @@ class VideoTranscoder:
         return self._progress.get(file_id)
 
     def is_cached(self, file_id: str) -> bool:
-        """Check if transcoded file exists in cache."""
+        """Check if transcoded file exists in cache and is complete (not still being written)."""
+        # If transcoding is still in progress, file is not ready even if it exists
+        if self.is_inflight(file_id):
+            return False
         target_path = os.path.join(self.OUTPUT_DIR, f"{file_id}.mp4")
         return os.path.exists(target_path)
+
+    def is_inflight(self, file_id: str) -> bool:
+        """Check if a transcoding task is currently running for this file."""
+        task = self._inflight.get(file_id)
+        return task is not None and not task.done()
 
     async def _transcode_snapshot(self, snapshot, encryption_service, target_path: str, decision: str = 'transcode'):
         file_id = snapshot.id

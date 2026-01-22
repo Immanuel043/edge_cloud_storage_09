@@ -768,6 +768,7 @@ async def login_zero_knowledge(
             "recovery_phrase_enabled": user.recovery_phrase_enabled
         },
         "encrypted_master_key": user.encrypted_master_key,
+        "master_key_iv": user.master_key_iv,  # Required for decrypting master key
         "kdf_salt": user.kdf_salt.hex(),
         "kdf_params": {
             "algorithm": user.kdf_algorithm,

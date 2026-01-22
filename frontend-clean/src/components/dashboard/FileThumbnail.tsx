@@ -73,7 +73,7 @@ const getFileTypeIcon = (fileName: string | undefined, size: number = 48): React
  *
  * Displays file thumbnails with lazy loading and ZK decryption support.
  */
-const FileThumbnail: React.FC<FileThumbnailProps> = ({
+const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
   file,
   size = 'medium',
   darkMode = false,
@@ -343,7 +343,8 @@ const FileThumbnail: React.FC<FileThumbnailProps> = ({
     file.file_key_iv,
     canPreview,
     file.file_id,
-    thumbnailUrl,
+    // Note: thumbnailUrl removed from dependencies - it was causing re-renders
+    // The cleanup function still has access to it via closure
   ]);
 
   // Size mapping
@@ -424,5 +425,17 @@ const FileThumbnail: React.FC<FileThumbnailProps> = ({
     </div>
   );
 };
+
+// Memoize to prevent re-renders when parent refreshes file list
+const FileThumbnail = React.memo(FileThumbnailInner, (prevProps, nextProps) => {
+  // Only re-render if these specific props actually change
+  return (
+    prevProps.file.id === nextProps.file.id &&
+    prevProps.file.updated_at === nextProps.file.updated_at &&
+    prevProps.size === nextProps.size &&
+    prevProps.darkMode === nextProps.darkMode &&
+    prevProps.className === nextProps.className
+  );
+});
 
 export default FileThumbnail;

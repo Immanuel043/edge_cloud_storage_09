@@ -544,8 +544,46 @@ async def download_file(
     # Remove None values
     base_headers = {k: v for k, v in base_headers.items() if v is not None}
     
-    # Handle HEAD request
+    # Handle HEAD request - check if video needs transcoding when compatible=true
     if request.method == "HEAD":
+        # For videos with compatible=true, check if transcoding is needed/in-progress
+        if compatible and mime_type.startswith('video/') and not original:
+            from ..services.video_transcoder import video_transcoder
+            
+            file_id_str = str(file_id)
+            
+            # Check if proactively optimized version exists
+            if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+                # Optimized version ready - return 200
+                headers = {**base_headers, "Content-Length": str(os.path.getsize(file_obj.optimized_path))}
+                headers["X-Video-Transcoded"] = "true"
+                return Response(status_code=200, headers=headers)
+            
+            # Check if transcoded version is cached
+            if video_transcoder.is_cached(file_id_str):
+                target_path = video_transcoder._target_path(file_obj)
+                if os.path.exists(target_path):
+                    headers = {**base_headers, "Content-Length": str(os.path.getsize(target_path))}
+                    headers["X-Video-Transcoded"] = "true"
+                    return Response(status_code=200, headers=headers)
+            
+            # Check video processing status
+            if file_obj.video_processing_status in ('processing', 'queued'):
+                headers = {**base_headers, "Content-Length": "0"}
+                headers["X-Transcode-Status"] = file_obj.video_processing_status
+                return Response(status_code=202, headers=headers)
+            
+            # Check if video needs transcoding (MOV, HEVC, etc.)
+            ext = file_obj.file_name.lower().rsplit('.', 1)[-1] if '.' in file_obj.file_name else ''
+            needs_transcode = ext in video_transcoder.INCOMPATIBLE_EXTS or ext in {'mov', 'qt', 'm4v', '3gp', '3g2', 'hevc'}
+            
+            if needs_transcode:
+                # Video needs transcoding but not started yet - return 202
+                headers = {**base_headers, "Content-Length": "0"}
+                headers["X-Transcode-Status"] = "not_started"
+                return Response(status_code=202, headers=headers)
+        
+        # Non-video files or videos that don't need transcoding - return 200
         headers = {**base_headers, "Content-Length": str(total_size)}
         return Response(status_code=200, headers=headers)
     
@@ -900,6 +938,14 @@ async def get_transcode_progress(
     progress = video_transcoder.get_progress(file_id)
 
     if not progress:
+        # Check if task is running but hasn't produced progress yet
+        if video_transcoder.is_inflight(file_id):
+            return {
+                "status": "transcoding",
+                "percent": 0,
+                "file_id": file_id,
+                "message": "Transcoding starting..."
+            }
         return {
             "status": "not_started",
             "percent": 0,

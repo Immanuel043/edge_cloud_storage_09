@@ -3,16 +3,20 @@
  * This file must be imported FIRST in main.tsx before any other imports
  */
 
-import { Buffer } from 'buffer';
+// Import Buffer using namespace import for compatibility
+import * as BufferModule from 'buffer'
+
+// Get the Buffer constructor
+const BufferClass = (BufferModule as any).Buffer || BufferModule
 
 // Make Buffer available globally for libraries like bip39
-// Type assertion needed because we're adding to global scope
-(globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer;
+if (typeof globalThis !== 'undefined') {
+  (globalThis as any).Buffer = BufferClass
+}
 
 if (typeof window !== 'undefined') {
-  // Type assertion for window.Buffer
-  (window as Window & { Buffer: typeof Buffer }).Buffer = Buffer;
+  (window as any).Buffer = BufferClass
   
   // Set argon2 WASM path for argon2-browser library
-  (window as Window & { argon2WasmPath?: string }).argon2WasmPath = '/argon2.wasm';
+  (window as any).argon2WasmPath = '/argon2.wasm'
 }

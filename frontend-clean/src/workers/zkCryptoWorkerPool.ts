@@ -163,15 +163,14 @@ class ZKCryptoWorkerPool {
   }
 
   /**
-   * Derive key using Argon2id (in worker)
+   * Derive key using Argon2id
+   * Note: This runs on the MAIN THREAD, not in worker
+   * because Vite module workers don't support the argon2-browser script
    */
   async deriveKeyArgon2id(password: string, salt: Uint8Array, options: DeriveKeyOptions = {}): Promise<Uint8Array> {
-    const result = await this.execute('deriveKey', {
-      password,
-      salt: Array.from(salt),
-      options,
-    });
-    return new Uint8Array(result as ArrayBuffer);
+    // Import the main thread argon2 function
+    const { deriveKeyArgon2id } = await import('../utils/zkCryptoV2');
+    return deriveKeyArgon2id(password, salt, options);
   }
 
   /**

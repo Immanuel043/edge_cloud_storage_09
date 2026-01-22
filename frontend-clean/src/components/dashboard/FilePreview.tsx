@@ -97,7 +97,9 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
       try {
         // Check transcode progress using new API endpoint
         const progressUrl = applyToken(`${API_URL}/api/v1/files/${file.id}/transcode/progress`);
-        const response = await fetch(progressUrl);
+        const response = await fetch(progressUrl, {
+          credentials: 'include'
+        });
 
         if (cancelled) {
           return;
@@ -131,15 +133,65 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
           }
 
           if (data.status === 'not_started') {
-            // Don't return - fall through to HEAD request to check if file is already compatible
+            // Video needs transcoding but hasn't started yet
+            // Check with HEAD request first - if 202, trigger transcoding with GET
             setPreviewWarning('Checking if video needs processing...');
+            
+            const headResponse = await fetch(streamUrl, {
+              method: 'HEAD',
+              credentials: 'include'
+            });
+
+            if (cancelled) {
+              return;
+            }
+
+            if (headResponse.ok || headResponse.status === 206) {
+              // Video is already compatible, no transcoding needed
+              clearTimer();
+              setStreamReady(true);
+              setPreviewWarning(null);
+              return;
+            }
+
+            if (headResponse.status === 202) {
+              // Video needs transcoding - trigger it with a GET request
+              setPreviewWarning('Starting video conversion for browser playback...');
+              
+              // Make a GET request to trigger the transcoding (abort quickly, we just need to start it)
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 2000);
+              
+              try {
+                await fetch(streamUrl, {
+                  credentials: 'include',
+                  signal: controller.signal
+                });
+              } catch {
+                // Expected to abort or get 202 - that's fine
+              } finally {
+                clearTimeout(timeoutId);
+              }
+              
+              // Now poll for progress
+              setStreamReady(false);
+              setPreviewWarning('Preparing a browser-compatible copy. This can take a minute for large videos...');
+              scheduleRetry(2000);
+              return;
+            }
+
+            // Other status - retry
+            setPreviewWarning(`Video stream unavailable (HTTP ${headResponse.status}). Retrying...`);
+            scheduleRetry(5000);
+            return;
           }
         }
 
         // Fallback: check stream availability with HEAD request
-        // This handles cases where the video doesn't need transcoding (already compatible MP4)
+        // This handles cases where transcode/progress endpoint fails or returns unexpected data
         const headResponse = await fetch(streamUrl, {
-          method: 'HEAD'
+          method: 'HEAD',
+          credentials: 'include'
         });
 
         if (headResponse.ok || headResponse.status === 206) {
@@ -341,8 +393,8 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
           errorHint = 'This video needs additional processing. For large files, this may take a few minutes. Please try again shortly.';
           break;
         case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
-          errorMessage = 'Cannot play this video';
-          errorHint = 'This format is not supported for streaming. You can download the file to play it locally.';
+          errorMessage = 'Video still processing';
+          errorHint = 'The video conversion is still in progress. Please wait a moment and try again, or download the original file to play locally.';
           break;
         default:
           errorMessage = 'Playback unavailable';
@@ -465,21 +517,46 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
           ) : !zkDecryptProgress && loading && !isPdfFile ? (
             <div className={darkMode ? 'text-white' : 'text-gray-900'}>Loading preview...</div>
           ) : !zkDecryptProgress && fatalError ? (
-            <div className={`text-center ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              <p className="mb-4">{fatalError}</p>
+            <div className={`flex flex-col items-center text-center gap-6 p-8 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              <div className={`p-4 rounded-full ${darkMode ? 'bg-amber-900/30' : 'bg-amber-50'}`}>
+                <Loader size={32} className="text-amber-500" />
+              </div>
+              <div>
+                <h3 className={`text-lg font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {fatalError.includes('still processing') ? 'Video Still Processing' : 'Playback Issue'}
+                </h3>
+                <p className="text-sm max-w-md">{fatalError}</p>
+              </div>
               {isVideoFile && (
-                <a
-                href={downloadLink}
-                  download={file.name}
-                  className={`inline-flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-colors ${
-                    darkMode
-                      ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                      : 'bg-blue-500 hover:bg-blue-600 text-white'
-                  }`}
-                >
-                  <Download size={20} />
-                  Download Video
-                </a>
+                <div className="flex flex-col sm:flex-row items-center gap-3">
+                  <button
+                    onClick={() => {
+                      setFatalError(null);
+                      setStreamReady(false);
+                      setPreviewWarning('Checking video status...');
+                    }}
+                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
+                      darkMode
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-blue-500 hover:bg-blue-600 text-white'
+                    }`}
+                  >
+                    <RotateCw size={18} />
+                    Try Again
+                  </button>
+                  <a
+                    href={downloadLink}
+                    download={file.name}
+                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
+                      darkMode
+                        ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                        : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                    }`}
+                  >
+                    <Download size={18} />
+                    Download Original
+                  </a>
+                </div>
               )}
               {!isVideoFile && (
                 <p className="text-sm mt-2">Preview may not be available for this file type</p>
@@ -582,12 +659,40 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                 )}
               </div>
             ) : (
-              <div className={`flex flex-col items-center text-center gap-4 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-                <div className="h-12 w-12 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
-                <p>{previewWarning || 'Preparing a browser-compatible stream...'}</p>
-                <p className="text-sm opacity-70">
-                  Leave this window open—we'll start playback automatically once it's ready.
-                </p>
+              <div className={`flex flex-col items-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                <div className={`p-6 rounded-2xl ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
+                  <div className="h-16 w-16 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
+                </div>
+                <div>
+                  <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    Converting Video for Browser Playback
+                  </h3>
+                  <p className={`text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    {previewWarning || 'Preparing a browser-compatible stream...'}
+                  </p>
+                  <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                    This may take a few minutes for large or high-resolution videos.
+                    <br />
+                    Playback will start automatically once ready.
+                  </p>
+                </div>
+                <div className={`w-full max-w-xs border-t pt-4 ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                  <p className={`text-xs mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                    Can't wait? Download the original file to play locally:
+                  </p>
+                  <a
+                    href={downloadLink}
+                    download={file.name}
+                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
+                      darkMode
+                        ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                        : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                    }`}
+                  >
+                    <Download size={18} />
+                    Download Original
+                  </a>
+                </div>
               </div>
             )
           ) : isAudioFile ? (

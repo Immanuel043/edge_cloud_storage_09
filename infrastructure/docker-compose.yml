@@ -155,7 +155,8 @@ services:
 
   # ClickHouse for Analytics
   clickhouse:
-    image: clickhouse/clickhouse-server:23.10
+    image: clickhouse/clickhouse-server:24.3
+    platform: linux/arm64
     container_name: edge-clickhouse
     ports:
       - "8123:8123"
@@ -171,9 +172,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
         reservations:
-          memory: 256M
+          memory: 512M
 
   # Zookeeper for Kafka
   zookeeper:

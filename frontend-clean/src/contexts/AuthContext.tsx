@@ -617,12 +617,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const data = await zkAuthService.loginZK(email, passwordHash);
 
     // Unlock ZK session with the encrypted master key from backend
+    // Use master_key_iv from login response, or fall back to kdf_iv from kdf_params
+    const masterKeyIV = data.master_key_iv || kdfParams.kdf_iv;
+    
     const unlocked = await unlockZKSession(password, {
       kdfSalt: kdfParams.kdf_salt,
       encryptedMasterKey: data.encrypted_master_key,
       kdfAlgorithm: kdfParams.kdf_algorithm === 'pbkdf2' ? 'pbkdf2' : 'argon2id',
       kdfIterations: kdfParams.kdf_iterations,
-      masterKeyIV: data.master_key_iv,
+      masterKeyIV: masterKeyIV,
     });
 
     if (!unlocked) {
@@ -636,14 +639,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setZkEnabled(true);
     setZkSessionUnlocked(true);
 
-    // Store ZK data for session
+    // Store ZK data for session (use consistent masterKeyIV)
     const zkDataObj: ZKData = {
       kdfSalt: kdfParams.kdf_salt,
       kdfAlgorithm: kdfParams.kdf_algorithm === 'pbkdf2' ? 'pbkdf2' : 'argon2id',
       kdfIterations: kdfParams.kdf_iterations,
       kdfMemory: kdfParams.kdf_memory || undefined,
       encryptedMasterKey: data.encrypted_master_key,
-      masterKeyIV: data.master_key_iv,
+      masterKeyIV: masterKeyIV,  // Use the same IV that was used for unlock
     };
     setZkData(zkDataObj);
 

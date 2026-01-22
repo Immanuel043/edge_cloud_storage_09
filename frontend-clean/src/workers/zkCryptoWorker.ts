@@ -72,82 +72,35 @@ interface WorkerResponse {
 
 // Worker-specific imports will be loaded dynamically
 let cryptoModule: CryptoModule | null = null;
-let argon2Module: Argon2Module | null = null;
 
 /**
  * Initialize crypto modules
+ * Note: Argon2 is NOT used in the worker - it runs on the main thread
+ * because Vite module workers don't support importScripts()
  */
 async function initModules(): Promise<void> {
-  if (cryptoModule && argon2Module) return;
+  if (cryptoModule) return;
 
-  // Dynamic imports for worker context
-  const [noble, argon2] = await Promise.all([
+  // Import noble crypto modules
+  const [noble, ciphers, sha2, utils, cipherUtils] = await Promise.all([
     import('@noble/hashes/hkdf.js'),
-    import('argon2-browser'),
-  ]);
-
-  // Import additional modules
-  const [ciphers, sha2, utils] = await Promise.all([
     import('@noble/ciphers/aes.js'),
     import('@noble/hashes/sha2.js'),
     import('@noble/hashes/utils.js'),
+    import('@noble/ciphers/utils.js'),
   ]);
 
   cryptoModule = {
-    hkdf: noble.hkdf as any, // Type mismatch with CHash vs function
+    hkdf: noble.hkdf as any,
     gcm: ciphers.gcm,
     sha256: sha2.sha256,
     utf8ToBytes: utils.utf8ToBytes,
-    randomBytes: (await import('@noble/ciphers/utils.js')).randomBytes,
+    randomBytes: cipherUtils.randomBytes,
   };
-
-  argon2Module = (argon2 as { default?: Argon2Module }).default ?? (argon2 as unknown as Argon2Module);
 }
 
-/**
- * Derive key using Argon2id with memory fallback
- */
-async function deriveKeyArgon2id(
-  password: string,
-  salt: ArrayBuffer,
-  options: DeriveKeyOptions = {}
-): Promise<Uint8Array> {
-  await initModules();
-
-  if (!argon2Module) {
-    throw new Error('Argon2 module not initialized');
-  }
-
-  const memoryLevels = [65536, 32768, 16384]; // 64MB, 32MB, 16MB
-
-  for (const memory of memoryLevels) {
-    try {
-      const result = await argon2Module.hash({
-        pass: password,
-        salt: new Uint8Array(salt),
-        time: options.iterations ?? 3,
-        mem: memory,
-        parallelism: options.parallelism ?? 4,
-        hashLen: 32,
-        type: argon2Module.ArgonType.Argon2id,
-      });
-
-      return new Uint8Array(result.hash);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '';
-      const isMemoryError =
-        errorMessage.includes('memory') ||
-        errorMessage.includes('allocation');
-
-      if (!isMemoryError || memory === 16384) {
-        throw error;
-      }
-      // Continue to next memory level
-    }
-  }
-
-  throw new Error('Argon2id failed at all memory levels');
-}
+// Note: Argon2 key derivation is done on the main thread, not in the worker
+// This worker only handles HKDF and chunk encryption/decryption
 
 /**
  * Derive a key using HKDF-SHA256
@@ -245,16 +198,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
 
     switch (type) {
       case 'deriveKey': {
-        if (!payload.password || !payload.salt) {
-          throw new Error('Missing password or salt');
-        }
-        result = await deriveKeyArgon2id(
-          payload.password,
-          payload.salt,
-          payload.options
-        );
-        transfer = [result.buffer];
-        break;
+        // Argon2 key derivation is not supported in worker
+        // Use main thread's deriveKeyArgon2id instead
+        throw new Error('deriveKey (Argon2) is not supported in worker. Use main thread.');
       }
 
       case 'deriveKeyHKDF': {

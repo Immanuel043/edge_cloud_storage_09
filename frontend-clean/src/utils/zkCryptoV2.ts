@@ -166,7 +166,8 @@ let argon2Module: Argon2Module | null = null;
 let argon2LoadPromise: Promise<Argon2Module> | null = null;
 
 /**
- * Load Argon2 via ES module import (consistent with web worker implementation)
+ * Load Argon2 - uses the global argon2 object loaded via script tag in index.html
+ * This is more reliable than dynamic imports for WASM-based modules
  */
 async function getArgon2(): Promise<Argon2Module> {
   if (argon2Module) return argon2Module;
@@ -174,20 +175,39 @@ async function getArgon2(): Promise<Argon2Module> {
 
   argon2LoadPromise = (async () => {
     try {
-      // Dynamic import for better code splitting and tree-shaking
-      const argon2 = await import('argon2-browser');
+      // argon2-browser is loaded via script tag in index.html
+      // It exposes window.argon2 with { hash, ArgonType, ... }
+      const globalArgon2 = (window as any).argon2;
       
-      // Handle both default and named exports (consistent with worker implementation)
-      argon2Module = (argon2 as { default?: Argon2Module }).default ?? (argon2 as unknown as Argon2Module);
-      
-      if (!argon2Module || typeof argon2Module.hash !== 'function') {
-        throw new Error('Argon2 module loaded but hash function not found');
+      if (globalArgon2 && typeof globalArgon2.hash === 'function') {
+        argon2Module = globalArgon2 as Argon2Module;
+        console.log('[ZK] Argon2 loaded from global (script tag)');
+        return argon2Module;
       }
       
-      console.log('[ZK] Argon2 loaded via ES module import');
-      return argon2Module;
+      // If not available yet, wait a bit and retry (script might still be loading)
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const retryArgon2 = (window as any).argon2;
+      if (retryArgon2 && typeof retryArgon2.hash === 'function') {
+        argon2Module = retryArgon2 as Argon2Module;
+        console.log('[ZK] Argon2 loaded from global (after retry)');
+        return argon2Module;
+      }
+      
+      // Log what's available for debugging
+      console.error('[ZK] Argon2 not found on window. Available:', {
+        hasArgon2: 'argon2' in window,
+        argon2Type: typeof (window as any).argon2,
+        argon2Keys: (window as any).argon2 ? Object.keys((window as any).argon2) : [],
+      });
+      
+      throw new Error(
+        'Argon2 module not loaded. Make sure argon2-browser.js is loaded via script tag in index.html'
+      );
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[ZK] Argon2 loading error:', error);
       throw new Error(`Failed to load Argon2 module: ${errorMessage}`);
     }
   })();

@@ -2,30 +2,59 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import wasm from 'vite-plugin-wasm'
 import topLevelAwait from 'vite-plugin-top-level-await'
-import { copyFileSync, existsSync, mkdirSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'fs'
 import { resolve, dirname } from 'path'
 import type { Plugin } from 'vite'
 
-// Copy argon2 wasm file to public folder for runtime loading
-function copyArgon2Wasm(): Plugin {
-  return {
-    name: 'copy-argon2-wasm',
-    buildStart() {
-      const wasmSrc = resolve('node_modules/argon2-browser/dist/argon2.wasm')
-      const wasmDest = resolve('public/argon2.wasm')
-      if (existsSync(wasmSrc)) {
-        const destDir = dirname(wasmDest)
+// Copy argon2 files to public folder for runtime loading
+function copyArgon2Files(): Plugin {
+  const filesToCopy = [
+    { src: 'node_modules/argon2-browser/dist/argon2.wasm', dest: 'public/argon2.wasm' },
+    // Use bundled version which includes everything (no dynamic imports)
+    { src: 'node_modules/argon2-browser/dist/argon2-bundled.min.js', dest: 'public/argon2-browser.js' },
+  ]
+  
+  function copyFiles() {
+    for (const { src, dest } of filesToCopy) {
+      const srcPath = resolve(src)
+      const destPath = resolve(dest)
+      
+      if (!existsSync(srcPath)) {
+        console.warn(`[vite-plugin] ${src} not found`)
+        continue
+      }
+      
+      try {
+        const destDir = dirname(destPath)
         if (!existsSync(destDir)) {
           mkdirSync(destDir, { recursive: true })
         }
-        copyFileSync(wasmSrc, wasmDest)
+        copyFileSync(srcPath, destPath)
+      } catch (error) {
+        console.error(`[vite-plugin] Failed to copy ${src}:`, error)
       }
+    }
+    console.log('[vite-plugin] Copied argon2 files to public directory')
+  }
+  
+  return {
+    name: 'copy-argon2-files',
+    buildStart() {
+      copyFiles()
+    },
+    configureServer() {
+      copyFiles()
     },
   }
 }
 
 export default defineConfig({
-  plugins: [react(), wasm(), topLevelAwait(), copyArgon2Wasm()],
+  plugins: [
+    react(),
+    wasm(),
+    topLevelAwait(),
+    copyArgon2Files(),
+  ],
   server: {
     port: 3000,
     proxy: {
@@ -34,12 +63,10 @@ export default defineConfig({
     },
   },
   define: {
-    // Polyfill for libraries that check for Buffer (like bip39)
     global: 'globalThis',
   },
   resolve: {
     alias: {
-      // Provide buffer polyfill for libraries that need it
       buffer: 'buffer',
       '@': resolve(__dirname, './src'),
     },
@@ -47,10 +74,9 @@ export default defineConfig({
   build: {
     target: 'esnext',
     rollupOptions: {
-      // Don't fail on unresolved wasm imports
       onwarn(warning, warn) {
-        // Ignore wasm-related warnings
-        if (warning.message && warning.message.includes('argon2.wasm')) {
+        // Ignore argon2 WASM warnings
+        if (warning.message?.includes('argon2')) {
           return
         }
         warn(warning)
@@ -59,14 +85,11 @@ export default defineConfig({
   },
   optimizeDeps: {
     esbuildOptions: {
-      // Node.js global to browser globalThis
       define: {
         global: 'globalThis',
       },
     },
-    // Pre-bundle buffer to ensure it's available
     include: ['buffer'],
-    // Exclude these from pre-bundling - they need special handling
     exclude: ['bip39', 'argon2-browser'],
   },
 })
