@@ -8,14 +8,14 @@ export interface DecryptChunkMessage {
     encryptedChunk: ArrayBuffer;
     fileKey: ArrayBuffer;
     chunkIndex: number;
-    jobId: string;
+    jobId: number;
   };
 }
 
 export interface DecryptSuccessMessage {
   type: 'DECRYPT_SUCCESS';
   data: {
-    jobId: string;
+    jobId: number;
     chunkIndex: number;
     decryptedChunk: ArrayBuffer;
   };
@@ -24,7 +24,7 @@ export interface DecryptSuccessMessage {
 export interface DecryptErrorMessage {
   type: 'DECRYPT_ERROR';
   data: {
-    jobId?: string;
+    jobId?: number;
     chunkIndex?: number;
     error: string;
   };

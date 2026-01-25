@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { Shield, ArrowUpCircle, X, Loader, CheckCircle, AlertTriangle, Lock } from 'lucide-react';
 import { useStorage } from '../../contexts/StorageContext';
 import { useAuth } from '../../contexts/AuthContext';
-import type { MigrationStats, MigrationProgress, MigrationResult } from './types';
+import type { MigrationProgress, MigrationResult } from './types';
 import { getErrorMessage } from './types';
+import { formatMigrationStats, type MigrationStats } from '../../utils/zkMigration';
 
 /**
  * MigrationBanner Component
@@ -18,7 +19,6 @@ const MigrationBanner: React.FC = () => {
   const migrateAllFiles = storageContext.migrateAllFiles as () => Promise<MigrationResult>;
   const dismissMigrationPrompt = storageContext.dismissMigrationPrompt as () => void;
   const isMigrationPromptDismissed = storageContext.isMigrationPromptDismissed as () => boolean;
-  const formatMigrationStats = storageContext.formatMigrationStats as (stats: unknown) => string;
 
   const { zkEnabled, zkSessionUnlocked } = useAuth();
 

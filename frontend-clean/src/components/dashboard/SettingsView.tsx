@@ -16,14 +16,10 @@ import {
   Database,
   Video,
   Search,
-  RefreshCw,
-  Crown,
-  TrendingUp
+  RefreshCw
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
-import { useSubscription } from '../../contexts/SubscriptionContext';
 import { generateZKRegistrationData, unlockZKSession } from '../../services/zkEncryptionService';
 import * as zkAuthService from '../../services/zkAuthService';
 import { ZK_STORAGE } from '../../config/constants';
@@ -80,10 +76,8 @@ function formatBytes(bytes: number, decimals = 2): string {
 type UpgradeStep = 1 | 2 | 3 | 4;
 
 const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
-  const navigate = useNavigate();
   const { user, zkEnabled } = useAuth();
   const { storageStats } = useStorage();
-  const { subscription, loading: subscriptionLoading } = useSubscription();
 
   // ZK Upgrade state
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false);
@@ -612,109 +606,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
         {zkEnabled && (
           <RecoverySettings />
         )}
-
-        {/* Billing & Plans Section */}
-        <div className={`p-6 rounded-lg ${
-          darkMode ? 'bg-gray-800' : 'bg-white'
-        } shadow-sm`}>
-          <h3 className={`text-lg font-semibold mb-4 ${
-            darkMode ? 'text-white' : 'text-gray-900'
-          }`}>
-            Billing & Plans
-          </h3>
-
-          {subscription && !subscriptionLoading ? (
-            <div className="space-y-4">
-              {/* Current Plan Card */}
-              <div className={`p-4 rounded-lg border-2 ${
-                darkMode
-                  ? 'bg-gray-700/50 border-blue-500/30'
-                  : 'bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200'
-              }`}>
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Crown className={`${
-                        (subscription.plan as { tier_name?: string })?.tier_name === 'free'
-                          ? 'text-gray-500'
-                          : 'text-yellow-500'
-                      }`} size={20} />
-                      <h4 className={`font-semibold ${
-                        darkMode ? 'text-white' : 'text-gray-900'
-                      }`}>
-                        {String((subscription.plan as { display_name?: string })?.display_name || subscription.plan_name || 'Free Plan')}
-                      </h4>
-                      {(subscription.plan as { tier_name?: string })?.tier_name !== 'free' && (
-                        <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800 rounded-full">
-                          Active
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Storage Info */}
-                    <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      <p className="mb-1">
-                        <span className="font-medium">Storage:</span>{' '}
-                        {(subscription.plan as { storage_gb?: number })?.storage_gb
-                          ? (subscription.plan as { storage_gb: number }).storage_gb >= 1024
-                            ? `${((subscription.plan as { storage_gb: number }).storage_gb / 1024).toFixed(0)} TB`
-                            : `${(subscription.plan as { storage_gb: number }).storage_gb} GB`
-                          : '5 GB'}
-                      </p>
-
-                      {/* Billing Cycle for paid plans */}
-                      {(() => {
-                        const billingCycle = subscription.billing_cycle;
-                        if (billingCycle && typeof billingCycle === 'string') {
-                          return (
-                            <p className="mb-1">
-                              <span className="font-medium">Billing:</span>{' '}
-                              {billingCycle.replace('_', ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-                            </p>
-                          );
-                        }
-                        return null;
-                      })()}
-
-                      {/* Next payment for paid plans */}
-                      {(() => {
-                        const nextPayment = subscription.next_payment_at;
-                        if (nextPayment) {
-                          return (
-                            <p className={`text-xs mt-2 ${
-                              darkMode ? 'text-gray-400' : 'text-gray-600'
-                            }`}>
-                              Next payment: {new Date(String(nextPayment)).toLocaleDateString('en-US', {
-                                month: 'long' as const,
-                                day: 'numeric' as const,
-                                year: 'numeric' as const
-                              })}
-                            </p>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Upgrade Button */}
-              <button
-                onClick={() => { navigate('/pricing'); }}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-lg font-medium transition-all shadow-sm"
-                type="button"
-              >
-                <TrendingUp size={18} />
-                Upgrade Plans
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className={`animate-spin ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} size={24} />
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Upgrade Modal */}

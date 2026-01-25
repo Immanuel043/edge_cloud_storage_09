@@ -1,8 +1,8 @@
 # services/storage-service/Dockerfile
 FROM python:3.11-slim
 
-#curl installation
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+#curl and procps installation
+RUN apt-get update && apt-get install -y curl procps && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

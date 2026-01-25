@@ -339,6 +339,9 @@ const AuthPage: React.FC = () => {
       setLoading(true);
       try {
         if (enableZK) {
+          if (!loginZK) {
+            throw new Error('ZK login is not available');
+          }
           await loginZK(formData.email, formData.password);
           console.log('ZK login complete - redirecting to homepage');
           localStorage.setItem('zkEnabled', 'true');
@@ -469,6 +472,9 @@ const AuthPage: React.FC = () => {
           billingCycle
         );
 
+        if (!loginZK) {
+          throw new Error('ZK login is not available');
+        }
         await loginZK(pendingFormData.email, pendingFormData.password);
 
         setLoading(false);
@@ -513,6 +519,9 @@ const AuthPage: React.FC = () => {
 
   const handleRecoveryPhraseSetup = async (skipSessionCheck = false): Promise<void> => {
     try {
+      if (!setupRecoveryPhrase) {
+        throw new Error('Recovery phrase setup is not available');
+      }
       const result = await setupRecoveryPhrase(skipSessionCheck);
       if (result.success) {
         setRecoveryPhrase(result.recoveryPhrase);

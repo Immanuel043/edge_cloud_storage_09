@@ -45,6 +45,8 @@ import {
   base64ToBytes as base64ToBytesv2,
   encryptFilename as encryptFilenameV2,
   decryptFilename as decryptFilenameV2,
+  encryptChunkV2,
+  decryptChunkV2,
 } from '../utils/zkCryptoV2';
 
 // ==================== Type Definitions ====================
@@ -586,7 +588,7 @@ export async function prepareFileForEncryption(
 }
 
 /**
- * Encrypt a file chunk
+ * Encrypt a file chunk (V1 - backward compatibility)
  * @param chunkData - Chunk data
  * @param fileKey - File encryption key
  * @param chunkIndex - Chunk index
@@ -598,6 +600,23 @@ export function encryptFileChunk(
   chunkIndex: number
 ): { encryptedData: Uint8Array; iv: Uint8Array; tag: Uint8Array } {
   return encryptChunk(chunkData, fileKey, chunkIndex);
+}
+
+/**
+ * Encrypt a file chunk with V2 encryption (HKDF + AAD)
+ * @param chunkData - Chunk data
+ * @param fileKey - File encryption key
+ * @param fileId - File/Upload ID (used in AAD to prevent chunk reordering)
+ * @param chunkIndex - Chunk index
+ * @returns Encrypted chunk as single Uint8Array (VERSION + IV + ciphertext + tag)
+ */
+export function encryptFileChunkV2(
+  chunkData: Uint8Array,
+  fileKey: Uint8Array,
+  fileId: string,
+  chunkIndex: number
+): Uint8Array {
+  return encryptChunkV2(chunkData, fileKey, fileId, chunkIndex);
 }
 
 /**
@@ -666,22 +685,113 @@ export async function encryptFile(
   };
 }
 
+/**
+ * Encrypt entire file in chunks using V2 encryption (HKDF + AAD)
+ * @param file - File to encrypt
+ * @param fileId - File/Upload ID (used in AAD to prevent chunk reordering attacks)
+ * @param progressCallback - Progress callback (bytesEncrypted, totalBytes)
+ * @returns { encryptedChunks, fileKey, encryptedFileKey, metadata }
+ */
+export async function encryptFileV2(
+  file: File,
+  fileId: string,
+  progressCallback: ((bytesEncrypted: number, totalBytes: number) => void) | null = null
+): Promise<EncryptedFileResult> {
+  const masterKey = zkSession.getMasterKey();
+
+  // Generate file encryption key
+  const fileKey = generateFileKey();
+
+  // Encrypt file key with master key
+  const { encryptedFileKey, iv: fileKeyIV } = encryptFileKey(fileKey, masterKey);
+
+  // Read file as ArrayBuffer
+  const fileBuffer = await file.arrayBuffer();
+  const fileData = new Uint8Array(fileBuffer);
+
+  // Calculate file hash (before encryption)
+  const fileHash = computeFileHash(fileData);
+
+  const chunkSize = ZK_CONSTANTS.CHUNK_SIZE;
+  const totalChunks = Math.ceil(fileData.length / chunkSize);
+  const encryptedChunks: EncryptedChunk[] = [];
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(start + chunkSize, fileData.length);
+    const chunkData = fileData.slice(start, end);
+
+    // Use V2 encryption with AAD (fileId + chunkIndex)
+    // Returns: VERSION(1 byte) + IV(12 bytes) + ciphertext + tag(16 bytes)
+    const encryptedChunkData = encryptChunkV2(chunkData, fileKey, fileId, i);
+
+    // For V2 chunks, store the complete encrypted data (including VERSION byte)
+    // The VERSION byte allows automatic detection during decryption
+    // Set iv/tag to empty arrays since they're embedded in the data
+    encryptedChunks.push({
+      index: i,
+      data: encryptedChunkData, // Complete V2 chunk with VERSION byte
+      iv: new Uint8Array(0), // Empty - IV is in data
+      tag: new Uint8Array(0), // Empty - tag is in data
+      size: encryptedChunkData.length,
+    });
+
+    if (progressCallback) {
+      progressCallback(end, fileData.length);
+    }
+  }
+
+  return {
+    encryptedChunks,
+    encryptedFileKey,
+    fileKeyIV,
+    fileKey, // Include plaintext file key for thumbnail encryption
+    fileHash,
+    totalChunks,
+    originalSize: file.size,
+    encryptedSize: encryptedChunks.reduce((sum, chunk) => sum + chunk.size, 0),
+    metadata: {
+      fileName: file.name,
+      mimeType: file.type,
+      encryptionAlgorithm: 'AES-256-GCM',
+    },
+  };
+}
+
 // ==================== File Decryption ====================
 
 /**
- * Decrypt a file chunk
- * @param encryptedChunk - Encrypted chunk data (format: IV + ciphertext + tag)
+ * Decrypt a file chunk with automatic version detection
+ * @param encryptedChunk - Encrypted chunk data
  * @param fileKey - File decryption key
- * @param chunkIndex - Chunk index (optional, for logging/AAD)
+ * @param fileIdOrChunkIndex - File ID (for V2) or chunk index (for V1)
+ * @param chunkIndex - Chunk index (optional, only used if first param is fileId)
  * @returns Decrypted chunk data
  */
 export function decryptFileChunk(
   encryptedChunk: Uint8Array,
   fileKey: Uint8Array,
-  chunkIndex: number = 0
+  fileIdOrChunkIndex: string | number = 0,
+  chunkIndex?: number
 ): Uint8Array {
-  // IV is now prepended to the encrypted chunk, no need to pass separately
-  return decryptChunk(encryptedChunk, fileKey, chunkIndex);
+  // Auto-detect version from first byte
+  const version = encryptedChunk[0];
+
+  if (version === ZK_CONSTANTS_V2.VERSION) {
+    // V2 encryption - requires fileId for AAD
+    const fileId = typeof fileIdOrChunkIndex === 'string' ? fileIdOrChunkIndex : '';
+    const index = chunkIndex !== undefined ? chunkIndex : 0;
+
+    if (!fileId) {
+      console.warn('[ZK] V2 chunk detected but no fileId provided, decryption may fail');
+    }
+
+    return decryptChunkV2(encryptedChunk, fileKey, fileId, index);
+  }
+
+  // V1 encryption (backward compatibility)
+  const index = typeof fileIdOrChunkIndex === 'number' ? fileIdOrChunkIndex : (chunkIndex || 0);
+  return decryptChunk(encryptedChunk, fileKey, index);
 }
 
 /**
@@ -965,6 +1075,7 @@ export default {
   // File Encryption
   prepareFileForEncryption,
   encryptFileChunk,
+  encryptFileChunkV2,
   encryptFile,
 
   // File Decryption

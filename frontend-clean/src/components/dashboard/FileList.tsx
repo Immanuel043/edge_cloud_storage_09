@@ -69,7 +69,7 @@ const FileList: React.FC<FileListProps> = ({
           key={folder.id}
           data-file-card="true"
           onClick={(e: React.MouseEvent) => {
-            onFileClick(folder.id, folderIndex, e.shiftKey);
+            onFileClick(folder.id, folderIndex, e.ctrlKey || e.metaKey, e.shiftKey);
           }}
           onDoubleClick={(e: React.MouseEvent) => {
             e.stopPropagation();
@@ -130,7 +130,7 @@ const FileList: React.FC<FileListProps> = ({
           key={file.id}
           data-file-card="true"
           onClick={(e: React.MouseEvent) => {
-            onFileClick(file.id, folders.length + fileIndex, e.shiftKey);
+            onFileClick(file.id, folders.length + fileIndex, e.ctrlKey || e.metaKey, e.shiftKey);
           }}
           onDoubleClick={(e: React.MouseEvent) => {
             e.stopPropagation();

@@ -3,6 +3,7 @@ import { sanitizeInput, validateFileType, validateFileSize } from '../utils/secu
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
 import * as zkEncryptionService from './zkEncryptionService';
+import { getWorkerPool } from './zkDecryptWorkerPool';
 import { zkStorageService } from './zkStorageService';
 
 // Threshold (bytes) above which we prefer native browser download instead of buffering in JS.
@@ -590,7 +591,7 @@ class StorageService {
     metadata: FileMetadata,
     onProgress?: (progress: Record<string, unknown>) => void
   ): Promise<DownloadResult> {
-    return zkStorageService.downloadZKFile(fileId, fileName, metadata, onProgress) as Promise<DownloadResult>;
+    return zkStorageService.downloadZKFile(fileId, fileName, metadata, onProgress);
   }
 
   // Zero-Knowledge file PREVIEW - returns blob URL for in-browser display
@@ -610,15 +611,176 @@ class StorageService {
 
   // Zero-Knowledge file download with STREAMING DECRYPTION using Web Workers
   // This is a performance-optimized version that decrypts chunks in parallel
-  // Zero-Knowledge file download with STREAMING DECRYPTION using Web Workers
-  // DELEGATED to zkStorageService for code segregation
   async downloadZKFileStreaming(
     fileId: string,
     fileName: string,
     metadata: FileMetadata,
     onProgress?: (progress: Record<string, unknown>) => void
   ): Promise<DownloadResult> {
-    return zkStorageService.downloadZKFileStreaming(fileId, fileName, metadata, onProgress) as Promise<DownloadResult>;
+    console.log('[Download] Starting ZK file download with streaming decryption:', fileName);
+
+    // 1. Check if ZK session is unlocked
+    if (!zkEncryptionService.isZKSessionUnlocked()) {
+      throw new Error('ZK session is locked. Please unlock to download encrypted files.');
+    }
+
+    try {
+      // 2. Decrypt file key with master key
+      console.log('[Download] Decrypting file key...');
+      const fileKey = zkEncryptionService.prepareFileForDecryption(
+        metadata.encrypted_file_key!,
+        metadata.file_key_iv!
+      );
+
+      // 3. Determine number of chunks
+      const chunkSize = metadata.chunk_size || 32 * 1024 * 1024; // 32MB default
+      const totalChunks = Math.ceil((metadata.file_size || 0) / chunkSize);
+      console.log(`[Download] File has ${totalChunks} chunks - using parallel decryption`);
+
+      // 4. Initialize worker pool
+      const workerPool = getWorkerPool();
+      await workerPool.init();
+
+      // 5. Download and decrypt chunks in parallel (streaming approach)
+      const decryptedChunks: Uint8Array[] = new Array(totalChunks); // Preallocate array
+      const PARALLEL_DOWNLOADS = Math.min(3, totalChunks); // Download 3 chunks at a time
+
+      let downloadedCount = 0;
+      let decryptedCount = 0;
+
+      // Helper function to download and decrypt a single chunk
+      const downloadAndDecryptChunk = async (chunkIndex: number): Promise<void> => {
+        // Download phase
+        if (onProgress) {
+          onProgress({
+            currentStage: 'downloading',
+            currentChunk: chunkIndex + 1,
+            totalChunks,
+            downloadProgress: ((downloadedCount + 1) / totalChunks) * 100,
+            decryptProgress: (decryptedCount / totalChunks) * 100,
+            bytesDownloaded: downloadedCount * chunkSize,
+            totalBytes: metadata.file_size,
+            isZK: true,
+            streaming: true,
+            workersActive: workerPool.getStats().activeJobs,
+          });
+        }
+
+        // Download encrypted chunk from ZK service (useZKService = true)
+        const encryptedChunk = await this._downloadChunkWithRetry(fileId, chunkIndex, 0, 3, true);
+        downloadedCount++;
+        console.log(`[Download] Downloaded chunk ${chunkIndex}: ${encryptedChunk.byteLength} bytes`);
+
+        // Decrypt phase (using worker pool)
+        if (onProgress) {
+          onProgress({
+            currentStage: 'decrypting',
+            currentChunk: chunkIndex + 1,
+            totalChunks,
+            downloadProgress: (downloadedCount / totalChunks) * 100,
+            decryptProgress: ((decryptedCount + 1) / totalChunks) * 100,
+            bytesDownloaded: downloadedCount * chunkSize,
+            totalBytes: metadata.file_size,
+            chunksDecrypted: decryptedCount + 1,
+            isZK: true,
+            streaming: true,
+            workersActive: workerPool.getStats().activeJobs,
+          });
+        }
+
+        // Decrypt using worker pool (this happens in parallel across workers)
+        const result = await workerPool.decryptChunk(new Uint8Array(encryptedChunk), fileKey, chunkIndex);
+
+        decryptedCount++;
+        console.log(
+          `[Download] Decrypted chunk ${chunkIndex}: ${result.decryptedChunk.length} bytes (Worker pool: ${JSON.stringify(workerPool.getStats())})`
+        );
+
+        // Store in the correct position
+        decryptedChunks[chunkIndex] = result.decryptedChunk;
+      };
+
+      // Process chunks in batches with parallel downloads/decryptions
+      for (let i = 0; i < totalChunks; i += PARALLEL_DOWNLOADS) {
+        const batchPromises: Promise<void>[] = [];
+
+        for (let j = 0; j < PARALLEL_DOWNLOADS && i + j < totalChunks; j++) {
+          const chunkIndex = i + j;
+          batchPromises.push(
+            downloadAndDecryptChunk(chunkIndex).catch((error) => {
+              // Handle corruption errors
+              const errorMessage = (error as Error).message;
+              if (
+                errorMessage &&
+                (errorMessage.includes('authentication') ||
+                  errorMessage.includes('corrupted') ||
+                  errorMessage.includes('tag mismatch') ||
+                  errorMessage.includes('Decryption failed'))
+              ) {
+                throw new Error(
+                  `File corruption detected in chunk ${chunkIndex}. The file may have been tampered with or corrupted during storage. ` +
+                    `Please try re-uploading the file or contact support if this persists.`
+                );
+              }
+              throw error;
+            })
+          );
+        }
+
+        // Wait for batch to complete
+        await Promise.all(batchPromises);
+      }
+
+      // 6. Assemble decrypted chunks into Blob
+      console.log('[Download] Assembling decrypted chunks...');
+      const blob = new Blob(decryptedChunks as BlobPart[], {
+        type: (metadata as Record<string, unknown>).mime_type as string || 'application/octet-stream',
+      });
+
+      // 7. Trigger browser download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+
+      setTimeout(() => {
+        try {
+          document.body.removeChild(a);
+        } catch (_) {
+          /* ignore */
+        }
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {
+          /* ignore */
+        }
+      }, 10000);
+
+      console.log('[Download] ZK file downloaded and decrypted successfully with streaming!');
+
+      // Final progress update
+      if (onProgress) {
+        onProgress({
+          currentStage: 'completed',
+          currentChunk: totalChunks,
+          totalChunks,
+          downloadProgress: 100,
+          decryptProgress: 100,
+          bytesDownloaded: metadata.file_size,
+          totalBytes: metadata.file_size,
+          chunksDecrypted: totalChunks,
+          isZK: true,
+          streaming: true,
+        });
+      }
+
+      return { success: true, fileName, size: metadata.file_size || 0 };
+    } catch (error) {
+      console.error('[Download] ZK streaming download failed:', error);
+      throw new Error(`ZK download failed: ${(error as Error).message}`);
+    }
   }
 
   async uploadFile(

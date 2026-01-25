@@ -263,7 +263,7 @@ export interface FileGridProps extends DarkModeProps {
   files: FileItem[];
   selectedFiles: Set<string>;
   onFolderClick: (folderId: string, folderName: string) => void;
-  onFileClick: (fileId: string, index: number, shiftKey: boolean) => void;
+  onFileClick: (fileId: string, index: number, ctrlKey: boolean, shiftKey: boolean) => void;
   onFilePreview: (file: FileItem) => void;
   onFileDownload: (fileId: string, fileName: string) => void;
   onFileShare: (fileId: string) => void;
@@ -463,7 +463,7 @@ export type ViewMode = 'grid' | 'list';
 export interface FileViewBaseProps extends DarkModeProps {
   viewMode: ViewMode;
   selectedFiles: Set<string>;
-  onFileClick: (fileId: string, index: number, shiftKey: boolean) => void;
+  onFileClick: (fileId: string, index: number, ctrlKey: boolean, shiftKey: boolean) => void;
   onFilePreview: (file: FileItem) => void;
   onFileDownload: (fileId: string, fileName: string) => void;
   onFileShare: (fileId: string) => void;
@@ -1079,7 +1079,7 @@ export interface ZKDashboardLayoutProps extends DarkModeProps {
   deleteFile: (fileId: string, fileName?: string) => Promise<void>;
   createFolder: (name: string) => Promise<void>;
   navigateToFolder: (folderId: string | null) => void;
-  selectFile: (fileId: string, index: number, shiftKey: boolean) => void;
+  selectFile: (fileId: string, index: number, ctrlKey: boolean, shiftKey: boolean) => void;
   selectAll: () => void;
   clearSelection: () => void;
   refreshFiles: () => Promise<void>;

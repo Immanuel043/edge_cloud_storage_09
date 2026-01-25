@@ -61,7 +61,6 @@ import type {
   DownloadProgressData
 } from './types';
 import { getErrorMessage } from './types';
-import type { UploadProgress } from '../../types/hooks.types';
 
 interface ErrorWithStatus extends Error {
   status?: number;
@@ -262,14 +261,18 @@ const Dashboard: React.FC = () => {
         setUploads(prev => {
           const current = prev[uploadId];
           if (!current) return prev;
+          // Map context UploadProgress (has chunk) to UploadItem (has chunksUploaded)
+          const chunksUploaded = progressData.chunk || 0;
+          const totalChunks = progressData.totalChunks || 0;
+          const bytesUploaded = totalChunks > 0 ? chunksUploaded * (file.size / totalChunks) : 0;
           return {
             ...prev,
             [uploadId]: {
               ...current,
               progress: progressData.progress,
-              chunksUploaded: progressData.chunksUploaded || 0,
-              totalChunks: progressData.totalChunks || 0,
-              bytesUploaded: progressData.bytesUploaded || (progressData.chunksUploaded || 0) * (file.size / (progressData.totalChunks || 1)),
+              chunksUploaded,
+              totalChunks,
+              bytesUploaded,
               elapsedTime: Date.now() - startTime
             }
           };
@@ -483,8 +486,8 @@ const Dashboard: React.FC = () => {
             ...prev,
             [downloadId]: {
               ...current,
-              progress: progressData.progress,
-              bytesDownloaded: progressData.bytesUploaded,
+              progress: (progressData.progress as number) || 0,
+              bytesDownloaded: (progressData.bytesUploaded as number) || 0,
               status: 'downloading'
             }
           };
@@ -945,7 +948,7 @@ const Dashboard: React.FC = () => {
           user={user}
           logout={logout}
           isUnlocked={zkSessionUnlocked}
-          onLock={lockSession}
+          onLock={lockSession || (() => {})}
           files={files}
           folders={folders}
           currentFolder={currentFolder}
@@ -954,11 +957,14 @@ const Dashboard: React.FC = () => {
           selectedFiles={selectedFiles}
           uploadFile={async (file: File, onProgress?: (data: { progress: number; chunksUploaded: number; totalChunks: number; bytesUploaded?: number }) => void) => {
             await uploadFile(file, onProgress ? (progress) => {
+              // Map context UploadProgress (has chunk) to expected format
+              const chunksUploaded = progress.chunk || 0;
+              const totalChunks = progress.totalChunks || 0;
               onProgress({
                 progress: progress.progress,
-                chunksUploaded: progress.chunksUploaded || 0,
-                totalChunks: progress.totalChunks || 0,
-                bytesUploaded: progress.bytesUploaded
+                chunksUploaded,
+                totalChunks,
+                bytesUploaded: 0 // Not provided by context
               });
             } : undefined);
           }}
@@ -966,9 +972,9 @@ const Dashboard: React.FC = () => {
             await downloadFile(fileId, fileName, onProgress ? (progress) => {
               onProgress({
                 status: (progress.status || 'downloading') as DownloadStatus,
-                progress: progress.progress,
-                bytesDownloaded: progress.bytesUploaded,
-                totalBytes: progress.totalBytes
+                progress: (progress.progress as number) || 0,
+                bytesDownloaded: (progress.bytesUploaded as number) || 0,
+                totalBytes: (progress.totalBytes as number) || 0
               });
             } : undefined);
           }}
@@ -1286,8 +1292,8 @@ const Dashboard: React.FC = () => {
       {/* Share Bundle Composer Modal */}
       {showShareBundleComposer && (
         <ShareBundleComposer
-          selectedFiles={Array.from(selectedFiles).map(id => files.find(f => f.id === id)).filter((f): f is FileItem => f !== undefined && f !== null)}
-          selectedFolders={Array.from(selectedFiles).map(id => folders.find(f => f.id === id)).filter((f): f is FolderItem => f !== undefined && f !== null)}
+          selectedFiles={Array.from(selectedFiles).map(id => files.find(f => f.id === id)).filter(f => f !== undefined && f !== null) as FileItem[]}
+          selectedFolders={Array.from(selectedFiles).map(id => folders.find(f => f.id === id)).filter(f => f !== undefined && f !== null) as FolderItem[]}
           onClose={() => setShowShareBundleComposer(false)}
           onSuccess={() => {
             setShowShareBundleComposer(false);
@@ -1393,7 +1399,7 @@ const Dashboard: React.FC = () => {
               <button
                 onClick={() => {
                   setShowLockConfirm(false);
-                  lockSession();
+                  if (lockSession) lockSession();
                 }}
                 className="flex-1 px-4 py-2.5 rounded-xl font-semibold text-white bg-gradient-to-r from-yellow-500 to-orange-600 hover:from-yellow-600 hover:to-orange-700 transition-all"
                 type="button"

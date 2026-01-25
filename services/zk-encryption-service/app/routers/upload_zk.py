@@ -21,7 +21,7 @@ Security Properties:
 """
 import structlog
 from typing import Optional
-from uuid import uuid4
+from uuid import uuid4, UUID
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
@@ -44,6 +44,9 @@ router = APIRouter()
 
 class InitUploadRequest(BaseModel):
     """Request to initialize ZK upload"""
+    # V2: Pre-generated uploadId for AAD (optional - server generates if not provided)
+    upload_id: Optional[str] = None
+
     # Encrypted filename (client-side encrypted with filename key derived from master key)
     encrypted_file_name: str = Field(..., max_length=1024)  # Base64 encoded encrypted filename
     file_name_iv: str = Field(..., max_length=64)  # Base64 encoded IV for filename encryption
@@ -210,7 +213,17 @@ async def initialize_upload(
 
     # Create file record
     file_id = uuid4()
-    upload_id = uuid4()
+    # V2: Use client-provided uploadId for AAD, or generate one
+    if request_data.upload_id:
+        try:
+            upload_id = UUID(request_data.upload_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid upload_id format"
+            )
+    else:
+        upload_id = uuid4()
 
     # Use client-encrypted filename directly (proper ZK encryption)
     encrypted_filename = request_data.encrypted_file_name
