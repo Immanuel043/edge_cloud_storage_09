@@ -263,10 +263,10 @@ const NormalDashboard: React.FC = () => {
         setUploads(prev => {
           const current = prev[uploadId];
           if (!current) return prev;
-          // Map context UploadProgress (has chunk) to UploadItem (has chunksUploaded)
-          const chunksUploaded = progressData.chunk || 0;
+          // Map context UploadProgress to UploadItem
+          const chunksUploaded = progressData.chunksUploaded || 0;
           const totalChunks = progressData.totalChunks || 0;
-          const bytesUploaded = totalChunks > 0 ? chunksUploaded * (file.size / totalChunks) : 0;
+          const bytesUploaded = progressData.bytesUploaded || 0;
           return {
             ...prev,
             [uploadId]: {

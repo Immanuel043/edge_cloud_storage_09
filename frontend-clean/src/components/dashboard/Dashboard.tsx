@@ -57,14 +57,14 @@ const Dashboard: React.FC = () => {
         selectedFiles={selectedFiles}
         uploadFile={async (file: File, onProgress?: (data: { progress: number; chunksUploaded: number; totalChunks: number; bytesUploaded?: number }) => void) => {
           await uploadFile(file, onProgress ? (progress) => {
-            // Map context UploadProgress (has chunk) to expected format
-            const chunksUploaded = progress.chunk || 0;
+            // Map context UploadProgress to expected format
+            const chunksUploaded = progress.chunksUploaded || 0;
             const totalChunks = progress.totalChunks || 0;
             onProgress({
               progress: progress.progress,
               chunksUploaded,
               totalChunks,
-              bytesUploaded: 0 // Not provided by context
+              bytesUploaded: progress.bytesUploaded || 0
             });
           } : undefined);
         }}

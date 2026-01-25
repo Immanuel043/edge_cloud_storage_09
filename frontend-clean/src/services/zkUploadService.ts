@@ -471,7 +471,7 @@ class ZKUploadService {
     );
 
     const formData = new FormData();
-    formData.append('file', new Blob([encryptedFile]));
+    formData.append('file', new Blob([encryptedFile as BlobPart]));
 
     const response = await fetch(`${API_BASE_URL}/api/v1/zk/upload/direct/${uploadId}`, {
       method: 'POST',
