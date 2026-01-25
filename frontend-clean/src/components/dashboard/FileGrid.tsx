@@ -301,7 +301,7 @@ const FileGrid: React.FC<FileGridProps> = ({
             key={folder.id || `folder-${folderIndex}`}
             data-file-card="true"
             onClick={(e: React.MouseEvent) => {
-              onFileClick(folder.id, folderIndex, e.shiftKey);
+              onFileClick(folder.id, folderIndex, e.ctrlKey || e.metaKey, e.shiftKey);
             }}
             onDoubleClick={(e: React.MouseEvent) => {
               e.stopPropagation();
@@ -344,7 +344,7 @@ const FileGrid: React.FC<FileGridProps> = ({
             key={file.id || `file-${fileIndex}`}
             data-file-card="true"
             onClick={(e: React.MouseEvent) => {
-              onFileClick(file.id, safeFolders.length + fileIndex, e.shiftKey);
+              onFileClick(file.id, safeFolders.length + fileIndex, e.ctrlKey || e.metaKey, e.shiftKey);
             }}
             onDoubleClick={(e: React.MouseEvent) => {
               e.stopPropagation();

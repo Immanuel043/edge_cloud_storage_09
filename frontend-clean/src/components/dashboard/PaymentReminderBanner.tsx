@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CreditCard, X, Calendar, AlertCircle } from 'lucide-react';
 import API_CONFIG from '../../config/api';
+import { useSubscription } from '../../contexts/SubscriptionContext';
 import type { PaymentReminderBannerProps, PaymentReminderData } from './types';
 
 type UrgencyLevel = 'red' | 'orange' | 'blue';
@@ -47,13 +48,28 @@ const colors: Record<UrgencyLevel, ColorScheme> = {
  * Shows upcoming payment reminder for subscription renewals.
  */
 const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode: _darkMode }) => {
+  const { subscription, loading: subscriptionLoading } = useSubscription();
   const [paymentData, setPaymentData] = useState<PaymentReminderData | null>(null);
   const [isVisible, setIsVisible] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [hasFetched, setHasFetched] = useState<boolean>(false);
 
   useEffect(() => {
-    fetchUpcomingPayment();
-  }, []);
+    // Only fetch once if subscription is loaded and user is on a paid plan
+    if (!subscriptionLoading && !hasFetched) {
+      if (subscription) {
+        const tierName = (subscription.plan as { tier_name?: string })?.tier_name;
+        if (tierName && tierName !== 'free') {
+          setHasFetched(true);
+          fetchUpcomingPayment();
+        } else {
+          setLoading(false);
+        }
+      } else {
+        setLoading(false);
+      }
+    }
+  }, [subscription, subscriptionLoading, hasFetched]);
 
   const wasDismissedToday = (): boolean => {
     const dismissal = localStorage.getItem('payment_reminder_dismissed');
@@ -72,6 +88,12 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
         credentials: 'include',
       });
 
+      // Handle 404 silently - means no upcoming payment or free plan
+      if (response.status === 404) {
+        setLoading(false);
+        return;
+      }
+
       if (response.ok) {
         const data = (await response.json()) as PaymentReminderData;
 
@@ -79,12 +101,12 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
           setPaymentData(data);
           setIsVisible(true);
         }
+      } else {
+        // Log other errors (non-404)
+        console.error('Failed to fetch upcoming payment:', response.status, response.statusText);
       }
     } catch (error: unknown) {
-      const errStatus = (error as { status?: number })?.status;
-      if (errStatus !== 404) {
-        console.error('Failed to fetch upcoming payment:', error);
-      }
+      console.error('Failed to fetch upcoming payment:', error);
     } finally {
       setLoading(false);
     }

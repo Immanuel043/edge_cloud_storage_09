@@ -519,6 +519,12 @@ services:
       # Logging
       LOG_LEVEL: INFO
     entrypoint: ["python", "-m", "app.scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python -m app.scheduler' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
     restart: unless-stopped
     deploy:
       resources:
@@ -560,6 +566,12 @@ services:
       # Logging
       LOG_LEVEL: INFO
     entrypoint: ["python", "-m", "app.scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python -m app.scheduler' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
     restart: unless-stopped
     deploy:
       resources:

@@ -2,7 +2,7 @@
 // This runs in a separate thread to avoid blocking the main UI
 // Uses native Web Crypto API (works in workers, no external dependencies)
 
-import type { WorkerRequestMessage, WorkerResponseMessage, DecryptChunkMessage, DecryptSuccessMessage, DecryptErrorMessage } from './types';
+import type { WorkerRequestMessage, DecryptChunkMessage, DecryptSuccessMessage, DecryptErrorMessage } from './types';
 
 // AES-GCM constants
 const GCM_IV_LENGTH = 12; // 96 bits
@@ -30,7 +30,7 @@ async function decryptChunk(
     // Import the raw key for AES-GCM
     const cryptoKey = await crypto.subtle.importKey(
       'raw',
-      fileKey,
+      fileKey as BufferSource,
       { name: 'AES-GCM' },
       false, // not extractable
       ['decrypt']
@@ -78,15 +78,16 @@ self.addEventListener('message', async (event: MessageEvent<WorkerRequestMessage
       const decryptedChunk = await decryptChunk(encryptedChunkArray, fileKeyArray, chunkIndex);
 
       // Send result back to main thread
+      const decryptedBuffer = decryptedChunk.buffer as ArrayBuffer;
       const successMessage: DecryptSuccessMessage = {
         type: 'DECRYPT_SUCCESS',
         data: {
           jobId,
           chunkIndex,
-          decryptedChunk: decryptedChunk.buffer // Transfer as ArrayBuffer
+          decryptedChunk: decryptedBuffer // Transfer as ArrayBuffer
         }
       };
-      self.postMessage(successMessage, [decryptedChunk.buffer]); // Transfer ownership for performance
+      self.postMessage(successMessage, { transfer: [decryptedBuffer] }); // Transfer ownership for performance
 
     } else if (message.type === 'PING') {
       // Health check
@@ -96,13 +97,18 @@ self.addEventListener('message', async (event: MessageEvent<WorkerRequestMessage
   } catch (error: unknown) {
     // Send error back to main thread
     const errorObj = error as { message?: string };
+    const errorData: { error: string; jobId?: number; chunkIndex?: number } = {
+      error: errorObj.message || String(error)
+    };
+
+    if (message.type === 'DECRYPT_CHUNK') {
+      errorData.jobId = message.data.jobId;
+      errorData.chunkIndex = message.data.chunkIndex;
+    }
+
     const errorMessage: DecryptErrorMessage = {
       type: 'DECRYPT_ERROR',
-      data: {
-        jobId: message.type === 'DECRYPT_CHUNK' ? message.data.jobId : undefined,
-        chunkIndex: message.type === 'DECRYPT_CHUNK' ? message.data.chunkIndex : undefined,
-        error: errorObj.message || String(error)
-      }
+      data: errorData
     };
     self.postMessage(errorMessage);
   }

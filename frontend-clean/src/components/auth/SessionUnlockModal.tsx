@@ -73,6 +73,11 @@ const SessionUnlockModal: React.FC<SessionUnlockModalProps> = ({ isOpen, onClose
     setLoading(true);
 
     try {
+      if (!unlockSession) {
+        setError('Session unlock is not available');
+        setLoading(false);
+        return;
+      }
       const success = await unlockSession(password);
       if (success) {
         setUnlocked(true);

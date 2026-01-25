@@ -3,9 +3,14 @@
  *
  * Manages a pool of Web Workers to decrypt file chunks in parallel,
  * improving performance for large file downloads.
+ *
+ * Supports both V1 and V2 encryption:
+ * - V1: Uses worker pool for parallel decryption
+ * - V2: Uses main thread (requires HKDF from @noble/hashes)
  */
 
 import type { WorkerResponseMessage } from '../workers/types';
+import * as zkEncryptionService from './zkEncryptionService';
 
 // ==================== Type Definitions ====================
 
@@ -31,6 +36,7 @@ interface DecryptChunkInput {
   encryptedChunk: Uint8Array;
   fileKey: Uint8Array;
   chunkIndex: number;
+  fileId?: string; // Required for V2 decryption (AAD verification)
 }
 
 interface PoolStats {
@@ -194,17 +200,41 @@ class ZKDecryptWorkerPool {
   }
 
   /**
-   * Decrypt a chunk using the worker pool
+   * Decrypt a chunk using the worker pool (V1) or main thread (V2)
    * @param encryptedChunk - Encrypted chunk data
    * @param fileKey - File decryption key
    * @param chunkIndex - Chunk index
+   * @param fileId - File ID (required for V2 AAD verification)
    * @returns Promise resolving to decrypted chunk
    */
   async decryptChunk(
     encryptedChunk: Uint8Array,
     fileKey: Uint8Array,
-    chunkIndex: number
+    chunkIndex: number,
+    fileId?: string
   ): Promise<DecryptResult> {
+    // Auto-detect version from first byte
+    const version = encryptedChunk[0];
+    const V2_VERSION = 0x02;
+
+    if (version === V2_VERSION) {
+      // V2 encryption - use main thread (requires HKDF from @noble/hashes)
+      console.log(`[WorkerPool] V2 chunk detected, using main thread decryption for chunk ${chunkIndex}`);
+
+      try {
+        const decryptedChunk = zkEncryptionService.decryptFileChunk(
+          encryptedChunk,
+          fileKey,
+          fileId || '',
+          chunkIndex
+        );
+        return { chunkIndex, decryptedChunk };
+      } catch (error) {
+        throw new Error(`V2 chunk ${chunkIndex} decryption failed: ${(error as Error).message}`);
+      }
+    }
+
+    // V1 encryption - use worker pool for parallel processing
     if (!this.initialized) {
       await this.init();
     }
@@ -256,7 +286,7 @@ class ZKDecryptWorkerPool {
     }
 
     const decryptPromises = chunks.map((chunk) =>
-      this.decryptChunk(chunk.encryptedChunk, chunk.fileKey, chunk.chunkIndex)
+      this.decryptChunk(chunk.encryptedChunk, chunk.fileKey, chunk.chunkIndex, chunk.fileId)
     );
 
     return Promise.all(decryptPromises);

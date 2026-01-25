@@ -98,6 +98,9 @@ const RecoverySettings: React.FC = () => {
     setError('');
 
     try {
+      if (!setupRecoveryPhrase) {
+        throw new Error('Recovery phrase setup is not available');
+      }
       // Call the AuthContext setupRecoveryPhrase function
       const result = await setupRecoveryPhrase();
       if (result && result.recoveryPhrase) {

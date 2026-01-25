@@ -24,6 +24,7 @@ interface UploadInitZKRequest {
   encrypted_file_key: string;
   file_key_iv: string;
   encryption_algorithm: string;
+  encryption_version?: number;
   mime_type: string;
   folder_id: string | null;
 }
@@ -136,11 +137,12 @@ class UploadService {
         encrypted_file_key: encryptedFileKey,
         file_key_iv: fileKeyIV,
         encryption_algorithm: 'AES-256-GCM',
+        encryption_version: 2, // V2 encryption (HKDF + AAD for enhanced security)
         mime_type: file.type,
         folder_id: folderId,
       };
 
-      const response = await fetch(`${API_BASE_URL}/api/v1/upload/init/zk`, {
+      const response = await fetch(`${API_BASE_URL}/api/v1/zk/upload/init`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -246,7 +248,7 @@ class UploadService {
       }
 
       // Step 3: Complete upload
-      const result = await this._completeUpload(upload_id);
+      const result = await this._completeUpload(upload_id, zkEnabled, total_chunks);
 
       this.activeUploads.delete(upload_id);
       return result;
@@ -341,15 +343,20 @@ class UploadService {
         const chunkArrayBuffer = await chunkBlob.arrayBuffer();
         const chunkBytes = new Uint8Array(chunkArrayBuffer);
 
-        // Encrypt chunk with file key
-        const encryptResult = zkEncryptionService.encryptFileChunk(chunkBytes, fileKey, chunkIndex);
-        const { encryptedData } = encryptResult;
+        // Encrypt chunk with V2 encryption (HKDF + AAD)
+        // V2 returns single Uint8Array: VERSION + IV + ciphertext + tag
+        const encryptedChunk = zkEncryptionService.encryptFileChunkV2(
+          chunkBytes,
+          fileKey,
+          uploadId, // Use uploadId as fileId for AAD binding
+          chunkIndex
+        );
 
         // Convert encrypted bytes to Blob
-        finalChunkData = new Blob([encryptedData as BlobPart]);
+        finalChunkData = new Blob([encryptedChunk as BlobPart]);
 
         console.log(
-          `[Upload] Encrypted chunk ${chunkIndex}: ${chunkBytes.length} → ${encryptedData.length} bytes`
+          `[Upload] Encrypted chunk ${chunkIndex} (V2): ${chunkBytes.length} → ${encryptedChunk.length} bytes`
         );
       } catch (encryptError) {
         const errorMessage =
@@ -361,16 +368,19 @@ class UploadService {
 
     const formData = new FormData();
     formData.append('chunk', finalChunkData);
+    formData.append('chunk_index', chunkIndex.toString());
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/v1/upload/chunk/${uploadId}?chunk_index=${chunkIndex}`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          body: formData,
-        }
-      );
+      // Use ZK endpoint for ZK uploads, regular endpoint for non-ZK uploads
+      const endpoint = zkEnabled
+        ? `${API_BASE_URL}/api/v1/zk/upload/chunk/${uploadId}`
+        : `${API_BASE_URL}/api/v1/upload/chunk/${uploadId}?chunk_index=${chunkIndex}`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -428,11 +438,29 @@ class UploadService {
   /**
    * Complete the upload
    */
-  private async _completeUpload(uploadId: string): Promise<UploadCompleteResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/upload/complete/${uploadId}`, {
+  private async _completeUpload(
+    uploadId: string,
+    zkEnabled?: boolean,
+    totalChunks?: number
+  ): Promise<UploadCompleteResponse> {
+    // Use ZK endpoint for ZK uploads, regular endpoint for non-ZK uploads
+    const endpoint = zkEnabled
+      ? `${API_BASE_URL}/api/v1/zk/upload/complete/${uploadId}`
+      : `${API_BASE_URL}/api/v1/upload/complete/${uploadId}`;
+
+    const body = zkEnabled && totalChunks !== undefined ? { total_chunks: totalChunks } : undefined;
+
+    const fetchOptions: RequestInit = {
       method: 'POST',
       credentials: 'include',
-    });
+    };
+
+    if (body) {
+      fetchOptions.headers = { 'Content-Type': 'application/json' };
+      fetchOptions.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(endpoint, fetchOptions);
 
     if (!response.ok) {
       const error = (await response.json()) as { detail?: string };

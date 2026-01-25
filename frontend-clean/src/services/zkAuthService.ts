@@ -84,6 +84,7 @@ export interface RecoveryData {
 }
 
 export interface UploadInitData {
+  uploadId?: string; // V2: Pre-generated uploadId for AAD
   encryptedFileName: string;
   fileNameIV: string;
   fileSize: number;
@@ -460,6 +461,9 @@ export async function rotateRecoveryPhrase(
  */
 export async function initializeUpload(uploadData: UploadInitData): Promise<UploadInitResponse> {
   const payload = {
+    // V2: Pre-generated uploadId for AAD (optional)
+    ...(uploadData.uploadId && { upload_id: uploadData.uploadId }),
+
     // Encrypted filename (client-side encrypted)
     encrypted_file_name: uploadData.encryptedFileName,
     file_name_iv: uploadData.fileNameIV,
