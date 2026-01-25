@@ -302,7 +302,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
           (progress: Record<string, unknown>) => setZkDecryptProgress(progress as unknown as ZKDecryptProgress)
         );
 
-        setPreviewUrl(result.blobUrl);
+        setPreviewUrl(result.blobUrl ?? '');
         setZkDecryptProgress(null);
         setLoading(false);
         return;
