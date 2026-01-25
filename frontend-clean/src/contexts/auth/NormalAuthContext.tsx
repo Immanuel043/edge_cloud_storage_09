@@ -164,8 +164,10 @@ export const NormalAuthProvider: React.FC<NormalAuthProviderProps> = ({ children
   const refreshSessionToken = async (): Promise<string | null> => {
     try {
       const response = await authService.getSessionToken();
-      const sessionToken = response.session_token;
-      setToken(sessionToken);
+      const sessionToken = response.access_token;
+      if (sessionToken) {
+        setToken(sessionToken);
+      }
       return sessionToken;
     } catch (error) {
       console.error('[Normal] Failed to refresh session token:', error);

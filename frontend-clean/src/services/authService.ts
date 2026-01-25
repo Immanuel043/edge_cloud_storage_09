@@ -59,8 +59,8 @@ export interface LinkedAccount {
 }
 
 export interface SessionTokenResponse {
-  session_token: string;
-  expires_at: string;
+  access_token: string;
+  expires_at?: string;
 }
 
 export interface ErrorResponse {

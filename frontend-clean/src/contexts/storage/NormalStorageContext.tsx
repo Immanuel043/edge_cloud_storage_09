@@ -45,7 +45,7 @@ interface NormalStorageProviderProps {
 
 export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ children }) => {
   // Get auth state directly - will update when auth completes
-  const { isAuthenticated, token } = useAuth();
+  const { isAuthenticated, token, loading: authLoading } = useAuth();
 
   // State
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -122,20 +122,25 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     };
   }, [debouncedRefresh]);
 
-  // Auto-load files when authenticated
-  useEffect(() => {
-    if (isAuthenticated && token) {
-      if (isOnline) {
-        void loadFiles();
-      } else {
-        void loadOfflineData();
-      }
-    }
-  }, [isAuthenticated, token, currentFolder, isOnline]);
-
   // ==================== FILE LOADING ====================
 
-  const loadFiles = async (folderId: string | null = currentFolder): Promise<void> => {
+  // Load offline data from cache (defined first as loadFiles depends on it)
+  const loadOfflineData = useCallback(async (): Promise<void> => {
+    try {
+      const cachedFiles = await offlineDB.getCachedFiles();
+      const cachedFolders = await offlineDB.getCachedFolders();
+      const cachedStats = await offlineDB.getCachedStats();
+
+      if (cachedFiles) setFiles(cachedFiles as unknown as FileItem[]);
+      if (cachedFolders) setFolders(cachedFolders as unknown as FolderItem[]);
+      if (cachedStats) setStorageStats(cachedStats as unknown as StorageStats);
+    } catch (error) {
+      console.error('[Normal] Failed to load offline data:', error);
+    }
+  }, []);
+
+  // Load files from server
+  const loadFiles = useCallback(async (folderId: string | null = currentFolder): Promise<void> => {
     if (!token) {
       console.warn('[Normal] No token available for loadFiles');
       return;
@@ -172,7 +177,23 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
         await loadOfflineData();
       }
     }
-  };
+  }, [token, currentFolder, isOnline, loadOfflineData]);
+
+  // Auto-load files when authenticated (must be after loadFiles/loadOfflineData definitions)
+  useEffect(() => {
+    // Wait for auth to complete loading
+    if (authLoading) {
+      return;
+    }
+
+    if (isAuthenticated && token) {
+      if (isOnline) {
+        void loadFiles();
+      } else {
+        void loadOfflineData();
+      }
+    }
+  }, [authLoading, isAuthenticated, token, currentFolder, isOnline, loadFiles, loadOfflineData]);
 
   const refreshFiles = async (): Promise<void> => {
     if (isRefreshingRef.current) return;
@@ -229,20 +250,6 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       console.log('[Normal] Dedup stats not yet implemented');
     } catch (error) {
       console.error('[Normal] Failed to load dedup stats:', error);
-    }
-  };
-
-  const loadOfflineData = async (): Promise<void> => {
-    try {
-      const cachedFiles = await offlineDB.getCachedFiles();
-      const cachedFolders = await offlineDB.getCachedFolders();
-      const cachedStats = await offlineDB.getCachedStats();
-
-      if (cachedFiles) setFiles(cachedFiles as unknown as FileItem[]);
-      if (cachedFolders) setFolders(cachedFolders as unknown as FolderItem[]);
-      if (cachedStats) setStorageStats(cachedStats as unknown as StorageStats);
-    } catch (error) {
-      console.error('[Normal] Failed to load offline data:', error);
     }
   };
 
