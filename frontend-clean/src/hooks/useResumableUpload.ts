@@ -6,16 +6,23 @@
  * - Automatically resumes on page reload
  * - Detects network failures
  * - Shows resume button in UI
+ * - Supports both ZK (encrypted) and Normal upload modes
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import uploadService from '../services/uploadService';
+import { zkUploadService } from '../services/zkUploadService';
+import { normalUploadService } from '../services/normalUploadService';
 import type {
   UploadProgress,
   UploadCheckpoint,
   ResumableUploadOptions,
   UploadCompleteResponse,
 } from '../types/hooks.types';
+
+// Extended options to support ZK mode selection
+interface ExtendedResumableUploadOptions extends ResumableUploadOptions {
+  zkEnabled?: boolean;
+}
 
 const STORAGE_KEY_PREFIX = 'resumable_upload_';
 
@@ -62,8 +69,8 @@ function isUploadCheckpoint(data: unknown): data is UploadCheckpoint {
 export interface UseResumableUploadReturn {
   uploads: Record<string, UploadProgress>;
   resumableUploads: UploadCheckpoint[];
-  uploadWithResume: (file: File, options?: ResumableUploadOptions) => Promise<UploadCompleteResponse>;
-  resumeUpload: (checkpoint: UploadCheckpoint, file: File, options?: ResumableUploadOptions) => Promise<UploadCompleteResponse>;
+  uploadWithResume: (file: File, options?: ExtendedResumableUploadOptions) => Promise<UploadCompleteResponse>;
+  resumeUpload: (checkpoint: UploadCheckpoint, file: File, options?: ExtendedResumableUploadOptions) => Promise<UploadCompleteResponse>;
   deleteResumable: (uploadId: string) => void;
   clearAllCheckpoints: () => void;
   loadResumableUploads: () => void;
@@ -160,11 +167,18 @@ export function useResumableUpload(): UseResumableUploadReturn {
 
   /**
    * Upload file with automatic checkpointing
+   * Supports both ZK (encrypted) and Normal upload modes via zkEnabled option
    */
   const uploadWithResume = useCallback(
-    async (file: File, options: ResumableUploadOptions = {}): Promise<UploadCompleteResponse> => {
+    async (file: File, options: ExtendedResumableUploadOptions = {}): Promise<UploadCompleteResponse> => {
       const uploadId: string | null = options.uploadId || null;
       let uploadState: UploadStateForCheckpoint | null = null;
+
+      // Select upload service based on mode
+      const uploadService = options.zkEnabled ? zkUploadService : normalUploadService;
+      const modeLabel = options.zkEnabled ? '[ZK]' : '[Normal]';
+
+      console.log(`${modeLabel} Starting resumable upload:`, file.name);
 
       try {
         const result = await uploadService.uploadFile(file, {
@@ -290,7 +304,7 @@ export function useResumableUpload(): UseResumableUploadReturn {
         return result;
       } catch (err: unknown) {
         const error = err instanceof Error ? err : new Error(String(err));
-        console.error('Upload failed:', error);
+        console.error(`${modeLabel} Upload failed:`, error);
         throw error;
       }
     },
@@ -299,14 +313,16 @@ export function useResumableUpload(): UseResumableUploadReturn {
 
   /**
    * Resume a saved upload
+   * Supports both ZK (encrypted) and Normal modes via zkEnabled option
    */
   const resumeUpload = useCallback(
     async (
       checkpoint: UploadCheckpoint,
       file: File,
-      options: ResumableUploadOptions = {}
+      options: ExtendedResumableUploadOptions = {}
     ): Promise<UploadCompleteResponse> => {
-      console.log(`Resuming upload: ${checkpoint.fileName}`);
+      const modeLabel = options.zkEnabled ? '[ZK]' : '[Normal]';
+      console.log(`${modeLabel} Resuming upload: ${checkpoint.fileName}`);
 
       // Initialize upload with existing upload ID
       return uploadWithResume(file, {

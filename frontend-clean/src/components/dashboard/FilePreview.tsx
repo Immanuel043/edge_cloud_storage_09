@@ -4,7 +4,7 @@ import { API_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
 import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS, AUDIO_EXTENSIONS } from '../../utils/helpers';
 import SecureVideoPlayer from './SecureVideoPlayer';
-import { storageService } from '../../services/storageService';
+import { zkStorageService } from '../../services/zkStorageService';
 import { isZKSessionUnlocked } from '../../services/zkEncryptionService';
 import type { FilePreviewProps, ZKDecryptProgress, TranscodeProgressResponse } from './types';
 import { getErrorMessage } from './types';
@@ -296,7 +296,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
         if (file.chunk_size !== undefined) {
           fileMetadata.chunk_size = file.chunk_size;
         }
-        const result = await storageService.previewZKFile(
+        const result = await zkStorageService.previewZKFile(
           file.id,
           fileMetadata,
           (progress: Record<string, unknown>) => setZkDecryptProgress(progress as unknown as ZKDecryptProgress)

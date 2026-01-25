@@ -38,7 +38,7 @@ export interface UploadCheckpoint {
   error?: string;
 }
 
-// Resumable upload options (extends uploadService UploadOptions)
+// Resumable upload options (extends zkUploadService/normalUploadService UploadOptions)
 export interface ResumableUploadOptions {
   uploadId?: string | null;
   folderId?: string | null;
@@ -48,7 +48,7 @@ export interface ResumableUploadOptions {
   onError?: (error: Error) => void;
 }
 
-// Upload complete response (from uploadService)
+// Upload complete response (from zkUploadService/normalUploadService)
 export interface UploadCompleteResponse {
   file_id: string;
   file_name: string;

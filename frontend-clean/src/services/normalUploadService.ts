@@ -1,33 +1,19 @@
 /**
- * Advanced Upload Service with Parallel Multipart Uploads
+ * Normal Upload Service - Standard File Uploads
  *
  * Features:
+ * - Server-side encryption
  * - Parallel chunk uploads (configurable concurrency)
  * - Automatic retry with exponential backoff
  * - Progress tracking per chunk
  * - Network error resilience
- * - Bandwidth estimation
- * - Zero-Knowledge encryption support (client-side encryption)
  */
 
-import * as zkEncryptionService from './zkEncryptionService';
 import { API_URL } from '../config/constants';
 
-// Use centralized API URL from constants (type-safe, no import.meta issues)
 const API_BASE_URL = API_URL;
 
 // ==================== Type Definitions ====================
-
-interface UploadInitZKRequest {
-  file_name: string;
-  file_size: number;
-  encrypted_file_key: string;
-  file_key_iv: string;
-  encryption_algorithm: string;
-  encryption_version?: number;
-  mime_type: string;
-  folder_id: string | null;
-}
 
 interface UploadInitRequest {
   file_name: string;
@@ -42,16 +28,9 @@ interface UploadInitResponse {
   total_chunks: number;
 }
 
-interface UploadInitZKResponse extends UploadInitResponse {
-  zkEnabled: true;
-  fileKey: Uint8Array;
-}
-
 interface UploadInitNormalResponse extends UploadInitResponse {
   zkEnabled: false;
 }
-
-type UploadInitResult = UploadInitZKResponse | UploadInitNormalResponse;
 
 interface UploadProgressData {
   progress: number;
@@ -83,8 +62,6 @@ interface UploadContext {
   onProgress?: ((data: UploadProgressData) => void) | undefined;
   onChunkComplete?: ((chunkIndex: number, uploadedCount: number, totalChunks: number) => void) | undefined;
   onError?: ((error: Error) => void) | undefined;
-  zkEnabled: boolean;
-  fileKey?: Uint8Array | undefined;
 }
 
 interface UploadCompleteResponse {
@@ -100,9 +77,9 @@ interface ChunkUploadResponse {
   success: boolean;
 }
 
-// ==================== Upload Service Class ====================
+// ==================== Normal Upload Service Class ====================
 
-class UploadService {
+class NormalUploadService {
   private activeUploads: Map<string, UploadContext>;
   private defaultConcurrency: number;
   private maxRetries: number;
@@ -117,82 +94,35 @@ class UploadService {
 
   /**
    * Initialize a new upload session
-   * Automatically detects ZK mode and calls appropriate endpoint
+   * Uses server-side encryption
    */
-  async initUpload(file: File, folderId: string | null = null): Promise<UploadInitResult> {
-    // Check if ZK (Zero-Knowledge) mode is enabled
-    const zkEnabled = zkEncryptionService.isZKSessionUnlocked();
+  async initUpload(file: File, folderId: string | null = null): Promise<UploadInitNormalResponse> {
+    const requestBody: UploadInitRequest = {
+      file_name: file.name,
+      file_size: file.size,
+      folder_id: folderId,
+    };
 
-    if (zkEnabled) {
-      // ZK Mode: Generate file key and encrypt it with master key
-      console.log('[Upload] ZK mode detected - generating file key');
+    const response = await fetch(`${API_BASE_URL}/api/v1/upload/init`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify(requestBody),
+    });
 
-      const zkPrepResult = await zkEncryptionService.prepareFileForEncryption(file);
-      const { fileKey, encryptedFileKey, fileKeyIV } = zkPrepResult;
-
-      // Call ZK upload init endpoint
-      const requestBody: UploadInitZKRequest = {
-        file_name: file.name,
-        file_size: file.size,
-        encrypted_file_key: encryptedFileKey,
-        file_key_iv: fileKeyIV,
-        encryption_algorithm: 'AES-256-GCM',
-        encryption_version: 2, // V2 encryption (HKDF + AAD for enhanced security)
-        mime_type: file.type,
-        folder_id: folderId,
-      };
-
-      const response = await fetch(`${API_BASE_URL}/api/v1/zk/upload/init`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        const error = (await response.json()) as { detail?: string };
-        throw new Error(error.detail || 'Failed to initialize ZK upload');
-      }
-
-      const initData = (await response.json()) as UploadInitResponse;
-
-      // Return with ZK metadata
-      return {
-        ...initData,
-        zkEnabled: true,
-        fileKey, // Keep file key in memory for chunk encryption
-      };
-    } else {
-      // Standard Mode: Use existing server-side encryption flow
-      const requestBody: UploadInitRequest = {
-        file_name: file.name,
-        file_size: file.size,
-        folder_id: folderId,
-      };
-
-      const response = await fetch(`${API_BASE_URL}/api/v1/upload/init`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        const error = (await response.json()) as { detail?: string };
-        throw new Error(error.detail || 'Failed to initialize upload');
-      }
-
-      const initData = (await response.json()) as UploadInitResponse;
-
-      return {
-        ...initData,
-        zkEnabled: false,
-      };
+    if (!response.ok) {
+      const error = (await response.json()) as { detail?: string };
+      throw new Error(error.detail || 'Failed to initialize upload');
     }
+
+    const initData = (await response.json()) as UploadInitResponse;
+
+    return {
+      ...initData,
+      zkEnabled: false,
+    };
   }
 
   /**
@@ -212,10 +142,9 @@ class UploadService {
     } = options;
 
     try {
-      // Step 1: Initialize upload (auto-detects ZK mode)
+      // Step 1: Initialize upload
       const initData = await this.initUpload(file, folderId);
-      const { upload_id, storage_strategy, chunk_size, total_chunks, zkEnabled } = initData;
-      const fileKey = zkEnabled ? initData.fileKey : undefined;
+      const { upload_id, storage_strategy, chunk_size, total_chunks } = initData;
 
       // Create upload context
       const uploadContext: UploadContext = {
@@ -231,10 +160,6 @@ class UploadService {
         onProgress,
         onChunkComplete,
         onError,
-
-        // ZK-specific fields
-        zkEnabled,
-        fileKey, // File key for chunk encryption (ZK mode only)
       };
 
       this.activeUploads.set(upload_id, uploadContext);
@@ -248,7 +173,7 @@ class UploadService {
       }
 
       // Step 3: Complete upload
-      const result = await this._completeUpload(upload_id, zkEnabled, total_chunks);
+      const result = await this._completeUpload(upload_id);
 
       this.activeUploads.delete(upload_id);
       return result;
@@ -320,67 +245,32 @@ class UploadService {
 
   /**
    * Upload single chunk with exponential backoff retry
-   * Automatically encrypts chunk if ZK mode is enabled
    */
   private async _uploadChunkWithRetry(
     context: UploadContext,
     chunkIndex: number,
     retryCount: number = 0
   ): Promise<ChunkUploadResponse> {
-    const { file, chunkSize, uploadId, zkEnabled, fileKey } = context;
+    const { file, chunkSize, uploadId } = context;
 
     // Calculate chunk boundaries
     const start = chunkIndex * chunkSize;
     const end = Math.min(start + chunkSize, file.size);
     const chunkBlob = file.slice(start, end);
 
-    let finalChunkData: Blob = chunkBlob;
-
-    // ZK Mode: Encrypt chunk before upload
-    if (zkEnabled && fileKey) {
-      try {
-        // Read chunk as ArrayBuffer
-        const chunkArrayBuffer = await chunkBlob.arrayBuffer();
-        const chunkBytes = new Uint8Array(chunkArrayBuffer);
-
-        // Encrypt chunk with V2 encryption (HKDF + AAD)
-        // V2 returns single Uint8Array: VERSION + IV + ciphertext + tag
-        const encryptedChunk = zkEncryptionService.encryptFileChunkV2(
-          chunkBytes,
-          fileKey,
-          uploadId, // Use uploadId as fileId for AAD binding
-          chunkIndex
-        );
-
-        // Convert encrypted bytes to Blob
-        finalChunkData = new Blob([encryptedChunk as BlobPart]);
-
-        console.log(
-          `[Upload] Encrypted chunk ${chunkIndex} (V2): ${chunkBytes.length} → ${encryptedChunk.length} bytes`
-        );
-      } catch (encryptError) {
-        const errorMessage =
-          encryptError instanceof Error ? encryptError.message : String(encryptError);
-        console.error(`[Upload] Encryption failed for chunk ${chunkIndex}:`, encryptError);
-        throw new Error(`Encryption failed: ${errorMessage}`);
-      }
-    }
-
     const formData = new FormData();
-    formData.append('chunk', finalChunkData);
+    formData.append('chunk', chunkBlob);
     formData.append('chunk_index', chunkIndex.toString());
 
     try {
-      // Use ZK endpoint for ZK uploads, regular endpoint for non-ZK uploads
-      const endpoint = zkEnabled
-        ? `${API_BASE_URL}/api/v1/zk/upload/chunk/${uploadId}`
-        : `${API_BASE_URL}/api/v1/upload/chunk/${uploadId}?chunk_index=${chunkIndex}`;
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData,
-      });
+      const response = await fetch(
+        `${API_BASE_URL}/api/v1/upload/chunk/${uploadId}?chunk_index=${chunkIndex}`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -438,29 +328,11 @@ class UploadService {
   /**
    * Complete the upload
    */
-  private async _completeUpload(
-    uploadId: string,
-    zkEnabled?: boolean,
-    totalChunks?: number
-  ): Promise<UploadCompleteResponse> {
-    // Use ZK endpoint for ZK uploads, regular endpoint for non-ZK uploads
-    const endpoint = zkEnabled
-      ? `${API_BASE_URL}/api/v1/zk/upload/complete/${uploadId}`
-      : `${API_BASE_URL}/api/v1/upload/complete/${uploadId}`;
-
-    const body = zkEnabled && totalChunks !== undefined ? { total_chunks: totalChunks } : undefined;
-
-    const fetchOptions: RequestInit = {
+  private async _completeUpload(uploadId: string): Promise<UploadCompleteResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/upload/complete/${uploadId}`, {
       method: 'POST',
       credentials: 'include',
-    };
-
-    if (body) {
-      fetchOptions.headers = { 'Content-Type': 'application/json' };
-      fetchOptions.body = JSON.stringify(body);
-    }
-
-    const response = await fetch(endpoint, fetchOptions);
+    });
 
     if (!response.ok) {
       const error = (await response.json()) as { detail?: string };
@@ -536,4 +408,6 @@ class UploadService {
 }
 
 // Export singleton instance
-export default new UploadService();
+const normalUploadService = new NormalUploadService();
+export { normalUploadService, NormalUploadService };
+export default normalUploadService;
