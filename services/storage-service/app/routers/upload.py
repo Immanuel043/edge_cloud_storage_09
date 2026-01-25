@@ -847,6 +847,7 @@ async def complete_upload(
             storage_key=session.get("encrypted_data", ""),
             content_hash=session.get("hash", ""),
             encryption_key=session.get("key"),
+            encryption_mode="aes-gcm" if session.get("key") else "none",
             storage_tier="cache",
             file_metadata=file_metadata_dict,
         )
@@ -863,6 +864,7 @@ async def complete_upload(
             object_path=session.get("storage_path", ""),
             content_hash=session.get("hash", ""),
             encryption_key=session.get("key"),
+            encryption_mode="aes-gcm" if session.get("key") else "none",
             storage_tier="cache",
             file_metadata=file_metadata_dict,
         )
@@ -880,6 +882,7 @@ async def complete_upload(
             storage_type="chunked",
             content_hash=combined_hash,
             encryption_key=session.get("key"),
+            encryption_mode="aes-gcm" if session.get("key") else "none",
             chunk_info={
                 "chunks": session["hashes"],
                 "count": session["chunks"],

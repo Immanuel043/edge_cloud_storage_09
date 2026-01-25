@@ -97,24 +97,27 @@ class NormalUploadService {
    * Uses server-side encryption
    */
   async initUpload(file: File, folderId: string | null = null): Promise<UploadInitNormalResponse> {
-    const requestBody: UploadInitRequest = {
-      file_name: file.name,
-      file_size: file.size,
-      folder_id: folderId,
-    };
+    // Build query parameters (backend expects query params, not JSON body)
+    const params = new URLSearchParams();
+    params.append('file_name', file.name);
+    params.append('file_size', file.size.toString());
+    if (folderId) {
+      params.append('folder_id', folderId);
+    }
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/upload/init`, {
+    const response = await fetch(`${API_BASE_URL}/api/v1/upload/init?${params.toString()}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
       credentials: 'include',
-      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
-      const error = (await response.json()) as { detail?: string };
-      throw new Error(error.detail || 'Failed to initialize upload');
+      const error = (await response.json()) as { detail?: string | Array<{ msg: string }> };
+      const errorMessage = typeof error.detail === 'string' 
+        ? error.detail 
+        : Array.isArray(error.detail) 
+          ? error.detail.map(e => e.msg).join(', ') 
+          : 'Failed to initialize upload';
+      throw new Error(errorMessage);
     }
 
     const initData = (await response.json()) as UploadInitResponse;
