@@ -53,25 +53,17 @@ interface StorageProviderProps {
  * Automatically selects ZK or Normal provider based on auth state.
  */
 export const StorageProvider: React.FC<StorageProviderProps> = ({ children }) => {
-  const { token, isAuthenticated, zkEnabled, zkSessionUnlocked } = useAuth();
+  const { zkEnabled, zkSessionUnlocked } = useAuth();
 
   // ZK Mode: Use ZK Storage Provider
   if (zkEnabled && zkSessionUnlocked) {
     console.log('[StorageRouter] Using ZK Storage Provider');
-    return (
-      <ZKStorageProvider isAuthenticated={isAuthenticated} zkSessionUnlocked={zkSessionUnlocked}>
-        {children}
-      </ZKStorageProvider>
-    );
+    return <ZKStorageProvider>{children}</ZKStorageProvider>;
   }
 
   // Normal Mode: Use Normal Storage Provider
   console.log('[StorageRouter] Using Normal Storage Provider');
-  return (
-    <NormalStorageProvider isAuthenticated={isAuthenticated} token={token}>
-      {children}
-    </NormalStorageProvider>
-  );
+  return <NormalStorageProvider>{children}</NormalStorageProvider>;
 };
 
 export default {
