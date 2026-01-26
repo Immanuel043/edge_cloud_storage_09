@@ -15,12 +15,6 @@ const API_BASE_URL = API_URL;
 
 // ==================== Type Definitions ====================
 
-interface UploadInitRequest {
-  file_name: string;
-  file_size: number;
-  folder_id: string | null;
-}
-
 interface UploadInitResponse {
   upload_id: string;
   storage_strategy: 'inline' | 'single' | 'chunked';

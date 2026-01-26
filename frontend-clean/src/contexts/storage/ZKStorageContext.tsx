@@ -102,15 +102,33 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
       debouncedRefresh();
     };
 
-    const unsubscribe = websocketService.on('file_uploaded', handleFileUploaded);
-    return () => unsubscribe();
+    const handleFileDeleted = (): void => {
+      debouncedRefresh();
+    };
+
+    const handleStorageUpdate = (): void => {
+      void loadStorageStats();
+    };
+
+    const unsubFileUploaded = websocketService.on('file_uploaded', handleFileUploaded);
+    const unsubFileDeleted = websocketService.on('file_deleted', handleFileDeleted);
+    const unsubStorageUpdate = websocketService.on('storage_updated', handleStorageUpdate);
+
+    return () => {
+      unsubFileUploaded();
+      unsubFileDeleted();
+      unsubStorageUpdate();
+    };
   }, [debouncedRefresh]);
 
   // Auto-load files when authenticated and session unlocked
   useEffect(() => {
     if (isAuthenticated && zkSessionUnlocked) {
-      void loadFiles();
-      void updateMigrationStats();
+      // Load files first, then update migration stats (which depends on files state)
+      void (async () => {
+        await loadFiles();
+        await updateMigrationStats();
+      })();
     }
   }, [isAuthenticated, zkSessionUnlocked, currentFolder]);
 

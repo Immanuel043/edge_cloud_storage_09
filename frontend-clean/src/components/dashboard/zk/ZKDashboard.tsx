@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home,
   Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
@@ -60,6 +60,8 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
   selectAll,
   clearSelection,
   refreshFiles,
+  pendingDownload,
+  onClearPendingDownload,
 }) => {
   // View state
   const [activeView, setActiveView] = useState<ActiveView>('cloud-drive');
@@ -94,6 +96,96 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllers = useRef<Record<string, AbortController>>({});
+  const pendingDownloadProcessedRef = useRef<string | null>(null);
+
+  // Handle pending download retry from parent Dashboard
+  // This handles the case where a download was started in NormalDashboard with a locked session,
+  // user unlocks via SessionUnlockModal, and then the dashboard switches to ZKDashboard
+  useEffect(() => {
+    if (pendingDownload && isUnlocked) {
+      // Prevent processing the same pending download multiple times
+      const downloadKey = `${pendingDownload.fileId}-${pendingDownload.fileName}`;
+      if (pendingDownloadProcessedRef.current === downloadKey) {
+        return;
+      }
+      pendingDownloadProcessedRef.current = downloadKey;
+
+      console.log('[ZKDashboard] Processing pending download from parent:', pendingDownload.fileName);
+
+      // Small delay to ensure component is fully mounted
+      const retryTimeout = setTimeout(async () => {
+        const { fileId, fileName } = pendingDownload;
+
+        // Clear the pending download first to prevent re-processing
+        if (onClearPendingDownload) {
+          onClearPendingDownload();
+        }
+
+        // Trigger the download
+        try {
+          const downloadId = crypto.randomUUID();
+          const file = files.find(f => f.id === fileId);
+
+          setDownloads(prev => ({
+            ...prev,
+            [downloadId]: {
+              id: downloadId,
+              fileName,
+              status: 'downloading',
+              progress: 0,
+              bytesDownloaded: 0,
+              totalBytes: file?.size || 0,
+              isZK: true,
+            }
+          }));
+
+          await downloadFile(fileId, fileName, (progressData) => {
+            setDownloads(prev => {
+              const current = prev[downloadId];
+              if (!current) return prev;
+              return {
+                ...prev,
+                [downloadId]: {
+                  ...current,
+                  ...progressData,
+                  status: 'downloading'
+                }
+              };
+            });
+          });
+
+          // Mark as completed
+          setDownloads(prev => {
+            const current = prev[downloadId];
+            if (!current) return prev;
+            return {
+              ...prev,
+              [downloadId]: {
+                ...current,
+                status: 'complete',
+                progress: 100,
+              }
+            };
+          });
+
+          // Remove after delay
+          setTimeout(() => {
+            setDownloads(prev => {
+              const newDownloads = { ...prev };
+              delete newDownloads[downloadId];
+              return newDownloads;
+            });
+          }, 3000);
+
+          console.log('[ZKDashboard] Pending download completed successfully:', fileName);
+        } catch (error) {
+          console.error('[ZKDashboard] Pending download retry failed:', error);
+        }
+      }, 300);
+
+      return () => clearTimeout(retryTimeout);
+    }
+  }, [pendingDownload, isUnlocked, onClearPendingDownload, downloadFile, files]);
 
   // Handle sort change with localStorage persistence
   const handleSortChange = (e: React.ChangeEvent<HTMLSelectElement>): void => {
@@ -101,6 +193,23 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
     setSortBy(newSort);
     localStorage.setItem('zk_sort_preference', newSort);
   };
+
+  // Watch for upload completion to show toast
+  useEffect(() => {
+    const uploadValues = Object.values(uploads);
+    const allCompleted = uploadValues.length > 0 &&
+                         uploadValues.every(u => u.status === 'complete');
+
+    if (allCompleted) {
+      setCompletedUploadCount(uploadValues.length);
+      setShowUploadCompleteToast(true);
+
+      // Auto-hide toast after 5 seconds
+      setTimeout(() => {
+        setShowUploadCompleteToast(false);
+      }, 5000);
+    }
+  }, [uploads]);
 
   // Filter and sort files
   const { filteredFolders, filteredFiles } = useMemo(() => {
@@ -228,11 +337,6 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
           }
         };
       });
-
-      // Show completion toast
-      setCompletedUploadCount(prev => prev + 1);
-      setShowUploadCompleteToast(true);
-      setTimeout(() => setShowUploadCompleteToast(false), 5000);
 
       // Remove from list after delay
       setTimeout(() => {
@@ -863,6 +967,8 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
                   const files = e.target.files;
                   if (files) {
                     Array.from(files).forEach(handleFileUpload);
+                    // Reset input value to allow uploading the same file again
+                    e.target.value = '';
                   }
                 }}
                 className="hidden"

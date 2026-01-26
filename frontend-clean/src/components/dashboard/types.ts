@@ -1083,6 +1083,17 @@ export interface ZKDashboardLayoutProps extends DarkModeProps {
   selectAll: () => void;
   clearSelection: () => void;
   refreshFiles: () => Promise<void>;
+  // Pending download passed from parent Dashboard for cross-dashboard retry
+  pendingDownload?: PendingDownload | null;
+  onClearPendingDownload?: () => void;
+}
+
+/**
+ * NormalDashboard Props - props passed from parent Dashboard
+ */
+export interface NormalDashboardProps {
+  // Callback to lift pending download state to parent Dashboard for cross-dashboard retry
+  onPendingDownload?: (download: PendingDownload | null) => void;
 }
 
 // ==================== Settings View Types ====================

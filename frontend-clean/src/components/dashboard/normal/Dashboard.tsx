@@ -34,7 +34,6 @@ import KeyboardShortcuts from '../KeyboardShortcuts';
 import BulkActions from '../BulkActions';
 import SearchBar from '../SearchBar';
 import SearchResults from '../SearchResults';
-import SessionUnlockModal from '../../auth/SessionUnlockModal';
 import DownloadProgress from '../DownloadProgress';
 import MigrationBanner from '../MigrationBanner';
 import PaymentReminderBanner from '../PaymentReminderBanner';
@@ -56,7 +55,8 @@ import type {
   SortByType,
   ViewMode,
   PendingDownload,
-  CorruptionErrorInfo
+  CorruptionErrorInfo,
+  NormalDashboardProps
 } from '../types';
 import { getErrorMessage } from '../types';
 
@@ -67,10 +67,16 @@ interface ErrorWithStatus extends Error {
 /**
  * NormalDashboard - Standard file management dashboard
  * For users without Zero-Knowledge encryption
+ * 
+ * Props:
+ * - pendingDownload: Download that was interrupted by locked session (from parent Dashboard)
+ * - onPendingDownload: Callback to lift pending download state to parent Dashboard
  */
-const NormalDashboard: React.FC = () => {
+const NormalDashboard: React.FC<NormalDashboardProps> = ({
+  onPendingDownload
+}) => {
   const { darkMode, toggleTheme } = useTheme();
-  const { user, logout, isAuthenticated, loading: authLoading, showUnlockModal, zkEnabled, zkSessionUnlocked, lockSession } = useAuth();
+  const { user, logout, isAuthenticated, loading: authLoading, zkEnabled, zkSessionUnlocked, lockSession } = useAuth();
   const {
     files,
     folders,
@@ -123,7 +129,11 @@ const NormalDashboard: React.FC = () => {
   const [showUploadCompleteToast, setShowUploadCompleteToast] = useState<boolean>(false);
   const [completedUploadCount, setCompletedUploadCount] = useState<number>(0);
   const [downloads, setDownloads] = useState<Record<string, DownloadItem>>({});
-  const [pendingDownload, setPendingDownload] = useState<PendingDownload | null>(null);
+  // Local pending download state setter (used when parent doesn't provide handlers)
+  const [, setLocalPendingDownload] = useState<PendingDownload | null>(null);
+  // Use parent's callback if available, otherwise use local state setter
+  // The actual pendingDownload value is read by parent Dashboard and passed to ZKDashboard
+  const setPendingDownload = onPendingDownload ?? setLocalPendingDownload;
   const [corruptionError, setCorruptionError] = useState<CorruptionErrorInfo | null>(null);
   const [showShareBundleComposer, setShowShareBundleComposer] = useState<boolean>(false);
 
@@ -489,7 +499,7 @@ const NormalDashboard: React.FC = () => {
             [downloadId]: {
               ...current,
               progress: (progressData.progress as number) || 0,
-              bytesDownloaded: (progressData.bytesUploaded as number) || 0,
+              bytesDownloaded: (progressData.bytesDownloaded as number) || 0,
               status: 'downloading'
             }
           };
@@ -597,21 +607,10 @@ const NormalDashboard: React.FC = () => {
     }
   };
 
-  // Handle session unlock modal close - retry pending download if any
-  const handleSessionUnlockClose = async (): Promise<void> => {
-    if (pendingDownload && zkSessionUnlocked) {
-      console.log('[Download] Session unlocked - retrying download:', pendingDownload.fileName);
-
-      // Retry the download
-      const { fileId, fileName } = pendingDownload;
-      setPendingDownload(null);
-
-      // Small delay to allow UI to update
-      setTimeout(() => {
-        handleFileDownload(fileId, fileName);
-      }, 500);
-    }
-  };
+  // Note: Session unlock modal is now managed by parent Dashboard component.
+  // When a ZK user with locked session tries to download, the pending download
+  // is lifted to parent state. After unlock, ZKDashboard mounts and handles
+  // the retry via its useEffect watching pendingDownload prop.
 
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
@@ -1211,13 +1210,8 @@ const NormalDashboard: React.FC = () => {
         />
       )}
 
-      {/* Session Unlock Modal (ZK Encryption) */}
-      {showUnlockModal && (
-        <SessionUnlockModal
-          isOpen={showUnlockModal}
-          onClose={handleSessionUnlockClose}
-        />
-      )}
+      {/* Session Unlock Modal is now managed by parent Dashboard component
+          to survive dashboard switches when zkSessionUnlocked changes */}
 
       {/* File Corruption Modal */}
       {corruptionError && (
