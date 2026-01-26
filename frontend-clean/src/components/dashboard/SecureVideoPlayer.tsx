@@ -59,6 +59,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
     encrypted_file_key: metadata.encrypted_file_key || '',
     file_key_iv: (metadata as FileItem & { file_key_iv?: string }).file_key_iv || '',
     file_size: metadata.size || 0,
+    chunk_size: (metadata as FileItem & { chunk_size?: number }).chunk_size,
   } : null);
 
   // Local state

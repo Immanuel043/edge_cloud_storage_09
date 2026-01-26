@@ -66,6 +66,7 @@ export interface SecureVideoMetadata {
   encrypted_file_key: string;
   file_key_iv: string;
   file_size: number;
+  chunk_size?: number; // Optional, defaults to 1MB if not provided
 }
 
 // Secure video player state

@@ -294,24 +294,29 @@ export class ChunkManager {
     }
 
     // Decrypt using worker pool or main thread
+    // IMPORTANT: Pass fileId for V2 encryption AAD binding
     let decrypted: Uint8Array;
 
     if (this.workerPool) {
       try {
+        // Worker pool signature: decryptChunk(chunk, key, chunkIndex, fileId?)
         const result = await (this.workerPool as {
-          decryptChunk: (chunk: Uint8Array, key: Uint8Array, index: number) => Promise<{ decryptedChunk: Uint8Array }>;
+          decryptChunk: (chunk: Uint8Array, key: Uint8Array, index: number, fileId?: string) => Promise<{ decryptedChunk: Uint8Array }>;
         }).decryptChunk(
           encryptedChunk,
           this.fileKey,
-          chunkIndex
+          chunkIndex,
+          this.fileId // V2 AAD binding
         );
         decrypted = result.decryptedChunk;
       } catch (error) {
         console.warn('[ChunkManager] Worker decryption failed, falling back to main thread');
-        decrypted = decryptFileChunk(encryptedChunk, this.fileKey, chunkIndex);
+        // zkEncryptionService.decryptFileChunk signature: (chunk, key, fileIdOrIndex, chunkIndex?)
+        decrypted = decryptFileChunk(encryptedChunk, this.fileKey, this.fileId, chunkIndex);
       }
     } else {
-      decrypted = decryptFileChunk(encryptedChunk, this.fileKey, chunkIndex);
+      // zkEncryptionService.decryptFileChunk signature: (chunk, key, fileIdOrIndex, chunkIndex?)
+      decrypted = decryptFileChunk(encryptedChunk, this.fileKey, this.fileId, chunkIndex);
     }
 
     return decrypted;
