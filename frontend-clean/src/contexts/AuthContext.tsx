@@ -118,7 +118,7 @@ export const useAuth = (): AuthContextValue => {
     if (!kdfParams) {
       throw new Error('Failed to get KDF parameters');
     }
-    const { kdf_salt, kdf_algorithm, kdf_iterations, kdf_memory } = kdfParams;
+    const { kdf_salt, kdf_algorithm, kdf_iterations, kdf_memory, kdf_iv } = kdfParams;
 
     // Step 2: Derive password hash
     const passwordHash = await zkEncryptionService.getPasswordHashForLogin(
@@ -132,18 +132,26 @@ export const useAuth = (): AuthContextValue => {
     const response = await zkAuthService.loginZK(email, passwordHash);
 
     // Step 4: Store ZK data (this will trigger mode switch)
+    // Use master_key_iv from response, or fall back to kdf_iv from params
+    const masterKeyIV = response.master_key_iv || kdf_iv || '';
     const zkDataObj: ZKData = {
       kdfSalt: kdf_salt,
       kdfAlgorithm: kdf_algorithm as 'argon2id' | 'pbkdf2',
       kdfIterations: kdf_iterations,
       encryptedMasterKey: response.encrypted_master_key,
-      masterKeyIV: response.master_key_iv,
+      masterKeyIV: masterKeyIV,
       ...(kdf_memory !== undefined && { kdfMemory: kdf_memory }),
     };
 
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
     localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
+
+    // Step 5: Unlock session immediately (so user doesn't need to unlock after redirect)
+    const unlocked = await zkEncryptionService.unlockZKSession(password, zkDataObj);
+    if (!unlocked) {
+      console.warn('[Router] Session unlock failed, user will need to unlock manually');
+    }
 
     // Dispatch custom event to trigger immediate provider switch
     window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
@@ -153,7 +161,7 @@ export const useAuth = (): AuthContextValue => {
       access_token: response.access_token,
       user: { id: response.user_id, email, username: '', user_type: '', created_at: '' },
       encrypted_master_key: response.encrypted_master_key,
-      kdf_iv: response.master_key_iv,
+      kdf_iv: masterKeyIV,
     };
   };
 
@@ -200,6 +208,12 @@ export const useAuth = (): AuthContextValue => {
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
     localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
+
+    // Step 4: Unlock session immediately (so user doesn't need to unlock after redirect)
+    const unlocked = await zkEncryptionService.unlockZKSession(password, zkDataObj);
+    if (!unlocked) {
+      console.warn('[Router] Session unlock failed after registration');
+    }
 
     // Dispatch custom event to trigger immediate provider switch
     window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));

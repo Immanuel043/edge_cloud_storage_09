@@ -11,7 +11,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import * as zkAuthService from '../../services/zkAuthService';
 import * as zkEncryptionService from '../../services/zkEncryptionService';
-import { websocketService } from '../../services/websocketService';
 import { ZK_STORAGE } from '../../config/constants';
 import type {
   User,
@@ -172,7 +171,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       console.log('[ZK] Session timed out due to inactivity');
       lockSession();
     }
-  }, [zkSessionUnlocked, SESSION_TIMEOUT]);
+  }, [zkSessionUnlocked]); // SESSION_TIMEOUT is a constant, not a dependency
 
   useEffect(() => {
     if (!zkEnabled || !zkSessionUnlocked) {
@@ -286,7 +285,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       if (!kdfParams) {
         throw new Error('Failed to get KDF parameters for user');
       }
-      const { kdf_salt, kdf_algorithm, kdf_iterations, kdf_memory } = kdfParams;
+      const { kdf_salt, kdf_algorithm, kdf_iterations, kdf_memory, kdf_iv } = kdfParams;
 
       // Step 2: Derive password hash (Argon2id or PBKDF2)
       const passwordHash = await zkEncryptionService.getPasswordHashForLogin(
@@ -300,12 +299,14 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       const response = await zkAuthService.loginZK(email, passwordHash);
 
       // Step 4: Store ZK data
+      // Use master_key_iv from response, or fall back to kdf_iv from params
+      const masterKeyIV = response.master_key_iv || kdf_iv || '';
       const zkDataObj: ZKData = {
         kdfSalt: kdf_salt,
         kdfAlgorithm: kdf_algorithm as 'argon2id' | 'pbkdf2',
         kdfIterations: kdf_iterations,
         encryptedMasterKey: response.encrypted_master_key,
-        masterKeyIV: response.master_key_iv,
+        masterKeyIV: masterKeyIV,
         ...(kdf_memory !== undefined && { kdfMemory: kdf_memory }),
       };
 
@@ -323,15 +324,30 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       setZkEnabled(true);
       setZkData(zkDataObj);
 
-      // Create user object from response
-      const user: User = {
-        id: response.user_id,
-        email,
-        username: '',
-        user_type: '',
-        created_at: new Date().toISOString(),
-        zk_enabled: response.zk_enabled,
-      };
+      // Fetch full user profile from ZK service to get complete data
+      let user: User;
+      try {
+        const userProfile = await zkAuthService.getProfile();
+        user = {
+          id: userProfile.id,
+          email: userProfile.email,
+          username: userProfile.username,
+          user_type: 'individual', // ZK service doesn't have user_type
+          created_at: userProfile.created_at,
+          zk_enabled: userProfile.zk_enabled,
+        };
+      } catch (profileError) {
+        // Fallback to basic user object if profile fetch fails
+        console.warn('[ZK] Failed to fetch full profile, using basic user data:', profileError);
+        user = {
+          id: response.user_id,
+          email,
+          username: email.split('@')[0] || email, // Use email prefix as fallback username
+          user_type: 'individual',
+          created_at: new Date().toISOString(),
+          zk_enabled: response.zk_enabled,
+        };
+      }
       setUser(user);
       setIsAuthenticated(true);
 
@@ -517,10 +533,8 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       setUser(user);
       setIsAuthenticated(true);
 
-      // Step 7: Set up WebSocket (note: ZK users may not use WebSocket)
-      if (!websocketService.isConnected) {
-        websocketService.connect();
-      }
+      // Note: ZK users don't use WebSocket - ZK service (port 8002) doesn't have WebSocket support
+      // Real-time updates are not available for ZK users; they use polling or manual refresh
 
       console.log('[ZK] Account recovery successful');
       return {
@@ -574,10 +588,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       setIsAuthenticated(false);
       setShowUnlockModal(false);
 
-      // Disconnect WebSocket if connected
-      if (websocketService.isConnected) {
-        websocketService.disconnect();
-      }
+      // Note: ZK users don't use WebSocket, so no need to disconnect
 
       // Call backend logout (clears HTTP-only cookie)
       await zkAuthService.logout();
