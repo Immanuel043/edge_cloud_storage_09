@@ -331,7 +331,31 @@ export async function logout(): Promise<{ message: string }> {
   return response;
 }
 
-// ==================== User Status ====================
+// ==================== User Profile & Status ====================
+
+/**
+ * User profile response from ZK service
+ */
+export interface ZKUserProfile {
+  id: string;
+  email: string;
+  username: string;
+  plan_type: string;
+  storage_quota: number;
+  storage_used: number;
+  zk_enabled: boolean;
+  recovery_phrase_enabled: boolean;
+  created_at: string;
+}
+
+/**
+ * Get current user's profile from ZK service
+ * This is the ZK-equivalent of authService.getProfile()
+ */
+export async function getProfile(): Promise<ZKUserProfile> {
+  const response = await zkFetch<ZKUserProfile>(ZK_ENDPOINTS.ME);
+  return response;
+}
 
 /**
  * Get current user's ZK status
@@ -735,7 +759,8 @@ export default {
   loginZK,
   logout,
 
-  // Status
+  // Profile & Status
+  getProfile,
   getZKStatus,
 
   // Recovery

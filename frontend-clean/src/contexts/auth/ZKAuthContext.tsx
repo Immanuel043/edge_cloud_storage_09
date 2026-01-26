@@ -11,7 +11,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import * as zkAuthService from '../../services/zkAuthService';
 import * as zkEncryptionService from '../../services/zkEncryptionService';
-import { authService } from '../../services/authService';
 import { websocketService } from '../../services/websocketService';
 import { ZK_STORAGE } from '../../config/constants';
 import type {
@@ -94,39 +93,61 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         const recoveryEnabled = localStorage.getItem(ZK_STORAGE.RECOVERY_ENABLED_KEY) === 'true';
         setZkRecoveryEnabled(recoveryEnabled);
 
-        // Try to get user profile (uses normal authService which checks HTTP-only cookie)
-        try {
-          const userProfile = await authService.getProfile();
-          const user: User = {
-            id: userProfile.id,
-            email: userProfile.email,
-            username: userProfile.username,
-            user_type: userProfile.user_type,
-            created_at: userProfile.created_at,
-          };
-          if (userProfile.zk_enabled !== undefined) {
-            user.zk_enabled = userProfile.zk_enabled;
-          }
-          setUser(user);
-          setIsAuthenticated(true);
+        // Try to get user profile from ZK service (uses HTTP-only cookie set by ZK login)
+        // Use retry logic to handle race conditions after fresh login
+        let retryCount = 0;
+        const maxRetries = 3;
+        let profileLoaded = false;
 
-          // Check if session is unlocked
-          const sessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
-          setZkSessionUnlocked(sessionUnlocked);
+        while (retryCount < maxRetries && !profileLoaded) {
+          try {
+            // Add small delay for retries (except first attempt)
+            if (retryCount > 0) {
+              await new Promise(resolve => setTimeout(resolve, 500 * retryCount));
+            }
 
-          // Show unlock modal if session is locked
-          if (!sessionUnlocked) {
-            setShowUnlockModal(true);
+            // Use ZK service profile endpoint (port 8002)
+            const userProfile = await zkAuthService.getProfile();
+            const user: User = {
+              id: userProfile.id,
+              email: userProfile.email,
+              username: userProfile.username,
+              user_type: 'individual', // ZK service doesn't have user_type, default to individual
+              created_at: userProfile.created_at,
+              zk_enabled: userProfile.zk_enabled,
+            };
+            setUser(user);
+            setIsAuthenticated(true);
+
+            // Check if session is unlocked
+            const sessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
+            setZkSessionUnlocked(sessionUnlocked);
+
+            // Show unlock modal if session is locked
+            if (!sessionUnlocked) {
+              setShowUnlockModal(true);
+            }
+
+            profileLoaded = true;
+          } catch (error) {
+            retryCount++;
+            if (retryCount >= maxRetries) {
+              console.error('[ZK] Failed to load user profile after retries:', error);
+              // Session expired - clear ZK data
+              localStorage.removeItem(ZK_STORAGE.ZK_ENABLED_KEY);
+              localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
+              localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
+              localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
+
+              // Dispatch custom event to trigger immediate provider switch
+              window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: false } }));
+
+              setZkEnabled(false);
+              setZkData(null);
+            } else {
+              console.log(`[ZK] Profile fetch failed, retrying (${retryCount}/${maxRetries})...`);
+            }
           }
-        } catch (error) {
-          console.error('[ZK] Failed to load user profile:', error);
-          // Session expired - clear ZK data
-          localStorage.removeItem(ZK_STORAGE.ZK_ENABLED_KEY);
-          localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
-          localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
-          localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
-          setZkEnabled(false);
-          setZkData(null);
         }
       } catch (error) {
         console.error('[ZK] Bootstrap error:', error);
@@ -461,8 +482,8 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         throw new Error('Failed to decrypt master key');
       }
 
-      // Step 5: Get user profile (HYBRID: calls normal authService)
-      const userProfile = await authService.getProfile();
+      // Step 5: Get user profile from ZK service
+      const userProfile = await zkAuthService.getProfile();
 
       // Step 6: Set up ZK state
       const zkDataObj: ZKData = {
@@ -484,21 +505,19 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       setZkSessionUnlocked(true);
       setZkRecoveryEnabled(true);
 
-      // Convert UserProfile to User
+      // Convert ZKUserProfile to User
       const user: User = {
         id: userProfile.id,
         email: userProfile.email,
         username: userProfile.username,
-        user_type: userProfile.user_type,
+        user_type: 'individual', // ZK service doesn't have user_type, default to individual
         created_at: userProfile.created_at,
+        zk_enabled: userProfile.zk_enabled,
       };
-      if (userProfile.zk_enabled !== undefined) {
-        user.zk_enabled = userProfile.zk_enabled;
-      }
       setUser(user);
       setIsAuthenticated(true);
 
-      // Step 7: Set up WebSocket (HYBRID: normal service)
+      // Step 7: Set up WebSocket (note: ZK users may not use WebSocket)
       if (!websocketService.isConnected) {
         websocketService.connect();
       }
@@ -542,6 +561,9 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
       localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
       localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
+
+      // Dispatch custom event to trigger immediate provider switch
+      window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: false } }));
 
       // Clear state
       setZkEnabled(false);

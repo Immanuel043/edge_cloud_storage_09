@@ -46,14 +46,18 @@ export const useAuth = (): AuthContextValue => {
       }
     };
 
-    // Check on storage changes
+    // Check on storage changes (cross-tab)
     window.addEventListener('storage', checkZKMode);
 
-    // Poll periodically (in case same-window changes)
+    // Check on custom zk-mode-changed event (same-window, immediate)
+    window.addEventListener('zk-mode-changed', checkZKMode);
+
+    // Poll periodically (fallback)
     const interval = setInterval(checkZKMode, 1000);
 
     return () => {
       window.removeEventListener('storage', checkZKMode);
+      window.removeEventListener('zk-mode-changed', checkZKMode);
       clearInterval(interval);
     };
   }, [isZKMode]);
@@ -141,6 +145,9 @@ export const useAuth = (): AuthContextValue => {
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
     localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
+    // Dispatch custom event to trigger immediate provider switch
+    window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
+
     // Convert LoginZKResponse to LoginResponse
     return {
       access_token: response.access_token,
@@ -193,6 +200,9 @@ export const useAuth = (): AuthContextValue => {
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
     localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
     localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
+
+    // Dispatch custom event to trigger immediate provider switch
+    window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
 
     return response;
   };
@@ -253,11 +263,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Listen for storage changes (cross-tab)
     window.addEventListener('storage', checkZKMode);
 
-    // Poll for same-window changes
+    // Listen for custom zk-mode-changed event (same-window, immediate)
+    window.addEventListener('zk-mode-changed', checkZKMode);
+
+    // Poll for same-window changes (fallback)
     const interval = setInterval(checkZKMode, 1000);
 
     return () => {
       window.removeEventListener('storage', checkZKMode);
+      window.removeEventListener('zk-mode-changed', checkZKMode);
       clearInterval(interval);
     };
   }, [isZKMode]);
