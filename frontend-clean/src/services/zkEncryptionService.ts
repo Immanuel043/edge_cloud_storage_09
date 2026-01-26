@@ -21,6 +21,7 @@ import {
   decryptFileKey,
   encryptChunk,
   decryptChunk,
+  decryptAESGCM,
   generateRecoveryPhrase,
   validateRecoveryPhrase,
   deriveKeyFromRecoveryPhrase,
@@ -761,7 +762,7 @@ export async function encryptFileV2(
 // ==================== File Decryption ====================
 
 /**
- * Decrypt a file chunk with automatic version detection
+ * Decrypt a file chunk with automatic version detection and fallback strategies
  * @param encryptedChunk - Encrypted chunk data
  * @param fileKey - File decryption key
  * @param fileIdOrChunkIndex - File ID (for V2) or chunk index (for V1)
@@ -774,24 +775,52 @@ export function decryptFileChunk(
   fileIdOrChunkIndex: string | number = 0,
   chunkIndex?: number
 ): Uint8Array {
-  // Auto-detect version from first byte
   const version = encryptedChunk[0];
+  const fileId = typeof fileIdOrChunkIndex === 'string' ? fileIdOrChunkIndex : '';
+  const index = chunkIndex !== undefined ? chunkIndex : (typeof fileIdOrChunkIndex === 'number' ? fileIdOrChunkIndex : 0);
 
+  // Strategy 1: V2 encryption (VERSION + IV + ciphertext + tag)
   if (version === ZK_CONSTANTS_V2.VERSION) {
-    // V2 encryption - requires fileId for AAD
-    const fileId = typeof fileIdOrChunkIndex === 'string' ? fileIdOrChunkIndex : '';
-    const index = chunkIndex !== undefined ? chunkIndex : 0;
-
-    if (!fileId) {
-      console.warn('[ZK] V2 chunk detected but no fileId provided, decryption may fail');
+    try {
+      return decryptChunkV2(encryptedChunk, fileKey, fileId, index);
+    } catch (v2Error) {
+      console.warn('[ZK] V2 decryption failed, trying fallbacks:', v2Error);
     }
-
-    return decryptChunkV2(encryptedChunk, fileKey, fileId, index);
   }
 
-  // V1 encryption (backward compatibility)
-  const index = typeof fileIdOrChunkIndex === 'number' ? fileIdOrChunkIndex : (chunkIndex || 0);
-  return decryptChunk(encryptedChunk, fileKey, index);
+  // Strategy 2: V1 encryption (deterministic IV from fileKey + chunkIndex)
+  // Format: ciphertext + tag (no prepended IV)
+  try {
+    const result = decryptChunk(encryptedChunk, fileKey, index);
+    console.log('[ZK] Decryption succeeded with V1 strategy (deterministic IV)');
+    return result;
+  } catch (v1Error) {
+    console.warn('[ZK] V1 decryption failed, trying IV-prepended format');
+  }
+
+  // Strategy 3: IV-prepended format (IV + ciphertext + tag) - no version byte
+  // This handles legacy encryption that may have stored IV at the beginning
+  try {
+    const IV_LENGTH = 12;
+    const TAG_LENGTH = 16;
+    
+    if (encryptedChunk.length > IV_LENGTH + TAG_LENGTH) {
+      const iv = encryptedChunk.slice(0, IV_LENGTH);
+      const ciphertextWithTag = encryptedChunk.slice(IV_LENGTH);
+      const ciphertext = ciphertextWithTag.slice(0, -TAG_LENGTH);
+      const tag = ciphertextWithTag.slice(-TAG_LENGTH);
+      
+      const result = decryptAESGCM(ciphertext, fileKey, iv, tag);
+      console.log('[ZK] Decryption succeeded with IV-prepended strategy');
+      return result;
+    }
+  } catch (ivPrependError) {
+    console.warn('[ZK] IV-prepended decryption failed');
+  }
+
+  // All strategies failed
+  console.error('[ZK] All decryption strategies failed for chunk');
+  throw new Error('Decryption failed: Invalid key, corrupted data, or authentication tag mismatch');
 }
 
 /**

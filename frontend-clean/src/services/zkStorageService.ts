@@ -379,19 +379,36 @@ class ZKStorageService {
     onProgress?: (progress: Record<string, unknown>) => void
   ): Promise<DownloadResult> {
     console.log('[ZK Preview] Starting ZK file preview:', fileId);
+    console.log('[ZK Preview] Metadata:', {
+      hasEncryptedFileKey: !!metadata.encrypted_file_key,
+      hasFileKeyIV: !!metadata.file_key_iv,
+      fileSize: metadata.file_size,
+      chunkSize: metadata.chunk_size,
+      encryptedFileKeyLength: metadata.encrypted_file_key?.length,
+      fileKeyIVLength: metadata.file_key_iv?.length,
+    });
 
     // 1. Check if ZK session is unlocked
     if (!zkEncryptionService.isZKSessionUnlocked()) {
       throw new Error('ZK session is locked. Please unlock to preview encrypted files.');
     }
 
+    // Validate required metadata
+    if (!metadata.encrypted_file_key) {
+      throw new Error('Missing encrypted_file_key in file metadata');
+    }
+    if (!metadata.file_key_iv) {
+      throw new Error('Missing file_key_iv in file metadata');
+    }
+
     try {
       // 2. Decrypt file key with master key
       console.log('[ZK Preview] Decrypting file key...');
       const fileKey = zkEncryptionService.prepareFileForDecryption(
-        metadata.encrypted_file_key!,
-        metadata.file_key_iv!
+        metadata.encrypted_file_key,
+        metadata.file_key_iv
       );
+      console.log('[ZK Preview] File key decrypted, length:', fileKey.length);
 
       // 3. Determine number of chunks
       const chunkSize = metadata.chunk_size || 32 * 1024 * 1024; // 32MB default
@@ -409,6 +426,7 @@ class ZKStorageService {
 
         // Download encrypted chunk
         const encryptedChunk = await this._downloadChunkWithRetry(fileId, i, 0, 3);
+        console.log(`[ZK Preview] Downloaded chunk ${i}: ${encryptedChunk.byteLength} bytes, first byte (version): ${new Uint8Array(encryptedChunk)[0]}`);
 
         // Update progress
         if (onProgress) {
@@ -416,13 +434,20 @@ class ZKStorageService {
         }
 
         // Decrypt chunk (auto-detects V1/V2)
-        const decryptedChunk = zkEncryptionService.decryptFileChunk(
-          new Uint8Array(encryptedChunk),
-          fileKey,
-          fileId, // Pass fileId for V2 AAD verification
-          i       // Chunk index
-        );
-        decryptedChunks.push(decryptedChunk);
+        try {
+          const decryptedChunk = zkEncryptionService.decryptFileChunk(
+            new Uint8Array(encryptedChunk),
+            fileKey,
+            fileId, // Pass fileId for V2 AAD verification
+            i       // Chunk index
+          );
+          console.log(`[ZK Preview] Decrypted chunk ${i}: ${decryptedChunk.length} bytes`);
+          decryptedChunks.push(decryptedChunk);
+        } catch (decryptError) {
+          console.error(`[ZK Preview] Chunk ${i} decryption failed:`, decryptError);
+          console.error(`[ZK Preview] Chunk details: size=${encryptedChunk.byteLength}, version=${new Uint8Array(encryptedChunk)[0]}, fileKeyLength=${fileKey.length}`);
+          throw decryptError;
+        }
       }
 
       // 5. Assemble decrypted chunks into Blob

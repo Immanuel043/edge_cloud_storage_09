@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, ZoomIn, ZoomOut, RotateCw, Download, Table, Shield, Lock, Loader, Music } from 'lucide-react';
-import { API_URL } from '../../config/constants';
+import { API_URL, ZK_SERVICE_URL } from '../../config/constants';
 import { useAuth } from '../../contexts/AuthContext';
 import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS, AUDIO_EXTENSIONS } from '../../utils/helpers';
 import SecureVideoPlayer from './SecureVideoPlayer';
@@ -28,8 +28,16 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
   };
 
-  const downloadLink = applyToken(`${API_URL}/api/v1/files/${file.id}/download`);
-  const streamUrl = applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`);
+  // Use ZK service for ZK-encrypted files, normal service for others
+  const serviceUrl = isZKEncrypted ? ZK_SERVICE_URL : API_URL;
+  const apiPath = isZKEncrypted ? '/api/v1/zk/files' : '/api/v1/files';
+  
+  const downloadLink = isZKEncrypted 
+    ? `${serviceUrl}${apiPath}/${file.id}/download`  // ZK files don't use token params (use cookies)
+    : applyToken(`${API_URL}/api/v1/files/${file.id}/download`);
+  const streamUrl = isZKEncrypted
+    ? `${serviceUrl}${apiPath}/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`
+    : applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`);
 
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [zoom, setZoom] = useState<number>(1);
@@ -570,12 +578,20 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                   <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
                 </div>
               )}
-              <iframe
-                src={isZKEncrypted && previewUrl ? previewUrl : applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
-                className="w-full h-full rounded-lg"
-                style={{ minHeight: '70vh' }}
-                title={file.name}
-              />
+              {/* Only render iframe when we have a valid URL - avoids empty src warning */}
+              {(previewUrl || !isZKEncrypted) && (
+                <iframe
+                  src={previewUrl || applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
+                  className="w-full h-full rounded-lg"
+                  style={{ minHeight: '70vh' }}
+                  title={file.name}
+                />
+              )}
+              {isZKEncrypted && !previewUrl && (
+                <div className="flex items-center justify-center h-full min-h-[70vh]">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                </div>
+              )}
             </div>
           ) : isExcelFile ? (
             <div className={`flex flex-col items-center justify-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
@@ -612,12 +628,20 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                   <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
                 </div>
               )}
-              <iframe
-                src={isZKEncrypted && previewUrl ? previewUrl : applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
-                className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
-                style={{ minHeight: '70vh' }}
-                title={file.name}
-              />
+              {/* Only render iframe when we have a valid URL - avoids empty src warning */}
+              {(previewUrl || !isZKEncrypted) && (
+                <iframe
+                  src={previewUrl || applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
+                  className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
+                  style={{ minHeight: '70vh' }}
+                  title={file.name}
+                />
+              )}
+              {isZKEncrypted && !previewUrl && (
+                <div className="flex items-center justify-center h-full min-h-[70vh]">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                </div>
+              )}
             </div>
           ) : isVideoFile && isZKEncrypted ? (
             // ZK-encrypted video - use SecureVideoPlayer with client-side decryption

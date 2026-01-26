@@ -38,9 +38,13 @@ interface UploadInitZKRequest {
 
 interface UploadInitResponse {
   upload_id: string;
-  storage_strategy: 'inline' | 'single' | 'chunked';
+  file_id: string;
   chunk_size: number;
-  total_chunks: number;
+  max_chunks: number;
+  storage_upload_id: string;
+  // Frontend-computed fields
+  storage_strategy?: 'inline' | 'single' | 'chunked';
+  total_chunks?: number;
 }
 
 interface UploadInitZKResponse extends UploadInitResponse {
@@ -76,6 +80,7 @@ export interface ZKUploadProgressData extends UploadProgressData {
 
 interface UploadContext {
   uploadId: string;
+  fileId: string; // Used for V2 encryption AAD binding
   file: File;
   strategy: 'inline' | 'single' | 'chunked';
   chunkSize: number;
@@ -193,10 +198,22 @@ class ZKUploadService {
 
     const initData = (await response.json()) as UploadInitResponse;
 
-    // Return with ZK metadata (use our pre-generated uploadId)
+    // Compute total_chunks from file size and chunk_size
+    const chunkSize = initData.chunk_size || 1024 * 1024;
+    const totalChunks = Math.ceil(file.size / chunkSize);
+
+    // IMPORTANT: Use the backend's upload_id (UUID format with dashes)
+    // The backend converts our hex string to proper UUID format
+    // We must use the backend's version for subsequent requests
+    console.log('[ZK Upload] Backend returned upload_id:', initData.upload_id);
+
+    // Return with ZK metadata
+    // Always use chunked upload strategy (direct upload endpoint doesn't exist)
     return {
       ...initData,
-      upload_id: uploadId, // Override with our pre-generated ID for V2 AAD
+      // Use backend's upload_id - it's the one stored in the database
+      storage_strategy: 'chunked' as const, // Always use chunked upload
+      total_chunks: totalChunks,
       zkEnabled: true,
       fileKey, // Keep file key in memory for chunk encryption
     };
@@ -235,7 +252,8 @@ class ZKUploadService {
 
       // Step 1: Initialize upload (encrypts file key, filename, thumbnail)
       const initData = await this.initUpload(file, folderId, { generateThumbnail });
-      const { upload_id, storage_strategy, chunk_size, total_chunks, fileKey } = initData;
+      const { upload_id, file_id, storage_strategy, chunk_size, total_chunks, fileKey } = initData;
+      console.log('[ZK Upload] Got upload_id:', upload_id, 'file_id:', file_id);
 
       // Report encryption complete
       if (onProgress) {
@@ -254,6 +272,7 @@ class ZKUploadService {
       // Create upload context
       const uploadContext: UploadContext = {
         uploadId: upload_id,
+        fileId: file_id, // Use file_id for V2 encryption AAD binding
         file,
         strategy: storage_strategy,
         chunkSize: chunk_size,
@@ -385,7 +404,7 @@ class ZKUploadService {
     chunkIndex: number,
     retryCount: number = 0
   ): Promise<ChunkUploadResponse> {
-    const { file, chunkSize, uploadId, fileKey } = context;
+    const { file, chunkSize, uploadId, fileId, fileKey } = context;
 
     // Calculate chunk boundaries
     const start = chunkIndex * chunkSize;
@@ -399,10 +418,11 @@ class ZKUploadService {
 
       // Encrypt chunk with V2 encryption (HKDF + AAD)
       // V2 returns single Uint8Array: VERSION + IV + ciphertext + tag
+      // Use fileId (not uploadId) for AAD binding - this matches what's used during decryption
       const encryptedChunk = zkEncryptionService.encryptFileChunkV2(
         chunkBytes,
         fileKey,
-        uploadId, // Use uploadId as fileId for AAD binding
+        fileId, // Use fileId for AAD binding (matches decryption)
         chunkIndex
       );
 
@@ -456,17 +476,18 @@ class ZKUploadService {
    * Still encrypted before upload
    */
   private async _uploadDirect(context: UploadContext): Promise<unknown> {
-    const { file, uploadId, fileKey } = context;
+    const { file, uploadId, fileId, fileKey } = context;
 
     // For direct upload, encrypt the entire file
     const fileArrayBuffer = await file.arrayBuffer();
     const fileBytes = new Uint8Array(fileArrayBuffer);
 
     // Encrypt with V2 encryption
+    // Use fileId for AAD binding (matches decryption)
     const encryptedFile = zkEncryptionService.encryptFileChunkV2(
       fileBytes,
       fileKey,
-      uploadId,
+      fileId,
       0 // Chunk index 0 for single file
     );
 
