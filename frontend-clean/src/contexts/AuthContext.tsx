@@ -6,7 +6,7 @@
  * - Normal Mode: NormalAuthProvider (server-side auth, WebSocket)
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ZK_STORAGE } from '../config/constants';
 import { ZKAuthProvider, useZKAuth } from './auth/ZKAuthContext';
 import { NormalAuthProvider, useNormalAuth } from './auth/NormalAuthContext';
@@ -37,15 +37,16 @@ export const useAuth = (): AuthContextValue => {
     return localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
   });
 
-  // Watch for changes to ZK mode (e.g., during login/logout)
-  useEffect(() => {
-    const checkZKMode = (): void => {
-      const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
-      if (zkEnabled !== isZKMode) {
-        setIsZKMode(zkEnabled);
-      }
-    };
+  // Stable callback that checks localStorage and updates state if changed.
+  // Uses functional update to avoid stale closure over isZKMode.
+  const checkZKMode = useCallback((): void => {
+    const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+    setIsZKMode((prev) => (zkEnabled !== prev ? zkEnabled : prev));
+  }, []);
 
+  // Watch for changes to ZK mode (e.g., during login/logout)
+  // Attach listeners only once (empty dependency array) to avoid re-attachment gaps.
+  useEffect(() => {
     // Check on storage changes (cross-tab)
     window.addEventListener('storage', checkZKMode);
 
@@ -60,7 +61,7 @@ export const useAuth = (): AuthContextValue => {
       window.removeEventListener('zk-mode-changed', checkZKMode);
       clearInterval(interval);
     };
-  }, [isZKMode]);
+  }, [checkZKMode]);
 
   // Route to appropriate hook based on current mode
   if (isZKMode) {
@@ -264,16 +265,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     return localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
   });
 
-  // Watch for changes to ZK mode
-  useEffect(() => {
-    const checkZKMode = (): void => {
-      const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
-      if (zkEnabled !== isZKMode) {
+  // Stable callback that checks localStorage and updates state if changed.
+  // Uses functional update to avoid stale closure over isZKMode.
+  const checkZKMode = useCallback((): void => {
+    const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+    setIsZKMode((prev) => {
+      if (zkEnabled !== prev) {
         console.log('[AuthRouter] Mode changed, switching provider...');
-        setIsZKMode(zkEnabled);
+        return zkEnabled;
       }
-    };
+      return prev;
+    });
+  }, []);
 
+  // Watch for changes to ZK mode.
+  // Attach listeners only once (empty dependency array) to avoid re-attachment gaps.
+  useEffect(() => {
     // Listen for storage changes (cross-tab)
     window.addEventListener('storage', checkZKMode);
 
@@ -288,7 +295,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       window.removeEventListener('zk-mode-changed', checkZKMode);
       clearInterval(interval);
     };
-  }, [isZKMode]);
+  }, [checkZKMode]);
 
   // ZK Mode: Use ZK Auth Provider
   if (isZKMode) {
