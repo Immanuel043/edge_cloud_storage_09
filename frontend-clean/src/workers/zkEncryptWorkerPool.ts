@@ -10,7 +10,6 @@
  * - Transferable objects for zero-copy performance
  * - Automatic worker cleanup
  */
-import { EventEmitter } from 'events';
 
 interface EncryptedChunk {
   index: number;
@@ -36,13 +35,12 @@ interface WorkerState {
   currentTask: EncryptTask | null;
 }
 
-export class ZKEncryptWorkerPool extends EventEmitter {
+export class ZKEncryptWorkerPool {
   private workers: WorkerState[] = [];
   private taskQueue: EncryptTask[] = [];
   private poolSize: number;
 
   constructor() {
-    super();
     // Same sizing as decrypt pool: 2-4 workers on mobile, 4-8 on desktop
     const isMobile = /Mobile|Android|iPhone/i.test(navigator.userAgent);
     this.poolSize = isMobile ? Math.min(navigator.hardwareConcurrency || 2, 4) : Math.min(navigator.hardwareConcurrency || 4, 8);
