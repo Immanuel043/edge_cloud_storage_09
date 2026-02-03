@@ -96,30 +96,78 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
     }, 500);
   }, []);
 
-  // WebSocket listeners for real-time updates
+  // ✅ WebSocket listeners for real-time updates (ZK-specific events with incremental updates)
   useEffect(() => {
-    const handleFileUploaded = (): void => {
-      debouncedRefresh();
+    if (!isAuthenticated) return;
+
+    console.log('[ZK Storage] Setting up WebSocket listeners for ZK events');
+
+    // Initialize WebSocket connection
+    websocketService.connect();
+
+    // ✅ Incremental update: Add new file to list (no full reload)
+    const handleFileUploaded = (data: any): void => {
+      console.log('[ZK WebSocket] File uploaded:', data);
+      if (data?.file) {
+        setFiles((prev) => {
+          // Avoid duplicates
+          if (prev.some(f => f.id === data.file.id)) {
+            return prev;
+          }
+          return [...prev, data.file];
+        });
+        void loadStorageStats(); // Update storage stats
+      }
     };
 
-    const handleFileDeleted = (): void => {
-      debouncedRefresh();
+    // ✅ Incremental update: Remove file from list (no full reload)
+    const handleFileDeleted = (data: any): void => {
+      console.log('[ZK WebSocket] File deleted:', data.fileId);
+      if (data?.fileId) {
+        setFiles((prev) => prev.filter((f) => f.id !== data.fileId));
+        void loadStorageStats(); // Update storage stats
+      }
     };
 
-    const handleStorageUpdate = (): void => {
-      void loadStorageStats();
+    // ✅ Incremental update: Update file in list
+    const handleFileUpdated = (data: any): void => {
+      console.log('[ZK WebSocket] File updated:', data);
+      if (data?.file) {
+        setFiles((prev) =>
+          prev.map((f) => (f.id === data.file.id ? data.file : f))
+        );
+      }
     };
 
-    const unsubFileUploaded = websocketService.on('file_uploaded', handleFileUploaded);
-    const unsubFileDeleted = websocketService.on('file_deleted', handleFileDeleted);
-    const unsubStorageUpdate = websocketService.on('storage_updated', handleStorageUpdate);
+    // ✅ Incremental update: Add new folder
+    const handleFolderCreated = (data: any): void => {
+      console.log('[ZK WebSocket] Folder created:', data);
+      if (data?.folder) {
+        setFolders((prev) => {
+          // Avoid duplicates
+          if (prev.some(f => f.id === data.folder.id)) {
+            return prev;
+          }
+          return [...prev, data.folder];
+        });
+      }
+    };
+
+    // Register ZK-specific event listeners
+    const unsubFileUploaded = websocketService.on('zk:file:uploaded', handleFileUploaded);
+    const unsubFileDeleted = websocketService.on('zk:file:deleted', handleFileDeleted);
+    const unsubFileUpdated = websocketService.on('zk:file:updated', handleFileUpdated);
+    const unsubFolderCreated = websocketService.on('zk:folder:created', handleFolderCreated);
 
     return () => {
+      // Cleanup listeners
       unsubFileUploaded();
       unsubFileDeleted();
-      unsubStorageUpdate();
+      unsubFileUpdated();
+      unsubFolderCreated();
+      websocketService.disconnect();
     };
-  }, [debouncedRefresh]);
+  }, [isAuthenticated]);
 
   // Auto-load files when authenticated and session unlocked
   useEffect(() => {
@@ -131,6 +179,22 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
       })();
     }
   }, [isAuthenticated, zkSessionUnlocked, currentFolder]);
+
+  // ✅ Worker pool cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Terminate worker pools when component unmounts
+      console.log('[ZK Storage] Cleaning up worker pools...');
+      try {
+        const { terminateEncryptWorkerPool } = require('../../workers/zkEncryptWorkerPool');
+        const { terminateDecryptWorkerPool } = require('../../workers/zkDecryptWorkerPool');
+        terminateEncryptWorkerPool();
+        terminateDecryptWorkerPool();
+      } catch (error) {
+        console.error('[ZK Storage] Error terminating worker pools:', error);
+      }
+    };
+  }, []);
 
   // ==================== FILE LOADING ====================
 

@@ -40,6 +40,7 @@ import PaymentReminderBanner from '../PaymentReminderBanner';
 import FreeAccountUpgradeBanner from '../FreeAccountUpgradeBanner';
 import FileCorruptionModal from '../FileCorruptionModal';
 import ShareBundleComposer from '../ShareBundleComposer';
+import ServiceModeBadge from '../ServiceModeBadge';
 // ZKDashboardLayout not needed in Normal Dashboard
 import { getFileType } from '../../../utils/helpers';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
@@ -1003,6 +1004,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                   <Lock size={20} />
                 </button>
               )}
+
+              {/* Service Mode Badge */}
+              <ServiceModeBadge isZKMode={false} darkMode={darkMode} />
 
               <div className="flex items-center gap-2">
                 <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>

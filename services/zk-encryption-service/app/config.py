@@ -66,6 +66,13 @@ class Settings(BaseSettings):
         env="ACCESS_TOKEN_EXPIRE_MINUTES"
     )
 
+    # Internal Service Communication
+    INTERNAL_SERVICE_API_KEY: str = Field(default="", env="INTERNAL_SERVICE_API_KEY")
+    STORAGE_SERVICE_INTERNAL_URL: str = Field(
+        default="http://localhost:8001",
+        env="STORAGE_SERVICE_INTERNAL_URL"
+    )
+
     # Payment Gateway Configuration
     # Razorpay
     RAZORPAY_KEY_ID: str = Field(default="", env="RAZORPAY_KEY_ID")

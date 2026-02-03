@@ -20,7 +20,11 @@ class Settings:
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 120))  # 2 hours (was 30 min)
     ENABLE_HTTPS: bool = os.getenv("ENABLE_HTTPS", "false").lower() == "true"
-    
+
+    # Internal Service Communication
+    INTERNAL_SERVICE_API_KEY: str = os.getenv("INTERNAL_SERVICE_API_KEY", "")
+    ZK_SERVICE_INTERNAL_URL: str = os.getenv("ZK_SERVICE_INTERNAL_URL", "http://localhost:8002")
+
     # Database
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL", 

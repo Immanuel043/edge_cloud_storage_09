@@ -50,6 +50,9 @@ import {
   decryptChunkV2,
 } from '../utils/zkCryptoV2';
 
+// Import worker pool for background encryption
+import { getEncryptWorkerPool } from '../workers/zkEncryptWorkerPool';
+
 // ==================== Type Definitions ====================
 
 interface ZKRegistrationData {
@@ -715,32 +718,51 @@ export async function encryptFileV2(
 
   const chunkSize = ZK_CONSTANTS.CHUNK_SIZE;
   const totalChunks = Math.ceil(fileData.length / chunkSize);
-  const encryptedChunks: EncryptedChunk[] = [];
 
+  // ✅ OPTIMIZED: Parallel encryption using worker pool (non-blocking)
+  const workerPool = getEncryptWorkerPool();
+  const encryptionPromises: Promise<{ index: number; data: Uint8Array }>[] = [];
+
+  console.log(`[ZK Encrypt] Starting parallel encryption of ${totalChunks} chunks using worker pool`);
+
+  // Queue all chunks for parallel encryption
   for (let i = 0; i < totalChunks; i++) {
     const start = i * chunkSize;
     const end = Math.min(start + chunkSize, fileData.length);
     const chunkData = fileData.slice(start, end);
 
-    // Use V2 encryption with AAD (fileId + chunkIndex)
-    // Returns: VERSION(1 byte) + IV(12 bytes) + ciphertext + tag(16 bytes)
-    const encryptedChunkData = encryptChunkV2(chunkData, fileKey, fileId, i);
+    // ✅ Offload to worker pool (non-blocking)
+    const encryptPromise = workerPool
+      .encryptChunk(chunkData, fileKey, fileId, i)
+      .then((encryptedData) => ({
+        index: i,
+        data: encryptedData,
+      }));
 
-    // For V2 chunks, store the complete encrypted data (including VERSION byte)
-    // The VERSION byte allows automatic detection during decryption
-    // Set iv/tag to empty arrays since they're embedded in the data
-    encryptedChunks.push({
-      index: i,
-      data: encryptedChunkData, // Complete V2 chunk with VERSION byte
-      iv: new Uint8Array(0), // Empty - IV is in data
-      tag: new Uint8Array(0), // Empty - tag is in data
-      size: encryptedChunkData.length,
-    });
-
-    if (progressCallback) {
-      progressCallback(end, fileData.length);
-    }
+    encryptionPromises.push(encryptPromise);
   }
+
+  // Wait for all chunks to be encrypted in parallel
+  const encryptedChunkResults = await Promise.all(encryptionPromises);
+
+  // Sort by index to maintain order
+  encryptedChunkResults.sort((a, b) => a.index - b.index);
+
+  // Convert to EncryptedChunk format
+  const encryptedChunks: EncryptedChunk[] = encryptedChunkResults.map(({ index, data }) => ({
+    index,
+    data, // Complete V2 chunk with VERSION byte
+    iv: new Uint8Array(0), // Empty - IV is embedded in data
+    tag: new Uint8Array(0), // Empty - tag is embedded in data
+    size: data.length,
+  }));
+
+  // Call progress callback with final value
+  if (progressCallback) {
+    progressCallback(fileData.length, fileData.length);
+  }
+
+  console.log(`[ZK Encrypt] Parallel encryption complete: ${encryptedChunks.length} chunks`);
 
   return {
     encryptedChunks,

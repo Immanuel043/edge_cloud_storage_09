@@ -746,6 +746,17 @@ async def delete_file(
             file_id=file_id
         )
 
+        # ✅ Emit WebSocket event for permanent deletion
+        try:
+            from app.websocket.manager import connection_manager
+            await connection_manager.send_to_user(
+                user_id=user.id,
+                event="zk:file:deleted",
+                data={"fileId": file_id}
+            )
+        except Exception as e:
+            logger.error("websocket_emit_failed", error=str(e), event="zk:file:deleted")
+
         return {
             "message": "File permanently deleted",
             "file_id": file_id,
@@ -770,6 +781,17 @@ async def delete_file(
             user_id=str(user.id),
             file_id=file_id
         )
+
+        # ✅ Emit WebSocket event for soft deletion
+        try:
+            from app.websocket.manager import connection_manager
+            await connection_manager.send_to_user(
+                user_id=user.id,
+                event="zk:file:deleted",
+                data={"fileId": file_id}
+            )
+        except Exception as e:
+            logger.error("websocket_emit_failed", error=str(e), event="zk:file:deleted")
 
         return {
             "message": "File moved to trash",

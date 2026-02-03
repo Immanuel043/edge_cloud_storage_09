@@ -419,6 +419,62 @@ app.include_router(
     tags=["Subscription UI Helpers"]
 )
 
+# Enhanced health check router
+from app.routers import health
+app.include_router(health.router)
+
+# Internal API for cross-service communication
+from app.routers import internal
+app.include_router(
+    internal.router,
+    prefix="/api/v1/zk/internal",
+    tags=["Internal"]
+)
+
+# ✅ WebSocket endpoint for real-time updates
+from fastapi import WebSocket, WebSocketDisconnect
+from app.websocket.manager import connection_manager
+from app.routers.auth_zk import get_current_user_from_cookie
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time ZK file updates
+
+    Authenticates users via session cookie and broadcasts events:
+    - zk:file:uploaded
+    - zk:file:deleted
+    - zk:file:updated
+    - zk:folder:created
+    """
+    user_id = None
+    try:
+        # Authenticate via session cookie
+        session_token = websocket.cookies.get("session")
+        if not session_token:
+            await websocket.close(code=1008, reason="No session cookie")
+            return
+
+        current_user = await get_current_user_from_cookie(session_token)
+        user_id = current_user.id
+
+        await connection_manager.connect(websocket, user_id)
+        logger.info("websocket_client_connected", user_id=user_id)
+
+        # Keep connection alive with ping/pong
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+
+    except WebSocketDisconnect:
+        if user_id:
+            connection_manager.disconnect(websocket, user_id)
+            logger.info("websocket_client_disconnected", user_id=user_id)
+    except Exception as e:
+        logger.error("websocket_error", error=str(e), user_id=user_id)
+        if user_id:
+            connection_manager.disconnect(websocket, user_id)
+
 
 # ========== STARTUP MESSAGE ==========
 

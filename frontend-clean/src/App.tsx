@@ -1,6 +1,7 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { bootstrapWithVerification } from './utils/bootstrapVerification';
 import { StorageProvider } from './contexts/StorageContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { NotificationProvider } from './contexts/NotificationContext';
@@ -44,6 +45,11 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
  * Sets up routing, context providers, and application structure.
  */
 const App: React.FC = () => {
+  // Run bootstrap verification on mount to auto-detect service mode
+  useEffect(() => {
+    bootstrapWithVerification();
+  }, []);
+
   return (
     <Router>
       <ThemeProvider>

@@ -334,6 +334,16 @@ async def register_init(
     """
     email = payload.email.lower().strip()
 
+    # Check if email exists on ZK service
+    from ..services.internal_client import InternalServiceClient
+    internal_client = InternalServiceClient()
+    if await internal_client.check_email_exists_on_zk_service(email):
+        raise HTTPException(
+            status_code=400,
+            detail="This email is already registered with ZK Encrypted Storage. "
+                   "Please log in using ZK mode, or use a different email."
+        )
+
     # Check if user already exists and is verified
     existing_user = await verification_service.get_user_by_email(db, email)
     if existing_user and existing_user.email_verified and existing_user.password_hash:

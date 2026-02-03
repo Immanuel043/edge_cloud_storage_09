@@ -303,6 +303,14 @@ app.include_router(share_bundles.router)
 app.include_router(billing_v2.router)  # Database-driven billing system
 app.include_router(subscription_helpers.router)  # Subscription UI helpers
 
+# Internal API for cross-service communication
+from .routers import internal
+app.include_router(
+    internal.router,
+    prefix="/api/v1/auth/internal",
+    tags=["Internal"]
+)
+
 
 # Helper functions
 async def create_storage_directories():

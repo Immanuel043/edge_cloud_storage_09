@@ -248,6 +248,24 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         break;
       }
 
+      case 'encrypt': {
+        // New handler for zkEncryptWorkerPool
+        // This is different from 'encryptChunk' - it's used by the worker pool for parallel encryption
+        if (!payload.fileKey || !payload.fileId || payload.chunkIndex === undefined || !payload.chunkData) {
+          throw new Error('Missing required encryption parameters for worker pool');
+        }
+
+        // Encrypt chunk using V2 encryption
+        result = encryptChunk(
+          payload.chunkData,
+          new Uint8Array(payload.fileKey),
+          payload.fileId,
+          payload.chunkIndex
+        );
+        transfer = [result.buffer];
+        break;
+      }
+
       default:
         throw new Error(`Unknown operation type: ${type}`);
     }

@@ -198,6 +198,16 @@ async def register_zk_init(
 
     email = payload.email.lower().strip()
 
+    # Check if email exists on Normal service
+    from app.services.internal_client import InternalServiceClient
+    internal_client = InternalServiceClient()
+    if await internal_client.check_email_exists_on_normal_service(email):
+        raise HTTPException(
+            status_code=400,
+            detail="This email is already registered with Standard Storage. "
+                   "Please log in using Normal mode, or use a different email."
+        )
+
     # Check if user already exists and is verified
     result = await db.execute(
         select(ZKUser).filter(ZKUser.email == email)

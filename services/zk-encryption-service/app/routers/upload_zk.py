@@ -528,6 +528,25 @@ async def complete_upload(
         total_chunks=request_data.total_chunks
     )
 
+    # ✅ Emit WebSocket event for real-time UI update
+    try:
+        from app.websocket.manager import connection_manager
+        await connection_manager.send_to_user(
+            user_id=user.id,
+            event="zk:file:uploaded",
+            data={
+                "file": {
+                    "id": str(file_obj.id),
+                    "encrypted_file_name": file_obj.encrypted_file_name,
+                    "file_name_iv": file_obj.file_name_iv,
+                    "file_size": file_obj.file_size,
+                    "uploaded_at": file_obj.uploaded_at.isoformat() if file_obj.uploaded_at else None,
+                }
+            }
+        )
+    except Exception as e:
+        logger.error("websocket_emit_failed", error=str(e), event="zk:file:uploaded")
+
     # Return encrypted filename (client will decrypt)
     return {
         "message": "Upload completed successfully",

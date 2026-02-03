@@ -26,6 +26,7 @@ import KeyboardShortcuts from '../KeyboardShortcuts';
 import MigrationBanner from '../MigrationBanner';
 import FileCorruptionModal from '../FileCorruptionModal';
 import ShareOptionsModal from '../ShareOptionsModal';
+import ServiceModeBadge from '../ServiceModeBadge';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { getFileType } from '../../../utils/helpers';
 import type { ZKDashboardLayoutProps, FileItem, FolderItem, UploadItem, DownloadItem, UploadProgressData, DownloadProgressData, UploadErrorInfo, CorruptionErrorInfo, SearchResults as SearchResultsType } from '../types';
@@ -856,6 +857,9 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
               >
                 <Lock size={20} />
               </button>
+
+              {/* Service Mode Badge */}
+              <ServiceModeBadge isZKMode={true} darkMode={darkMode} />
 
               <div className="flex items-center gap-2">
                 <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
