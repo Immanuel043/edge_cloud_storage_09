@@ -95,7 +95,7 @@ export const useSubscription = (): SubscriptionContextValue => {
  */
 export function SubscriptionProvider({ children }: SubscriptionProviderProps): React.ReactElement {
   const { showNotification } = useNotification();
-  const { zkEnabled } = useAuth();
+  const { zkEnabled, isAuthenticated } = useAuth();
 
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [availablePlans, setAvailablePlans] = useState<Plan[]>([]);
@@ -113,11 +113,11 @@ export function SubscriptionProvider({ children }: SubscriptionProviderProps): R
     subscriptionService.setServiceType(serviceType);
     console.log(`[SubscriptionContext] Service type set to: ${serviceType}`);
 
-    // Refetch dashboard data when service type changes
-    if (!loading) {
+    // Refetch dashboard data when service type changes (only if authenticated)
+    if (!loading && isAuthenticated) {
       fetchDashboard();
     }
-  }, [zkEnabled]); // Note: Not including fetchDashboard/loading to avoid infinite loop
+  }, [zkEnabled, isAuthenticated]); // Note: Not including fetchDashboard/loading to avoid infinite loop
 
   /**
    * Fetch complete dashboard data
@@ -328,22 +328,31 @@ export function SubscriptionProvider({ children }: SubscriptionProviderProps): R
   }, [subscription, getPlanByCode]);
 
   /**
-   * Initial load
+   * Initial load (only when authenticated)
    */
   useEffect(() => {
-    fetchDashboard();
-  }, [fetchDashboard]);
+    if (isAuthenticated) {
+      fetchDashboard();
+    } else {
+      // Reset state when not authenticated
+      setLoading(false);
+    }
+  }, [fetchDashboard, isAuthenticated]);
 
   /**
-   * Poll for updates every 30 seconds
+   * Poll for updates every 30 seconds (only when authenticated)
    */
   useEffect(() => {
+    if (!isAuthenticated) {
+      return; // Don't poll when not authenticated
+    }
+
     const interval = setInterval(() => {
       fetchDashboard();
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [fetchDashboard]);
+  }, [fetchDashboard, isAuthenticated]);
 
   const value: SubscriptionContextValue = {
     // State

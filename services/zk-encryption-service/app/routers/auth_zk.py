@@ -33,8 +33,9 @@ import os
 # Cookie settings for HTTP-only session cookie
 COOKIE_NAME = "access_token"
 COOKIE_MAX_AGE = 3600  # 1 hour
-# SECURITY: Must be True in production to prevent token theft over HTTP
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
+# SECURITY: Set COOKIE_SECURE=true in production to prevent token theft over HTTP
+# Default is false for development compatibility (cookies work over HTTP/localhost)
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_HTTPONLY = True  # Prevent JavaScript access (XSS protection)
 COOKIE_SAMESITE = "lax"  # CSRF protection
 from app.database import get_db
@@ -51,6 +52,59 @@ from app.models.zk_models import ZKEnrollmentHistory
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+# ========== HELPER FUNCTIONS ==========
+
+async def get_current_user_from_cookie(session_token: str):
+    """
+    Get current user from session cookie (for WebSocket authentication).
+
+    Args:
+        session_token: JWT token from session cookie
+
+    Returns:
+        User object from database
+
+    Raises:
+        HTTPException: If token invalid or user not found
+    """
+    from app.dependencies import verify_token
+    from app.models.database import ZKUser
+    from app.database import get_db
+
+    if not session_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authenticated"
+        )
+
+    # Verify JWT token
+    payload = verify_token(session_token)
+    user_id = payload.get("sub")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid token"
+        )
+
+    # Get user from database using async context manager
+    from app.database import async_session_maker
+
+    async with async_session_maker() as db:
+        result = await db.execute(
+            select(ZKUser).filter(ZKUser.id == int(user_id))
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not found"
+            )
+
+        return user
 
 
 # ========== REQUEST/RESPONSE MODELS ==========

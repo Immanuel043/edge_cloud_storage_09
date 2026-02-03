@@ -448,8 +448,8 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     user_id = None
     try:
-        # Authenticate via session cookie
-        session_token = websocket.cookies.get("session")
+        # Authenticate via session cookie (access_token is the cookie name)
+        session_token = websocket.cookies.get("access_token")
         if not session_token:
             await websocket.close(code=1008, reason="No session cookie")
             return

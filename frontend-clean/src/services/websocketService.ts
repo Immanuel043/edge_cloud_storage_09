@@ -9,7 +9,7 @@
  * - Browser notification support
  */
 
-import { API_URL, WS_URL } from '../config/constants';
+import { API_URL, WS_URL, ZK_WS_URL, ZK_STORAGE } from '../config/constants';
 
 // ==================== Type Definitions ====================
 
@@ -100,20 +100,35 @@ class WebSocketService {
     this.connectPromiseReject = null;
     this.manualClose = false; // true when client intentionally closed
     this.getToken = getToken; // optional function to retrieve a fresh token for reconnect
+
+    // Listen for ZK mode changes and reconnect to the correct service
+    window.addEventListener('zk-mode-changed', () => {
+      console.log('[WebSocket] ZK mode changed, reconnecting to correct service...');
+      if (this.isConnected) {
+        this.disconnect();
+        setTimeout(() => this.connect(), 500); // Small delay before reconnecting
+      }
+    });
   }
 
   private _makeWsUrl(_token: string | null): string {
-    // Prefer explicit WS_URL; fall back to API_URL transformed to ws
-    let base = WS_URL || (API_URL ? API_URL.replace(/^http/, 'ws') : null);
+    // Check if user is in ZK mode
+    const isZKMode = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
+
+    // Use ZK WebSocket URL if in ZK mode, otherwise use Normal WebSocket URL
+    let base = isZKMode ? ZK_WS_URL : (WS_URL || (API_URL ? API_URL.replace(/^http/, 'ws') : null));
     if (!base) throw new Error('No WS base URL configured (WS_URL or API_URL)');
 
     // Normalize: remove trailing slashes
     base = base.replace(/\/+$/, '');
 
+    // ZK service uses /ws, Normal service uses /api/v1/ws
     // If base already includes /api/v1, we assume it also contains the path root; append /ws
-    // Else append /api/v1/ws
+    // Else append /api/v1/ws for Normal mode, /ws for ZK mode
     const hasApiV1 = /\/api\/v1$/i.test(base);
-    const path = hasApiV1 ? '/ws' : '/api/v1/ws';
+    const path = hasApiV1 ? '/ws' : (isZKMode ? '/ws' : '/api/v1/ws');
+
+    console.log(`[WebSocket] Connecting to ${isZKMode ? 'ZK' : 'Normal'} service: ${base}${path}`);
 
     // SECURITY FIX: Don't put token in URL - send it in first message instead
     // Tokens in URLs can leak via browser history, logs, referrer headers

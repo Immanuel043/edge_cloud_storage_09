@@ -331,6 +331,10 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       setZkEnabled(true);
       setZkData(zkDataObj);
 
+      // Step 5: Unlock session BEFORE setting authenticated (prevents mode switching)
+      const unlocked = await zkEncryptionService.unlockZKSession(password, zkDataObj);
+      setZkSessionUnlocked(unlocked);
+
       // Fetch full user profile from ZK service to get complete data
       let user: User;
       try {
@@ -357,10 +361,6 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       }
       setUser(user);
       setIsAuthenticated(true);
-
-      // Step 5: Unlock session
-      const unlocked = await zkEncryptionService.unlockZKSession(password, zkDataObj);
-      setZkSessionUnlocked(unlocked);
 
       if (!unlocked) {
         setShowUnlockModal(true);

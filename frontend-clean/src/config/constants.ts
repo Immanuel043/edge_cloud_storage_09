@@ -21,7 +21,7 @@ export const API_URL: string = normalizeUrl(
   'http://localhost:8001'
 );
 
-/** WebSocket URL for real-time communication */
+/** WebSocket URL for real-time communication (Normal service) */
 export const WS_URL: string = normalizeUrl(
   import.meta.env.VITE_WS_URL,
   'ws://localhost:8001'
@@ -31,6 +31,12 @@ export const WS_URL: string = normalizeUrl(
 export const ZK_SERVICE_URL: string = normalizeUrl(
   import.meta.env.VITE_ZK_SERVICE_URL,
   'http://localhost:8002'
+);
+
+/** WebSocket URL for ZK service real-time communication */
+export const ZK_WS_URL: string = normalizeUrl(
+  import.meta.env.VITE_ZK_WS_URL,
+  'ws://localhost:8002'
 );
 
 // ==================== Size Constants ====================

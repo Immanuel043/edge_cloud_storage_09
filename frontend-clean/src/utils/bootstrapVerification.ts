@@ -11,53 +11,51 @@
  */
 import { API_URL, ZK_SERVICE_URL, ZK_STORAGE } from '../config/constants';
 
-interface ServiceHealthCheck {
+interface SessionCheck {
   service: 'zk' | 'normal';
-  available: boolean;
-  hasSession: boolean;
+  hasActiveSession: boolean;
 }
 
-const HEALTH_CHECK_TIMEOUT = 2000; // 2 seconds
+const SESSION_CHECK_TIMEOUT = 3000; // 3 seconds
 
 /**
- * Check if a service is available and has active session
+ * Check if user has active session on a service by calling an authenticated endpoint
  *
- * @param url - Health check endpoint URL
+ * Uses profile/me endpoints which require valid session cookies.
+ * A 200 response means active session exists.
+ * A 401/403 or error means no active session.
+ *
  * @param service - Service type ('zk' or 'normal')
- * @returns ServiceHealthCheck with availability and session status
+ * @returns SessionCheck with active session status
  */
-async function checkServiceHealth(
-  url: string,
-  service: 'zk' | 'normal'
-): Promise<ServiceHealthCheck> {
+async function checkActiveSession(service: 'zk' | 'normal'): Promise<SessionCheck> {
+  // Use authenticated endpoints that require session cookies
+  const url = service === 'zk'
+    ? `${ZK_SERVICE_URL}/api/v1/zk/me`
+    : `${API_URL}/api/v1/users/profile`;
+
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT);
+    const timeoutId = setTimeout(() => controller.abort(), SESSION_CHECK_TIMEOUT);
 
     const response = await fetch(url, {
       method: 'GET',
-      credentials: 'include', // Include HTTP-only cookies
+      credentials: 'include', // Include HTTP-only session cookies
       signal: controller.signal,
     });
 
     clearTimeout(timeoutId);
 
+    // 200 OK means we have a valid session
     if (response.ok) {
-      const data = await response.json();
-      // If we got a successful response with status "healthy", assume session exists
-      const hasSession = data.status === 'healthy';
-
-      return {
-        service,
-        available: true,
-        hasSession,
-      };
+      return { service, hasActiveSession: true };
     }
 
-    return { service, available: false, hasSession: false };
+    // 401/403 means no valid session (expected when not logged in)
+    return { service, hasActiveSession: false };
   } catch (error) {
-    // Timeout or network error
-    return { service, available: false, hasSession: false };
+    // Timeout, network error, or CORS error - no active session
+    return { service, hasActiveSession: false };
   }
 }
 
@@ -67,7 +65,8 @@ async function checkServiceHealth(
  * Checks both ZK and Normal services to determine which one has an active session,
  * then corrects localStorage if it doesn't match.
  *
- * Preference order: ZK > Normal > localStorage
+ * IMPORTANT: Only corrects localStorage if there's a clear mismatch.
+ * If no sessions are detected, trusts localStorage (user might be logged out).
  *
  * @returns Correct ZK mode (true for ZK, false for Normal)
  */
@@ -77,34 +76,38 @@ export async function verifyServiceMode(): Promise<boolean> {
   // Get current localStorage mode
   const storedZKMode = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
 
-  // Check both services in parallel
+  // Check both services in parallel for active sessions
   const [zkCheck, normalCheck] = await Promise.all([
-    checkServiceHealth(`${ZK_SERVICE_URL}/health`, 'zk'),
-    checkServiceHealth(`${API_URL}/api/v1/health/db`, 'normal'),
+    checkActiveSession('zk'),
+    checkActiveSession('normal'),
   ]);
 
-  console.log('[Bootstrap] Health checks:', { zkCheck, normalCheck });
+  console.log('[Bootstrap] Session checks:', { zkCheck, normalCheck, storedZKMode });
 
   // Determine correct mode based on active sessions
   let correctZKMode: boolean;
 
-  if (zkCheck.hasSession && zkCheck.available) {
-    // Active ZK session found
+  if (zkCheck.hasActiveSession && !normalCheck.hasActiveSession) {
+    // Only ZK session found
     correctZKMode = true;
-    console.log('[Bootstrap] Active ZK session detected');
-  } else if (normalCheck.hasSession && normalCheck.available) {
-    // Active Normal session found
+    console.log('[Bootstrap] Active ZK session detected (only)');
+  } else if (normalCheck.hasActiveSession && !zkCheck.hasActiveSession) {
+    // Only Normal session found
     correctZKMode = false;
-    console.log('[Bootstrap] Active Normal session detected');
+    console.log('[Bootstrap] Active Normal session detected (only)');
+  } else if (zkCheck.hasActiveSession && normalCheck.hasActiveSession) {
+    // Both sessions found (unusual) - prefer ZK for security
+    correctZKMode = true;
+    console.log('[Bootstrap] Both sessions detected, preferring ZK');
   } else {
-    // No active sessions, use localStorage
+    // No active sessions - trust localStorage (user is logged out or fresh)
     correctZKMode = storedZKMode;
-    console.log('[Bootstrap] No active sessions, using localStorage:', correctZKMode);
+    console.log('[Bootstrap] No active sessions detected, trusting localStorage:', correctZKMode);
   }
 
-  // Correct localStorage if mismatch
-  if (correctZKMode !== storedZKMode) {
-    console.log(`[Bootstrap] Mode mismatch detected! Correcting: ${storedZKMode} → ${correctZKMode}`);
+  // Correct localStorage only if there's a real mismatch with active session
+  if (correctZKMode !== storedZKMode && (zkCheck.hasActiveSession || normalCheck.hasActiveSession)) {
+    console.log(`[Bootstrap] Mode mismatch with active session! Correcting: ${storedZKMode} → ${correctZKMode}`);
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, String(correctZKMode));
 
     // Dispatch event to trigger provider switch

@@ -15,6 +15,8 @@ import { websocketService } from '../../services/websocketService';
 import { requestCache } from '../../utils/requestCache';
 import { getMigrationStats, needsMigration } from '../../utils/zkMigration';
 import { UploadError, cancelUpload as zkCancelUpload } from '../../services/zkAuthService';
+import { terminateEncryptWorkerPool } from '../../workers/zkEncryptWorkerPool';
+import { terminateWorkerPool as terminateDecryptWorkerPool } from '../../workers/zkCryptoWorkerPool';
 import type {
   FileItem,
   FolderItem,
@@ -186,8 +188,6 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
       // Terminate worker pools when component unmounts
       console.log('[ZK Storage] Cleaning up worker pools...');
       try {
-        const { terminateEncryptWorkerPool } = require('../../workers/zkEncryptWorkerPool');
-        const { terminateDecryptWorkerPool } = require('../../workers/zkDecryptWorkerPool');
         terminateEncryptWorkerPool();
         terminateDecryptWorkerPool();
       } catch (error) {
