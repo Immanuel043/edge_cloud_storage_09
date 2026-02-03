@@ -164,6 +164,13 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
     lastActivityRef.current = Date.now();
   }, []);
 
+  const lockSession = useCallback((): void => {
+    console.log('[ZK] Locking session...');
+    zkEncryptionService.lockZKSession();
+    setZkSessionUnlocked(false);
+    setShowUnlockModal(true);
+  }, []);
+
   const checkInactivity = useCallback((): void => {
     const timeSinceActivity = Date.now() - lastActivityRef.current;
 
@@ -171,7 +178,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       console.log('[ZK] Session timed out due to inactivity');
       lockSession();
     }
-  }, [zkSessionUnlocked]); // SESSION_TIMEOUT is a constant, not a dependency
+  }, [zkSessionUnlocked, lockSession]); // SESSION_TIMEOUT is a constant, not a dependency
 
   useEffect(() => {
     if (!zkEnabled || !zkSessionUnlocked) {
@@ -410,13 +417,6 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       console.error('[ZK] Unlock failed:', error);
       throw error;
     }
-  };
-
-  const lockSession = (): void => {
-    console.log('[ZK] Locking session...');
-    zkEncryptionService.lockZKSession();
-    setZkSessionUnlocked(false);
-    setShowUnlockModal(true);
   };
 
   // ==================== RECOVERY PHRASE ====================
