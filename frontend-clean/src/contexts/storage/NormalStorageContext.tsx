@@ -278,11 +278,13 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       const result = await normalUploadService.uploadFile(file, {
         folderId: currentFolder,
         onProgress: (progressData) => {
-          if (onProgress) {
+            if (onProgress) {
             onProgress({
               progress: progressData.progress,
               bytesUploaded: progressData.bytesUploaded,
               totalBytes: progressData.totalBytes,
+              chunksUploaded: progressData.chunksUploaded,
+              totalChunks: progressData.totalChunks,
               status: 'uploading' as const,
             });
           }

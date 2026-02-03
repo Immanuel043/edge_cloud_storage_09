@@ -30,6 +30,8 @@ interface UploadProgressData {
   progress: number;
   bytesUploaded: number;
   totalBytes: number;
+  chunksUploaded: number;
+  totalChunks: number;
   speed: number;
   elapsed: number;
   eta: number;
@@ -303,6 +305,9 @@ class NormalUploadService {
   private async _uploadDirect(context: UploadContext): Promise<unknown> {
     const { file, uploadId } = context;
 
+    // Report initial progress (0/1 chunks) so UI shows correct total
+    this._updateProgress(context);
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -345,15 +350,26 @@ class NormalUploadService {
   private _updateProgress(context: UploadContext): void {
     if (!context.onProgress) return;
 
-    const { bytesUploaded, file, startTime } = context;
+    const { bytesUploaded, file, startTime, strategy, totalChunks, uploadedChunks } = context;
     const progress = (bytesUploaded / file.size) * 100;
     const elapsed = (Date.now() - startTime) / 1000; // seconds
     const speed = bytesUploaded / elapsed; // bytes per second
+
+    // Chunk counts: chunked uploads use real counts; direct/single use 1 "chunk"
+    const totalChunksForProgress = strategy === 'chunked' ? totalChunks : 1;
+    const chunksUploadedForProgress =
+      strategy === 'chunked'
+        ? uploadedChunks.size
+        : bytesUploaded >= file.size
+          ? 1
+          : 0;
 
     context.onProgress({
       progress: Math.min(progress, 100),
       bytesUploaded,
       totalBytes: file.size,
+      chunksUploaded: chunksUploadedForProgress,
+      totalChunks: totalChunksForProgress,
       speed,
       elapsed,
       eta: speed > 0 ? (file.size - bytesUploaded) / speed : 0,

@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, CheckCircle, AlertCircle, Clock, Lock, Shield } from 'lucide-react';
-import { formatDuration } from '../../utils/helpers';
+import { formatDuration, formatBytes } from '../../utils/helpers';
 import type { UploadProgressProps, UploadItem } from './types';
 
 /**
@@ -37,7 +37,9 @@ const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, dark
                 </div>
               )}
               <span className="text-xs text-gray-500">
-                {upload.chunksUploaded}/{upload.totalChunks} chunks
+                {upload.totalChunks != null && upload.totalChunks > 0
+                  ? `${upload.chunksUploaded ?? 0}/${upload.totalChunks} chunks`
+                  : `${formatBytes(upload.bytesUploaded)} / ${formatBytes(upload.totalBytes)}`}
               </span>
               {upload.status === 'uploading' && (
                 <button
