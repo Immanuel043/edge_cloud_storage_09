@@ -75,6 +75,12 @@ class DownloadTokenResponse(BaseModel):
     file_id: str
 
 
+class RenameFileRequest(BaseModel):
+    """Request to rename a ZK file. Client sends encrypted name (server never sees plaintext)."""
+    encrypted_file_name: str  # Base64 encoded encrypted new filename
+    file_name_iv: str  # Base64 encoded IV for filename encryption
+
+
 # ========== DOWNLOAD ENDPOINTS ==========
 
 @router.get("/files", response_model=FileListResponse)
@@ -597,6 +603,87 @@ async def download_chunk(
             "X-File-Encrypted": "true"
         }
     )
+
+
+@router.patch("/files/{file_id}/rename")
+async def rename_file(
+    file_id: str,
+    request_data: RenameFileRequest,
+    user=Depends(get_current_zk_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Rename a ZK file.
+
+    Client sends the new filename already encrypted with the user's master key
+    (same as upload). Server never sees plaintext.
+
+    Args:
+        file_id: File UUID
+        request_data: Encrypted new filename and IV
+        user: Current authenticated user
+
+    Returns:
+        Updated file metadata (encrypted_file_name, file_name_iv)
+    """
+    from app.models.database import ZKObject
+
+    logger.info(
+        "zk_rename_file",
+        user_id=str(user.id),
+        file_id=file_id
+    )
+
+    if not request_data.encrypted_file_name or not request_data.file_name_iv:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="encrypted_file_name and file_name_iv are required"
+        )
+
+    if len(request_data.encrypted_file_name) > 2048:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Encrypted filename too long"
+        )
+
+    result = await db.execute(
+        select(ZKObject).where(
+            ZKObject.id == file_id,
+            ZKObject.user_id == user.id,
+            ZKObject.is_deleted == False
+        )
+    )
+    file_obj = result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found"
+        )
+
+    await db.execute(
+        update(ZKObject)
+        .where(ZKObject.id == file_id)
+        .values(
+            encrypted_file_name=request_data.encrypted_file_name,
+            file_name_iv=request_data.file_name_iv,
+            updated_at=datetime.utcnow()
+        )
+    )
+    await db.commit()
+
+    logger.info(
+        "zk_file_renamed",
+        user_id=str(user.id),
+        file_id=file_id
+    )
+
+    return {
+        "message": "File renamed successfully",
+        "file_id": file_id,
+        "encrypted_file_name": request_data.encrypted_file_name,
+        "file_name_iv": request_data.file_name_iv
+    }
 
 
 @router.delete("/files/{file_id}")

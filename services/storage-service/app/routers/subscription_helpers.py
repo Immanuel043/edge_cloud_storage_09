@@ -191,7 +191,7 @@ def format_plan_features(plan: SubscriptionPlan, service_type: str = 'normal') -
                 available=True
             ))
 
-        # ZK-specific features
+        # ZK-specific features (service_type allows ZK dashboard to get ZK plan features)
         if service_type == 'zk':
             if 'hardware_keys' in plan.features:
                 num_keys = plan.features['hardware_keys']

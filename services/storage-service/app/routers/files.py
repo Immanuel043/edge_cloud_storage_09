@@ -2522,8 +2522,12 @@ async def get_video_processing_status(
 
 
 # ============================================================================
-# ZERO-KNOWLEDGE CHUNK DOWNLOAD ENDPOINT
-# For client-side decrypted video playback and file downloads
+# LEGACY ZK: Zero-Knowledge file metadata and chunk download
+# ============================================================================
+# These endpoints serve ZK-style files stored in THIS service (Object with
+# encrypted_file_key), e.g. from a legacy "upgrade to ZK" flow where data
+# remained in storage-service. Primary ZK file operations (list, metadata,
+# chunks, rename) for native ZK users are in zk-encryption-service.
 # ============================================================================
 
 @router.get("/{file_id}/zk/metadata")

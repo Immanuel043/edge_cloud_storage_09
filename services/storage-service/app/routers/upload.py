@@ -286,6 +286,10 @@ async def init_upload(
     )
 
 
+# ---------------------------------------------------------------------------
+# LEGACY ZK: Zero-Knowledge uploads are handled by zk-encryption-service.
+# This endpoint is deprecated (410 Gone). Kept only to redirect legacy clients.
+# ---------------------------------------------------------------------------
 @router.post("/init/zk")
 async def init_zk_upload(current_user: User = Depends(get_current_user)):
     """
@@ -385,7 +389,7 @@ async def upload_chunk(
         # Read chunk data
         chunk_data = await chunk.read()
 
-        # Reject ZK uploads - they should go to the separate ZK service
+        # LEGACY ZK: Defensive reject - ZK uploads must use zk-encryption-service.
         if session.get("zk_mode", False):
             raise HTTPException(
                 status_code=400,

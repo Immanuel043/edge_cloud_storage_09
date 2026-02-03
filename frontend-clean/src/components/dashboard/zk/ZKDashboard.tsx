@@ -4,7 +4,8 @@ import {
   Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
   ArrowUpDown, AlertTriangle, CreditCard
 } from 'lucide-react';
-import { API_URL } from '../../../config/constants';
+import { ZK_SERVICE_URL } from '../../../config/constants';
+import zkEncryptionService from '../../../services/zkEncryptionService';
 import { UploadError, UPLOAD_ERROR_TYPES } from '../../../services/zkAuthService';
 import TrashView from '../TrashView';
 import ZKStorageStats from '../ZKStorageStats';
@@ -533,13 +534,18 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
 
   const handleRenameFile = async (fileId: string, newName: string): Promise<void> => {
     try {
-      const response = await fetch(`${API_URL}/api/v1/files/${fileId}/rename`, {
+      // ZK: encrypt new filename client-side (server never sees plaintext)
+      const { encryptedFilename, filenameIV } = zkEncryptionService.encryptFilename(newName);
+      const response = await fetch(`${ZK_SERVICE_URL}/api/v1/zk/files/${fileId}/rename`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify({ name: newName }),
+        body: JSON.stringify({
+          encrypted_file_name: encryptedFilename,
+          file_name_iv: filenameIV,
+        }),
       });
 
       if (!response.ok) {

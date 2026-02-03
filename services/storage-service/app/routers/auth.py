@@ -40,6 +40,8 @@ async def get_public_plans(
 
     Does not require authentication - used by registration flow.
     Returns categorized plan catalog with pricing and features.
+    service_type: 'normal' for storage-service plans, 'zk' for ZK vault plans
+    (both dashboards may call this to show the appropriate plan list).
     """
     from shared_billing import BillingService
 
