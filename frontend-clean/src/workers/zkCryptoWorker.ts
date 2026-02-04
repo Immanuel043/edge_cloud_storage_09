@@ -49,7 +49,7 @@ interface DeriveKeyOptions {
 
 interface WorkerMessage {
   id: string;
-  type: 'deriveKey' | 'deriveKeyHKDF' | 'encryptChunk' | 'decryptChunk' | 'ping';
+  type: 'deriveKey' | 'deriveKeyHKDF' | 'encryptChunk' | 'decryptChunk' | 'encrypt' | 'ping';
   payload: {
     password?: string;
     salt?: ArrayBuffer;
@@ -57,6 +57,7 @@ interface WorkerMessage {
     masterKey?: ArrayBuffer;
     label?: string;
     chunk?: ArrayBuffer;
+    chunkData?: ArrayBuffer;
     fileKey?: ArrayBuffer;
     fileId?: string;
     chunkIndex?: number;

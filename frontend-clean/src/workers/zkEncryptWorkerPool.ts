@@ -11,14 +11,6 @@
  * - Automatic worker cleanup
  */
 
-interface EncryptedChunk {
-  index: number;
-  data: Uint8Array;
-  iv: Uint8Array;
-  tag: Uint8Array;
-  size: number;
-}
-
 interface EncryptTask {
   id: string;
   chunkData: Uint8Array;
@@ -123,8 +115,9 @@ export class ZKEncryptWorkerPool {
 
   private handleWorkerMessage(workerIndex: number, e: MessageEvent): void {
     const workerState = this.workers[workerIndex];
-    const task = workerState.currentTask;
+    if (!workerState) return;
 
+    const task = workerState.currentTask;
     if (!task) return;
 
     const { id, result, error } = e.data;
@@ -146,8 +139,9 @@ export class ZKEncryptWorkerPool {
   private handleWorkerError(workerIndex: number, error: ErrorEvent): void {
     console.error(`[ZK Encrypt Pool] Worker ${workerIndex} error:`, error);
     const workerState = this.workers[workerIndex];
-    const task = workerState.currentTask;
+    if (!workerState) return;
 
+    const task = workerState.currentTask;
     if (task) {
       task.reject(new Error(`Worker ${workerIndex} error: ${error.message}`));
       this.releaseWorker(workerState);

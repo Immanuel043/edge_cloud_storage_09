@@ -50,6 +50,8 @@ interface UploadInitResponse {
 interface UploadInitZKResponse extends UploadInitResponse {
   zkEnabled: true;
   fileKey: Uint8Array;
+  storage_strategy: 'inline' | 'single' | 'chunked';
+  total_chunks: number;
 }
 
 interface UploadProgressData {

@@ -149,8 +149,12 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
                 ...prev,
                 [downloadId]: {
                   ...current,
-                  ...progressData,
-                  status: 'downloading'
+                  status: 'downloading',
+                  progress: progressData.progress || 0,
+                  bytesDownloaded: progressData.bytesDownloaded || 0,
+                  ...(progressData.decryptProgress !== undefined && { decryptionProgress: progressData.decryptProgress }),
+                  ...(progressData.currentChunk !== undefined && { chunksDownloaded: progressData.currentChunk }),
+                  ...(progressData.totalChunks !== undefined && { totalChunks: progressData.totalChunks })
                 }
               };
             });
@@ -450,8 +454,12 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
             ...prev,
             [downloadId]: {
               ...current,
-              ...progressData,
-              status: 'downloading'
+              status: 'downloading',
+              progress: progressData.progress || 0,
+              bytesDownloaded: progressData.bytesDownloaded || 0,
+              ...(progressData.decryptProgress !== undefined && { decryptionProgress: progressData.decryptProgress }),
+              ...(progressData.currentChunk !== undefined && { chunksDownloaded: progressData.currentChunk }),
+              ...(progressData.totalChunks !== undefined && { totalChunks: progressData.totalChunks })
             }
           };
         });

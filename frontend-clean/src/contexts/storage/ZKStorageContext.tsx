@@ -5,7 +5,7 @@
  * Uses dedicated services: zkUploadService, zkStorageService, zkAuthService
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { useAuth } from '../AuthContext';
 import * as zkAuthService from '../../services/zkAuthService';
 import * as zkEncryptionService from '../../services/zkEncryptionService';
@@ -68,7 +68,6 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
     currentFile: null,
   });
 
-  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRefreshingRef = useRef<boolean>(false);
 
   // Online/offline listeners
@@ -83,19 +82,6 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
-
-  // Debounced refresh
-  const debouncedRefresh = useCallback(() => {
-    if (refreshDebounceRef.current) {
-      clearTimeout(refreshDebounceRef.current);
-    }
-
-    refreshDebounceRef.current = setTimeout(() => {
-      if (!isRefreshingRef.current) {
-        void refreshFiles();
-      }
-    }, 500);
   }, []);
 
   // ✅ WebSocket listeners for real-time updates (ZK-specific events with incremental updates)

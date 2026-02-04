@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useSecureVideoPlayer } from '../../hooks/useSecureVideoPlayer';
 import type { SecureVideoPlayerProps, FileItem } from './types';
+import type { SecureVideoMetadata } from '../../types/hooks.types';
 
 /**
  * Format seconds to MM:SS or HH:MM:SS
@@ -39,6 +40,20 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
   onClose,
   className = '',
 }) => {
+  // Build metadata with explicit narrowing — conditional spread widens chunk_size
+  // to number | undefined under exactOptionalPropertyTypes, so we assign after construction.
+  const videoMeta: SecureVideoMetadata | null = (() => {
+    if (!metadata) return null;
+    const result: SecureVideoMetadata = {
+      encrypted_file_key: metadata.encrypted_file_key || '',
+      file_key_iv: (metadata as FileItem & { file_key_iv?: string }).file_key_iv || '',
+      file_size: metadata.size || 0,
+    };
+    const cs = (metadata as FileItem & { chunk_size?: number }).chunk_size;
+    if (cs !== undefined) result.chunk_size = cs;
+    return result;
+  })();
+
   const {
     videoRef,
     videoElement,
@@ -55,12 +70,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
     togglePlay,
     lock,
     clearError,
-  } = useSecureVideoPlayer(fileId, metadata ? {
-    encrypted_file_key: metadata.encrypted_file_key || '',
-    file_key_iv: (metadata as FileItem & { file_key_iv?: string }).file_key_iv || '',
-    file_size: metadata.size || 0,
-    chunk_size: (metadata as FileItem & { chunk_size?: number }).chunk_size,
-  } : null);
+  } = useSecureVideoPlayer(fileId, videoMeta);
 
   // Local state
   const [volume, setVolume] = useState<number>(1);
