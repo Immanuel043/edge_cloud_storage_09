@@ -4,7 +4,7 @@ This migration creates user_subscriptions records for all existing users
 based on their current plan_type values.
 
 Revision ID: migrate_existing_subscriptions
-Revises: add_subscription_fk_to_users
+Revises: add_plan_id_user_subs
 Create Date: 2026-01-04
 """
 from alembic import op
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers
 revision = 'migrate_existing_subscriptions'
-down_revision = 'add_subscription_fk_to_users'
+down_revision = 'add_plan_id_user_subs'
 branch_labels = None
 depends_on = None
 

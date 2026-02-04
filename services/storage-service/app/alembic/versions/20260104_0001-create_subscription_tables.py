@@ -23,134 +23,130 @@ depends_on = None
 
 def upgrade():
     # =========================================================================
-    # 1. CREATE subscription_plans TABLE
+    # 1. CREATE subscription_plans TABLE (idempotent)
     # =========================================================================
-    
-    op.create_table(
-        'subscription_plans',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
-        
-        # Plan Identity
-        sa.Column('plan_code', sa.String(50), nullable=False, unique=True),
-        sa.Column('service_type', sa.String(20), nullable=False),
-        sa.Column('tier_name', sa.String(50), nullable=False),
-        sa.Column('display_name', sa.String(100), nullable=False),
-        sa.Column('description', sa.Text()),
-        
-        # Pricing (nullable for Phase-1)
-        sa.Column('price_monthly', sa.Numeric(10, 2)),
-        sa.Column('price_yearly', sa.Numeric(10, 2)),
-        sa.Column('stripe_price_id_monthly', sa.String(255)),
-        sa.Column('stripe_price_id_yearly', sa.String(255)),
-        sa.Column('currency', sa.String(3), server_default='USD'),
-        
-        # Quotas and Limits
-        sa.Column('storage_bytes', sa.BigInteger(), nullable=False),
-        sa.Column('bandwidth_mbps', sa.Integer(), nullable=False),
-        sa.Column('bandwidth_burst_mbps', sa.Integer(), nullable=False),
-        sa.Column('max_concurrent_streams', sa.Integer(), nullable=False),
-        
-        # Feature Flags
-        sa.Column('features', postgresql.JSONB(), server_default='{}'),
-        
-        # Metadata
-        sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
-        sa.Column('is_default', sa.Boolean(), nullable=False, server_default='false'),
-        sa.Column('sort_order', sa.Integer(), server_default='0'),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.func.now()),
-        
-        # Constraints
-        sa.CheckConstraint('storage_bytes > 0 OR storage_bytes = -1', name='valid_storage_quota'),
-        sa.UniqueConstraint('service_type', 'tier_name', name='unique_service_tier'),
-    )
-    
-    # Indexes for subscription_plans
-    op.create_index('idx_plans_service_active', 'subscription_plans', ['service_type', 'is_active'])
-    op.create_index('idx_plans_code', 'subscription_plans', ['plan_code'])
-    
+
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS subscription_plans (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            plan_code VARCHAR(50) NOT NULL UNIQUE,
+            service_type VARCHAR(20) NOT NULL,
+            tier_name VARCHAR(50) NOT NULL,
+            display_name VARCHAR(100) NOT NULL,
+            description TEXT,
+            price_monthly NUMERIC(10, 2),
+            price_yearly NUMERIC(10, 2),
+            stripe_price_id_monthly VARCHAR(255),
+            stripe_price_id_yearly VARCHAR(255),
+            currency VARCHAR(3) DEFAULT 'USD',
+            storage_bytes BIGINT NOT NULL,
+            bandwidth_mbps INTEGER NOT NULL,
+            bandwidth_burst_mbps INTEGER NOT NULL,
+            max_concurrent_streams INTEGER NOT NULL,
+            features JSONB DEFAULT '{}',
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            is_default BOOLEAN NOT NULL DEFAULT FALSE,
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ,
+            CONSTRAINT valid_storage_quota CHECK (storage_bytes > 0 OR storage_bytes = -1),
+            CONSTRAINT unique_service_tier UNIQUE (service_type, tier_name)
+        )
+    """)
+
+    # Add any missing columns if table existed with old schema
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS stripe_price_id_monthly VARCHAR(255)")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS stripe_price_id_yearly VARCHAR(255)")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS currency VARCHAR(3) DEFAULT 'USD'")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0")
+
+    # Indexes for subscription_plans (idempotent)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_plans_service_active ON subscription_plans(service_type, is_active)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_plans_code ON subscription_plans(plan_code)")
+
     # =========================================================================
-    # 2. CREATE user_subscriptions TABLE
+    # 2. CREATE user_subscriptions TABLE (idempotent)
     # =========================================================================
-    
-    op.create_table(
-        'user_subscriptions',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
-        
-        # User Reference (polymorphic)
-        sa.Column('user_id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('service_type', sa.String(20), nullable=False),
-        sa.Column('plan_id', postgresql.UUID(as_uuid=True), nullable=False),
-        
-        # Subscription State
-        sa.Column('status', sa.String(20), nullable=False, server_default='active'),
-        sa.Column('billing_cycle', sa.String(20)),
-        
-        # Dates
-        sa.Column('started_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column('current_period_start', sa.DateTime(timezone=True)),
-        sa.Column('current_period_end', sa.DateTime(timezone=True)),
-        sa.Column('cancelled_at', sa.DateTime(timezone=True)),
-        sa.Column('trial_ends_at', sa.DateTime(timezone=True)),
-        
-        # Stripe Integration (Phase-2)
-        sa.Column('stripe_subscription_id', sa.String(255)),
-        sa.Column('stripe_customer_id', sa.String(255)),
-        sa.Column('payment_method', sa.String(50)),
-        sa.Column('last_payment_at', sa.DateTime(timezone=True)),
-        sa.Column('next_payment_at', sa.DateTime(timezone=True)),
-        
-        # Metadata
-        sa.Column('extra_metadata', postgresql.JSONB(), server_default='{}'),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.func.now()),
-        
-        # Foreign Keys
-        sa.ForeignKeyConstraint(['plan_id'], ['subscription_plans.id']),
-    )
-    
-    # Indexes for user_subscriptions
-    op.create_index('idx_subscriptions_user', 'user_subscriptions', ['user_id', 'service_type'])
-    op.create_index('idx_subscriptions_status', 'user_subscriptions', ['status'])
-    op.create_index('idx_subscriptions_stripe', 'user_subscriptions', ['stripe_subscription_id'])
-    
+
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS user_subscriptions (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id UUID NOT NULL,
+            service_type VARCHAR(20) NOT NULL,
+            plan_id UUID NOT NULL REFERENCES subscription_plans(id),
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            billing_cycle VARCHAR(20),
+            started_at TIMESTAMPTZ DEFAULT now(),
+            current_period_start TIMESTAMPTZ,
+            current_period_end TIMESTAMPTZ,
+            cancelled_at TIMESTAMPTZ,
+            trial_ends_at TIMESTAMPTZ,
+            stripe_subscription_id VARCHAR(255),
+            stripe_customer_id VARCHAR(255),
+            payment_method VARCHAR(50),
+            last_payment_at TIMESTAMPTZ,
+            next_payment_at TIMESTAMPTZ,
+            extra_metadata JSONB DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )
+    """)
+
+    # Add any missing columns if table existed with old schema (e.g. from 20251101_0000 which had tier_id, not plan_id)
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES subscription_plans(id)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS service_type VARCHAR(20) NOT NULL DEFAULT 'normal'")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS billing_cycle VARCHAR(20)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS last_payment_at TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS next_payment_at TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS extra_metadata JSONB DEFAULT '{}'")
+
+    # Indexes for user_subscriptions (idempotent)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_subscriptions(user_id, service_type)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON user_subscriptions(status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe ON user_subscriptions(stripe_subscription_id)")
+
     # =========================================================================
-    # 3. CREATE subscription_history TABLE
+    # 3. CREATE subscription_history TABLE (idempotent)
     # =========================================================================
-    
-    op.create_table(
-        'subscription_history',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
-        
-        # Reference
-        sa.Column('user_id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('service_type', sa.String(20), nullable=False),
-        sa.Column('subscription_id', postgresql.UUID(as_uuid=True)),
-        
-        # Event Details
-        sa.Column('event_type', sa.String(50), nullable=False),
-        sa.Column('from_plan_id', postgresql.UUID(as_uuid=True)),
-        sa.Column('to_plan_id', postgresql.UUID(as_uuid=True)),
-        
-        # Change Details
-        sa.Column('reason', sa.String(100)),
-        sa.Column('performed_by', postgresql.UUID(as_uuid=True)),
-        sa.Column('notes', sa.Text()),
-        
-        # Metadata
-        sa.Column('extra_metadata', postgresql.JSONB(), server_default='{}'),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        
-        # Foreign Keys
-        sa.ForeignKeyConstraint(['subscription_id'], ['user_subscriptions.id']),
-        sa.ForeignKeyConstraint(['from_plan_id'], ['subscription_plans.id']),
-        sa.ForeignKeyConstraint(['to_plan_id'], ['subscription_plans.id']),
-    )
-    
-    # Indexes for subscription_history
-    op.create_index('idx_history_user', 'subscription_history', ['user_id', 'service_type'])
-    op.create_index('idx_history_subscription', 'subscription_history', ['subscription_id'])
-    op.create_index('idx_history_created', 'subscription_history', ['created_at'])
+
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS subscription_history (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id UUID NOT NULL,
+            service_type VARCHAR(20) NOT NULL,
+            subscription_id UUID REFERENCES user_subscriptions(id),
+            event_type VARCHAR(50) NOT NULL,
+            from_plan_id UUID REFERENCES subscription_plans(id),
+            to_plan_id UUID REFERENCES subscription_plans(id),
+            reason VARCHAR(100),
+            performed_by UUID,
+            notes TEXT,
+            extra_metadata JSONB DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+    """)
+
+    # Add any missing columns if table existed with old schema
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS service_type VARCHAR(20) NOT NULL DEFAULT 'normal'")
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS from_plan_id UUID")
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS to_plan_id UUID")
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS reason VARCHAR(100)")
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS performed_by UUID")
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS notes TEXT")
+    op.execute("ALTER TABLE subscription_history ADD COLUMN IF NOT EXISTS extra_metadata JSONB DEFAULT '{}'")
+
+    # Indexes for subscription_history (idempotent)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_history_user ON subscription_history(user_id, service_type)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_history_subscription ON subscription_history(subscription_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_history_created ON subscription_history(created_at)")
     
     # =========================================================================
     # 4. SEED subscription_plans WITH NORMAL STORAGE PLANS
@@ -253,6 +249,7 @@ def upgrade():
                 {f"'{plan['stripe_price_id_yearly']}'" if plan['stripe_price_id_yearly'] else 'NULL'},
                 '{plan['features']}'::jsonb, {plan['is_active']}, {plan['is_default']}, {plan['sort_order']}
             )
+            ON CONFLICT (plan_code) DO NOTHING
         """)
     
     print("✅ Created subscription tables and seeded Normal Storage plans")
@@ -260,8 +257,8 @@ def upgrade():
 
 def downgrade():
     # Drop tables in reverse order (respect foreign keys)
-    op.drop_table('subscription_history')
-    op.drop_table('user_subscriptions')
-    op.drop_table('subscription_plans')
-    
+    op.execute("DROP TABLE IF EXISTS subscription_history CASCADE")
+    op.execute("DROP TABLE IF EXISTS user_subscriptions CASCADE")
+    op.execute("DROP TABLE IF EXISTS subscription_plans CASCADE")
+
     print("Dropped subscription tables")

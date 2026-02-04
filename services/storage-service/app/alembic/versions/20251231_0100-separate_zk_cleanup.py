@@ -84,22 +84,36 @@ def upgrade():
             print(f"Column {col} may not exist in objects, skipping: {e}")
     
     # =========================================================================
-    # UPDATE encryption_mode constraint
+    # ADD encryption_mode column if missing, then update constraint
     # =========================================================================
-    
+
+    # Add encryption_mode column (was defined in model but never migrated)
+    op.execute("""
+        ALTER TABLE objects
+        ADD COLUMN IF NOT EXISTS encryption_mode VARCHAR(20) NOT NULL DEFAULT 'none'
+    """)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_objects_encryption_mode ON objects(encryption_mode)")
+
     # Update any 'client_zk' rows to 'none' (they should have been migrated)
     op.execute("""
-        UPDATE objects 
-        SET encryption_mode = 'none' 
+        UPDATE objects
+        SET encryption_mode = 'none'
         WHERE encryption_mode = 'client_zk'
     """)
 
 
 def downgrade():
     # =========================================================================
+    # OBJECTS TABLE - Drop encryption_mode column/index added in upgrade
+    # =========================================================================
+
+    op.execute("DROP INDEX IF EXISTS idx_objects_encryption_mode")
+    op.execute("ALTER TABLE objects DROP COLUMN IF EXISTS encryption_mode")
+
+    # =========================================================================
     # OBJECTS TABLE - Restore ZK columns
     # =========================================================================
-    
+
     op.add_column('objects', sa.Column('is_encrypted', sa.Boolean(), nullable=True, server_default='false'))
     op.add_column('objects', sa.Column('encrypted_file_key', sa.Text(), nullable=True))
     op.add_column('objects', sa.Column('file_key_iv', sa.String(255), nullable=True))

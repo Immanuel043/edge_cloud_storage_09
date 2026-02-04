@@ -24,11 +24,11 @@ def upgrade():
     """
     Add new columns and migrate to new plan structure.
     """
-    # Step 1: Add new columns to subscription_plans table
-    op.add_column('subscription_plans', sa.Column('price_six_months', sa.Numeric(10, 2), nullable=True))
-    op.add_column('subscription_plans', sa.Column('is_most_popular', sa.Boolean(), nullable=False, server_default='false'))
-    op.add_column('subscription_plans', sa.Column('category', sa.String(20), nullable=False, server_default='individual'))
-    op.add_column('subscription_plans', sa.Column('stripe_price_id_six_months', sa.String(255), nullable=True))
+    # Step 1: Add new columns to subscription_plans table (IF NOT EXISTS for idempotent re-runs)
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS price_six_months NUMERIC(10, 2)")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS is_most_popular BOOLEAN NOT NULL DEFAULT false")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'individual'")
+    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS stripe_price_id_six_months VARCHAR(255)")
 
     # Step 2: SOFT DELETE - Mark old plans as inactive (DON'T DELETE!)
     # This preserves existing user subscriptions and history
@@ -54,7 +54,7 @@ def upgrade():
     # NORMAL STORAGE PLANS - Individual
     ###################
 
-    # 1. normal_free (5GB, Free)
+    # 1. normal_free (5GB, Free) - upsert so re-runs don't violate unique constraint
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -70,7 +70,26 @@ def upgrade():
                 '{"support": "community", "ai_features": false}'::jsonb,
                 TRUE, TRUE, FALSE, 'individual', 0,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -90,7 +109,26 @@ def upgrade():
                 '{"support": "email", "versioning": 10, "ai_features": false}'::jsonb,
                 TRUE, FALSE, TRUE, 'individual', 1,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -110,7 +148,26 @@ def upgrade():
                 '{"support": "priority", "versioning": 50, "ai_features": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 2,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -130,7 +187,26 @@ def upgrade():
                 '{"support": "priority", "versioning": 100, "ai_features": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 3,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -150,7 +226,26 @@ def upgrade():
                 '{"support": "priority", "versioning": 150, "ai_features": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 4,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -170,7 +265,26 @@ def upgrade():
                 '{"support": "priority", "versioning": 200, "ai_features": true, "team_sharing": false}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 5,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -194,7 +308,26 @@ def upgrade():
                 '{"support": "24/7", "versioning": 100, "ai_features": true, "team_sharing": true}'::jsonb,
                 TRUE, FALSE, TRUE, 'business', 6,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -218,7 +351,26 @@ def upgrade():
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 10, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, TRUE, 'individual', 0,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -238,7 +390,26 @@ def upgrade():
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 15, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 1,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -258,7 +429,26 @@ def upgrade():
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 25, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 2,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
@@ -278,71 +468,32 @@ def upgrade():
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 40, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 3,
                 NOW(), NOW()
-            );
+            )
+            ON CONFLICT (plan_code) DO UPDATE SET
+                service_type = EXCLUDED.service_type,
+                tier_name = EXCLUDED.tier_name,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                price_monthly = EXCLUDED.price_monthly,
+                price_six_months = EXCLUDED.price_six_months,
+                price_yearly = EXCLUDED.price_yearly,
+                storage_bytes = EXCLUDED.storage_bytes,
+                bandwidth_mbps = EXCLUDED.bandwidth_mbps,
+                bandwidth_burst_mbps = EXCLUDED.bandwidth_burst_mbps,
+                max_concurrent_streams = EXCLUDED.max_concurrent_streams,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active,
+                is_default = EXCLUDED.is_default,
+                is_most_popular = EXCLUDED.is_most_popular,
+                category = EXCLUDED.category,
+                sort_order = EXCLUDED.sort_order,
+                updated_at = NOW();
         """
     )
 
-    # Step 4: Migrate existing user subscriptions to new plans
-    # Map old plan codes to new plan codes
-    op.execute(
-        """
-            -- Create temp table for plan mapping
-            CREATE TEMP TABLE plan_migration_map AS
-            SELECT
-                old_plan.id as old_plan_id,
-                new_plan.id as new_plan_id,
-                old_plan.plan_code as old_code,
-                CASE old_plan.plan_code
-                    WHEN 'normal_free' THEN 'storage_free'
-                    WHEN 'normal_basic' THEN 'storage_basic'
-                    WHEN 'normal_pro' THEN 'storage_pro'
-                    WHEN 'normal_team' THEN 'storage_business'
-                    WHEN 'zk_free' THEN 'zk_free'
-                    WHEN 'zk_personal' THEN 'zk_personal'
-                    WHEN 'zk_business' THEN 'zk_business'
-                    WHEN 'zk_enterprise' THEN 'zk_enterprise'
-                END as new_code
-            FROM subscription_plans old_plan
-            JOIN subscription_plans new_plan ON new_plan.plan_code = CASE old_plan.plan_code
-                WHEN 'normal_free' THEN 'storage_free'
-                WHEN 'normal_basic' THEN 'storage_basic'
-                WHEN 'normal_pro' THEN 'storage_pro'
-                WHEN 'normal_team' THEN 'storage_business'
-                WHEN 'zk_free' THEN 'zk_free'
-                WHEN 'zk_personal' THEN 'zk_personal'
-                WHEN 'zk_business' THEN 'zk_business'
-                WHEN 'zk_enterprise' THEN 'zk_enterprise'
-            END
-            WHERE old_plan.is_active = FALSE;
-
-            -- Update user_subscriptions with new plan IDs
-            UPDATE user_subscriptions us
-            SET plan_id = pm.new_plan_id,
-                updated_at = NOW()
-            FROM plan_migration_map pm
-            WHERE us.plan_id = pm.old_plan_id;
-
-            -- Update subscription_history with new plan IDs
-            UPDATE subscription_history sh
-            SET from_plan_id = pm.new_plan_id,
-                updated_at = NOW()
-            FROM plan_migration_map pm
-            WHERE sh.from_plan_id = pm.old_plan_id;
-
-            UPDATE subscription_history sh
-            SET to_plan_id = pm.new_plan_id,
-                updated_at = NOW()
-            FROM plan_migration_map pm
-            WHERE sh.to_plan_id = pm.old_plan_id;
-
-            -- Drop temp table
-            DROP TABLE plan_migration_map;
-        """
-    )
-
-    # Step 5: Add ON CONFLICT handling to allow safe re-runs
-    # Note: Already using gen_random_uuid() for IDs, so re-runs will create new rows
-    # This is acceptable since we soft-deleted old plans
+    # Step 4: Subscription migration skipped.
+    # Plans were upserted in place (same plan_code), so user_subscriptions.plan_id
+    # and subscription_history already reference the correct plan rows; no remap needed.
 
 
 def downgrade():
@@ -362,37 +513,16 @@ def downgrade():
         """
     )
 
-    # Soft delete new plans (instead of hard delete to preserve subscriptions)
+    # Soft-delete plans that this migration added/updated (no remap needed; we upserted in place)
     op.execute(
         """
             UPDATE subscription_plans
             SET is_active = FALSE,
                 updated_at = NOW()
             WHERE plan_code IN (
-                'storage_free', 'storage_basic', 'storage_pro', 'storage_business',
-                'storage_pro_plus', 'storage_pro_ultra', 'storage_solo_max',
+                'normal_pro_plus', 'normal_pro_ultra', 'normal_solo_max',
                 'zk_pro', 'zk_pro_plus', 'zk_ultra', 'zk_max'
             );
-        """
-    )
-
-    # Migrate subscriptions back to old plan structure if needed
-    # (Only if there are active subscriptions on new plans)
-    op.execute(
-        """
-            -- Reverse migration for subscriptions
-            UPDATE user_subscriptions us
-            SET plan_id = old_plan.id,
-                updated_at = NOW()
-            FROM subscription_plans old_plan, subscription_plans new_plan
-            WHERE us.plan_id = new_plan.id
-            AND new_plan.plan_code IN ('storage_free', 'storage_basic', 'storage_pro', 'storage_business')
-            AND old_plan.plan_code = CASE new_plan.plan_code
-                WHEN 'storage_free' THEN 'normal_free'
-                WHEN 'storage_basic' THEN 'normal_basic'
-                WHEN 'storage_pro' THEN 'normal_pro'
-                WHEN 'storage_business' THEN 'normal_team'
-            END;
         """
     )
 
