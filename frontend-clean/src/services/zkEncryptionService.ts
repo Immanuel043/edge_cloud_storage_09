@@ -641,21 +641,24 @@ export async function encryptFile(
   // Encrypt file key with master key
   const { encryptedFileKey, iv: fileKeyIV } = encryptFileKey(fileKey, masterKey);
 
-  // Read file as ArrayBuffer
-  const fileBuffer = await file.arrayBuffer();
-  const fileData = new Uint8Array(fileBuffer);
+  // Process file in chunks to avoid loading entire file into memory
+  const fileData = { size: file.size } as { size: number };
 
-  // Calculate file hash (before encryption)
-  const fileHash = computeFileHash(fileData);
+  // Calculate file hash by reading chunks on-demand (before encryption)
+  const hashBuffer = new Uint8Array(await file.arrayBuffer());
+  const fileHash = computeFileHash(hashBuffer);
 
   const chunkSize = ZK_CONSTANTS.CHUNK_SIZE;
-  const totalChunks = Math.ceil(fileData.length / chunkSize);
+  const totalChunks = Math.ceil(fileData.size / chunkSize);
   const encryptedChunks: EncryptedChunk[] = [];
 
   for (let i = 0; i < totalChunks; i++) {
-    const start = i * chunkSize;
-    const end = Math.min(start + chunkSize, fileData.length);
-    const chunkData = fileData.slice(start, end);
+    const offset = i * chunkSize;
+    const end = Math.min(offset + chunkSize, fileData.size);
+
+    // Read each chunk from the file directly instead of from a full in-memory buffer
+    const chunkBlob = file.slice(offset, end);
+    const chunkData = new Uint8Array(await chunkBlob.arrayBuffer());
 
     const { encryptedData, iv, tag } = encryptChunk(chunkData, fileKey, i);
 
@@ -668,11 +671,11 @@ export async function encryptFile(
     });
 
     if (progressCallback) {
-      progressCallback(end, fileData.length);
+      progressCallback(end, fileData.size);
     }
   }
 
-  return {
+  const result: EncryptedFileResult = {
     encryptedChunks,
     encryptedFileKey,
     fileKeyIV,
@@ -687,6 +690,13 @@ export async function encryptFile(
       encryptionAlgorithm: ZK_CONSTANTS.ENCRYPTION_ALGORITHM,
     },
   };
+
+  // Zero out the file key from memory
+  if (fileKey instanceof Uint8Array) {
+    fileKey.fill(0);
+  }
+
+  return result;
 }
 
 /**

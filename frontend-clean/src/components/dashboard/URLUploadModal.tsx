@@ -30,11 +30,34 @@ const URLUploadModal: React.FC<URLUploadModalProps> = ({
     setLoading(true);
 
     try {
-      // Validate URL
+      // Validate URL - SSRF protection
+      let parsedUrl: URL;
       try {
-        new URL(url);
+        parsedUrl = new URL(url);
       } catch {
         throw new Error('Invalid URL format');
+      }
+
+      // Only allow http and https protocols
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error('Only HTTP and HTTPS URLs are supported');
+      }
+
+      // Block localhost and private IP ranges
+      const hostname = parsedUrl.hostname.toLowerCase();
+      const blockedHosts = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'metadata.google.internal', '169.254.169.254'];
+      if (blockedHosts.includes(hostname) || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
+        throw new Error('URLs pointing to internal or local addresses are not allowed');
+      }
+
+      // Block private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+      const ipMatch = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (ipMatch) {
+        const a = Number(ipMatch[1]);
+        const b = Number(ipMatch[2]);
+        if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
+          throw new Error('URLs pointing to private network addresses are not allowed');
+        }
       }
 
       const response = await fetch(`${API_URL}/api/v1/upload/from-url`, {

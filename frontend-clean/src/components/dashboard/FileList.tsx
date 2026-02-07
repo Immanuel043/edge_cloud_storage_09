@@ -390,7 +390,10 @@ const FileList: React.FC<FileListProps> = ({
                     <button
                       onClick={(e: React.MouseEvent) => {
                         e.stopPropagation();
-                        onFileDelete(file.id, file.name);
+                        const action = trashedView ? 'permanently delete' : 'delete';
+                        if (window.confirm(`Are you sure you want to ${action} "${file.name}"?`)) {
+                          onFileDelete(file.id, file.name);
+                        }
                         setOpenMenuId(null);
                       }}
                       className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${

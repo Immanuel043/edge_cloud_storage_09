@@ -149,11 +149,12 @@ const SharePage: React.FC = () => {
         const chunk = chunks[i];
         if (!chunk) continue;
         const url = new URL(`${API_URL}${chunk.url}`);
+        const chunkHeaders: Record<string, string> = {};
         if (password) {
-          url.searchParams.append('password', password);
+          chunkHeaders['X-Share-Password'] = password;
         }
 
-        const response = await fetch(url.toString());
+        const response = await fetch(url.toString(), { headers: chunkHeaders });
         if (!response.ok) {
           throw new Error(`Failed to download chunk ${i}`);
         }
@@ -206,11 +207,12 @@ const SharePage: React.FC = () => {
 
     try {
       const url = new URL(`${API_URL}/api/v1/share/${token}`);
+      const headers: Record<string, string> = {};
       if (password) {
-        url.searchParams.append('password', password);
+        headers['X-Share-Password'] = password;
       }
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), { headers });
 
       if (response.status === 400) {
         // This is a ZK file - switch to ZK mode

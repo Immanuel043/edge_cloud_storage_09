@@ -64,6 +64,12 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
 
   // ==================== BOOTSTRAP ====================
 
+  // Guard against state updates after unmount in async initialization
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => { isMountedRef.current = false; };
+  }, []);
+
   useEffect(() => {
     const initializeZKAuth = async (): Promise<void> => {
       try {
@@ -71,18 +77,18 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         const isZKUser = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
 
         if (!isZKUser) {
-          setLoading(false);
+          if (isMountedRef.current) setLoading(false);
           return;
         }
 
-        setZkEnabled(true);
+        if (isMountedRef.current) setZkEnabled(true);
 
         // Load ZK data from localStorage
         const storedZkData = localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY);
         if (storedZkData) {
           try {
             const parsedZkData = JSON.parse(storedZkData) as ZKData;
-            setZkData(parsedZkData);
+            if (isMountedRef.current) setZkData(parsedZkData);
           } catch (error) {
             console.error('[ZK] Failed to parse stored ZK data:', error);
           }
@@ -90,7 +96,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
 
         // Check recovery status
         const recoveryEnabled = localStorage.getItem(ZK_STORAGE.RECOVERY_ENABLED_KEY) === 'true';
-        setZkRecoveryEnabled(recoveryEnabled);
+        if (isMountedRef.current) setZkRecoveryEnabled(recoveryEnabled);
 
         // Try to get user profile from ZK service (uses HTTP-only cookie set by ZK login)
         // Use retry logic to handle race conditions after fresh login
@@ -99,14 +105,23 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         let profileLoaded = false;
 
         while (retryCount < maxRetries && !profileLoaded) {
+          // Bail out early if component unmounted during retry loop
+          if (!isMountedRef.current) return;
+
           try {
             // Add small delay for retries (except first attempt)
             if (retryCount > 0) {
               await new Promise(resolve => setTimeout(resolve, 500 * retryCount));
             }
 
+            // Check again after await
+            if (!isMountedRef.current) return;
+
             // Use ZK service profile endpoint (port 8002)
             const userProfile = await zkAuthService.getProfile();
+
+            if (!isMountedRef.current) return;
+
             const user: User = {
               id: userProfile.id,
               email: userProfile.email,
@@ -141,8 +156,10 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
               // Dispatch custom event to trigger immediate provider switch
               window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: false } }));
 
-              setZkEnabled(false);
-              setZkData(null);
+              if (isMountedRef.current) {
+                setZkEnabled(false);
+                setZkData(null);
+              }
             } else {
               console.log(`[ZK] Profile fetch failed, retrying (${retryCount}/${maxRetries})...`);
             }
@@ -151,7 +168,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       } catch (error) {
         console.error('[ZK] Bootstrap error:', error);
       } finally {
-        setLoading(false);
+        if (isMountedRef.current) setLoading(false);
       }
     };
 

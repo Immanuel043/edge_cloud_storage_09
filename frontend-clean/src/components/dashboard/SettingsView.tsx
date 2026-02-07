@@ -26,8 +26,7 @@ import { ZK_STORAGE } from '../../config/constants';
 import RecoverySettings from '../settings/RecoverySettings';
 import type { SettingsViewProps, IndexStatus, ReindexResult, VideoOptimizationMode, VideoSettingsResponse } from './types';
 import { getErrorMessage } from './types';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+import { API_URL } from '../../config/constants';
 
 interface ZKData {
   kdfSalt?: string;
@@ -103,7 +102,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
   useEffect(() => {
     const fetchVideoSettings = async (): Promise<void> => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/v1/users/settings/video-optimization`, {
+        const response = await fetch(`${API_URL}/api/v1/users/settings/video-optimization`, {
           credentials: 'include'
         });
         if (response.ok) {
@@ -121,7 +120,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
   useEffect(() => {
     const fetchIndexStatus = async (): Promise<void> => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/v1/search/reindex/status`, {
+        const response = await fetch(`${API_URL}/api/v1/search/reindex/status`, {
           credentials: 'include'
         });
         if (response.ok) {
@@ -140,7 +139,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
     setIsReindexing(true);
     setReindexResult(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/search/reindex`, {
+      const response = await fetch(`${API_URL}/api/v1/search/reindex`, {
         method: 'POST',
         credentials: 'include'
       });
@@ -163,7 +162,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
     setVideoModeLoading(true);
     setVideoModeError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/users/settings/video-optimization`, {
+      const response = await fetch(`${API_URL}/api/v1/users/settings/video-optimization`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json'
@@ -229,12 +228,10 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
       }
 
       // Step 1: Generate ZK credentials using Argon2id
-      console.log('Generating ZK credentials with Argon2id...');
       const zkRegData = await generateZKRegistrationData(newPassword);
 
       // Step 2: Call upgrade endpoint (includes Argon2id parameters)
-      console.log('Upgrading account to ZK...');
-      const response = await zkAuthService.upgradeToZK({
+      await zkAuthService.upgradeToZK({
         passwordHash: zkRegData.passwordHash,
         encryptedMasterKey: zkRegData.encryptedMasterKey,
         masterKeyIV: zkRegData.masterKeyIV,
@@ -244,8 +241,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
         kdfMemory: zkRegData.kdfMemory,
         kdfParallelism: zkRegData.kdfParallelism,
       });
-
-      console.log('Upgrade successful:', response);
 
       // Step 3: Store zkData to localStorage for session persistence
       const zkDataObj: ZKData = {
@@ -257,19 +252,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
         masterKeyIV: zkRegData.masterKeyIV,
       };
 
-      console.log('Storing ZK data to localStorage...');
       localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
       localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, user?.email || '');
       localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
       // Step 4: Unlock the session with the new credentials
-      const unlocked = await unlockZKSession(newPassword, zkDataObj as Parameters<typeof unlockZKSession>[1]);
-
-      if (!unlocked) {
-        console.warn('Could not unlock session after upgrade, user will need to re-login');
-      } else {
-        console.log('ZK session unlocked successfully after upgrade');
-      }
+      await unlockZKSession(newPassword, zkDataObj as Parameters<typeof unlockZKSession>[1]);
 
       setUpgradeSuccess(true);
       setUpgradeStep(4);

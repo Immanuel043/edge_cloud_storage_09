@@ -35,6 +35,10 @@ const RecoveryPhraseSetup: React.FC<RecoveryPhraseSetupProps> = ({
   const handleCopy = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(recoveryPhrase);
+      // Clear clipboard after 60 seconds for security
+      setTimeout(() => {
+        navigator.clipboard.writeText('').catch(() => {});
+      }, 60000);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err: unknown) {

@@ -10,7 +10,7 @@ import type { FilePreviewProps, ZKDecryptProgress, TranscodeProgressResponse } f
 import { getErrorMessage } from './types';
 
 const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) => {
-  const { isAuthenticated, token } = useAuth();
+  const { isAuthenticated } = useAuth();
   const mimeType = (file.mime_type || file.type || '').toLowerCase();
   const extension = (file.name?.split('.').pop()?.toLowerCase() || '') as string;
   const isVideoFile = mimeType.startsWith('video/') || VIDEO_EXTENSIONS.includes(extension as any);
@@ -23,21 +23,23 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
   // Check if file is ZK-encrypted (client-side encryption)
   const isZKEncrypted = file.is_encrypted || !!file.encrypted_file_key;
 
-  const applyToken = (url: string): string => {
-    if (!token) return url;
-    return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+  const fetchAsBlob = async (url: string): Promise<string> => {
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
   };
 
   // Use ZK service for ZK-encrypted files, normal service for others
   const serviceUrl = isZKEncrypted ? ZK_SERVICE_URL : API_URL;
   const apiPath = isZKEncrypted ? '/api/v1/zk/files' : '/api/v1/files';
   
-  const downloadLink = isZKEncrypted 
-    ? `${serviceUrl}${apiPath}/${file.id}/download`  // ZK files don't use token params (use cookies)
-    : applyToken(`${API_URL}/api/v1/files/${file.id}/download`);
+  const downloadLink = isZKEncrypted
+    ? `${serviceUrl}${apiPath}/${file.id}/download`
+    : `${API_URL}/api/v1/files/${file.id}/download`;
   const streamUrl = isZKEncrypted
     ? `${serviceUrl}${apiPath}/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`
-    : applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`);
+    : `${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`;
 
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [zoom, setZoom] = useState<number>(1);
@@ -104,7 +106,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     const checkStream = async (): Promise<void> => {
       try {
         // Check transcode progress using new API endpoint
-        const progressUrl = applyToken(`${API_URL}/api/v1/files/${file.id}/transcode/progress`);
+        const progressUrl = `${API_URL}/api/v1/files/${file.id}/transcode/progress`;
         const response = await fetch(progressUrl, {
           credentials: 'include'
         });
@@ -324,6 +326,21 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
             : 'Failed to decrypt file for preview. Please try again or download the file.',
           { fatal: true }
         );
+        setLoading(false);
+        return;
+      }
+    }
+
+    // For non-ZK audio files, fetch the stream as a blob to avoid exposing URLs
+    if (isAudioFile) {
+      try {
+        const blobUrl = await fetchAsBlob(streamUrl);
+        setPreviewUrl(blobUrl);
+        setLoading(false);
+        return;
+      } catch (err: unknown) {
+        console.error('Failed to load audio as blob:', err);
+        setPreviewFailure('Failed to load audio preview. Please try downloading the file.', { fatal: true });
         setLoading(false);
         return;
       }
@@ -581,7 +598,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
               {/* Only render iframe when we have a valid URL - avoids empty src warning */}
               {(previewUrl || !isZKEncrypted) && (
                 <iframe
-                  src={previewUrl || applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
+                  src={previewUrl || `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
                   className="w-full h-full rounded-lg"
                   style={{ minHeight: '70vh' }}
                   title={file.name}
@@ -631,7 +648,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
               {/* Only render iframe when we have a valid URL - avoids empty src warning */}
               {(previewUrl || !isZKEncrypted) && (
                 <iframe
-                  src={previewUrl || applyToken(`${API_URL}/api/v1/files/${file.id}/download?inline=true`)}
+                  src={previewUrl || `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
                   className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
                   style={{ minHeight: '70vh' }}
                   title={file.name}
@@ -743,7 +760,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                 controls
                 autoPlay={false}
                 className="w-full max-w-md"
-                src={isZKEncrypted && previewUrl ? previewUrl : streamUrl}
+                src={previewUrl || streamUrl}
               >
                 Your browser does not support the audio element.
               </audio>

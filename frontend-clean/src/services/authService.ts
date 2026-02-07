@@ -78,17 +78,24 @@ class AuthService {
     formData.append('timestamp', Date.now().toString());
 
     // SECURITY FIX: Include credentials to receive HTTP-only cookie
-    const response = await fetch(`${API_URL}/api/v1/auth/login`, {
-      method: 'POST',
-      body: formData,
-      credentials: 'include', // Important for cookie-based auth
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${API_URL}/api/v1/auth/login`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include', // Important for cookie-based auth
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      throw new Error('Invalid credentials');
+      if (!response.ok) {
+        throw new Error('Invalid credentials');
+      }
+
+      return await response.json();
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return await response.json();
   }
 
   async register(
@@ -115,32 +122,46 @@ class AuthService {
     }
 
     // SECURITY FIX: Include credentials to receive HTTP-only cookie
-    const response = await fetch(`${API_URL}/api/v1/auth/register`, {
-      method: 'POST',
-      body: formData,
-      credentials: 'include', // Important for cookie-based auth
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${API_URL}/api/v1/auth/register`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include', // Important for cookie-based auth
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      throw new Error('Registration failed');
+      if (!response.ok) {
+        throw new Error('Registration failed');
+      }
+
+      return await response.json();
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return await response.json();
   }
 
   async getProfile(): Promise<UserProfile> {
     await rateLimiter.checkLimit();
 
     // SECURITY FIX: Use cookies instead of Authorization header
-    const response = await fetch(`${API_URL}/api/v1/users/profile`, {
-      credentials: 'include', // Send HTTP-only cookie
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${API_URL}/api/v1/users/profile`, {
+        credentials: 'include', // Send HTTP-only cookie
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      throw new Error('Failed to load profile');
+      if (!response.ok) {
+        throw new Error('Failed to load profile');
+      }
+
+      return await response.json();
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return await response.json();
   }
 
   // Version with AbortSignal support for timeout handling
@@ -163,16 +184,23 @@ class AuthService {
     await rateLimiter.checkLimit();
 
     // SECURITY FIX: Call logout endpoint to clear HTTP-only cookie
-    const response = await fetch(`${API_URL}/api/v1/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${API_URL}/api/v1/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      console.error('Logout request failed');
+      if (!response.ok) {
+        console.error('Logout request failed');
+      }
+
+      return response.ok;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return response.ok;
   }
 
   async updateTheme(theme: string): Promise<UserProfile> {

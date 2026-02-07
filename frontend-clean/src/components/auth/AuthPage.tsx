@@ -535,7 +535,8 @@ const AuthPage: React.FC = () => {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
     const { name, value } = e.target;
-    const sanitizedValue = sanitizeInput(value);
+    // Never sanitize password fields - sanitizeInput strips characters like <>"' which are valid in passwords
+    const sanitizedValue = name === 'password' || name === 'confirmPassword' ? value : sanitizeInput(value);
     setFormData((prev) => ({ ...prev, [name]: sanitizedValue }));
     if (fieldErrors[name as keyof FieldErrors]) {
       setFieldErrors((prev) => ({ ...prev, [name]: null }));

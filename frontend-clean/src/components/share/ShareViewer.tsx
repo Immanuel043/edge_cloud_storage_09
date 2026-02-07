@@ -83,6 +83,7 @@ const ShareViewer: React.FC = () => {
   /**
    * Build streaming URL for shared content
    */
+  // Password in URL required for direct media src (headers not supported)
   const getStreamUrl = (): string => {
     if (!shareInfo?.file_id) return '';
     let url = `${API_URL}/api/v1/share/${token}/stream?inline=true`;
@@ -102,11 +103,12 @@ const ShareViewer: React.FC = () => {
 
     try {
       const url = new URL(`${API_URL}/api/v1/share/${token}/info`);
+      const headers: Record<string, string> = {};
       if (pwd || password) {
-        url.searchParams.append('password', pwd || password);
+        headers['X-Share-Password'] = pwd || password;
       }
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), { headers });
 
       if (response.status === 401) {
         setRequiresPassword(true);
@@ -152,11 +154,12 @@ const ShareViewer: React.FC = () => {
   const loadFolderContents = async (pwd: string | null = null): Promise<void> => {
     try {
       const url = new URL(`${API_URL}/api/v1/share/${token}/folder/contents`);
+      const folderHeaders: Record<string, string> = {};
       if (pwd || password) {
-        url.searchParams.append('password', pwd || password);
+        folderHeaders['X-Share-Password'] = pwd || password;
       }
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), { headers: folderHeaders });
 
       if (response.ok) {
         const data: unknown = await response.json();
@@ -180,12 +183,14 @@ const ShareViewer: React.FC = () => {
         : `${API_URL}/api/v1/share/${token}`;
 
       const url = new URL(downloadUrl);
+      const dlHeaders: Record<string, string> = {};
       if (password) {
-        url.searchParams.append('password', password);
+        dlHeaders['X-Share-Password'] = password;
       }
 
       const response = await fetch(url.toString(), {
         credentials: 'include',
+        headers: dlHeaders,
       });
 
       if (!response.ok) {

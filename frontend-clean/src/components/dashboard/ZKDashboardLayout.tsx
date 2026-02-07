@@ -458,6 +458,13 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
     }
   };
 
+  // Handle file delete with confirmation
+  const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
+    const displayName = fileName || 'this file';
+    if (!window.confirm(`Are you sure you want to delete "${displayName}"?`)) return;
+    await deleteFile(fileId, fileName);
+  };
+
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
@@ -497,7 +504,7 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
           onFileDownload={handleFileDownload}
           onVersionHistory={() => {}}
           onFileShare={() => {}}
-          onFileDelete={deleteFile}
+          onFileDelete={handleDeleteFile}
           onRefresh={refreshFiles}
         />
       );
@@ -560,7 +567,7 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
                     onFilePreview={setPreviewFile}
                     onFileDownload={handleFileDownload}
                     onFileShare={handleShare}
-                    onFileDelete={deleteFile}
+                    onFileDelete={handleDeleteFile}
                     onVersionHistory={() => {}}
                     onRename={setRenameFile}
                     onFileInfo={setFileInfo}
@@ -576,7 +583,7 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
                     onFilePreview={setPreviewFile}
                     onFileDownload={handleFileDownload}
                     onFileShare={handleShare}
-                    onFileDelete={deleteFile}
+                    onFileDelete={handleDeleteFile}
                     onVersionHistory={() => {}}
                     onRename={setRenameFile}
                     onFileInfo={setFileInfo}
@@ -869,6 +876,7 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
                   if (files) {
                     Array.from(files).forEach(handleFileUpload);
                   }
+                  e.target.value = '';
                 }}
                 className="hidden"
               />

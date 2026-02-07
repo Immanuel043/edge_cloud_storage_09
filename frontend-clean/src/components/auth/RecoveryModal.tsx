@@ -166,6 +166,12 @@ const RecoveryModal: React.FC<RecoveryModalProps> = ({
       }
 
       // Send recovery request to backend with new credentials
+      // TODO: Implement client-side recovery key derivation. Currently the recovery
+      // phrase is needed server-side for account recovery verification. A proper ZK
+      // implementation would derive the master key from the phrase client-side and
+      // only send encrypted artifacts to the server. The recovery_phrase should be
+      // removed from the payload once the backend supports verification via a
+      // recovery_phrase_hash instead of the raw phrase.
       const result = await recoverAccountWithNewPassword({
         email,
         recoveryPhrase: recoveryInfo.recoveryPhrase,

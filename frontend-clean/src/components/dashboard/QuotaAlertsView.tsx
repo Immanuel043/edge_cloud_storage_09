@@ -94,7 +94,7 @@ const QuotaAlertsView: React.FC<QuotaAlertsViewProps> = ({ darkMode, storageStat
       });
 
       if (response.ok) {
-        setAlerts(alerts.filter(a => a.id !== alertId));
+        setAlerts(prev => prev.filter(a => a.id !== alertId));
       }
     } catch (err: unknown) {
       console.error('Failed to dismiss alert:', err);

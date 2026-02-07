@@ -6,10 +6,12 @@
  * - Normal Mode: NormalAuthProvider (server-side auth, WebSocket)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useContext } from 'react';
 import { ZK_STORAGE } from '../config/constants';
-import { ZKAuthProvider, useZKAuth } from './auth/ZKAuthContext';
-import { NormalAuthProvider, useNormalAuth } from './auth/NormalAuthContext';
+import { ZKAuthProvider } from './auth/ZKAuthContext';
+import ZKAuthContext from './auth/ZKAuthContext';
+import { NormalAuthProvider } from './auth/NormalAuthContext';
+import NormalAuthContext from './auth/NormalAuthContext';
 import type { AuthContextValue, LoginResponse, ZKData } from './auth/types';
 import * as zkAuthService from '../services/zkAuthService';
 import * as zkEncryptionService from '../services/zkEncryptionService';
@@ -63,49 +65,11 @@ export const useAuth = (): AuthContextValue => {
     };
   }, [checkZKMode]);
 
-  // Route to appropriate hook based on current mode
-  if (isZKMode) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const zkAuth = useZKAuth();
-
-    // Build combined interface (ZK mode)
-    const combined: AuthContextValue = {
-      user: zkAuth.user,
-      isAuthenticated: zkAuth.isAuthenticated,
-      loading: zkAuth.loading,
-      token: null, // ZK uses HTTP-only cookies, no token
-
-      // ZK state
-      zkEnabled: zkAuth.zkEnabled,
-      zkSessionUnlocked: zkAuth.zkSessionUnlocked,
-      zkRecoveryEnabled: zkAuth.zkRecoveryEnabled,
-
-      // Unified auth methods (delegates to ZK)
-      login: zkAuth.loginZK,
-      register: zkAuth.registerZK,
-      logout: zkAuth.logout,
-
-      // Expose ZK-specific methods explicitly (for mode selection during auth)
-      loginZK: zkAuth.loginZK,
-      registerZK: zkAuth.registerZK,
-
-      // ZK session methods
-      unlockSession: zkAuth.unlockSession,
-      lockSession: zkAuth.lockSession,
-      setupRecoveryPhrase: zkAuth.setupRecoveryPhrase,
-      verifyRecoveryPhrase: zkAuth.verifyRecoveryPhrase,
-      recoverAccount: zkAuth.recoverAccount,
-      checkZKStatus: zkAuth.checkZKStatus,
-      showUnlockModal: zkAuth.showUnlockModal,
-      setShowUnlockModal: zkAuth.setShowUnlockModal,
-    };
-
-    return combined;
-  }
-
-  // Normal mode
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const normalAuth = useNormalAuth();
+  // Call both contexts unconditionally (Rules of Hooks: hooks must always
+  // be called in the same order). Only one will have a value depending on
+  // which provider is rendered by AuthProvider.
+  const zkAuth = useContext(ZKAuthContext);
+  const normalAuth = useContext(NormalAuthContext);
 
   /**
    * Standalone ZK login/register functions for use during auth flow
@@ -222,32 +186,85 @@ export const useAuth = (): AuthContextValue => {
     return response;
   };
 
-  // Build combined interface (Normal mode)
-  const combined: AuthContextValue = {
-    user: normalAuth.user,
-    isAuthenticated: normalAuth.isAuthenticated,
-    loading: normalAuth.loading,
-    token: normalAuth.token,
+  // Route to appropriate context based on current mode
+  if (isZKMode && zkAuth) {
+    // Build combined interface (ZK mode)
+    return {
+      user: zkAuth.user,
+      isAuthenticated: zkAuth.isAuthenticated,
+      loading: zkAuth.loading,
+      token: null, // ZK uses HTTP-only cookies, no token
 
-    // ZK state (all false in normal mode)
+      // ZK state
+      zkEnabled: zkAuth.zkEnabled,
+      zkSessionUnlocked: zkAuth.zkSessionUnlocked,
+      zkRecoveryEnabled: zkAuth.zkRecoveryEnabled,
+
+      // Unified auth methods (delegates to ZK)
+      login: zkAuth.loginZK,
+      register: zkAuth.registerZK,
+      logout: zkAuth.logout,
+
+      // Expose ZK-specific methods explicitly (for mode selection during auth)
+      loginZK: zkAuth.loginZK,
+      registerZK: zkAuth.registerZK,
+
+      // ZK session methods
+      unlockSession: zkAuth.unlockSession,
+      lockSession: zkAuth.lockSession,
+      setupRecoveryPhrase: zkAuth.setupRecoveryPhrase,
+      verifyRecoveryPhrase: zkAuth.verifyRecoveryPhrase,
+      recoverAccount: zkAuth.recoverAccount,
+      checkZKStatus: zkAuth.checkZKStatus,
+      showUnlockModal: zkAuth.showUnlockModal,
+      setShowUnlockModal: zkAuth.setShowUnlockModal,
+    };
+  }
+
+  if (!isZKMode && normalAuth) {
+    // Build combined interface (Normal mode)
+    return {
+      user: normalAuth.user,
+      isAuthenticated: normalAuth.isAuthenticated,
+      loading: normalAuth.loading,
+      token: normalAuth.token,
+
+      // ZK state (all false in normal mode)
+      zkEnabled: false,
+      zkSessionUnlocked: false,
+      zkRecoveryEnabled: false,
+
+      // Unified auth methods (delegates to Normal)
+      login: normalAuth.login,
+      register: normalAuth.register,
+      logout: normalAuth.logout,
+
+      // Expose ZK methods for mode selection during auth
+      loginZK: standaloneLoginZK,
+      registerZK: standaloneRegisterZK,
+
+      // Normal-specific methods
+      refreshSessionToken: normalAuth.refreshSessionToken,
+    };
+  }
+
+  // Fallback: provider not yet mounted or transitioning between modes.
+  // Return a loading state so consumers don't crash.
+  const noOp = () => Promise.reject(new Error('Auth provider not ready'));
+  return {
+    user: null,
+    isAuthenticated: false,
+    loading: true,
+    token: null,
     zkEnabled: false,
     zkSessionUnlocked: false,
     zkRecoveryEnabled: false,
-
-    // Unified auth methods (delegates to Normal)
-    login: normalAuth.login,
-    register: normalAuth.register,
-    logout: normalAuth.logout,
-
-    // Expose ZK methods for mode selection during auth
+    login: noOp,
+    register: noOp,
+    logout: noOp,
     loginZK: standaloneLoginZK,
     registerZK: standaloneRegisterZK,
-
-    // Normal-specific methods
-    refreshSessionToken: normalAuth.refreshSessionToken,
   };
-
-  return combined;
 };
 
 interface AuthProviderProps {

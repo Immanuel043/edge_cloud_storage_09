@@ -23,12 +23,30 @@ export const sanitizeInput = (input: unknown): unknown => {
   if (typeof input !== 'string') return input;
 
   // Remove HTML tags and scripts
-  return input
+  let result = input
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
     .replace(/<[^>]+>/g, '')
-    .replace(/[<>"']/g, '')
-    .trim();
+    .replace(/[<>"']/g, '');
+
+  // Strip javascript:, data:, and vbscript: URL patterns
+  result = result.replace(/javascript\s*:/gi, '');
+  result = result.replace(/data\s*:/gi, '');
+  result = result.replace(/vbscript\s*:/gi, '');
+
+  // Strip HTML event handlers
+  result = result.replace(/\bon\w+\s*=/gi, '');
+
+  return result.trim();
 };
+
+export function sanitizeUrl(url: string): string {
+  const trimmed = url.trim();
+  // Block dangerous URL protocols
+  if (/^(javascript|data|vbscript):/i.test(trimmed)) {
+    return '';
+  }
+  return trimmed;
+}
 
 export const validateFileType = (file: File): boolean => {
   const fileName = file.name.toLowerCase();

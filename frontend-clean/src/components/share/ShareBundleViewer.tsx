@@ -226,6 +226,7 @@ const ShareBundleViewer: React.FC = () => {
   };
 
   // Build streaming URL for a file in the bundle
+  // Password in URL required for direct media src (headers not supported)
   const getStreamUrl = (fileId: string): string => {
     let url = `${API_URL}/api/v1/share/bundle/${token}/file/${fileId}/stream`;
     if (password) url += `?password=${encodeURIComponent(password)}`;
@@ -233,6 +234,7 @@ const ShareBundleViewer: React.FC = () => {
   };
 
   // Build thumbnail URL for a file in the bundle
+  // Password in URL required for direct media src (headers not supported)
   const getThumbnailUrl = (fileId: string, size: string = 'medium'): string => {
     let url = `${API_URL}/api/v1/share/bundle/${token}/file/${fileId}/thumbnail?size=${size}`;
     if (password) url += `&password=${encodeURIComponent(password)}`;
@@ -276,12 +278,14 @@ const ShareBundleViewer: React.FC = () => {
 
     try {
       const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/info`);
+      const headers: Record<string, string> = {};
       if (pwd || password) {
-        url.searchParams.append('password', pwd || password);
+        headers['X-Share-Password'] = pwd || password;
       }
 
       const response = await fetch(url.toString(), {
         credentials: 'include',
+        headers,
       });
 
       if (response.status === 401) {
@@ -356,10 +360,14 @@ const ShareBundleViewer: React.FC = () => {
       const url = new URL(
         `${API_URL}/api/v1/share/bundle/${token}/file/${file.id}/stream`
       );
-      if (password) url.searchParams.append('password', password);
+      const dlHeaders: Record<string, string> = {};
+      if (password) {
+        dlHeaders['X-Share-Password'] = password;
+      }
 
       const response = await fetch(url.toString(), {
         credentials: 'include',
+        headers: dlHeaders,
       });
       if (!response.ok) throw new Error('Download failed');
 
@@ -384,10 +392,14 @@ const ShareBundleViewer: React.FC = () => {
 
     try {
       const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/download`);
-      if (password) url.searchParams.append('password', password);
+      const zipHeaders: Record<string, string> = {};
+      if (password) {
+        zipHeaders['X-Share-Password'] = password;
+      }
 
       const response = await fetch(url.toString(), {
         credentials: 'include',
+        headers: zipHeaders,
       });
       if (!response.ok) throw new Error('Download failed');
 

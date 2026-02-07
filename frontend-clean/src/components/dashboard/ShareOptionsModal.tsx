@@ -117,6 +117,13 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
     setLoading(true);
     setError('');
 
+    // Validate password minimum length
+    if (sharingMode === 'link' && passwordEnabled && password && password.length < 8) {
+      setError('Password must be at least 8 characters long.');
+      setLoading(false);
+      return;
+    }
+
     try {
       if (sharingMode === 'people') {
         // Collaborative sharing with specific users
@@ -233,11 +240,29 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
     }
   };
 
-  const handleCopy = (): void => {
+  const handleCopy = async (): Promise<void> => {
     if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback: attempt using a temporary textarea
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = shareUrl;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        alert('Copy failed. Please select and copy the link manually.');
+      }
+    }
   };
 
   const itemName = folder ? folder.name : file?.name || 'Unknown';
@@ -509,13 +534,19 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    minLength={8}
                     className={`w-full px-3 py-2 rounded border ${
                       darkMode
                         ? 'bg-gray-700 border-gray-600 text-white'
                         : 'bg-white border-gray-300 text-gray-900'
-                    }`}
-                    placeholder="Enter password"
+                    } ${password && password.length < 8 ? 'border-red-500' : ''}`}
+                    placeholder="Enter password (min 8 characters)"
                   />
+                  {password && password.length < 8 && (
+                    <p className="text-xs text-red-500 mt-1">
+                      Password must be at least 8 characters long.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -569,9 +600,9 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
               </button>
               <button
                 onClick={handleCreateShare}
-                disabled={loading || (sharingMode === 'link' && passwordEnabled && !password) || (sharingMode === 'people' && !emails)}
+                disabled={loading || (sharingMode === 'link' && passwordEnabled && (!password || password.length < 8)) || (sharingMode === 'people' && !emails)}
                 className={`flex-1 py-2 rounded flex items-center justify-center gap-2 transition-colors ${
-                  loading || (sharingMode === 'link' && passwordEnabled && !password) || (sharingMode === 'people' && !emails)
+                  loading || (sharingMode === 'link' && passwordEnabled && (!password || password.length < 8)) || (sharingMode === 'people' && !emails)
                     ? 'bg-gray-400 cursor-not-allowed'
                     : 'bg-blue-500 hover:bg-blue-600'
                 } text-white`}

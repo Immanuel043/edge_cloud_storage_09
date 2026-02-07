@@ -19,11 +19,31 @@ const ShareModal: React.FC<ShareModalProps> = ({ shareData, onClose, darkMode })
 
   const shareUrl = shareData?.share_url ?? '';
 
-  const handleCopy = (): void => {
+  const handleCopy = async (): Promise<void> => {
     if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback: select text for manual copy or show failure message
+      console.warn('Clipboard write failed. User may need to copy manually.');
+      // Attempt fallback using a temporary textarea
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = shareUrl;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        alert('Copy failed. Please select and copy the link manually.');
+      }
+    }
   };
 
   const infoItems: InfoItem[] = [

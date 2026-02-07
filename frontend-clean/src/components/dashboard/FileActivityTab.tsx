@@ -9,6 +9,20 @@ import { getErrorMessage } from './types';
 import type { LucideIcon } from 'lucide-react';
 
 /**
+ * Mask an IP address for privacy by hiding the last segments.
+ * IPv4: 192.168.1.5 -> 192.168.*.*
+ * IPv6 or other formats: mask last segment
+ */
+function maskIpAddress(ip: string): string {
+  const parts = ip.split('.');
+  if (parts.length === 4) {
+    return `${parts[0]}.${parts[1]}.*.*`;
+  }
+  // IPv6 or other formats - mask last segments
+  return ip.replace(/:[^:]+$/, ':****');
+}
+
+/**
  * FileActivityTab - Displays file activity timeline
  */
 const FileActivityTab: React.FC<FileActivityTabProps> = ({ file, darkMode }) => {
@@ -193,7 +207,7 @@ const FileActivityTab: React.FC<FileActivityTabProps> = ({ file, darkMode }) => 
                         {activity.ip_address && (
                           <>
                             <span>•</span>
-                            <span>{activity.ip_address}</span>
+                            <span>{maskIpAddress(activity.ip_address)}</span>
                           </>
                         )}
                       </div>

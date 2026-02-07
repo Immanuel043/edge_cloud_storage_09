@@ -9,8 +9,7 @@ import type {
   SearchHit,
   FileItem,
 } from './types';
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1';
+import { API_URL } from '../../config/constants';
 
 /**
  * SearchBar Component

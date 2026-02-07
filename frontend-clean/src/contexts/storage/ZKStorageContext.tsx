@@ -70,6 +70,10 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
 
   const isRefreshingRef = useRef<boolean>(false);
 
+  // Ref to track latest files for use in async callbacks (avoids stale closure)
+  const filesRef = useRef<FileItem[]>(files);
+  useEffect(() => { filesRef.current = files; }, [files]);
+
   // Online/offline listeners
   useEffect(() => {
     const handleOnline = (): void => setIsOnline(true);
@@ -287,7 +291,7 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
         total: quotaBytes,
         quota: quotaBytes,
         available: Math.max(0, quotaBytes - usedBytes),
-        files_count: files.length,
+        files_count: filesRef.current.length,
         percentage_used: quotaBytes > 0 ? (usedBytes / quotaBytes) * 100 : 0,
       });
     } catch (error) {

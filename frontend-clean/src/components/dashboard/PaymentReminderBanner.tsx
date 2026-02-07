@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { CreditCard, X, Calendar, AlertCircle } from 'lucide-react';
-import API_CONFIG from '../../config/api';
+import { API_URL } from '../../config/constants';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import type { PaymentReminderBannerProps, PaymentReminderData } from './types';
 
@@ -84,7 +84,7 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
 
   const fetchUpcomingPayment = async (): Promise<void> => {
     try {
-      const response = await fetch(`${API_CONFIG.STORAGE_API}/api/v1/billing/upcoming-payment`, {
+      const response = await fetch(`${API_URL}/api/v1/billing/upcoming-payment`, {
         credentials: 'include',
       });
 

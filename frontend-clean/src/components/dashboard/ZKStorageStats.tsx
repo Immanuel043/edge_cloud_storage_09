@@ -22,7 +22,7 @@ const ZKStorageStats: React.FC<ZKStorageStatsProps> = ({ stats, darkMode, onUpgr
   const total =
     storageQuotaGb > 0
       ? storageQuotaGb * 1024 * 1024 * 1024
-      : stats.quota ?? 100 * 1024 * 1024 * 1024;
+      : (stats.quota || (100 * 1024 * 1024 * 1024)); // Use || to treat 0 as "no quota"
 
   const usageStoragePercent =
     usage && typeof (usage as Record<string, unknown>).storage_percent === 'number'

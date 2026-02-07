@@ -438,6 +438,13 @@ export async function getRecoveryInfo(
 /**
  * Recover account with recovery phrase and set new password
  * Full recovery flow that updates the user's password
+ *
+ * TODO: Implement client-side recovery key derivation. Currently the recovery
+ * phrase is needed server-side for account recovery verification. A proper ZK
+ * implementation would derive the master key from the phrase client-side and
+ * only send encrypted artifacts to the server. The recovery_phrase should be
+ * removed from the payload once the backend supports verification via a
+ * recovery_phrase_hash instead of the raw phrase.
  */
 export async function recoverAccountWithNewPassword(
   recoveryData: RecoveryData
@@ -525,7 +532,7 @@ export async function uploadChunk(
   chunkIV: string,
   retryCount = 0
 ): Promise<{ message: string; chunk_index: number; status: string }> {
-  const MAX_RETRIES = 5;
+  const MAX_RETRIES = 10;
   const BASE_DELAY_MS = 2000; // 2 seconds base delay
 
   // Create FormData for multipart upload (backend expects file upload)
