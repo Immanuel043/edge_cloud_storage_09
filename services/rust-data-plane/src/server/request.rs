@@ -1,5 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+/// Validate file_id to prevent path traversal (reject `..`, `/`, `\`, etc.)
+pub fn validate_file_id(file_id: &str) -> Result<(), String> {
+    if file_id.is_empty() {
+        return Err("file_id cannot be empty".to_string());
+    }
+    if !file_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("file_id contains invalid characters (allowed: alphanumeric, -, _)".to_string());
+    }
+    Ok(())
+}
+
 /// Upload request from FastAPI
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadRequest {
@@ -41,6 +55,18 @@ pub struct ChunkRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_file_id() {
+        assert!(validate_file_id("file-123").is_ok());
+        assert!(validate_file_id("abc_XYZ-09").is_ok());
+        assert!(validate_file_id("a").is_ok());
+        assert!(validate_file_id("").is_err());
+        assert!(validate_file_id("file/bar").is_err());
+        assert!(validate_file_id("..").is_err());
+        assert!(validate_file_id("path\\to").is_err());
+        assert!(validate_file_id("file name").is_err());
+    }
 
     #[test]
     fn test_upload_request_serialization() {

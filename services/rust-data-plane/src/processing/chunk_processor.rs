@@ -79,8 +79,8 @@ impl ChunkProcessor {
             "Hashed original chunk"
         );
 
-        // Step 2: Optional compression
-        let (data_to_encrypt, compressed_size, was_compressed) = if should_compress {
+        // Step 2: Optional compression, Step 3: Encryption
+        let (encrypted_data, compressed_size, was_compressed) = if should_compress {
             let compressed = self.compressor.compress(chunk_data)?;
             let compressed_size = compressed.len();
             let ratio = (compressed_size as f64 / original_size as f64) * 100.0;
@@ -91,18 +91,22 @@ impl ChunkProcessor {
                 "Compression completed"
             );
 
-            (compressed, compressed_size, true)
+            let encrypted = self.cipher.encrypt_chunk(
+                &compressed,
+                file_key.as_bytes(),
+                chunk_index,
+            )?;
+            (encrypted, compressed_size, true)
         } else {
             debug!("Skipping compression");
-            (chunk_data.to_vec(), 0, false)
+            // Avoid redundant to_vec - encrypt directly from chunk_data
+            let encrypted = self.cipher.encrypt_chunk(
+                chunk_data,
+                file_key.as_bytes(),
+                chunk_index,
+            )?;
+            (encrypted, 0, false)
         };
-
-        // Step 3: Encryption
-        let encrypted_data = self.cipher.encrypt_chunk(
-            &data_to_encrypt,
-            file_key.as_bytes(),
-            chunk_index,
-        )?;
 
         let encrypted_size = encrypted_data.len();
 

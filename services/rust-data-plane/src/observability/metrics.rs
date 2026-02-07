@@ -198,21 +198,12 @@ impl Metrics {
     }
 }
 
-/// Register all metrics with a custom registry
-pub fn register_metrics(registry: &Registry) -> Result<(), prometheus::Error> {
-    registry.register(Box::new(REQUESTS_TOTAL.clone()))?;
-    registry.register(Box::new(REQUEST_DURATION.clone()))?;
-    registry.register(Box::new(CHUNKS_PROCESSED.clone()))?;
-    registry.register(Box::new(CHUNK_SIZE_BYTES.clone()))?;
-    registry.register(Box::new(COMPRESSION_RATIO.clone()))?;
-    registry.register(Box::new(ENCRYPTION_OPS.clone()))?;
-    registry.register(Box::new(STORAGE_OPS.clone()))?;
-    registry.register(Box::new(CIRCUIT_BREAKER_STATE.clone()))?;
-    registry.register(Box::new(RATE_LIMITER_TOKENS.clone()))?;
-    registry.register(Box::new(ACTIVE_CONNECTIONS.clone()))?;
-    registry.register(Box::new(BUFFER_POOL_SIZE.clone()))?;
-    registry.register(Box::new(MODE_VIOLATIONS.clone()))?;
-    registry.register(Box::new(ERRORS_TOTAL.clone()))?;
+/// Register all metrics with a custom registry (optional - metrics use default registry by default)
+/// Call this only if you need metrics in a custom registry for /metrics endpoint.
+/// Using both default registry (from macros) and custom registry causes double registration.
+pub fn register_metrics(_registry: &Registry) -> Result<(), prometheus::Error> {
+    // Metrics are already registered to default registry via lazy_static macros.
+    // Do not re-register to avoid double registration.
     Ok(())
 }
 

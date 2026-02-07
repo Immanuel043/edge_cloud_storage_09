@@ -2,16 +2,25 @@
 use crate::crypto::key_manager::SecretKey;
 use crate::error::SecurityError;
 use nix::libc;
+use scopeguard;
 use std::os::unix::io::RawFd;
-use tracing::{debug, instrument};
+use tracing::debug;
+
+/// Close FD on drop (used for error path cleanup)
+unsafe fn close_fd(fd: RawFd) {
+    if fd >= 0 {
+        let _ = libc::close(fd);
+    }
+}
 
 /// Read encryption key from memfd file descriptor (macOS via shm_open)
 ///
 /// # Security
 /// - FD passed via SCM_RIGHTS from FastAPI
 /// - Key never touches HTTP layer
-/// - FD closed immediately after read
+/// - FD closed immediately after read (or on any error path)
 /// - Key zeroized on drop (SecretKey)
+/// - Retries on EINTR
 ///
 /// # macOS Note
 /// macOS doesn't have memfd_create, so we use shm_open for similar functionality
@@ -21,46 +30,56 @@ use tracing::{debug, instrument};
 ///
 /// # Returns
 /// SecretKey with automatic zeroization
-#[instrument(skip(fd), fields(fd = fd))]
 pub fn read_key_from_memfd(fd: RawFd) -> Result<SecretKey, SecurityError> {
-    debug!("Reading key from FD (macOS shm): {}", fd);
+    debug!("Reading key from FD (macOS shm)");
 
-    // Read exactly 32 bytes from FD
+    // Guard ensures FD is closed on any error path or panic
+    let guard = scopeguard::guard((), |_| unsafe { close_fd(fd) });
+
+    // Read exactly 32 bytes from FD (retry on EINTR)
     let mut key_bytes = [0u8; 32];
+    let mut total_read: isize = 0;
 
-    let bytes_read = unsafe {
-        libc::read(
-            fd,
-            key_bytes.as_mut_ptr() as *mut libc::c_void,
-            32,
-        )
-    };
+    while (total_read as usize) < 32 {
+        let bytes_read = unsafe {
+            libc::read(
+                fd,
+                key_bytes.as_mut_ptr().add(total_read as usize) as *mut libc::c_void,
+                (32 - total_read as usize) as libc::size_t,
+            )
+        };
 
-    if bytes_read < 0 {
-        let err = std::io::Error::last_os_error();
-        return Err(SecurityError::KeyReadFailed(format!(
-            "Failed to read from FD: {}",
-            err
-        )));
-    }
+        if bytes_read < 0 {
+            let err = std::io::Error::last_os_error();
+            let raw_err = err.raw_os_error().unwrap_or(0);
+            // Retry on EINTR
+            if raw_err == libc::EINTR {
+                continue;
+            }
+            return Err(SecurityError::KeyReadFailed(format!(
+                "Failed to read from FD: {}",
+                err
+            )));
+        }
 
-    if bytes_read != 32 {
-        // Zeroize partial read
-        key_bytes.iter_mut().for_each(|b| *b = 0);
-        return Err(SecurityError::KeyReadFailed(format!(
-            "Expected 32 bytes, got {}",
-            bytes_read
-        )));
+        if bytes_read == 0 {
+            // EOF before getting 32 bytes
+            key_bytes.iter_mut().for_each(|b| *b = 0);
+            return Err(SecurityError::KeyReadFailed(
+                "Unexpected EOF reading key".to_string(),
+            ));
+        }
+
+        total_read += bytes_read;
     }
 
     debug!("Successfully read 32-byte key from FD");
 
-    // Close FD immediately (secure cleanup)
+    // Close FD immediately (secure cleanup) and disarm guard to avoid double-close
     unsafe {
-        libc::close(fd);
+        close_fd(fd);
     }
-
-    debug!("Closed FD: {}", fd);
+    scopeguard::ScopeGuard::into_inner(guard);
 
     // Create SecretKey (will be zeroized on drop)
     Ok(SecretKey::from_bytes(key_bytes))
@@ -76,10 +95,7 @@ pub fn verify_memfd(fd: RawFd) -> Result<(), SecurityError> {
     let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
 
     if result < 0 {
-        return Err(SecurityError::KeyReadFailed(format!(
-            "Invalid FD: {}",
-            fd
-        )));
+        return Err(SecurityError::KeyReadFailed("Invalid FD".to_string()));
     }
 
     Ok(())

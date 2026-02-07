@@ -39,9 +39,12 @@ impl UploadHandler {
         let mode = ProcessingMode::from_header(&request.mode)
             .map_err(|e| ErrorResponse::bad_request(format!("Invalid mode: {}", e)))?;
 
-        // Enforce mode security
+        // Enforce mode security (close key_fd on violation - it would otherwise leak)
         ModeEnforcer::enforce(mode, key_fd.is_some())
             .map_err(|e| {
+                if let Some(fd) = key_fd {
+                    crate::server::fd_guard::close_key_fd(fd);
+                }
                 error!(error = ?e, "Mode enforcement violation");
                 match e {
                     SecurityError::ZkModeKeyLeakage => {
@@ -186,17 +189,25 @@ impl DownloadHandler {
         let mode = ProcessingMode::from_header(&request.mode)
             .map_err(|e| ErrorResponse::bad_request(format!("Invalid mode: {}", e)))?;
 
-        // Enforce mode security
+        // Enforce mode security (close key_fd on violation - it would otherwise leak)
         ModeEnforcer::enforce(mode, key_fd.is_some())
             .map_err(|e| {
+                if let Some(fd) = key_fd {
+                    crate::server::fd_guard::close_key_fd(fd);
+                }
                 error!(error = ?e, "Mode enforcement violation");
                 ErrorResponse::security_violation(format!("Security violation: {}", e))
             })?;
 
-        // Retrieve encrypted chunk
+        // Retrieve encrypted chunk (close key_fd on error - would otherwise leak)
         let storage = self.storage.lock().await;
         let encrypted_data = storage.retrieve_chunk(&request.file_id, request.chunk_index)
-            .map_err(|e| ErrorResponse::bad_request(format!("Chunk not found: {}", e)))?;
+            .map_err(|e| {
+                if let Some(fd) = key_fd {
+                    crate::server::fd_guard::close_key_fd(fd);
+                }
+                ErrorResponse::bad_request(format!("Chunk not found: {}", e))
+            })?;
         drop(storage);
 
         // Process based on mode

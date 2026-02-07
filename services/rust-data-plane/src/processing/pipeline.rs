@@ -81,15 +81,16 @@ impl ProcessingPipeline {
     pub async fn process_chunk_async(
         &self,
         chunk_data: Bytes,
-        file_key: SecretKey,
+        file_key: &SecretKey,
         chunk_index: u64,
         should_compress: bool,
     ) -> Result<ProcessedChunk, DataPlaneError> {
         let processor = Arc::clone(&self.processor);
+        let key = file_key.clone(); // Required for spawn_blocking ownership
 
         // Spawn CPU-bound work on blocking thread pool
         let result = task::spawn_blocking(move || {
-            processor.process_chunk(&chunk_data, &file_key, chunk_index, should_compress)
+            processor.process_chunk(&chunk_data, &key, chunk_index, should_compress)
         })
         .await
         .map_err(|e| DataPlaneError::Internal(format!("Task join error: {}", e)))??;
@@ -123,15 +124,16 @@ impl ProcessingPipeline {
     pub async fn decrypt_chunk_async(
         &self,
         encrypted_data: Bytes,
-        file_key: SecretKey,
+        file_key: &SecretKey,
         chunk_index: u64,
         was_compressed: bool,
     ) -> Result<Vec<u8>, DataPlaneError> {
         let processor = Arc::clone(&self.processor);
+        let key = file_key.clone(); // Required for spawn_blocking ownership
 
         // Spawn CPU-bound work on blocking thread pool
         let result = task::spawn_blocking(move || {
-            processor.decrypt_chunk(&encrypted_data, &file_key, chunk_index, was_compressed)
+            processor.decrypt_chunk(&encrypted_data, &key, chunk_index, was_compressed)
         })
         .await
         .map_err(|e| DataPlaneError::Internal(format!("Task join error: {}", e)))??;
@@ -168,7 +170,7 @@ mod tests {
         let data = Bytes::from_static(b"Test data for async processing");
 
         let result = pipeline
-            .process_chunk_async(data, key, 0, false)
+            .process_chunk_async(data, &key, 0, false)
             .await
             .unwrap();
 
@@ -187,7 +189,7 @@ mod tests {
 
         // Encrypt
         let processed = pipeline
-            .process_chunk_async(original.clone(), key.clone(), 5, true)
+            .process_chunk_async(original.clone(), &key, 5, true)
             .await
             .unwrap();
 
@@ -197,7 +199,7 @@ mod tests {
         let decrypted = pipeline
             .decrypt_chunk_async(
                 Bytes::from(processed.encrypted_data),
-                key,
+                &key,
                 5,
                 true,
             )
@@ -217,14 +219,15 @@ mod tests {
         // Process 10 chunks concurrently
         let mut handles = vec![];
 
+        let key = Arc::new(key);
         for i in 0..10 {
             let pipeline = Arc::clone(&pipeline);
-            let key = key.clone();
+            let key = Arc::clone(&key);
             let data = Bytes::from(vec![i as u8; 1000]);
 
             let handle = tokio::spawn(async move {
                 pipeline
-                    .process_chunk_async(data, key, i as u64, false)
+                    .process_chunk_async(data, key.as_ref(), i as u64, false)
                     .await
             });
 
@@ -277,7 +280,7 @@ mod tests {
         let data = Bytes::from(vec![0u8; 10 * 1024 * 1024]); // 10MB
 
         let result = pipeline
-            .process_chunk_async(data, key, 0, true)
+            .process_chunk_async(data, &key, 0, true)
             .await
             .unwrap();
 

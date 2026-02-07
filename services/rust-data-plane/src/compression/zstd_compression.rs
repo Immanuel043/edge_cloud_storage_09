@@ -1,7 +1,10 @@
 use crate::error::CompressionError;
-use std::io::Write;
+use std::io::{Read, Write};
 use tracing::{debug, instrument};
 use zstd::stream::Encoder;
+
+/// Maximum decompressed size (64MB) - prevents OOM from decompression bombs
+const MAX_DECOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
 
 /// Zstandard compressor with configurable compression level
 pub struct ZstdCompressor {
@@ -55,25 +58,43 @@ impl ZstdCompressor {
         Ok(compressed)
     }
 
-    /// Decompress Zstandard data
+    /// Decompress Zstandard data with size limit to prevent decompression bombs
     ///
     /// # Arguments
     /// * `input` - Compressed data
     ///
     /// # Returns
-    /// Decompressed data
+    /// Decompressed data (fails if exceeds MAX_DECOMPRESSED_SIZE)
     #[instrument(skip(self, input), fields(input_len = input.len()))]
     pub fn decompress(&self, input: &[u8]) -> Result<Vec<u8>, CompressionError> {
-        let decompressed = zstd::decode_all(input)
+        let mut decoder = zstd::stream::Decoder::new(input)
             .map_err(|e| CompressionError::DecompressionFailed(e.to_string()))?;
+
+        let mut out = Vec::with_capacity(input.len().min(MAX_DECOMPRESSED_SIZE));
+        let mut buf = [0u8; 65536];
+
+        loop {
+            let n = decoder
+                .read(&mut buf)
+                .map_err(|e| CompressionError::DecompressionFailed(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            if out.len() > MAX_DECOMPRESSED_SIZE {
+                return Err(CompressionError::DecompressionFailed(
+                    "Decompressed size exceeds maximum allowed 64MB".to_string(),
+                ));
+            }
+        }
 
         debug!(
             input_len = input.len(),
-            output_len = decompressed.len(),
+            output_len = out.len(),
             "Decompression completed"
         );
 
-        Ok(decompressed)
+        Ok(out)
     }
 }
 

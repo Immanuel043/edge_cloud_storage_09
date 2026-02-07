@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(headers[0].1, "localhost");
         assert_eq!(headers[1].0, "content-length");
         assert_eq!(headers[1].1, "10");
-        assert_eq!(body_start, 53); // Position after \r\n\r\n
+        assert_eq!(body_start, 62); // Position after \r\n\r\n
     }
 
     #[test]

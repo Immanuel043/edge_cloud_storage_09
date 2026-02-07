@@ -1,10 +1,11 @@
 // Main entry point for edge-storage-dataplane service
 use edge_storage_dataplane::{
-    detect_aes_ni, init_tracing, register_metrics, CircuitBreaker, CircuitBreakerConfig,
-    RateLimiter, RateLimiterConfig, ServerConfig, TracingConfig, UnixSocketServer,
+    detect_aes_ni, init_tracing, CircuitBreaker, CircuitBreakerConfig, RateLimiter,
+    RateLimiterConfig, ServerConfig, TracingConfig, UnixSocketServer,
     UnixSocketServerWithScmRights, WriteOptions,
 };
-use prometheus::Registry;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use tracing::info;
 
 #[tokio::main]
@@ -29,10 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    // Register Prometheus metrics
-    let registry = Registry::new();
-    register_metrics(&registry)?;
-    info!("📊 Prometheus metrics registered");
+    // Prometheus metrics use default registry (registered on first use via lazy_static)
+    info!("📊 Prometheus metrics available");
 
     // Initialize resilience components (for future use)
     let circuit_breaker_config = CircuitBreakerConfig::default();
@@ -71,6 +70,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "🔧 Server configuration loaded"
     );
 
+    // Shutdown channel for graceful termination on SIGTERM/SIGINT
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let shutdown_tx = std::sync::Arc::new(shutdown_tx);
+
+    // Spawn signal listener (SIGINT = Ctrl+C)
+    let shutdown_tx_clone = Arc::clone(&shutdown_tx);
+    tokio::spawn(async move {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "Failed to listen for ctrl_c");
+            return;
+        }
+        info!("Received shutdown signal (Ctrl+C)");
+        let _ = shutdown_tx_clone.send(());
+    });
+
     // Choose server implementation based on environment variable
     let use_scm_rights = std::env::var("USE_SCM_RIGHTS")
         .unwrap_or_else(|_| "true".to_string())
@@ -82,14 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let server = UnixSocketServerWithScmRights::new(server_config)?;
         info!("🌐 Server initialized with SCM_RIGHTS support");
         info!("🚀 Starting Unix Domain Socket server (SCM_RIGHTS enabled)");
-        server.serve().await?;
+        server.serve(shutdown_rx).await?;
     } else {
         info!("⚠️  Using legacy Hyper server (limited Non-ZK support)");
         let server = UnixSocketServer::new(server_config)?;
         info!("🌐 Server initialized");
         info!("🚀 Starting Unix Domain Socket server");
-        server.serve().await?;
+        server.serve(shutdown_rx).await?;
     }
 
+    info!("Server shutdown complete");
     Ok(())
 }

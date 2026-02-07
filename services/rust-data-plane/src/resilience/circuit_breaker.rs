@@ -1,5 +1,6 @@
 use crate::error::{CircuitBreakerError, DataPlaneError};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -26,6 +27,8 @@ pub struct CircuitBreakerConfig {
     pub timeout_seconds: u64,
     /// Window size for failure counting (seconds)
     pub window_seconds: u64,
+    /// Max concurrent requests allowed in half-open state
+    pub half_open_max_concurrent: usize,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -35,6 +38,7 @@ impl Default for CircuitBreakerConfig {
             success_threshold: 2,      // Close after 2 successes in half-open
             timeout_seconds: 60,       // Try half-open after 60s
             window_seconds: 10,        // Count failures in 10s window
+            half_open_max_concurrent: 1, // Only 1 test request at a time in half-open
         }
     }
 }
@@ -53,13 +57,14 @@ struct CircuitBreakerState {
 /// # Pattern
 /// - Closed: Normal operation, count failures
 /// - Open: Fast fail without calling service
-/// - Half-Open: Allow limited requests to test recovery
+/// - Half-Open: Allow limited concurrent requests to test recovery
 ///
 /// # Use Case
 /// Prevent cascading failures when downstream service is degraded
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
     state: Arc<Mutex<CircuitBreakerState>>,
+    half_open_active: Arc<AtomicUsize>,
 }
 
 impl CircuitBreaker {
@@ -74,6 +79,7 @@ impl CircuitBreaker {
                 last_failure_time: None,
                 opened_at: None,
             })),
+            half_open_active: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -103,6 +109,7 @@ impl CircuitBreaker {
                         debug!("Circuit transitioning from Open to HalfOpen");
                         state.state = CircuitState::HalfOpen;
                         state.success_count = 0;
+                        self.half_open_active.store(0, Ordering::Release);
                         Ok(())
                     } else {
                         // Still open - reject request
@@ -113,8 +120,15 @@ impl CircuitBreaker {
                 }
             }
             CircuitState::HalfOpen => {
-                // Allow limited requests to test recovery
-                Ok(())
+                // Allow only limited concurrent requests to test recovery
+                let limit = self.config.half_open_max_concurrent;
+                let current = self.half_open_active.load(Ordering::Acquire);
+                if current < limit {
+                    self.half_open_active.fetch_add(1, Ordering::Release);
+                    Ok(())
+                } else {
+                    Err(CircuitBreakerError::CircuitOpen)
+                }
             }
         }
     }
@@ -130,6 +144,9 @@ impl CircuitBreaker {
                 state.last_failure_time = None;
             }
             CircuitState::HalfOpen => {
+                if self.half_open_active.load(Ordering::Acquire) > 0 {
+                    self.half_open_active.fetch_sub(1, Ordering::Release);
+                }
                 state.success_count += 1;
                 debug!(
                     success_count = state.success_count,
@@ -145,6 +162,7 @@ impl CircuitBreaker {
                     state.success_count = 0;
                     state.last_failure_time = None;
                     state.opened_at = None;
+                    self.half_open_active.store(0, Ordering::Release);
                 }
             }
             CircuitState::Open => {
@@ -176,11 +194,15 @@ impl CircuitBreaker {
                 }
             }
             CircuitState::HalfOpen => {
+                if self.half_open_active.load(Ordering::Acquire) > 0 {
+                    self.half_open_active.fetch_sub(1, Ordering::Release);
+                }
                 // Any failure in half-open immediately reopens
                 warn!("Circuit transitioning from HalfOpen to Open (failure during test)");
                 state.state = CircuitState::Open;
                 state.opened_at = Some(Instant::now());
                 state.success_count = 0;
+                self.half_open_active.store(0, Ordering::Release);
             }
             CircuitState::Open => {
                 // Already open, just update timestamp
@@ -233,6 +255,7 @@ impl Clone for CircuitBreaker {
         Self {
             config: self.config.clone(),
             state: Arc::clone(&self.state),
+            half_open_active: Arc::clone(&self.half_open_active),
         }
     }
 }

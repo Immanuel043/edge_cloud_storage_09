@@ -1,3 +1,4 @@
+use crate::resilience::{CircuitBreaker, CircuitBreakerConfig, RateLimiter, RateLimiterConfig};
 use crate::server::handlers::{DownloadHandler, UploadHandler};
 use crate::server::request::{UploadRequest, DownloadRequest};
 use crate::storage::{ChunkStorage, WriteOptions};
@@ -10,6 +11,7 @@ use hyper_util::rt::TokioIo;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::net::UnixListener;
+use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -42,6 +44,8 @@ pub struct UnixSocketServer {
     config: ServerConfig,
     upload_handler: Arc<UploadHandler>,
     download_handler: Arc<DownloadHandler>,
+    circuit_breaker: Arc<CircuitBreaker>,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl UnixSocketServer {
@@ -59,16 +63,24 @@ impl UnixSocketServer {
             DownloadHandler::new(Arc::clone(&storage), config.compression_level)?
         );
 
+        let circuit_breaker = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));
+        let rate_limiter = Arc::new(RateLimiter::new(RateLimiterConfig::default()));
+
         Ok(Self {
             config,
             upload_handler,
             download_handler,
+            circuit_breaker,
+            rate_limiter,
         })
     }
 
-    /// Start server
-    #[instrument(skip(self))]
-    pub async fn serve(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Start server (shuts down gracefully when shutdown_rx receives)
+    #[instrument(skip(self, shutdown_rx))]
+    pub async fn serve(
+        &self,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Remove existing socket if present
         let socket_path = Path::new(&self.config.socket_path);
         if socket_path.exists() {
@@ -80,40 +92,52 @@ impl UnixSocketServer {
         let listener = UnixListener::bind(&self.config.socket_path)?;
         info!(socket = %self.config.socket_path, "Server listening on Unix socket");
 
-        // Accept connections
+        // Accept connections until shutdown signal
         loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    debug!("Accepted connection");
-
-                    let upload_handler = Arc::clone(&self.upload_handler);
-                    let download_handler = Arc::clone(&self.download_handler);
-
-                    // Spawn connection handler
-                    tokio::spawn(async move {
-                        let io = TokioIo::new(stream);
-
-                        let service = service_fn(move |req| {
-                            Self::handle_request(
-                                req,
-                                Arc::clone(&upload_handler),
-                                Arc::clone(&download_handler),
-                            )
-                        });
-
-                        if let Err(e) = http1::Builder::new()
-                            .serve_connection(io, service)
-                            .await
-                        {
-                            error!(error = %e, "Connection error");
-                        }
-                    });
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Shutdown signal received, stopping acceptor");
+                    break;
                 }
-                Err(e) => {
-                    error!(error = %e, "Failed to accept connection");
+                result = listener.accept() => match result {
+                    Ok((stream, _addr)) => {
+                        debug!("Accepted connection");
+
+                        let upload_handler = Arc::clone(&self.upload_handler);
+                        let download_handler = Arc::clone(&self.download_handler);
+                        let circuit_breaker = Arc::clone(&self.circuit_breaker);
+                        let rate_limiter = Arc::clone(&self.rate_limiter);
+
+                        // Spawn connection handler
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(stream);
+
+                            let service = service_fn(move |req| {
+                                Self::handle_request(
+                                    req,
+                                    Arc::clone(&upload_handler),
+                                    Arc::clone(&download_handler),
+                                    Arc::clone(&circuit_breaker),
+                                    Arc::clone(&rate_limiter),
+                                )
+                            });
+
+                            if let Err(e) = http1::Builder::new()
+                                .serve_connection(io, service)
+                                .await
+                            {
+                                error!(error = %e, "Connection error");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to accept connection");
+                    }
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Handle HTTP request
@@ -121,18 +145,37 @@ impl UnixSocketServer {
         req: Request<Incoming>,
         upload_handler: Arc<UploadHandler>,
         download_handler: Arc<DownloadHandler>,
+        circuit_breaker: Arc<CircuitBreaker>,
+        rate_limiter: Arc<RateLimiter>,
     ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let method = req.method().clone();
         let uri = req.uri().clone();
 
         debug!(method = %method, uri = %uri, "Handling request");
 
-        let response = match (method.as_str(), uri.path()) {
+        // Skip rate limit and circuit breaker for health checks
+        let path = uri.path();
+        if path != "/health" {
+            if let Err(_) = rate_limiter.allow_request() {
+                return Ok(Response::builder()
+                    .status(StatusCode::TOO_MANY_REQUESTS)
+                    .body(Full::new(Bytes::from(r#"{"success":false,"error":"rate_limit_exceeded","message":"Too many requests"}"#)))
+                    .expect("static body"));
+            }
+            if let Err(_) = circuit_breaker.allow_request() {
+                return Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Full::new(Bytes::from(r#"{"success":false,"error":"circuit_breaker_open","message":"Service temporarily unavailable"}"#)))
+                    .expect("static body"));
+            }
+        }
+
+        let response = match (method.as_str(), path) {
             ("POST", "/upload") => {
-                Self::handle_upload_endpoint(req, upload_handler).await
+                Self::handle_upload_endpoint(req, upload_handler, circuit_breaker).await
             }
             ("POST", "/download") => {
-                Self::handle_download_endpoint(req, download_handler).await
+                Self::handle_download_endpoint(req, download_handler, circuit_breaker).await
             }
             ("GET", "/health") => {
                 Self::handle_health_check().await
@@ -142,7 +185,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Full::new(Bytes::from("{\"error\":\"not_found\"}")))
-                    .unwrap()
+                    .expect("invalid body type")
             }
         };
 
@@ -150,10 +193,11 @@ impl UnixSocketServer {
     }
 
     /// Handle upload endpoint
-    #[instrument(skip(req, handler))]
+    #[instrument(skip(req, handler, circuit_breaker))]
     async fn handle_upload_endpoint(
         req: Request<Incoming>,
         handler: Arc<UploadHandler>,
+        circuit_breaker: Arc<CircuitBreaker>,
     ) -> Response<Full<Bytes>> {
         // Extract request metadata from headers
         let headers = req.headers();
@@ -169,6 +213,20 @@ impl UnixSocketServer {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown")
             .to_string();
+
+        if let Err(e) = crate::server::request::validate_file_id(&file_id) {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "success": false,
+                        "error": "invalid_file_id",
+                        "message": e
+                    })
+                    .to_string(),
+                )))
+                .expect("invalid body type");
+        }
 
         let chunk_index = headers
             .get("x-chunk-index")
@@ -204,17 +262,20 @@ impl UnixSocketServer {
         let chunk_data = match body.collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
+                circuit_breaker.record_failure();
                 error!(error = %e, "Failed to read request body");
+                let msg = serde_json::json!({
+                    "success": false,
+                    "error": "body_read_failed",
+                    "message": format!("Failed to read request body: {}", e)
+                });
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .body(Full::new(Bytes::from(
-                        serde_json::json!({
-                            "success": false,
-                            "error": "body_read_failed",
-                            "message": format!("Failed to read request body: {}", e)
-                        }).to_string()
+                        serde_json::to_string(&msg)
+                            .unwrap_or_else(|_| r#"{"success":false,"error":"body_read_failed"}"#.to_string())
                     )))
-                    .unwrap();
+                    .expect("invalid body type");
             }
         };
 
@@ -231,20 +292,23 @@ impl UnixSocketServer {
         // Call handler
         match handler.handle_upload(upload_req, chunk_data, key_fd).await {
             Ok(response) => {
+                circuit_breaker.record_success();
                 debug!(
                     success = response.success,
                     hash = %response.hash,
                     "Upload successful"
                 );
 
-                let json = serde_json::to_string(&response).unwrap();
+                let json = serde_json::to_string(&response)
+                    .unwrap_or_else(|_| r#"{"success":false,"error":"serialization_error"}"#.to_string());
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(json)))
-                    .unwrap()
+                    .expect("invalid body type")
             }
             Err(err) => {
+                circuit_breaker.record_failure();
                 error!(
                     error = %err.error,
                     message = %err.message,
@@ -252,22 +316,24 @@ impl UnixSocketServer {
                 );
 
                 let status_code = StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let json = serde_json::to_string(&err).unwrap();
+                let json = serde_json::to_string(&err)
+                    .unwrap_or_else(|_| r#"{"success":false,"error":"serialization_error"}"#.to_string());
 
                 Response::builder()
                     .status(status_code)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(json)))
-                    .unwrap()
+                    .expect("invalid body type")
             }
         }
     }
 
     /// Handle download endpoint
-    #[instrument(skip(req, handler))]
+    #[instrument(skip(req, handler, circuit_breaker))]
     async fn handle_download_endpoint(
         req: Request<Incoming>,
         handler: Arc<DownloadHandler>,
+        circuit_breaker: Arc<CircuitBreaker>,
     ) -> Response<Full<Bytes>> {
         // Extract request metadata from headers
         let headers = req.headers();
@@ -283,6 +349,20 @@ impl UnixSocketServer {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown")
             .to_string();
+
+        if let Err(e) = crate::server::request::validate_file_id(&file_id) {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "success": false,
+                        "error": "invalid_file_id",
+                        "message": e
+                    })
+                    .to_string(),
+                )))
+                .expect("invalid body type");
+        }
 
         let chunk_index = headers
             .get("x-chunk-index")
@@ -313,6 +393,7 @@ impl UnixSocketServer {
         // Call handler
         match handler.handle_download(download_req, key_fd).await {
             Ok(chunk_data) => {
+                circuit_breaker.record_success();
                 debug!(
                     chunk_index = chunk_index,
                     size = chunk_data.len(),
@@ -326,9 +407,10 @@ impl UnixSocketServer {
                     .status(StatusCode::OK)
                     .header("content-type", "application/octet-stream")
                     .body(Full::new(bytes_data))
-                    .unwrap()
+                    .expect("invalid body type")
             }
             Err(err) => {
+                circuit_breaker.record_failure();
                 error!(
                     error = %err.error,
                     message = %err.message,
@@ -336,13 +418,14 @@ impl UnixSocketServer {
                 );
 
                 let status_code = StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let json = serde_json::to_string(&err).unwrap();
+                let json = serde_json::to_string(&err)
+                    .unwrap_or_else(|_| r#"{"success":false,"error":"serialization_error"}"#.to_string());
 
                 Response::builder()
                     .status(status_code)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(json)))
-                    .unwrap()
+                    .expect("invalid body type")
             }
         }
     }
@@ -352,7 +435,7 @@ impl UnixSocketServer {
         Response::builder()
             .status(StatusCode::OK)
             .body(Full::new(Bytes::from("{\"status\":\"healthy\"}")))
-            .unwrap()
+            .expect("invalid body type")
     }
 }
 

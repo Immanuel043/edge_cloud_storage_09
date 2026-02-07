@@ -256,6 +256,7 @@ dependencies = [
  "parking_lot",
  "prometheus",
  "ring",
+ "scopeguard",
  "serde",
  "serde_json",
  "subtle",
