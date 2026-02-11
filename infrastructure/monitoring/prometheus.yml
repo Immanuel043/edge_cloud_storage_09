@@ -3,6 +3,9 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # Storage Service metrics (from your app/monitoring/metrics.py)
   - job_name: 'storage-service'
@@ -16,6 +19,12 @@ scrape_configs:
       - targets: ['web-service:3001']
     metrics_path: '/metrics'
 
+  # ZK Encryption Service metrics
+  - job_name: 'zk-encryption-service'
+    static_configs:
+      - targets: ['zk-encryption-service:8002']
+    metrics_path: '/metrics'
+
   # Prometheus self-monitoring
   - job_name: 'prometheus'
     static_configs:
@@ -26,23 +35,23 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 
-  # Redis metrics
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis-exporter:9121']
+  # Redis metrics (requires redis-exporter container - add when needed)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
 
-  # PostgreSQL metrics
-  - job_name: 'postgresql'
-    static_configs:
-      - targets: ['postgres-exporter:9187']
+  # PostgreSQL metrics (requires postgres-exporter container - add when needed)
+  # - job_name: 'postgresql'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
 
-  # Elasticsearch metrics
-  - job_name: 'elasticsearch'
-    static_configs:
-      - targets: ['elasticsearch:9200']
-    metrics_path: '/_prometheus/metrics'
+  # Elasticsearch metrics (requires prometheus-exporter plugin)
+  # - job_name: 'elasticsearch'
+  #   static_configs:
+  #     - targets: ['elasticsearch:9200']
+  #   metrics_path: '/_prometheus/metrics'
 
-  # Kafka metrics (if Kafka JMX is enabled)
-  - job_name: 'kafka'
-    static_configs:
-      - targets: ['kafka:9092']
+  # Kafka metrics (requires JMX exporter on port 9404, not broker port 9092)
+  # - job_name: 'kafka'
+  #   static_configs:
+  #     - targets: ['kafka:9404']

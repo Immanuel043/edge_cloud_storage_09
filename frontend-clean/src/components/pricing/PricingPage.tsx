@@ -560,6 +560,7 @@ export default function PricingPage(): ReactElement {
         // Import API config dynamically
         const API_CONFIG = (await import('../../config/api')).default;
 
+        // TODO: Replace raw fetch calls with a centralized API service (e.g., apiService.getPlans())
         // Fetch Normal Storage plans
         const edgeResponse = await fetch(
           `${API_CONFIG.STORAGE_API}/api/v1/auth/plans?service_type=normal`,
@@ -608,9 +609,11 @@ export default function PricingPage(): ReactElement {
         console.error('Failed to fetch plans:', error);
         setError('Failed to load pricing plans. Please try again later.');
         
-        // Fallback to mock data on error
-        setEdgePlans(mockPlansData.edge_plans);
-        setZkPlans(mockPlansData.zk_plans);
+        // Fallback to mock data on error (development only)
+        if (process.env.NODE_ENV !== 'production') {
+          setEdgePlans(mockPlansData.edge_plans);
+          setZkPlans(mockPlansData.zk_plans);
+        }
       } finally {
         setLoading(false);
       }

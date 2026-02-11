@@ -274,10 +274,9 @@ class URLValidator:
         final_parsed = urlparse(final_url)
 
         if original_parsed.scheme == 'https' and final_parsed.scheme == 'http':
-            logger.warning(
-                f"HTTPS downgrade detected: {original_url} -> {final_url}"
+            raise SSRFProtectionError(
+                f"HTTPS-to-HTTP downgrade blocked: {original_url} -> {final_url}"
             )
-            # Note: We allow this but log it. You can make this an error if desired.
 
 
 # Singleton instance

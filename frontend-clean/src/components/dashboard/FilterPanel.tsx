@@ -9,9 +9,21 @@ import type { FilterPanelProps } from './types';
 const FilterPanel: React.FC<FilterPanelProps> = ({ filters, setFilters, darkMode }) => {
   return (
     <div className={`mb-6 p-4 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-      <h3 className={`text-lg font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-        Filters
-      </h3>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+          Filters
+        </h3>
+        {(filters.type !== 'all' || filters.size !== 'all' || filters.date !== 'all') && (
+          <button
+            onClick={() => setFilters({ type: 'all', size: 'all', date: 'all' })}
+            className={`text-sm px-3 py-1 rounded-lg transition-colors ${
+              darkMode ? 'text-blue-400 hover:bg-gray-700' : 'text-blue-600 hover:bg-gray-100'
+            }`}
+          >
+            Reset filters
+          </button>
+        )}
+      </div>
 
       <div className="grid grid-cols-3 gap-4">
         {/* File Type Filter */}

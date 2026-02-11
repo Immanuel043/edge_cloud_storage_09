@@ -364,8 +364,8 @@ const AuthPage: React.FC = () => {
         const newFailedAttempts = failedAttempts + 1;
         setFailedAttempts(newFailedAttempts);
         if (newFailedAttempts >= 5) {
-          setLockoutUntil(Date.now() + 30000);
-          setError('Too many failed attempts. Please wait 30 seconds.');
+          setLockoutUntil(Date.now() + 60000);
+          setError('Too many failed attempts. Please wait 60 seconds.');
         }
       }
     } else {
@@ -1068,6 +1068,9 @@ const AuthPage: React.FC = () => {
                     )}
 
                     {/* ZK Toggle */}
+                    {/* TODO: Verify zkEnabled against server on login — currently the toggle can be
+                        manually set without server verification. checkZKStatus partially handles this
+                        via onBlur, but the user can still toggle ZK on for a non-ZK account. */}
                     <div
                       className={`p-4 rounded-xl border transition-all ${
                         enableZK

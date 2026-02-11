@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, Link as LinkIcon, Download, AlertCircle, CheckCircle, Loader } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import type { URLUploadModalProps, URLUploadProgress } from './types';
@@ -20,6 +20,13 @@ const URLUploadModal: React.FC<URLUploadModalProps> = ({
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<boolean>(false);
   const [progress, setProgress] = useState<URLUploadProgress | null>(null);
+  const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (autoCloseTimerRef.current) clearTimeout(autoCloseTimerRef.current);
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -79,7 +86,7 @@ const URLUploadModal: React.FC<URLUploadModalProps> = ({
       setProgress(result);
 
       // Wait 2 seconds then close
-      setTimeout(() => {
+      autoCloseTimerRef.current = setTimeout(() => {
         if (onUploadComplete) onUploadComplete();
         handleClose();
       }, 2000);

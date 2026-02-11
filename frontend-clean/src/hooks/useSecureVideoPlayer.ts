@@ -223,7 +223,7 @@ export function useSecureVideoPlayer(
     }
   }, [zkSessionUnlocked]);
 
-  // Track playing state
+  // Track playing state — re-attach listeners when video element mounts/unmounts
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -241,7 +241,7 @@ export function useSecureVideoPlayer(
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('ended', handleEnded);
     };
-  }, []);
+  }, [videoMounted]);
 
   // Playback controls
   const play = useCallback(async (): Promise<void> => {
@@ -294,7 +294,7 @@ export function useSecureVideoPlayer(
 
   const bufferProgress = useMemo<number>(() => {
     if (state.duration === 0) return 0;
-    return ((state.currentTime + state.buffered) / state.duration) * 100;
+    return Math.min(((state.currentTime + state.buffered) / state.duration) * 100, 100);
   }, [state.currentTime, state.buffered, state.duration]);
 
   // Callback ref that triggers re-render when video element mounts

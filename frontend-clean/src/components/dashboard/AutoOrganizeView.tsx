@@ -177,6 +177,7 @@ const AutoOrganizeView: React.FC<AutoOrganizeViewProps> = ({ darkMode }) => {
     try {
       setAnalyzing(true);
       const result = await organizationService.applyRules() as { rules_applied?: number; files_organized?: number };
+      // TODO: Replace alert() with toast notification
       alert(`Applied ${result.rules_applied || 0} rules, organized ${result.files_organized || 0} files`);
       await loadData();
     } catch (err: unknown) {

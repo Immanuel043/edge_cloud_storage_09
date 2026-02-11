@@ -44,6 +44,7 @@ from ..services.video_optimizer import video_optimizer
 from ..services.video_ingestion_service import video_ingestion_service
 from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..services.rust_dataplane_client import get_rust_client
+from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -56,7 +57,7 @@ _rust_client_available = False
 # Global resources
 kafka_producer = None
 kafka_lock = asyncio.Lock()
-executor = ThreadPoolExecutor(max_workers=100)  # Support 100 concurrent uploads
+executor = ThreadPoolExecutor(max_workers=min(os.cpu_count() + 1, 32))  # CPU-bound encryption work
 
 # Optimized buffer sizes
 # Read from environment variables with fallbacks
@@ -222,10 +223,20 @@ async def init_upload(
     
     redis_client = await get_redis()
 
-    # Check storage quota (with caching)
-    storage_info = await get_user_storage_info_fast(str(current_user.id), db, redis_client)
+    # Check storage quota with atomic reservation to prevent TOCTOU race
+    user_id_str = str(current_user.id)
+    storage_info = await get_user_storage_info_fast(user_id_str, db, redis_client)
     if storage_info['used'] + file_size > storage_info['quota']:
         raise HTTPException(status_code=413, detail="Storage quota exceeded")
+
+    # Atomically reserve space in Redis to prevent concurrent uploads exceeding quota
+    reserve_key = f"quota_reserved:{user_id_str}"
+    reserved = await redis_client.incrby(reserve_key, file_size)
+    await redis_client.expire(reserve_key, 7200)  # 2-hour TTL for cleanup
+    if storage_info['used'] + reserved > storage_info['quota']:
+        # Over quota with reservation - undo and reject
+        await redis_client.decrby(reserve_key, file_size)
+        raise HTTPException(status_code=413, detail="Storage quota exceeded (concurrent upload limit)")
     
     # Determine storage strategy
     if file_size < INLINE_THRESHOLD:
@@ -263,10 +274,8 @@ async def init_upload(
         "start": datetime.utcnow().isoformat(),
     }
 
-    # Fire-and-forget Redis update (non-blocking)
-    asyncio.create_task(
-        redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
-    )
+    # Persist session state to Redis + DB fallback
+    await save_upload_session(redis_client, db, upload_id, session_data)
     
     # Metrics
     upload_initiated.labels(
@@ -362,14 +371,9 @@ async def upload_chunk(
                 # Short wait - apply throttling
                 await asyncio.sleep(min(wait_time, 1.0))
 
-        session_data = await redis_client.get(f"up:{upload_id}")
-        if not session_data:
+        session = await get_upload_session(redis_client, db, upload_id)
+        if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
-
-        # Handle both bytes and string from Redis
-        if isinstance(session_data, bytes):
-            session_data = session_data.decode('utf-8')
-        session = json.loads(session_data)
 
         if session["user"] != str(current_user.id):
             raise HTTPException(status_code=403, detail="Unauthorized")
@@ -496,10 +500,8 @@ async def upload_chunk(
         session["hashes"].append(chunk_hash)
         session["chunk_paths"][str(chunk_index)] = storage_path
 
-        # Fire-and-forget Redis update
-        asyncio.create_task(
-            redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
-        )
+        # Persist updated session to Redis + DB fallback
+        await save_upload_session(redis_client, db, upload_id, session)
 
         progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
 
@@ -583,14 +585,9 @@ async def upload_direct(
                     )
                 await asyncio.sleep(min(wait_time, 1.0))
 
-        session_data = await redis_client.get(f"up:{upload_id}")
-        if not session_data:
+        session = await get_upload_session(redis_client, db, upload_id)
+        if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
-
-        # Handle both bytes and string from Redis
-        if isinstance(session_data, bytes):
-            session_data = session_data.decode('utf-8')
-        session = json.loads(session_data)
 
         if session["user"] != str(current_user.id):
             raise HTTPException(status_code=403, detail="Unauthorized")
@@ -676,14 +673,9 @@ async def get_upload_status(
     """
     redis_client = await get_redis()
 
-    session_data = await redis_client.get(f"up:{upload_id}")
-    if not session_data:
+    session = await get_upload_session(redis_client, db, upload_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Upload session not found or expired")
-
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
-    session = json.loads(session_data)
 
     # Verify ownership
     if session["user"] != str(current_user.id):
@@ -752,18 +744,13 @@ async def complete_upload(
     """Complete upload and create database record with deduplication"""
     redis_client = await get_redis()
 
-    session_data = await redis_client.get(f"up:{upload_id}")
-    if not session_data:
+    session = await get_upload_session(redis_client, db, upload_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Upload session not found")
 
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
-    session = json.loads(session_data)
-    
     if session["user"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
-    
+
     storage_strategy = session.get("strategy", "chunked")
     start_time = datetime.fromisoformat(session["start"])
     
@@ -821,8 +808,8 @@ async def complete_upload(
                 f"✓ Upload {upload_id} already completed for file {existing_file.id} "
                 f"({existing_file.file_name}). Returning existing file (idempotent)."
             )
-            # Clean up Redis session if still present
-            await redis_client.delete(f"up:{upload_id}")
+            # Clean up session from Redis + DB
+            await delete_upload_session(redis_client, db, upload_id)
 
             return {
                 "file_id": str(existing_file.id),
@@ -906,6 +893,12 @@ async def complete_upload(
         # Update user storage usage
         if hasattr(current_user, 'storage_used'):
             current_user.storage_used = (current_user.storage_used or 0) + session["size"]
+
+        # Release quota reservation (actual usage is now tracked in DB)
+        try:
+            await redis_client.decrby(f"quota_reserved:{current_user.id}", session["size"])
+        except Exception:
+            pass  # Non-critical
 
         # Commit transaction
         await db.commit()
@@ -1190,8 +1183,8 @@ async def complete_upload(
 
         asyncio.create_task(index_with_logging())
 
-    # Clean up Redis
-    await redis_client.delete(f"up:{upload_id}")
+    # Clean up session from Redis + DB
+    await delete_upload_session(redis_client, db, upload_id)
 
     # Metrics
     duration = (datetime.utcnow() - start_time).total_seconds()
@@ -1323,19 +1316,16 @@ async def download_file(
 @router.get("/resume/{upload_id}", response_model=UploadStatusResponse)
 async def get_upload_status(
     upload_id: str,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get upload status for resuming"""
     redis_client = await get_redis()
-    
-    session_data = await redis_client.get(f"up:{upload_id}")
-    if not session_data:
+
+    session = await get_upload_session(redis_client, db, upload_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Upload session not found")
 
-    # Handle both bytes and string from Redis
-    if isinstance(session_data, bytes):
-        session_data = session_data.decode('utf-8')
-    session = json.loads(session_data)
     if session["user"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
     
@@ -1506,8 +1496,24 @@ async def run_security_scans(
                             risk_level='critical'
                         )
 
-                        # TODO: Quarantine or delete infected file
-                        # For now, just log it
+                        # Quarantine infected file - block downloads
+                        try:
+                            from ..database import async_session as _async_session
+                            from sqlalchemy import update as _update
+                            async with _async_session() as quarantine_db:
+                                await quarantine_db.execute(
+                                    _update(Object)
+                                    .where(Object.id == file_id)
+                                    .values(
+                                        is_quarantined=True,
+                                        quarantined_at=datetime.utcnow(),
+                                        quarantine_reason=f"Virus detected: {scan_result.virus_name}"
+                                    )
+                                )
+                                await quarantine_db.commit()
+                            logger.info(f"File {file_id} quarantined: {scan_result.virus_name}")
+                        except Exception as qe:
+                            logger.error(f"Failed to quarantine file {file_id}: {qe}")
                     else:
                         logger.info(f"✅ Virus scan clean: {file_name} ({scan_result.scan_time:.2f}s)")
                 else:

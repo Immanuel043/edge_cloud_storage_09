@@ -81,12 +81,12 @@ impl ProcessingPipeline {
     pub async fn process_chunk_async(
         &self,
         chunk_data: Bytes,
-        file_key: &SecretKey,
+        file_key: Arc<SecretKey>,
         chunk_index: u64,
         should_compress: bool,
     ) -> Result<ProcessedChunk, DataPlaneError> {
         let processor = Arc::clone(&self.processor);
-        let key = file_key.clone(); // Required for spawn_blocking ownership
+        let key = file_key; // Arc<SecretKey> is cheap to move, no key bytes copied
 
         // Spawn CPU-bound work on blocking thread pool
         let result = task::spawn_blocking(move || {
@@ -124,12 +124,12 @@ impl ProcessingPipeline {
     pub async fn decrypt_chunk_async(
         &self,
         encrypted_data: Bytes,
-        file_key: &SecretKey,
+        file_key: Arc<SecretKey>,
         chunk_index: u64,
         was_compressed: bool,
     ) -> Result<Vec<u8>, DataPlaneError> {
         let processor = Arc::clone(&self.processor);
-        let key = file_key.clone(); // Required for spawn_blocking ownership
+        let key = file_key; // Arc<SecretKey> is cheap to move, no key bytes copied
 
         // Spawn CPU-bound work on blocking thread pool
         let result = task::spawn_blocking(move || {
@@ -166,11 +166,11 @@ mod tests {
         let config = PipelineConfig::default();
         let pipeline = ProcessingPipeline::new(config).unwrap();
 
-        let key = SecretKey::from_bytes([0x42u8; 32]);
+        let key = Arc::new(SecretKey::from_bytes([0x42u8; 32]));
         let data = Bytes::from_static(b"Test data for async processing");
 
         let result = pipeline
-            .process_chunk_async(data, &key, 0, false)
+            .process_chunk_async(data, Arc::clone(&key), 0, false)
             .await
             .unwrap();
 
@@ -184,12 +184,12 @@ mod tests {
         let config = PipelineConfig::default();
         let pipeline = ProcessingPipeline::new(config).unwrap();
 
-        let key = SecretKey::from_bytes([0x42u8; 32]);
+        let key = Arc::new(SecretKey::from_bytes([0x42u8; 32]));
         let original = Bytes::from_static(b"Test data for async roundtrip");
 
         // Encrypt
         let processed = pipeline
-            .process_chunk_async(original.clone(), &key, 5, true)
+            .process_chunk_async(original.clone(), Arc::clone(&key), 5, true)
             .await
             .unwrap();
 
@@ -199,7 +199,7 @@ mod tests {
         let decrypted = pipeline
             .decrypt_chunk_async(
                 Bytes::from(processed.encrypted_data),
-                &key,
+                Arc::clone(&key),
                 5,
                 true,
             )
@@ -214,12 +214,11 @@ mod tests {
         let config = PipelineConfig::default();
         let pipeline = Arc::new(ProcessingPipeline::new(config).unwrap());
 
-        let key = SecretKey::from_bytes([0x42u8; 32]);
+        let key = Arc::new(SecretKey::from_bytes([0x42u8; 32]));
 
         // Process 10 chunks concurrently
         let mut handles = vec![];
 
-        let key = Arc::new(key);
         for i in 0..10 {
             let pipeline = Arc::clone(&pipeline);
             let key = Arc::clone(&key);
@@ -227,7 +226,7 @@ mod tests {
 
             let handle = tokio::spawn(async move {
                 pipeline
-                    .process_chunk_async(data, key.as_ref(), i as u64, false)
+                    .process_chunk_async(data, key, i as u64, false)
                     .await
             });
 
@@ -276,11 +275,11 @@ mod tests {
         let config = PipelineConfig::default();
         let pipeline = ProcessingPipeline::new(config).unwrap();
 
-        let key = SecretKey::from_bytes([0x42u8; 32]);
+        let key = Arc::new(SecretKey::from_bytes([0x42u8; 32]));
         let data = Bytes::from(vec![0u8; 10 * 1024 * 1024]); // 10MB
 
         let result = pipeline
-            .process_chunk_async(data, &key, 0, true)
+            .process_chunk_async(data, key, 0, true)
             .await
             .unwrap();
 

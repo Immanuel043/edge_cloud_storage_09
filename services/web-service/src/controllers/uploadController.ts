@@ -7,6 +7,8 @@ import { Server as SocketIOServer } from 'socket.io';
 import { Producer } from 'kafkajs';
 import type { UploadInitRequest, UploadInitResponse, UploadSession, ErrorResponse } from '../types/api';
 
+const MIME_TYPE_PATTERN = /^[a-z]+\/[a-z0-9.+\-]+$/i;
+
 export class UploadController {
   constructor(
     private storageServiceUrl: string,
@@ -21,16 +23,32 @@ export class UploadController {
   ): Promise<void> {
     const { fileName, fileSize, mimeType } = req.body;
     const userId = req.session?.userId;
-    
+
     if (!userId) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
-    
+
+    // Input validation
+    if (!fileName || typeof fileName !== 'string' || fileName.trim().length === 0) {
+      res.status(400).json({ error: 'fileName is required and must be a non-empty string' });
+      return;
+    }
+
+    if (typeof fileSize !== 'number' || fileSize <= 0 || !Number.isFinite(fileSize)) {
+      res.status(400).json({ error: 'fileSize must be a positive number' });
+      return;
+    }
+
+    if (!mimeType || typeof mimeType !== 'string' || !MIME_TYPE_PATTERN.test(mimeType)) {
+      res.status(400).json({ error: 'mimeType must be a valid MIME type' });
+      return;
+    }
+
     const uploadId = randomUUID();
     const chunkSize = 64 * 1024 * 1024; // 64MB
     const totalChunks = Math.ceil(fileSize / chunkSize);
-    
+
     // Store upload session in Redis
     const session: UploadSession = {
       userId,
@@ -41,13 +59,13 @@ export class UploadController {
       uploadedChunks: [],
       startTime: Date.now()
     };
-    
+
     await this.redisCache.setex(
       `upload:${uploadId}`,
       3600,
       JSON.stringify(session)
     );
-    
+
     // Send real-time notification
     this.io.to(`user-${userId}`).emit('upload-started', {
       uploadId,
@@ -55,7 +73,7 @@ export class UploadController {
       fileSize,
       totalChunks
     });
-    
+
     res.json({
       uploadId,
       chunkSize,
@@ -69,12 +87,19 @@ export class UploadController {
   ): Promise<void> {
     const { uploadId, chunkIndex } = req.params;
     const chunk = req.file;
-    
+
+    // Validate chunkIndex
+    const chunkIdx = parseInt(chunkIndex, 10);
+    if (!Number.isInteger(chunkIdx) || chunkIdx < 0) {
+      res.status(400).json({ error: 'chunkIndex must be a non-negative integer' });
+      return;
+    }
+
     if (!chunk) {
       res.status(400).json({ error: 'No chunk provided' });
       return;
     }
-    
+
     try {
       // Get upload session
       const sessionData = await this.redisCache.get(`upload:${uploadId}`);
@@ -82,16 +107,22 @@ export class UploadController {
         res.status(404).json({ error: 'Upload session not found' });
         return;
       }
-      
+
       const session: UploadSession = JSON.parse(sessionData);
-      
+
+      // Verify ownership — user must match the session creator
+      if (session.userId !== req.session?.userId) {
+        res.status(403).json({ error: 'Not authorized for this upload session' });
+        return;
+      }
+
       // Forward chunk to storage service
       const formData = new FormData();
       formData.append('file', chunk.buffer, {
         filename: `chunk_${chunkIndex}`,
         contentType: 'application/octet-stream'
       });
-      
+
       await axios.post(
         `${this.storageServiceUrl}/api/v1/upload/chunk/${uploadId}`,
         formData,
@@ -101,30 +132,31 @@ export class UploadController {
             'chunk-index': chunkIndex
           },
           maxBodyLength: Infinity,
-          maxContentLength: Infinity
+          maxContentLength: Infinity,
+          timeout: 60000
         }
       );
-      
+
       // Update session
-      session.uploadedChunks.push(parseInt(chunkIndex));
+      session.uploadedChunks.push(chunkIdx);
       await this.redisCache.setex(
         `upload:${uploadId}`,
         3600,
         JSON.stringify(session)
       );
-      
+
       // Calculate progress
       const progress = (session.uploadedChunks.length / session.totalChunks) * 100;
-      
+
       // Send real-time progress update
       this.io.to(`user-${session.userId}`).emit('upload-progress', {
         uploadId,
-        chunkIndex: parseInt(chunkIndex),
+        chunkIndex: chunkIdx,
         progress,
         chunksUploaded: session.uploadedChunks.length,
         totalChunks: session.totalChunks
       });
-      
+
       // Send to Kafka for analytics
       if (this.kafkaProducer) {
         try {
@@ -141,18 +173,18 @@ export class UploadController {
             }]
           });
         } catch (error) {
-          console.error('Failed to send to Kafka:', error);
+          console.error('Failed to send to Kafka:', error instanceof Error ? error.message : error);
         }
       }
-      
+
       res.json({
         success: true,
-        chunkIndex: parseInt(chunkIndex),
+        chunkIndex: chunkIdx,
         progress
       });
-      
+
     } catch (error) {
-      console.error('Chunk upload error:', error);
+      console.error('Chunk upload error:', error instanceof Error ? error.message : error);
       res.status(500).json({ error: 'Failed to upload chunk' });
     }
   }
@@ -162,25 +194,31 @@ export class UploadController {
     res: Response
   ): Promise<void> {
     const { uploadId } = req.params;
-    
+
     try {
       const sessionData = await this.redisCache.get(`upload:${uploadId}`);
       if (!sessionData) {
         res.status(404).json({ error: 'Upload session not found' });
         return;
       }
-      
+
       const session: UploadSession = JSON.parse(sessionData);
-      
+
+      // Verify ownership
+      if (session.userId !== req.session?.userId) {
+        res.status(403).json({ error: 'Not authorized for this upload session' });
+        return;
+      }
+
       // Verify all chunks uploaded
       if (session.uploadedChunks.length !== session.totalChunks) {
-        res.status(400).json({ 
+        res.status(400).json({
           error: 'Not all chunks uploaded',
           missing: session.totalChunks - session.uploadedChunks.length
         });
         return;
       }
-      
+
       // Finalize with storage service
       const response = await axios.post(
         `${this.storageServiceUrl}/api/v1/upload/complete/${uploadId}`,
@@ -189,14 +227,15 @@ export class UploadController {
           fileSize: session.fileSize,
           mimeType: session.mimeType,
           userId: session.userId
-        }
+        },
+        { timeout: 60000 }
       );
-      
+
       const fileData = response.data;
-      
+
       // Clean up Redis session
       await this.redisCache.del(`upload:${uploadId}`);
-      
+
       // Send completion notification
       this.io.to(`user-${session.userId}`).emit('upload-complete', {
         uploadId,
@@ -205,7 +244,7 @@ export class UploadController {
         fileSize: session.fileSize,
         duration: Date.now() - session.startTime
       });
-      
+
       // Send to Kafka
       if (this.kafkaProducer) {
         try {
@@ -222,17 +261,17 @@ export class UploadController {
             }]
           });
         } catch (error) {
-          console.error('Failed to send to Kafka:', error);
+          console.error('Failed to send to Kafka:', error instanceof Error ? error.message : error);
         }
       }
-      
+
       res.json({
         success: true,
         file: fileData
       });
-      
+
     } catch (error) {
-      console.error('Complete upload error:', error);
+      console.error('Complete upload error:', error instanceof Error ? error.message : error);
       res.status(500).json({ error: 'Failed to complete upload' });
     }
   }

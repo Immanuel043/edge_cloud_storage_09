@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, Lock, Clock, Download, Link as LinkIcon, Copy, Check, Eye, Edit, Users, ShieldCheck } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import type { ShareOptionsModalProps } from './types';
@@ -31,6 +31,14 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
 
   const [shareUrl, setShareUrl] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
 
@@ -234,7 +242,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
       }
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
-      throw new Error(errorMessage);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -245,7 +253,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
     try {
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
     } catch {
       // Fallback: attempt using a temporary textarea
       try {
@@ -258,7 +266,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
         document.execCommand('copy');
         document.body.removeChild(textarea);
         setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
       } catch {
         alert('Copy failed. Please select and copy the link manually.');
       }
@@ -268,8 +276,8 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
   const itemName = folder ? folder.name : file?.name || 'Unknown';
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className={`p-6 rounded-lg max-w-md w-full ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className={`p-6 rounded-lg max-w-md w-full ${darkMode ? 'bg-gray-800' : 'bg-white'}`} onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
             Share "{itemName}"

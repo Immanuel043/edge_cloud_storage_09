@@ -413,6 +413,8 @@ const RecoveryModal: React.FC<RecoveryModalProps> = ({
                     </div>
                   </div>
 
+                  {/* TODO: Add PasswordStrengthMeter component here (import from ./PasswordStrengthMeter)
+                      to enforce strong passwords during account recovery */}
                   <div>
                     <label
                       htmlFor="newPassword"

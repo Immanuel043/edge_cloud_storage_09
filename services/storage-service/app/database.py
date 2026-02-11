@@ -10,7 +10,12 @@ engine = create_async_engine(
     echo=False,
     pool_size=50,          # Base pool size
     max_overflow=100,      # Additional connections beyond pool_size
-    pool_pre_ping=True     # Verify connections before using
+    pool_pre_ping=True,    # Verify connections before using
+    pool_timeout=30,       # Max seconds to wait for a connection from pool
+    pool_recycle=3600,     # Recycle connections after 1 hour (prevent stale connections)
+    connect_args={
+        "command_timeout": 30,  # Max seconds for any single query
+    }
 )
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -27,7 +32,9 @@ async def init_redis():
         decode_responses=False,  # Keep as bytes for binary data compatibility
         max_connections=100,  # Support 100+ concurrent connections
         socket_connect_timeout=5,
+        socket_timeout=5,
         socket_keepalive=True,
+        retry_on_timeout=True,
         health_check_interval=30
     )
     return redis_client

@@ -1,0 +1,177 @@
+{
+  "title": "Edge Cloud Storage - App Health",
+    "uid": "app-health",
+    "tags": ["edge-storage", "health", "overview"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "type": "row",
+        "title": "Service Status",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+        "collapsed": false
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Storage Service",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+        "targets": [{"expr": "up{job=\"storage-service\"}", "legendFormat": "Up"}],
+        "options": {"colorMode": "background", "graphMode": "none"},
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 1, "color": "green"}]}
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Web Service",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+        "targets": [{"expr": "up{job=\"web-service\"}", "legendFormat": "Up"}],
+        "options": {"colorMode": "background", "graphMode": "none"},
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 1, "color": "green"}]}
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "ZK Encryption Service",
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+        "targets": [{"expr": "up{job=\"zk-encryption-service\"}", "legendFormat": "Up"}],
+        "options": {"colorMode": "background", "graphMode": "none"},
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 1, "color": "green"}]}
+      },
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Node Exporter",
+        "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+        "targets": [{"expr": "up{job=\"node-exporter\"}", "legendFormat": "Up"}],
+        "options": {"colorMode": "background", "graphMode": "none"},
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 1, "color": "green"}]}
+      },
+      {
+        "id": 6,
+        "type": "row",
+        "title": "Key Metrics",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+        "collapsed": false
+      },
+      {
+        "id": 7,
+        "type": "stat",
+        "title": "Error Rate %",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 6},
+        "targets": [{"expr": "sum(rate(storage_errors_total[5m])) / sum(rate(http_requests_total[5m])) * 100", "legendFormat": "Error %"}],
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 1, "color": "yellow"}, {"value": 5, "color": "red"}]}
+      },
+      {
+        "id": 8,
+        "type": "stat",
+        "title": "P95 Latency (ms)",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 6},
+        "targets": [{"expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) * 1000", "legendFormat": "P95"}],
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 100, "color": "yellow"}, {"value": 500, "color": "red"}]}
+      },
+      {
+        "id": 9,
+        "type": "stat",
+        "title": "Request Rate (req/s)",
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 6},
+        "targets": [{"expr": "sum(rate(http_requests_total[5m]))", "legendFormat": "Requests/sec"}]
+      },
+      {
+        "id": 10,
+        "type": "stat",
+        "title": "Active Uploads",
+        "gridPos": {"h": 4, "w": 4, "x": 12, "y": 6},
+        "targets": [{"expr": "storage_active_uploads", "legendFormat": "Active"}]
+      },
+      {
+        "id": 11,
+        "type": "graph",
+        "title": "Request Rate & Error Rate",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+        "targets": [
+          {"expr": "sum(rate(http_requests_total[5m]))", "legendFormat": "Requests/sec"},
+          {"expr": "sum(rate(storage_errors_total[5m])) / sum(rate(http_requests_total[5m])) * 100", "legendFormat": "Error %"}
+        ],
+        "yaxes": [{"format": "reqps", "label": "Requests/sec"}, {"format": "percent", "label": "Error %"}],
+        "legend": {"show": true}
+      },
+      {
+        "id": 12,
+        "type": "graph",
+        "title": "Upload Success vs Failed",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+        "targets": [
+          {"expr": "sum(rate(storage_upload_completed_total{status=\"success\"}[5m]))", "legendFormat": "Success"},
+          {"expr": "sum(rate(storage_upload_completed_total{status=\"failed\"}[5m]))", "legendFormat": "Failed"}
+        ],
+        "legend": {"show": true}
+      },
+      {
+        "id": 13,
+        "type": "row",
+        "title": "Resources",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18},
+        "collapsed": false
+      },
+      {
+        "id": 14,
+        "type": "stat",
+        "title": "CPU %",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 19},
+        "targets": [{"expr": "storage_cpu_usage_percent", "legendFormat": "CPU"}],
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 80, "color": "red"}]}
+      },
+      {
+        "id": 15,
+        "type": "stat",
+        "title": "Memory (GB)",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 19},
+        "targets": [{"expr": "storage_memory_usage_bytes / 1024 / 1024 / 1024", "legendFormat": "GB"}]
+      },
+      {
+        "id": 16,
+        "type": "stat",
+        "title": "DB Connections",
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 19},
+        "targets": [{"expr": "storage_db_connections_active", "legendFormat": "Active"}],
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 45, "color": "yellow"}, {"value": 50, "color": "red"}]}
+      },
+      {
+        "id": 17,
+        "type": "graph",
+        "title": "CPU & Memory",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+        "targets": [
+          {"expr": "storage_cpu_usage_percent", "legendFormat": "CPU %"},
+          {"expr": "storage_memory_usage_bytes / 1024 / 1024 / 1024", "legendFormat": "Memory (GB)"}
+        ],
+        "yaxes": [{"format": "percent"}, {"format": "decgbytes"}],
+        "legend": {"show": true}
+      },
+      {
+        "id": 18,
+        "type": "graph",
+        "title": "Database Connections",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+        "targets": [{"expr": "storage_db_connections_active", "legendFormat": "Active"}]
+      },
+      {
+        "id": 19,
+        "type": "row",
+        "title": "Alerts",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+        "collapsed": false
+      },
+      {
+        "id": 20,
+        "type": "table",
+        "title": "Firing Alerts",
+        "gridPos": {"h": 6, "w": 24, "x": 0, "y": 32},
+        "targets": [{"expr": "ALERTS{alertstate=\"firing\"}", "format": "table", "instant": true}]
+      }
+    ]
+}

@@ -201,7 +201,7 @@ const RecentsView: React.FC<RecentsViewProps> = ({
           </h1>
         </div>
         <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-          {recents.length} files in the last 30 days
+          {recents.length} recent files
         </span>
       </div>
 

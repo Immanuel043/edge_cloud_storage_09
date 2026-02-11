@@ -176,12 +176,13 @@ const TrashView: React.FC<TrashViewProps> = ({
   };
 
   const confirmPermanentDelete = async (): Promise<void> => {
-    if (!deleteModal.fileId) return;
+    const fileId = deleteModal.fileId;
+    if (!fileId) return;
 
     try {
-      await storageService.permanentDelete(deleteModal.fileId);
+      await storageService.permanentDelete(fileId);
       // Remove from trash list
-      setTrashedFiles(prev => prev.filter(f => f.id !== deleteModal.fileId));
+      setTrashedFiles(prev => prev.filter(f => f.id !== fileId));
       setDeleteModal({ isOpen: false, fileId: null, fileName: null });
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);

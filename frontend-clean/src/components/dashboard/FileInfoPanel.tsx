@@ -34,7 +34,7 @@ const FileInfoPanel: React.FC<FileInfoPanelProps> = ({
 
       {/* Side Panel */}
       <div
-        className={`fixed right-0 top-0 bottom-0 w-full md:w-[400px] z-50 shadow-2xl transform transition-transform duration-300 ${
+        className={`fixed right-0 top-0 bottom-0 w-full md:w-[400px] z-50 shadow-2xl transform transition-transform duration-300 flex flex-col ${
           darkMode ? 'bg-gray-800' : 'bg-white'
         }`}
       >
@@ -90,7 +90,7 @@ const FileInfoPanel: React.FC<FileInfoPanelProps> = ({
         </div>
 
         {/* Tab Content */}
-        <div className="overflow-y-auto h-[calc(100vh-130px)] p-6">
+        <div className="overflow-y-auto flex-1 p-6">
           {activeTab === 'details' && (
             <FileDetailsTab file={file} onRename={onRename} darkMode={darkMode} isZK={isZK} />
           )}

@@ -2,13 +2,14 @@
 
 import os
 import base64
-import hashlib
 import platform
 import subprocess
 import logging
 from typing import Union
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -36,13 +37,19 @@ def _get_master_key() -> bytes:
         except Exception as e:
             raise RuntimeError(f"Invalid ENCRYPTION_MASTER_KEY: {e}")
 
-    # Fallback: derive from SECRET_KEY
+    # Fallback: derive from SECRET_KEY using HKDF (proper KDF with salt and info)
     secret = getattr(settings, "SECRET_KEY", None)
     if not secret:
         raise RuntimeError("No ENCRYPTION_MASTER_KEY or SECRET_KEY found in settings")
 
-    logger.warning("Deriving master key from SECRET_KEY (consider setting ENCRYPTION_MASTER_KEY)")
-    return hashlib.sha256(secret.encode()).digest()
+    logger.warning("Deriving master key from SECRET_KEY via HKDF (consider setting ENCRYPTION_MASTER_KEY)")
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"edge-cloud-storage-master-key-v1",
+        info=b"encryption-master-key",
+    )
+    return hkdf.derive(secret.encode())
 
 MASTER_KEY = _get_master_key()
 NONCE_SIZE = 12  # recommended nonce size for AES-GCM

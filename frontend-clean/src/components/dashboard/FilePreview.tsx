@@ -41,7 +41,16 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     ? `${serviceUrl}${apiPath}/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`
     : `${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`;
 
-  const [previewUrl, setPreviewUrl] = useState<string>('');
+  const [previewUrl, _setPreviewUrl] = useState<string>('');
+  const previewUrlRef = useRef<string>('');
+  const setPreviewUrl = (url: string): void => {
+    // Revoke old blob URL if replacing
+    if (previewUrlRef.current && previewUrlRef.current !== url) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+    previewUrlRef.current = url;
+    _setPreviewUrl(url);
+  };
   const [zoom, setZoom] = useState<number>(1);
   const [rotation, setRotation] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
@@ -59,8 +68,9 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
       loadPreview();
     }
     return () => {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = '';
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -86,6 +96,8 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     }
 
     let cancelled = false;
+    let retryCount = 0;
+    const MAX_STREAM_RETRIES = 150;
 
     const clearTimer = (): void => {
       if (pollTimerRef.current) {
@@ -95,6 +107,11 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     };
 
     const scheduleRetry = (delay = 2000): void => {
+      retryCount++;
+      if (retryCount >= MAX_STREAM_RETRIES) {
+        setPreviewWarning('Video stream preparation timed out. Try downloading the file instead.');
+        return;
+      }
       clearTimer();
       pollTimerRef.current = setTimeout(() => {
         if (!cancelled) {

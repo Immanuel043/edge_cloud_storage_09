@@ -7,6 +7,12 @@
  * - Detects network failures
  * - Shows resume button in UI
  * - Supports both ZK (encrypted) and Normal upload modes
+ *
+ * Limitation: Resume only works within the same browser session because
+ * the File object (required for re-uploading chunks) cannot be serialized
+ * to localStorage. The checkpoint stores metadata only; the user must
+ * re-select the same file to resume. Stale checkpoints older than 24 hours
+ * are automatically cleared on hook initialization.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -25,6 +31,7 @@ interface ExtendedResumableUploadOptions extends ResumableUploadOptions {
 }
 
 const STORAGE_KEY_PREFIX = 'resumable_upload_';
+const STALE_CHECKPOINT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Extended state type that includes file and folderId for checkpointing
 interface UploadStateForCheckpoint {
@@ -81,15 +88,11 @@ export function useResumableUpload(): UseResumableUploadReturn {
   const [resumableUploads, setResumableUploads] = useState<UploadCheckpoint[]>([]);
   const checkpointTimers = useRef<Record<string, NodeJS.Timeout>>({});
 
-  // Load resumable uploads on mount
-  useEffect(() => {
-    loadResumableUploads();
-  }, []);
-
   /**
-   * Load saved uploads from localStorage
+   * Load saved uploads from localStorage.
+   * Clears stale checkpoints (older than 24 hours) before loading.
    */
-  const loadResumableUploads = (): void => {
+  const loadResumableUploads = useCallback((): void => {
     const saved: UploadCheckpoint[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -100,11 +103,10 @@ export function useResumableUpload(): UseResumableUploadReturn {
 
           const data: unknown = JSON.parse(item);
           if (isUploadCheckpoint(data)) {
-            // Only load uploads from last 24 hours
-            if (Date.now() - data.savedAt < 24 * 60 * 60 * 1000) {
+            if (Date.now() - data.savedAt < STALE_CHECKPOINT_MS) {
               saved.push(data);
             } else {
-              // Clean up old uploads
+              // Clear stale checkpoint (older than 24 hours)
               localStorage.removeItem(key);
             }
           } else {
@@ -120,7 +122,12 @@ export function useResumableUpload(): UseResumableUploadReturn {
       }
     }
     setResumableUploads(saved);
-  };
+  }, []);
+
+  // Load resumable uploads on mount (clears stale checkpoints)
+  useEffect(() => {
+    loadResumableUploads();
+  }, [loadResumableUploads]);
 
   /**
    * Save checkpoint to localStorage

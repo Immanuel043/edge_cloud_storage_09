@@ -49,6 +49,12 @@ async def get_current_user(
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
+        # Check token blocklist (logout revocation)
+        jti = payload.get("jti")
+        if jti:
+            from .services.auth import auth_service
+            if await auth_service.is_token_blocklisted(jti):
+                raise HTTPException(status_code=401, detail="Token has been revoked")
     except JWTError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
@@ -62,6 +68,15 @@ async def get_current_user(
         raise HTTPException(status_code=403, detail="Account deactivated")
 
     return user
+
+async def require_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Require current user to be an admin. Returns the user if admin."""
+    if not getattr(current_user, 'is_admin', False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
 
 async def get_current_user_ws(token: str):
     """WebSocket authentication dependency"""
@@ -111,9 +126,6 @@ async def get_user_subscription(
         async def upload(subscription = Depends(get_user_subscription)):
             bandwidth_limit = subscription.plan.bandwidth_mbps
     """
-    import sys
-    sys.path.insert(0, '/Users/immanraj/edge-cloud-storage-final-mvp/services')
-
     from shared_billing import BillingService, SubscriptionNotFoundError
 
     billing = BillingService(db, service_type='normal')

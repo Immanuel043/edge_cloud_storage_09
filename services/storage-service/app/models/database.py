@@ -35,6 +35,7 @@ class User(Base):
     max_concurrent_streams = Column(Integer, nullable=True)
 
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False, nullable=False)
     theme_preference = Column(String(10), default="light")
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -93,6 +94,9 @@ class Object(Base):
     dedup_info = Column(JSON, nullable=True)
     is_deleted = Column(Boolean, default=False)  # Soft delete for trash functionality
     deleted_at = Column(DateTime, nullable=True)  # Timestamp when file was moved to trash
+    is_quarantined = Column(Boolean, default=False)  # Quarantined by virus scanner
+    quarantined_at = Column(DateTime, nullable=True)
+    quarantine_reason = Column(String(500), nullable=True)  # e.g., virus name
 
     # Encryption mode for server-side encryption
     # Values: 'none' (no encryption), 'server_side' (storage service encrypts)
@@ -1527,3 +1531,18 @@ class ComplianceReport(Base):
         Index('idx_report_type_period', 'report_type', 'report_period_start'),
         Index('idx_report_generated', 'generated_at'),
     )
+
+
+class UploadSession(Base):
+    """
+    Persistent upload session state (DB fallback for Redis).
+    If Redis restarts mid-upload, sessions can be recovered from here.
+    """
+    __tablename__ = "upload_sessions"
+
+    upload_id = Column(String(64), primary_key=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    session_data = Column(JSONB, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)

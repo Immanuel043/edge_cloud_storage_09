@@ -500,6 +500,14 @@ async def download_file(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Block downloads of quarantined files
+    if getattr(file_obj, 'is_quarantined', False):
+        raise HTTPException(
+            status_code=403,
+            detail=f"This file has been quarantined due to a security threat: {file_obj.quarantine_reason or 'malware detected'}. "
+                   "Contact support if you believe this is an error."
+        )
+
     # Update last accessed time (for tiering)
     file_obj.last_accessed = datetime.utcnow()
 

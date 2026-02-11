@@ -1,13 +1,12 @@
 # services/storage-service/Dockerfile
 FROM python:3.11-slim
 
-#curl and procps installation
-RUN apt-get update && apt-get install -y curl procps && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# Install system dependencies (including OpenCV, OCR, and video codec dependencies)
+# Install system dependencies (curl, procps, OpenCV, OCR, video codecs)
 RUN apt-get update && apt-get install -y \
+    curl \
+    procps \
     gcc \
     g++ \
     libpq-dev \
@@ -50,29 +49,15 @@ RUN mkdir -p /app/storage/{cache,warm,cold,temp,backup} && \
         mkdir -p /app/storage/$dir/objects; \
     done
 
-# Create entrypoint script with support for fresh DB init
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-echo "Waiting for database to be ready..."\n\
-while ! nc -z ${DB_HOST:-postgres} ${DB_PORT:-5432}; do\n\
-  sleep 1\n\
-done\n\
-echo "Database is ready!"\n\
-\n\
-# Check if we should use fresh DB init or migrations\n\
-if [ "${USE_FRESH_DB_INIT:-false}" = "true" ]; then\n\
-  echo "🚀 Initializing database from scratch (fresh install)..."\n\
-  python -m app.scripts.init_database\n\
-else\n\
-  echo "Running database migrations..."\n\
-  alembic upgrade head\n\
-fi\n\
-\n\
-echo "Starting application..."\n\
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000\n' > /entrypoint.sh
-
+# Copy entrypoint script
+COPY services/storage-service/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Create non-root user and set ownership
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app /entrypoint.sh
+
+USER appuser
 
 # Expose port
 EXPOSE 8000

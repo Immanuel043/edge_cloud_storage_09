@@ -32,6 +32,7 @@ from shared_billing import (
     QuotaExceededError,
     PaymentService,
 )
+from shared_billing.models import SubscriptionHistory
 from shared_billing.schemas import (
     SubscriptionPlanSchema,
     UserSubscriptionSchema,
@@ -687,7 +688,8 @@ async def create_payment(
     payment_request: CreatePaymentRequest,
     http_request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """
     Create a payment for subscription upgrade.
@@ -696,21 +698,36 @@ async def create_payment(
     For paid plans, creates payment with selected gateway and returns payment URL.
     In DEV_MODE, all plans upgrade immediately without payment.
 
+    Supports Idempotency-Key header to prevent duplicate payments on retry.
+
     Rate Limited: 10 requests per hour per user
     """
     # Apply rate limiting
     await apply_rate_limit(http_request, RateLimitConfig.PAYMENT_CREATE, "payment_create")
 
+    # Idempotency check: return cached result if same key was used before
+    if idempotency_key:
+        from ..database import redis_client
+        if redis_client:
+            cache_key = f"idem:payment:{current_user.id}:{idempotency_key}"
+            cached_result = await redis_client.get(cache_key)
+            if cached_result:
+                import json as _json
+                if isinstance(cached_result, bytes):
+                    cached_result = cached_result.decode("utf-8")
+                logger.info(f"Idempotent payment request: returning cached result for key {idempotency_key}")
+                return _json.loads(cached_result)
+
     billing = await get_billing_service(db)
     
     # Get the plan
     try:
-        plan = await billing.get_plan_by_code(payment_payment_request.plan_code)
+        plan = await billing.get_plan_by_code(payment_request.plan_code)
     except PlanNotFoundError:
-        raise HTTPException(404, f"Plan not found: {payment_payment_request.plan_code}")
+        raise HTTPException(404, f"Plan not found: {payment_request.plan_code}")
 
     # Check if plan is free
-    price_field = f"price_{payment_payment_request.billing_cycle}" if payment_payment_request.billing_cycle != "six_months" else "price_six_months"
+    price_field = f"price_{payment_request.billing_cycle}" if payment_request.billing_cycle != "six_months" else "price_six_months"
     plan_price = getattr(plan, price_field, None)
 
     # DEV_MODE: Bypass payment for all plans
@@ -718,7 +735,7 @@ async def create_payment(
         try:
             subscription = await billing.upgrade_subscription(
                 user_id=current_user.id,
-                new_plan_code=payment_payment_request.plan_code,
+                new_plan_code=payment_request.plan_code,
                 reason='user_request'
             )
 
@@ -726,7 +743,7 @@ async def create_payment(
             current_user.storage_quota = subscription.plan.storage_bytes
             await db.commit()
 
-            logger.info(f"DEV_MODE: Upgraded user {current_user.id} to {payment_payment_request.plan_code} without payment")
+            logger.info(f"DEV_MODE: Upgraded user {current_user.id} to {payment_request.plan_code} without payment")
             
             return {
                 "success": True,
@@ -840,7 +857,7 @@ async def create_payment(
             await db.commit()
             await db.refresh(pending_subscription)
         
-        return {
+        result = {
             "success": True,
             "free_plan": False,
             "payment_url": payment_result.get('payment_url'),
@@ -849,6 +866,19 @@ async def create_payment(
             "gateway": payment_request.payment_gateway,
             "gateway_data": payment_result
         }
+
+        # Cache result for idempotency (1 hour TTL)
+        if idempotency_key:
+            from ..database import redis_client
+            import json as _json
+            if redis_client:
+                cache_key = f"idem:payment:{current_user.id}:{idempotency_key}"
+                try:
+                    await redis_client.setex(cache_key, 3600, _json.dumps(result, default=str))
+                except Exception:
+                    pass  # Non-critical
+
+        return result
     except Exception as e:
         logger.error(f"Failed to create payment: {e}")
         raise HTTPException(500, f"Failed to create payment: {str(e)}")
@@ -900,17 +930,17 @@ async def verify_payment(
     # Verify payment
     try:
         is_verified = await payment_service.verify_payment(
-            payment_id=request.payment_id,
-            order_id=request.order_id,
-            signature=request.signature
+            payment_id=verify_request.payment_id,
+            order_id=verify_request.order_id,
+            signature=verify_request.signature
         )
-        
+
         if not is_verified:
             raise HTTPException(400, "Payment verification failed")
-        
+
         # Update subscription status
         subscription.status = 'active'
-        subscription.razorpay_payment_id = request.payment_id if subscription.payment_gateway == 'razorpay' else None
+        subscription.razorpay_payment_id = verify_request.payment_id if subscription.payment_gateway == 'razorpay' else None
         await db.commit()
         
         # Update user quota
@@ -969,12 +999,24 @@ async def razorpay_webhook(
     
     # Process webhook event
     event_type = event.get('event')
-    
+
+    # Deduplicate webhook events using Redis
+    event_id = event.get('event_id') or event.get('id')
+    if event_id:
+        from ..database import redis_client
+        if redis_client:
+            dedup_key = f"webhook:razorpay:{event_id}"
+            already_processed = await redis_client.set(dedup_key, "1", ex=86400, nx=True)
+            if not already_processed:
+                # NX returned None = key already existed = duplicate event
+                logger.info(f"Skipping duplicate Razorpay webhook event: {event_id}")
+                return {"status": "ok", "duplicate": True}
+
     if event_type == 'payment.captured':
         payment_data = event.get('payload', {}).get('payment', {}).get('entity', {})
         payment_id = payment_data.get('id')
         order_id = payment_data.get('order_id')
-        
+
         # Find subscription by order_id
         result = await db.execute(
             select(UserSubscription).filter(
@@ -982,14 +1024,14 @@ async def razorpay_webhook(
             )
         )
         subscription = result.scalar_one_or_none()
-        
+
         if subscription:
             subscription.status = 'active'
             subscription.razorpay_payment_id = payment_id
             subscription.last_payment_at = func.now()
             await db.commit()
             logger.info(f"Razorpay payment captured for subscription {subscription.id}")
-    
+
     return {"status": "ok"}
 
 

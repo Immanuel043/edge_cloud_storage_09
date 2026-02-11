@@ -367,30 +367,3 @@ async function loginWithZK(email, password) {
     return response.access_token;
 }
 """
-
-
-if __name__ == "__main__":
-    # Example usage (server-side testing only)
-    import base64
-
-    kdf = KDFService()
-
-    # Generate salt
-    salt = kdf.generate_salt()
-    print(f"Salt (base64): {base64.b64encode(salt).decode()}")
-
-    # Simulate what client does
-    password = "MySecurePassword123!"
-    derived_key = kdf.derive_key_pbkdf2(password, salt)
-    derived_key_hash = kdf.hash_derived_key(derived_key)
-
-    print(f"Derived key (hex): {derived_key.hex()}")
-    print(f"Derived key hash: {derived_key_hash}")
-
-    # Verification (what server does during login)
-    is_valid = kdf.verify_derived_key(derived_key, derived_key_hash)
-    print(f"Verification: {is_valid}")
-
-    # Get parameters for client
-    params = kdf.get_kdf_parameters('pbkdf2')
-    print(f"Client parameters: {params}")

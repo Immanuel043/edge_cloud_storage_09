@@ -29,6 +29,7 @@ const DeduplicationPanel: React.FC<DeduplicationPanelProps> = ({
   const error = stats?.error || null;
 
   const runGarbageCollection = async (): Promise<void> => {
+    // TODO: Replace window.confirm() with a custom confirmation modal
     if (!window.confirm('Run garbage collection to clean up unused blocks?')) return;
 
     try {
@@ -36,10 +37,12 @@ const DeduplicationPanel: React.FC<DeduplicationPanelProps> = ({
       if (onRefresh) {
         onRefresh(); // Refresh stats via Dashboard
       }
+      // TODO: Replace alert() with toast notification
       alert('Garbage collection initiated successfully');
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('GC failed:', err);
+      // TODO: Replace alert() with toast notification
       alert(`Failed to run garbage collection: ${errorMessage}`);
     }
   };

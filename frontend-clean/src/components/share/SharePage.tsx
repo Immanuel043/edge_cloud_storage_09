@@ -118,8 +118,9 @@ const SharePage: React.FC = () => {
 
     try {
       // 1. Derive key from password
-      // Note: For ZK shares, we need a salt. The share should include one.
-      // Using a fixed salt for share links (derived from token)
+      // TODO: Weak salt pattern — deriving salt from the share token is predictable.
+      // The backend should store and return a random salt per share link.
+      // Using a fixed salt for share links (derived from token) as interim solution.
       const encoder = new TextEncoder();
       const tokenHash = await crypto.subtle.digest('SHA-256', encoder.encode(token || ''));
       const salt = new Uint8Array(tokenHash).slice(0, 32);
@@ -363,7 +364,7 @@ const SharePage: React.FC = () => {
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setPassword(e.target.value)
                   }
-                  onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
                     if (
                       e.key === 'Enter' &&
                       !downloading &&

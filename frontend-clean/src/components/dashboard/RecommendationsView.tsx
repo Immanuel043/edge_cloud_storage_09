@@ -137,10 +137,10 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
 
   const getAlgorithmBadge = (algo: AlgorithmType): AlgorithmBadge => {
     const badges: Record<AlgorithmType, AlgorithmBadge> = {
-      'hybrid': { label: 'Hybrid', color: 'purple', icon: <Zap size={12} /> },
-      'content': { label: 'Content', color: 'blue', icon: <FileText size={12} /> },
-      'collaborative': { label: 'Collaborative', color: 'green', icon: <Users size={12} /> },
-      'trending': { label: 'Trending', color: 'orange', icon: <TrendingUp size={12} /> }
+      'hybrid': { label: 'Hybrid', color: 'bg-purple-600', icon: <Zap size={12} /> },
+      'content': { label: 'Content', color: 'bg-blue-600', icon: <FileText size={12} /> },
+      'collaborative': { label: 'Collaborative', color: 'bg-green-600', icon: <Users size={12} /> },
+      'trending': { label: 'Trending', color: 'bg-orange-600', icon: <TrendingUp size={12} /> }
     };
     return badges[algo] || badges['hybrid'];
   };
@@ -273,7 +273,7 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
           {(['hybrid', 'content', 'collaborative', 'trending'] as AlgorithmType[]).map((algo) => {
             const badge = getAlgorithmBadge(algo);
             const colorClass = algorithm === algo
-              ? `bg-${badge.color}-600 text-white`
+              ? `${badge.color} text-white`
               : darkMode
                 ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300';

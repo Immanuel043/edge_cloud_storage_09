@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   BarChart3,
   TrendingUp,
@@ -22,6 +22,7 @@ import { API_URL } from '../../config/constants';
 import type { AnalyticsViewProps, AnalyticsData, FileTypeDistributionItem, MonthlyActivity, MLInsight } from './types';
 import { getErrorMessage } from './types';
 import type { LucideIcon } from 'lucide-react';
+import { formatBytes } from '../../utils/helpers';
 
 interface FileTypeMapEntry {
   type: string;
@@ -53,15 +54,8 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({ darkMode }) => {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
 
-  const fetchAnalytics = async (isRefresh = false): Promise<void> => {
+  const fetchAnalytics = useCallback(async (isRefresh = false): Promise<void> => {
     try {
       if (isRefresh) {
         setRefreshing(true);
@@ -162,7 +156,7 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({ darkMode }) => {
 
       activityData.forEach(activity => {
         const date = new Date(activity.created_at);
-        const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth()).padStart(2, '0')}`;
         const monthName = months[date.getMonth()] || 'Unknown';
 
         if (!monthlyActivity[monthKey]) {
@@ -176,8 +170,11 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({ darkMode }) => {
         }
       });
 
-      // Get last 6 months of activity
-      const sortedMonths = Object.values(monthlyActivity).slice(-6);
+      // Sort chronologically by key (YYYY-MM format) and take last 6 months
+      const sortedMonths = Object.entries(monthlyActivity)
+        .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
+        .map(([, value]) => value)
+        .slice(-6);
 
       // If no activity data, show current month with actual file count
       const uploadTrend: MonthlyActivity[] = sortedMonths.length > 0 ? sortedMonths : [
@@ -206,11 +203,11 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({ darkMode }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchAnalytics();
-  }, []);
+  }, [fetchAnalytics]);
 
   if (loading) {
     return (
@@ -361,6 +358,9 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({ darkMode }) => {
         <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
           <Brain size={20} />
           AI Features Performance
+          <span className={`text-xs font-normal px-2 py-0.5 rounded-full ${darkMode ? 'bg-yellow-900/30 text-yellow-400' : 'bg-yellow-100 text-yellow-700'}`}>
+            AI-Generated Estimates
+          </span>
         </h2>
         <div className="space-y-4">
           {(analytics?.mlInsights || []).map((insight, index) => {

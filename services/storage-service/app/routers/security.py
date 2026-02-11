@@ -14,7 +14,7 @@ from uuid import UUID
 from datetime import datetime, timedelta
 
 from app.models.database import User
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.services.audit_service import get_audit_service
 from app.services.virus_scanner import get_virus_scanner
 from app.services.dlp_service import get_dlp_service
@@ -251,16 +251,11 @@ async def get_my_audit_logs(
 async def get_suspicious_activity(
     limit: int = Query(100, le=1000),
     risk_level: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
     """
     Get suspicious activity (admin only)
-
-    In production, add admin role check here
     """
-    # TODO: Add admin role check
-    # if current_user.role != 'admin':
-    #     raise HTTPException(status_code=403, detail="Admin access required")
 
     logs = await audit_service.get_suspicious_activity(
         limit=limit,
@@ -290,10 +285,9 @@ async def get_suspicious_activity(
 @router.get("/audit/infected-files")
 async def get_infected_files(
     limit: int = Query(100, le=1000),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
-    """Get all files flagged as infected"""
-    # TODO: Add admin role check in production
+    """Get all files flagged as infected (admin only)"""
 
     infected = await audit_service.get_infected_files(limit=limit)
 
@@ -318,10 +312,9 @@ async def get_infected_files(
 async def get_high_risk_files(
     min_risk_score: float = Query(70.0, ge=0, le=100),
     limit: int = Query(100, le=1000),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
-    """Get files with high DLP risk scores"""
-    # TODO: Add admin role check in production
+    """Get files with high DLP risk scores (admin only)"""
 
     high_risk = await audit_service.get_high_risk_files(
         min_risk_score=min_risk_score,

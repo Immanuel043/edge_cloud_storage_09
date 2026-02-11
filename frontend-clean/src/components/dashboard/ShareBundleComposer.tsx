@@ -72,6 +72,10 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
   // Total item count
   const totalItems = selectedFiles.length + selectedFolders.length;
 
+  // Check for ZK-encrypted files that may not be shareable via bundles
+  const zkFiles = selectedFiles.filter(f => f.is_encrypted || f.encrypted_file_key);
+  const hasZKFiles = zkFiles.length > 0;
+
   // Generate default bundle name
   const defaultBundleName = useMemo(() => {
     if (selectedFolders.length === 1 && selectedFiles.length === 0) {
@@ -333,6 +337,23 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
               })}
             </div>
           </div>
+
+          {/* ZK encrypted file warning */}
+          {hasZKFiles && (
+            <div className={`p-3 rounded-lg border ${
+              darkMode
+                ? 'bg-yellow-900/20 border-yellow-700/40'
+                : 'bg-yellow-50 border-yellow-200'
+            }`}>
+              <div className="flex items-start gap-2">
+                <AlertCircle size={16} className="text-yellow-500 flex-shrink-0 mt-0.5" />
+                <p className={`text-xs ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
+                  {zkFiles.length} ZK-encrypted file{zkFiles.length > 1 ? 's' : ''} selected.
+                  Recipients will need to download and decrypt locally.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Selected Items Preview */}
           <div>

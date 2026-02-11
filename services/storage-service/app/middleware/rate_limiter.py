@@ -13,6 +13,9 @@ Rate Limits:
 """
 
 import logging
+import time
+import threading
+from collections import defaultdict
 from typing import Callable, Optional
 from datetime import datetime, timedelta
 from fastapi import Request, HTTPException, status
@@ -20,6 +23,70 @@ from redis.asyncio import Redis
 import hashlib
 
 logger = logging.getLogger(__name__)
+
+
+class InMemoryRateLimiter:
+    """
+    Simple in-memory fallback rate limiter using sliding window.
+    Activates when Redis is unreachable.
+
+    Note: This is per-process only - in multi-worker deployments,
+    each worker tracks independently, so effective limits are multiplied
+    by worker count. This is acceptable as a degraded-mode fallback.
+    """
+
+    def __init__(self):
+        # key -> list of timestamps
+        self._requests: dict[str, list[float]] = defaultdict(list)
+        self._lock = threading.Lock()
+        self._last_cleanup = time.monotonic()
+        self._cleanup_interval = 60  # seconds
+
+    def check(self, key: str, max_requests: int, window_seconds: int) -> tuple[bool, dict]:
+        now = time.monotonic()
+        window_start = now - window_seconds
+
+        with self._lock:
+            # Periodic cleanup of stale keys
+            if now - self._last_cleanup > self._cleanup_interval:
+                self._cleanup(now)
+                self._last_cleanup = now
+
+            # Remove old entries for this key
+            timestamps = self._requests[key]
+            self._requests[key] = [t for t in timestamps if t > window_start]
+            timestamps = self._requests[key]
+
+            if len(timestamps) >= max_requests:
+                retry_after = int(timestamps[0] - window_start) + 1
+                return False, {
+                    "limit": max_requests,
+                    "remaining": 0,
+                    "reset": retry_after,
+                    "retry_after": retry_after
+                }
+
+            timestamps.append(now)
+            remaining = max_requests - len(timestamps)
+            return True, {
+                "limit": max_requests,
+                "remaining": remaining,
+                "reset": window_seconds,
+                "retry_after": None
+            }
+
+    def _cleanup(self, now: float):
+        """Remove keys with no recent requests"""
+        stale_keys = [
+            k for k, v in self._requests.items()
+            if not v or v[-1] < now - 7200  # 2 hours stale
+        ]
+        for k in stale_keys:
+            del self._requests[k]
+
+
+# Singleton fallback limiter shared across all RateLimiter instances
+_fallback_limiter = InMemoryRateLimiter()
 
 
 class RateLimitConfig:
@@ -150,17 +217,11 @@ class RateLimiter:
 
         except Exception as e:
             logger.error(
-                f"Rate limiter error: {e}",
+                f"Rate limiter Redis error, falling back to in-memory limiter: {e}",
                 exc_info=True
             )
-            # Fail open - allow request if Redis is down
-            # (prevents complete service outage)
-            return True, {
-                "limit": max_requests,
-                "remaining": max_requests,
-                "reset": window_seconds,
-                "retry_after": None
-            }
+            # Use in-memory fallback instead of failing open
+            return _fallback_limiter.check(key, max_requests, window_seconds)
 
     def get_identifier(self, request: Request) -> str:
         """

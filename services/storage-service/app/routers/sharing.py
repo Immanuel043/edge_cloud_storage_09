@@ -3,7 +3,7 @@
 Advanced sharing endpoints - Google Drive style collaborative sharing
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Body, Header
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
@@ -127,7 +127,7 @@ async def share_file_with_users(
     if share_data.expires_hours:
         expires_at = datetime.utcnow() + timedelta(hours=share_data.expires_hours)
 
-    responses = []
+    shared_items = []
     for email in share_data.emails:
         # Check if user exists
         user_result = await db.execute(select(User).filter(User.email == email))
@@ -149,12 +149,14 @@ async def share_file_with_users(
         )
 
         db.add(shared_access)
-        await db.commit()
+        shared_items.append((shared_access, email, invitation_token, recipient_user))
+
+    # Single commit for all shares - atomic operation
+    await db.commit()
+
+    responses = []
+    for shared_access, email, invitation_token, recipient_user in shared_items:
         await db.refresh(shared_access)
-
-        # TODO: Send email invitation
-        # await send_share_invitation(email, current_user.email, file_obj.file_name, invitation_token, share_data.message)
-
         responses.append(CollaborativeShareResponse(
             id=str(shared_access.id),
             shared_with_email=email,
@@ -200,7 +202,7 @@ async def share_folder_with_users(
     if share_data.expires_hours:
         expires_at = datetime.utcnow() + timedelta(hours=share_data.expires_hours)
 
-    responses = []
+    shared_items = []
     for email in share_data.emails:
         # Check if user exists
         user_result = await db.execute(select(User).filter(User.email == email))
@@ -222,11 +224,14 @@ async def share_folder_with_users(
         )
 
         db.add(shared_access)
-        await db.commit()
+        shared_items.append((shared_access, email, invitation_token, recipient_user))
+
+    # Single commit for all shares - atomic operation
+    await db.commit()
+
+    responses = []
+    for shared_access, email, invitation_token, recipient_user in shared_items:
         await db.refresh(shared_access)
-
-        # TODO: Send email invitation
-
         responses.append(CollaborativeShareResponse(
             id=str(shared_access.id),
             shared_with_email=email,
@@ -249,26 +254,40 @@ async def share_folder_with_users(
     return responses
 
 
-@router.get("/shared-with-me", response_model=List[SharedItemResponse])
+@router.get("/shared-with-me")
 async def get_shared_with_me(
+    limit: int = Query(50, ge=1, le=200, description="Max items to return"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all files/folders shared with current user"""
-    # Get shared items by email or user_id
+    """Get files/folders shared with current user (paginated)"""
+    from sqlalchemy import func as sql_func
+
+    base_filter = [
+        or_(
+            SharedAccess.shared_with_email == current_user.email,
+            SharedAccess.shared_with_user_id == current_user.id
+        ),
+        SharedAccess.invitation_status == 'accepted'
+    ]
+
+    # Get total count
+    count_result = await db.execute(
+        select(sql_func.count(SharedAccess.id)).filter(*base_filter)
+    )
+    total = count_result.scalar() or 0
+
+    # Get paginated items
     result = await db.execute(
         select(SharedAccess, User, Object, Folder)
         .outerjoin(User, SharedAccess.owner_id == User.id)
         .outerjoin(Object, SharedAccess.file_id == Object.id)
         .outerjoin(Folder, SharedAccess.folder_id == Folder.id)
-        .filter(
-            or_(
-                SharedAccess.shared_with_email == current_user.email,
-                SharedAccess.shared_with_user_id == current_user.id
-            ),
-            SharedAccess.invitation_status == 'accepted'
-        )
+        .filter(*base_filter)
         .order_by(SharedAccess.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
 
     shared_items = []
@@ -287,7 +306,7 @@ async def get_shared_with_me(
             folder_id=str(folder_obj.id) if folder_obj else None,
         ))
 
-    return shared_items
+    return {"items": shared_items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.delete("/shared-with-me/{share_access_id}")
@@ -321,10 +340,10 @@ async def remove_shared_access(
     return {"success": True, "message": "Removed from Shared with me"}
 
 
-@router.get("/share/{share_token}/info")
+@router.post("/share/{share_token}/info")
 async def get_share_info(
     share_token: str,
-    password: Optional[str] = None,
+    password: Optional[str] = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
 ):
     """Get information about a shared item (for viewer page)"""
@@ -374,10 +393,10 @@ async def get_share_info(
     }
 
 
-@router.get("/share/{share_token}/folder/contents")
+@router.post("/share/{share_token}/folder/contents")
 async def get_shared_folder_contents(
     share_token: str,
-    password: Optional[str] = None,
+    password: Optional[str] = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
 ):
     """Get contents of a shared folder"""
@@ -432,7 +451,7 @@ async def get_shared_folder_contents(
 async def stream_shared_file(
     share_token: str,
     request: Request,
-    password: Optional[str] = None,
+    x_share_password: Optional[str] = Header(None, alias="X-Share-Password"),
     inline: bool = Query(True, description="Serve as inline content"),
     compatible: bool = Query(False, description="Use compatible streaming for video"),
     db: AsyncSession = Depends(get_db),
@@ -465,9 +484,9 @@ async def stream_shared_file(
 
     # Verify password if required
     if share_link.password_hash:
-        if not password:
+        if not x_share_password:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(password, share_link.password_hash):
+        if not pwd_context.verify(x_share_password, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check if preview is allowed

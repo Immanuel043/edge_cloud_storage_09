@@ -21,7 +21,7 @@
         "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
         "targets": [
           {
-            "expr": "increase(quota_predictions_generated_total[24h])",
+            "expr": "increase(storage_quota_predictions_generated_total[24h])",
             "legendFormat": "Predictions"
           }
         ]
@@ -33,7 +33,7 @@
         "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
         "targets": [
           {
-            "expr": "increase(quota_alerts_generated_total[24h])",
+            "expr": "increase(storage_quota_alerts_generated_total[24h])",
             "legendFormat": "Alerts"
           }
         ],
@@ -49,7 +49,7 @@
         "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
         "targets": [
           {
-            "expr": "rate(quota_prediction_cache_hits_total[5m]) / (rate(quota_prediction_cache_hits_total[5m]) + rate(quota_prediction_cache_misses_total[5m])) * 100",
+            "expr": "rate(storage_quota_prediction_cache_hits_total[5m]) / (rate(storage_quota_prediction_cache_hits_total[5m]) + rate(storage_quota_prediction_cache_misses_total[5m])) * 100",
             "legendFormat": "Hit Rate %"
           }
         ],
@@ -73,7 +73,7 @@
         "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
         "targets": [
           {
-            "expr": "increase(quota_prediction_worker_errors_total[24h])",
+            "expr": "increase(storage_quota_prediction_worker_errors_total[24h])",
             "legendFormat": "Errors"
           }
         ],
@@ -117,15 +117,15 @@
         "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
         "targets": [
           {
-            "expr": "rate(quota_prediction_model_usage_total{model_type=\"prophet\"}[5m])",
+            "expr": "rate(storage_quota_prediction_model_usage_total{model_type=\"prophet\"}[5m])",
             "legendFormat": "Prophet"
           },
           {
-            "expr": "rate(quota_prediction_model_usage_total{model_type=\"linear_regression\"}[5m])",
+            "expr": "rate(storage_quota_prediction_model_usage_total{model_type=\"linear_regression\"}[5m])",
             "legendFormat": "Linear Regression"
           },
           {
-            "expr": "rate(quota_prediction_model_usage_total{model_type=\"moving_average\"}[5m])",
+            "expr": "rate(storage_quota_prediction_model_usage_total{model_type=\"moving_average\"}[5m])",
             "legendFormat": "Moving Average"
           }
         ]

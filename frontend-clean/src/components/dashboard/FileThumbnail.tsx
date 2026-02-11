@@ -79,7 +79,16 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
   darkMode = false,
   className = '',
 }) => {
-  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [thumbnailUrl, _setThumbnailUrl] = useState<string | null>(null);
+  const thumbnailUrlRef = useRef<string | null>(null);
+  const setThumbnailUrl = (url: string | null): void => {
+    // Revoke old blob URL when replacing
+    if (thumbnailUrlRef.current && thumbnailUrlRef.current !== url) {
+      URL.revokeObjectURL(thumbnailUrlRef.current);
+    }
+    thumbnailUrlRef.current = url;
+    _setThumbnailUrl(url);
+  };
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<boolean>(false);
   const [isVisible, setIsVisible] = useState<boolean>(false);
@@ -327,8 +336,9 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
         clearTimeout(timeoutId);
       }
       controller.abort();
-      if (thumbnailUrl) {
-        URL.revokeObjectURL(thumbnailUrl);
+      if (thumbnailUrlRef.current) {
+        URL.revokeObjectURL(thumbnailUrlRef.current);
+        thumbnailUrlRef.current = null;
       }
     };
   }, [

@@ -128,9 +128,26 @@ async def lifespan(app: FastAPI):
             print(f"Failed to start storage optimization worker: {e}")
 
     # Start video processing worker (Kafka consumer for video optimization)
+    # Supervised: restarts on crash with backoff, up to 5 retries
+    async def _supervised_video_worker():
+        retries = 0
+        max_retries = 5
+        while retries < max_retries:
+            try:
+                await video_processing_worker.start()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                retries += 1
+                backoff = min(2 ** retries, 60)
+                print(f"Video processing worker crashed (attempt {retries}/{max_retries}): {e}. Restarting in {backoff}s...")
+                await asyncio.sleep(backoff)
+        if retries >= max_retries:
+            print("Video processing worker exceeded max retries, giving up")
+
     try:
-        asyncio.create_task(video_processing_worker.start())
-        print("Video processing worker started")
+        asyncio.create_task(_supervised_video_worker())
+        print("Video processing worker started (supervised)")
     except Exception as e:
         print(f"Failed to start video processing worker: {e}")
 
@@ -191,11 +208,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error stopping video processing worker: {e}")
 
-    # try:
-    #     production_upload_service.cleanup()
-    #     print("Upload service cleaned up")
-    # except Exception as e:
-    #     print(f"Error cleaning up upload service: {e}")
+    # Stop Kafka producer (flush buffered messages before shutdown)
+    try:
+        from .routers.upload import kafka_producer as _kafka_producer
+        if _kafka_producer is not None:
+            await _kafka_producer.stop()
+            print("Kafka producer stopped")
+    except Exception as e:
+        print(f"Error stopping Kafka producer: {e}")
 
     await close_redis()
     await engine.dispose()
@@ -232,8 +252,13 @@ if settings.ENABLE_HTTPS:
     app.add_middleware(HTTPSRedirectMiddleware)
 
 # Configure CORS
-default_origins = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3001"]
-allow_origins = getattr(settings, "CORS_ORIGINS", default_origins)
+cors_env = os.getenv("CORS_ORIGINS", "")
+if cors_env:
+    allow_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+elif settings.is_production:
+    allow_origins = []  # Must be set via CORS_ORIGINS in production
+else:
+    allow_origins = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3001"]
 # Note: With credentials=True, expose_headers=["*"] doesn't work for custom headers
 # Must explicitly list custom headers for JavaScript to access them
 app.add_middleware(

@@ -43,6 +43,7 @@ export default function PlanChangeModal({
       void loadPreview();
       void loadPaymentGateways();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- loadPreview and loadPaymentGateways are stable useCallback refs
   }, [isOpen, targetPlan]);
 
   const loadPreview = useCallback(async (): Promise<void> => {

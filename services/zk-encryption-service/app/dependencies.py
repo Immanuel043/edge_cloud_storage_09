@@ -4,8 +4,10 @@ FastAPI Dependencies
 Dependency injection functions for authentication, database, and other shared resources.
 """
 import jwt
+import hashlib
 import structlog
 from typing import Optional
+from uuid import uuid4
 from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -15,6 +17,8 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import get_db
 from app.redis_client import get_redis, RateLimitService
+
+TOKEN_BLACKLIST_PREFIX = "zk:token_blacklist:"
 
 logger = structlog.get_logger()
 
@@ -26,7 +30,7 @@ security = HTTPBearer()
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
-    Create JWT access token.
+    Create JWT access token with unique jti for blacklist support.
 
     Args:
         data: Payload data (should include 'sub' for user ID)
@@ -42,7 +46,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.utcnow(),
+        "jti": str(uuid4()),
+    })
 
     encoded_jwt = jwt.encode(
         to_encode,
@@ -51,6 +59,30 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     )
 
     return encoded_jwt
+
+
+async def blacklist_token(token: str) -> None:
+    """Add a JWT token to the blacklist in Redis until it would have expired."""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if jti and exp:
+            ttl = int(exp - datetime.utcnow().timestamp())
+            if ttl > 0:
+                redis = get_redis()
+                await redis.setex(f"{TOKEN_BLACKLIST_PREFIX}{jti}", ttl, "1")
+    except jwt.JWTError:
+        pass  # Token already invalid, no need to blacklist
+
+
+async def is_token_blacklisted(jti: str) -> bool:
+    """Check if a token jti is blacklisted."""
+    try:
+        redis = get_redis()
+        return await redis.exists(f"{TOKEN_BLACKLIST_PREFIX}{jti}") > 0
+    except Exception:
+        return False  # Fail open — if Redis is down, allow the token
 
 
 def verify_token(token: str) -> Optional[dict]:
@@ -133,6 +165,15 @@ async def get_current_user(
         )
 
     payload = verify_token(token)
+
+    # Check token blacklist (logout invalidation)
+    jti = payload.get("jti")
+    if jti and await is_token_blacklisted(jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user_id = payload.get("sub")
     if user_id is None:
@@ -378,14 +419,14 @@ async def require_premium_tier(user=Depends(get_current_user)):
     Raises:
         HTTPException: If user doesn't have required tier
     """
-    # TODO: Implement proper tier checking
-    # For now, check if hardware keys feature is available
-    # (Premium tier feature - to be implemented)
+    allowed_tiers = ['professional', 'enterprise', 'premium']
+    if user.plan_type.lower() not in allowed_tiers:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This feature requires Premium tier. Upgrade to access hardware key support.",
+        )
 
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="This feature requires Premium tier. Upgrade to access hardware key support.",
-    )
+    return user
 
 
 # ========== HELPER FUNCTIONS ==========
@@ -424,3 +465,27 @@ def get_user_agent(request: Request) -> str:
         User agent string
     """
     return request.headers.get("User-Agent", "unknown")
+
+
+async def rate_limit_registration(request: Request):
+    """
+    Rate limit for registration init (email sending).
+    Prevents email flood attacks via rapid registration attempts.
+    """
+    if not settings.RATE_LIMIT_ENABLED:
+        return
+
+    client_ip = get_client_ip(request)
+
+    is_allowed, remaining = await RateLimitService.check_rate_limit(
+        identifier=client_ip,
+        action="register_init",
+        max_requests=10,  # 10 registration attempts per 15 minutes per IP
+        window_seconds=900
+    )
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many registration attempts. Please try again later.",
+        )

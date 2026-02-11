@@ -46,19 +46,8 @@ impl SecretKey {
 // Note: Drop is automatically implemented by ZeroizeOnDrop derive macro
 // No need for manual Drop implementation
 
-// Clone implementation for SecretKey
-// SECURITY NOTE: This creates a copy of the key in memory.
-// Both the original and clone will be zeroized when dropped.
-// Use sparingly and only when necessary for API ergonomics.
-impl Clone for SecretKey {
-    fn clone(&self) -> Self {
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(self.inner.as_ref());
-        Self {
-            inner: Box::new(bytes),
-        }
-    }
-}
+// No Clone implementation for SecretKey - prevents accidental key copies in memory.
+// Use Arc<SecretKey> for shared access instead of cloning key bytes.
 
 #[cfg(test)]
 mod tests {

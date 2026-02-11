@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { FileController } from '../controllers/fileController';
 import { requireAuth } from '../middleware/auth';
+import { apiLimiter } from '../middleware/rateLimit';
 
 export function createFileRoutes(storageServiceUrl: string): Router {
   const router = Router();
+  router.use(apiLimiter);
   const fileController = new FileController(storageServiceUrl);
 
   router.get('/', requireAuth, (req, res) => {

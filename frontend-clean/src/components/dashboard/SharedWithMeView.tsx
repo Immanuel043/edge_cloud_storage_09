@@ -45,6 +45,7 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
         await removeSharedAccess(file.id);
       } catch (err: unknown) {
         console.error('Failed to remove shared access:', getErrorMessage(err));
+        // TODO: Replace alert() with toast notification
         alert('Failed to remove from Shared with me');
       }
     }
@@ -57,7 +58,7 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
       .map((item) => ({
         id: item.file_id as string,
         name: item.item_name,
-        size: 0,
+        size: 0, // TODO: Shared items API doesn't return file size; fetch from file metadata endpoint
         created_at: item.shared_at,
         last_accessed: item.shared_at,
         is_favorite: false,

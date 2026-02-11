@@ -44,9 +44,9 @@ class EnableZKRequest(BaseModel):
     encrypted_master_key: str
     kdf_salt: str
     kdf_algorithm: str = Field(default="pbkdf2", pattern="^(pbkdf2|argon2id)$")
-    kdf_iterations: int = Field(default=600000, ge=1)  # Argon2id uses 3, PBKDF2 uses 600000
-    kdf_memory: Optional[int] = None
-    kdf_parallelism: Optional[int] = None
+    kdf_iterations: int = Field(default=600000, ge=1, le=10_000_000)
+    kdf_memory: Optional[int] = Field(default=None, ge=16384, le=1_048_576)  # 16MB-1GB
+    kdf_parallelism: Optional[int] = Field(default=None, ge=1, le=16)
 
 
 class EnableRecoveryPhraseRequest(BaseModel):

@@ -1,4 +1,5 @@
 # services/storage-service/app/services/auth.py
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import jwt, JWTError
@@ -49,10 +50,40 @@ class AuthService:
             expire = datetime.utcnow() + expires_delta
         else:
             expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-        
-        to_encode.update({"exp": expire})
+
+        to_encode.update({"exp": expire, "jti": str(uuid.uuid4())})
         encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return encoded_jwt
+
+    @staticmethod
+    async def blocklist_token(token: str):
+        """Add a JWT to the blocklist in Redis. TTL = remaining token lifetime."""
+        from ..database import redis_client
+        if not redis_client:
+            return
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if not jti or not exp:
+                return
+            ttl = int(exp - datetime.utcnow().timestamp())
+            if ttl > 0:
+                await redis_client.setex(f"blocklist:{jti}", ttl, "1")
+        except JWTError:
+            pass
+
+    @staticmethod
+    async def is_token_blocklisted(jti: str) -> bool:
+        """Check if a token's jti is in the blocklist."""
+        from ..database import redis_client
+        if not redis_client:
+            return False
+        try:
+            result = await redis_client.get(f"blocklist:{jti}")
+            return result is not None
+        except Exception:
+            return False
 
 
 auth_service = AuthService()

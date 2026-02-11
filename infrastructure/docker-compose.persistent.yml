@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Override file for production with Elasticsearch persistence
 # Use with: docker-compose -f docker-compose.yml -f docker-compose.persistent.yml up -d
 

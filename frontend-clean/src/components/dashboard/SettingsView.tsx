@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Shield,
   ShieldCheck,
@@ -27,6 +27,7 @@ import RecoverySettings from '../settings/RecoverySettings';
 import type { SettingsViewProps, IndexStatus, ReindexResult, VideoOptimizationMode, VideoSettingsResponse } from './types';
 import { getErrorMessage } from './types';
 import { API_URL } from '../../config/constants';
+import { formatBytes } from '../../utils/helpers';
 
 interface ZKData {
   kdfSalt?: string;
@@ -62,15 +63,6 @@ function getKdfDisplayString(): string {
   return 'Argon2id key derivation (64MB memory, 3 iterations)';
 }
 
-// Helper function to format bytes
-function formatBytes(bytes: number, decimals = 2): string {
-  if (!bytes || bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-}
 
 type UpgradeStep = 1 | 2 | 3 | 4;
 
@@ -97,6 +89,18 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [isReindexing, setIsReindexing] = useState<boolean>(false);
   const [reindexResult, setReindexResult] = useState<ReindexResult | null>(null);
+
+  // Ref for cleanup of upgrade auto-close timeout
+  const upgradeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (upgradeTimeoutRef.current) {
+        clearTimeout(upgradeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Fetch current video optimization setting
   useEffect(() => {
@@ -263,7 +267,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
       setUpgradeStep(4);
 
       // Auto-close after 3 seconds and reload
-      setTimeout(() => {
+      upgradeTimeoutRef.current = setTimeout(() => {
         resetUpgradeModal();
         setUpgradeSuccess(false);
         // Reload the page to fully reflect the new state

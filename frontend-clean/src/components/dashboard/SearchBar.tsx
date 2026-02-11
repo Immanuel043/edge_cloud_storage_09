@@ -255,11 +255,20 @@ const SearchBar: React.FC<SearchBarProps> = ({
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'Enter') {
       handleSearch();
     }
   };
+
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, []);
 
   const handleSuggestionClick = (suggestion: string): void => {
     setQuery(suggestion);
@@ -301,7 +310,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
             type="text"
             value={query}
             onChange={handleInputChange}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
             placeholder="Search files and folders..."
             className={`flex-1 bg-transparent outline-none ${
               darkMode ? 'placeholder-gray-500' : 'placeholder-gray-400'

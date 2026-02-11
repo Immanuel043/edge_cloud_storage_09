@@ -455,37 +455,3 @@ async function recoverAccount(email: string, recoveryPhrase: string) {
     return true;
 }
 """
-
-
-if __name__ == "__main__":
-    # Example usage
-    service = RecoveryPhraseService()
-
-    # Generate recovery phrase
-    phrase = service.generate_recovery_phrase()
-    print("Generated Recovery Phrase:")
-    print(service.format_phrase_for_display(phrase))
-    print()
-
-    # Validate phrase
-    is_valid = service.validate_recovery_phrase(phrase)
-    print(f"Is valid: {is_valid}")
-    print()
-
-    # Derive key from phrase
-    recovery_key = service.derive_key_from_phrase(phrase)
-    print(f"Recovery key (hex): {recovery_key.hex()}")
-    print()
-
-    # Hash for storage
-    phrase_hash = service.hash_recovery_phrase(phrase)
-    print(f"Phrase hash (for database): {phrase_hash}")
-    print()
-
-    # Test verification
-    word_7 = service.get_word_at_index(phrase, 7)
-    print(f"Word #7: {word_7}")
-    print()
-
-    # Wordlist info
-    print("Wordlist info:", service.get_wordlist_info())

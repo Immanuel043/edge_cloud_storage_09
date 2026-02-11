@@ -1,151 +1,95 @@
 import React from 'react';
 import {
-  Shield, Lock, Users, Link2, Eye, Download, Edit,
-  CheckCircle, AlertTriangle, ShieldCheck, Key
+  Shield, Lock, Users, Link2,
+  ShieldCheck, Key
 } from 'lucide-react';
 import type { FileSecurityTabProps } from './types';
-import type { LucideIcon } from 'lucide-react';
+
+// TODO: Connect to real security scanning API — /api/v1/files/{id}/security (not yet implemented)
 
 /**
- * FileSecurityTab - Displays file security information
+ * FileSecurityTab - Displays file security information derived from actual file data
  */
 const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => {
-  // Mock security data - will be replaced with API call
-  const securityInfo = {
-    encryption: {
-      enabled: true,
-      algorithm: 'AES-256-GCM',
-      status: 'encrypted'
-    } as const,
-    virusScan: {
-      status: 'clean' as const,
-      lastScanned: file.created_at || '',
-      scanner: 'ClamAV'
-    },
-    shareLinks: file.share_links || [],
-    sharedWith: file.shared_with || [],
-    permissions: {
-      canView: true,
-      canDownload: true,
-      canEdit: false,
-      canShare: true
-    } as const
-  };
-
-  interface PermissionItem {
-    key: keyof typeof securityInfo.permissions;
-    label: string;
-    icon: LucideIcon;
-  }
-
-  const permissionItems: PermissionItem[] = [
-    { key: 'canView', label: 'View', icon: Eye },
-    { key: 'canDownload', label: 'Download', icon: Download },
-    { key: 'canEdit', label: 'Edit', icon: Edit },
-    { key: 'canShare', label: 'Share', icon: Link2 },
-  ];
+  const shareLinks = file.share_links || [];
+  const sharedWith = file.shared_with || [];
+  const isEncrypted = file.is_encrypted === true || !!file.encrypted_file_key;
 
   return (
     <div className="space-y-6">
-      {/* Encryption Status */}
+      {/* Encryption Status — derived from actual file data */}
+      {isEncrypted ? (
+        <div className={`p-4 rounded-lg border ${
+          darkMode
+            ? 'bg-green-500/10 border-green-500/20'
+            : 'bg-green-50 border-green-200'
+        }`}>
+          <div className="flex items-start gap-3">
+            <Lock size={20} className="text-green-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h4 className={`text-sm font-semibold mb-1 ${
+                darkMode ? 'text-green-400' : 'text-green-700'
+              }`}>
+                File is encrypted
+              </h4>
+              <p className={`text-xs ${
+                darkMode ? 'text-green-400/80' : 'text-green-600'
+              }`}>
+                This file is protected with end-to-end encryption
+                {file.encryption_mode === 'client_zk' && ' (Zero-Knowledge)'}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className={`p-4 rounded-lg border ${
+          darkMode
+            ? 'bg-gray-500/10 border-gray-500/20'
+            : 'bg-gray-50 border-gray-200'
+        }`}>
+          <div className="flex items-start gap-3">
+            <Lock size={20} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
+            <div className="flex-1">
+              <h4 className={`text-sm font-semibold mb-1 ${
+                darkMode ? 'text-gray-400' : 'text-gray-600'
+              }`}>
+                Standard storage
+              </h4>
+              <p className={`text-xs ${
+                darkMode ? 'text-gray-500' : 'text-gray-500'
+              }`}>
+                Server-side encryption at rest
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Security Scan Status — no real API source yet */}
       <div className={`p-4 rounded-lg border ${
         darkMode
-          ? 'bg-green-500/10 border-green-500/20'
-          : 'bg-green-50 border-green-200'
+          ? 'bg-gray-500/10 border-gray-500/20'
+          : 'bg-gray-50 border-gray-200'
       }`}>
         <div className="flex items-start gap-3">
-          <Lock size={20} className="text-green-500 flex-shrink-0 mt-0.5" />
+          <ShieldCheck size={20} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
           <div className="flex-1">
             <h4 className={`text-sm font-semibold mb-1 ${
-              darkMode ? 'text-green-400' : 'text-green-700'
+              darkMode ? 'text-gray-400' : 'text-gray-600'
             }`}>
-              File is encrypted
-            </h4>
-            <p className={`text-xs mb-2 ${
-              darkMode ? 'text-green-400/80' : 'text-green-600'
-            }`}>
-              This file is protected with {securityInfo.encryption.algorithm} encryption
-            </p>
-            <div className={`text-xs ${
-              darkMode ? 'text-green-400/60' : 'text-green-600/80'
-            }`}>
-              <span className="font-mono">{securityInfo.encryption.algorithm}</span> •
-              <span className="ml-1">Military-grade encryption</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Virus Scan Status */}
-      <div className={`p-4 rounded-lg border ${
-        securityInfo.virusScan.status === 'clean'
-          ? darkMode
-            ? 'bg-blue-500/10 border-blue-500/20'
-            : 'bg-blue-50 border-blue-200'
-          : darkMode
-            ? 'bg-red-500/10 border-red-500/20'
-            : 'bg-red-50 border-red-200'
-      }`}>
-        <div className="flex items-start gap-3">
-          <ShieldCheck size={20} className={
-            securityInfo.virusScan.status === 'clean'
-              ? 'text-blue-500'
-              : 'text-red-500'
-          } />
-          <div className="flex-1">
-            <h4 className={`text-sm font-semibold mb-1 ${
-              securityInfo.virusScan.status === 'clean'
-                ? darkMode ? 'text-blue-400' : 'text-blue-700'
-                : darkMode ? 'text-red-400' : 'text-red-700'
-            }`}>
-              {securityInfo.virusScan.status === 'clean' ? 'No threats detected' : 'Threat detected'}
+              No security scan data available
             </h4>
             <p className={`text-xs ${
-              securityInfo.virusScan.status === 'clean'
-                ? darkMode ? 'text-blue-400/80' : 'text-blue-600'
-                : darkMode ? 'text-red-400/80' : 'text-red-600'
+              darkMode ? 'text-gray-500' : 'text-gray-500'
             }`}>
-              Scanned with {securityInfo.virusScan.scanner}
+              Security scanning is not yet connected
             </p>
           </div>
-        </div>
-      </div>
-
-      {/* Access Permissions */}
-      <div>
-        <h4 className={`text-sm font-semibold mb-3 ${
-          darkMode ? 'text-white' : 'text-gray-900'
-        }`}>
-          Your Permissions
-        </h4>
-        <div className="space-y-2">
-          {permissionItems.map(({ key, label, icon: Icon }) => (
-            <div
-              key={key}
-              className={`flex items-center justify-between p-3 rounded-lg ${
-                darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <Icon size={16} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                <span className={`text-sm ${
-                  darkMode ? 'text-white' : 'text-gray-900'
-                }`}>
-                  {label}
-                </span>
-              </div>
-              {securityInfo.permissions[key] ? (
-                <CheckCircle size={16} className="text-green-500" />
-              ) : (
-                <AlertTriangle size={16} className="text-red-500" />
-              )}
-            </div>
-          ))}
         </div>
       </div>
 
       {/* Share Links */}
-      {securityInfo.shareLinks.length > 0 && (
+      {shareLinks.length > 0 && (
         <div>
           <h4 className={`text-sm font-semibold mb-3 ${
             darkMode ? 'text-white' : 'text-gray-900'
@@ -153,7 +97,7 @@ const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => 
             Active Share Links
           </h4>
           <div className="space-y-2">
-            {securityInfo.shareLinks.map((link, index) => (
+            {shareLinks.map((link, index) => (
               <div
                 key={index}
                 className={`p-3 rounded-lg border ${
@@ -188,7 +132,7 @@ const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => 
       )}
 
       {/* Shared With */}
-      {securityInfo.sharedWith.length > 0 && (
+      {sharedWith.length > 0 && (
         <div>
           <h4 className={`text-sm font-semibold mb-3 ${
             darkMode ? 'text-white' : 'text-gray-900'
@@ -196,7 +140,7 @@ const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => 
             Shared With
           </h4>
           <div className="space-y-2">
-            {securityInfo.sharedWith.map((person, index) => (
+            {sharedWith.map((person, index) => (
               <div
                 key={index}
                 className={`flex items-center justify-between p-3 rounded-lg ${

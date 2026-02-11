@@ -39,7 +39,7 @@ const RecoveryPhraseConfirm: React.FC<RecoveryPhraseConfirmProps> = ({
       }
     }
     setSelectedWords(positions.sort((a, b) => a - b));
-  }, []);
+  }, [recoveryPhrase]);
 
   const handleInputChange = (position: number, value: string): void => {
     setUserInputs((prev) => ({

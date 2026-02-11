@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
-  FileText, Calendar, HardDrive, Tag, MapPin, Download,
-  Edit2, Plus, X, Image, Video, Music, Archive, Code
+  FileText, Calendar, HardDrive, MapPin,
+  Edit2, Image, Video, Music, Archive, Code
 } from 'lucide-react';
 import { formatBytes, formatDate } from '../../utils/helpers';
 import type { FileDetailsTabProps } from './types';
@@ -9,24 +9,7 @@ import type { FileDetailsTabProps } from './types';
 /**
  * FileDetailsTab - Displays detailed file information
  */
-const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename, darkMode, isZK = false }) => {
-  const [showAddTag, setShowAddTag] = useState<boolean>(false);
-  const [newTag, setNewTag] = useState<string>('');
-  const [tags, setTags] = useState<string[]>(file.tags || []);
-
-  const handleAddTag = (): void => {
-    if (newTag.trim() && !tags.includes(newTag.trim())) {
-      setTags([...tags, newTag.trim()]);
-      setNewTag('');
-      setShowAddTag(false);
-      // TODO: API call to add tag
-    }
-  };
-
-  const handleRemoveTag = (tagToRemove: string): void => {
-    setTags(tags.filter(tag => tag !== tagToRemove));
-    // TODO: API call to remove tag
-  };
+const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename, darkMode }) => {
 
   const getFileIcon = (): React.ReactElement => {
     const mimeType = file.mime_type || file.type || '';
@@ -54,16 +37,6 @@ const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename, darkMod
     const name = file.name || '';
     const extension = name.split('.').pop();
     return extension ? extension.toUpperCase() : 'Unknown';
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter') {
-      handleAddTag();
-    }
-    if (e.key === 'Escape') {
-      setShowAddTag(false);
-      setNewTag('');
-    }
   };
 
   return (
@@ -197,124 +170,28 @@ const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename, darkMod
         </div>
       </div>
 
-      {/* Tags */}
-      <div>
+      {/* Tags — Coming soon (no backend API yet) */}
+      <div className="opacity-60">
         <div className="flex items-center justify-between mb-3">
-          <p className={`text-sm font-semibold ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            Tags
-          </p>
-          {!showAddTag && (
-            <button
-              onClick={() => setShowAddTag(true)}
-              className={`flex items-center gap-1 px-2 py-1 text-xs rounded-lg transition-colors ${
-                darkMode
-                  ? 'text-blue-400 hover:bg-blue-500/10'
-                  : 'text-blue-600 hover:bg-blue-50'
-              }`}
-              type="button"
-            >
-              <Plus size={14} />
-              Add tag
-            </button>
-          )}
-        </div>
-
-        {showAddTag && (
-          <div className="flex items-center gap-2 mb-3">
-            <input
-              type="text"
-              value={newTag}
-              onChange={(e) => setNewTag(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Enter tag name"
-              className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
-                darkMode
-                  ? 'bg-gray-700 border-gray-600 text-white focus:border-blue-500'
-                  : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-              } focus:outline-none focus:ring-2 focus:ring-blue-500/20`}
-              autoFocus
-            />
-            <button
-              onClick={handleAddTag}
-              className={`px-3 py-2 text-sm rounded-lg transition-colors ${
-                darkMode
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : 'bg-blue-500 hover:bg-blue-600 text-white'
-              }`}
-              type="button"
-            >
-              Add
-            </button>
-            <button
-              onClick={() => { setShowAddTag(false); setNewTag(''); }}
-              className={`p-2 rounded-lg transition-colors ${
-                darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-600'
-              }`}
-              type="button"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        )}
-
-        <div className="flex flex-wrap gap-2">
-          {tags.length > 0 ? (
-            tags.map((tag, index) => (
-              <div
-                key={index}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm ${
-                  darkMode
-                    ? 'bg-blue-500/10 text-blue-400'
-                    : 'bg-blue-50 text-blue-600'
-                }`}
-              >
-                <Tag size={14} />
-                <span>{tag}</span>
-                <button
-                  onClick={() => handleRemoveTag(tag)}
-                  className={`p-0.5 rounded hover:bg-blue-500/20 transition-colors`}
-                  type="button"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))
-          ) : (
-            <p className={`text-sm italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-              No tags added yet
+          <div className="flex items-center gap-2">
+            <p className={`text-sm font-semibold ${
+              darkMode ? 'text-gray-300' : 'text-gray-700'
+            }`}>
+              Tags
             </p>
-          )}
+            <span className={`text-xs px-2 py-0.5 rounded-full ${
+              darkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-500'
+            }`}>
+              Coming soon
+            </span>
+          </div>
         </div>
+        <p className={`text-sm italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          File tagging will be available in a future update
+        </p>
       </div>
 
-      {/* Downloadable Toggle - Only show for non-ZK files */}
-      {!isZK && (
-        <div className={`flex items-center justify-between p-4 rounded-lg ${
-          darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
-        }`}>
-          <div className="flex items-center gap-3">
-            <Download size={18} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-            <div>
-              <p className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                File downloadable
-              </p>
-              <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                Allow others to download this file
-              </p>
-            </div>
-          </div>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" className="sr-only peer" defaultChecked />
-            <div className={`w-11 h-6 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all ${
-              darkMode
-                ? 'bg-gray-600 peer-checked:bg-blue-600'
-                : 'bg-gray-300 peer-checked:bg-blue-500'
-            }`}></div>
-          </label>
-        </div>
-      )}
+      {/* Downloadable toggle removed — not functional (no backend support) */}
     </div>
   );
 };

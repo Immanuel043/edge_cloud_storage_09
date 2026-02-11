@@ -41,8 +41,10 @@ COOKIE_SAMESITE = "lax"  # CSRF protection
 from app.database import get_db
 from app.dependencies import (
     create_access_token,
+    blacklist_token,
     get_current_user,
     rate_limit_login,
+    rate_limit_registration,
     get_client_ip,
     get_user_agent
 )
@@ -117,22 +119,6 @@ class KDFParamsResponse(BaseModel):
     kdf_iv: Optional[str] = None  # Base64-encoded IV for AES-GCM
     kdf_memory: Optional[int] = None  # For Argon2
     kdf_parallelism: Optional[int] = None  # For Argon2
-
-
-class RegisterZKRequest(BaseModel):
-    """Request to register with zero-knowledge encryption"""
-    email: EmailStr
-    username: str = Field(..., min_length=3, max_length=50)
-    password_hash: str = Field(..., min_length=64, max_length=64)  # SHA-256 hex (64 chars)
-    encrypted_master_key: str  # Base64 encoded
-    master_key_iv: str  # Base64 encoded IV for AES-GCM
-    kdf_salt: str  # Hex encoded
-    kdf_algorithm: str = Field(default="pbkdf2", pattern="^(pbkdf2|argon2id)$")
-    kdf_iterations: int = Field(default=600000, ge=1)  # Argon2id uses 3, PBKDF2 uses 600000
-    kdf_memory: Optional[int] = Field(default=None, ge=16384)  # Min 16MB for Argon2id
-    kdf_parallelism: Optional[int] = Field(default=None, ge=1)
-    recovery_encrypted_master_key: Optional[str] = None
-    recovery_phrase_hash: Optional[str] = None
 
 
 class LoginZKRequest(BaseModel):
@@ -225,7 +211,7 @@ async def get_kdf_params(
 
 # ========== EMAIL VERIFICATION REGISTRATION ENDPOINTS ==========
 
-@router.post("/register-zk/init")
+@router.post("/register-zk/init", dependencies=[Depends(rate_limit_registration)])
 async def register_zk_init(
     request: Request,
     db: AsyncSession = Depends(get_db)
@@ -605,153 +591,8 @@ async def resend_zk_verification_code(
     }
 
 
-@router.post("/register-zk", status_code=status.HTTP_201_CREATED, deprecated=True)
-async def register_zero_knowledge(
-    request_data: RegisterZKRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Register a new user with zero-knowledge encryption - DEPRECATED
-
-    ⚠️ DEPRECATED: This endpoint bypasses email verification and will be removed in a future version.
-
-    Please use the 3-step email verification flow instead:
-    1. POST /register-zk/init (send verification code)
-    2. POST /register-zk/verify (validate code, get token)
-    3. POST /register-zk/complete (create ZK account)
-
-    The client must:
-    1. Derive key from password (PBKDF2 600k iterations)
-    2. Hash the derived key (SHA-256)
-    3. Send the hash (NOT the password or derived key)
-    4. Encrypt master key with derived key
-    5. Send encrypted master key
-
-    Server stores:
-    - bcrypt(password_hash) for verification
-    - encrypted_master_key (cannot decrypt)
-    - KDF parameters (public)
-
-    Args:
-        request_data: Registration data
-
-    Returns:
-        Access token and user info
-    """
-    # Import ZKUser model
-    from app.models.database import ZKUser
-
-    logger.info("zk_registration_attempt", email=request_data.email)
-
-    # Check if user already exists
-    result = await db.execute(
-        select(ZKUser).filter(
-            (ZKUser.email == request_data.email) | (ZKUser.username == request_data.username)
-        )
-    )
-    existing_user = result.scalar_one_or_none()
-
-    if existing_user:
-        if existing_user.email == request_data.email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already taken"
-            )
-
-    # Decode salt (expecting hex string from frontend)
-    try:
-        kdf_salt = bytes.fromhex(request_data.kdf_salt)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid KDF salt format"
-        )
-
-    # Hash the password_hash with bcrypt (double hashing for security)
-    # This allows server to verify password without knowing it
-    password_hash_bytes = request_data.password_hash.encode('utf-8')
-    bcrypt_hash = bcrypt.hashpw(password_hash_bytes, bcrypt.gensalt(rounds=12))
-
-    # Create new user
-    new_user = ZKUser(
-        id=uuid4(),
-        email=request_data.email,
-        username=request_data.username,
-        password_hash=bcrypt_hash.decode('utf-8'),
-        zk_enrolled_at=datetime.utcnow(),
-        encrypted_master_key=request_data.encrypted_master_key,
-        master_key_iv=request_data.master_key_iv,
-        kdf_salt=kdf_salt,
-        kdf_algorithm=request_data.kdf_algorithm,
-        kdf_iterations=request_data.kdf_iterations,
-        kdf_memory=request_data.kdf_memory,
-        kdf_parallelism=request_data.kdf_parallelism,
-        recovery_encrypted_master_key=request_data.recovery_encrypted_master_key,
-        recovery_phrase_hash=request_data.recovery_phrase_hash,
-        recovery_phrase_enabled=request_data.recovery_phrase_hash is not None,
-        is_active=True,
-        storage_quota=107374182400,  # 100GB for Pro tier (ZK enabled)
-    )
-
-    db.add(new_user)
-
-    # Log enrollment
-    enrollment_log = ZKEnrollmentHistory(
-        id=uuid4(),
-        user_id=new_user.id,
-        action="enabled",
-        to_tier="pro",
-        recovery_methods_configured=["phrase"] if request_data.recovery_phrase_hash else [],
-        ip_address=get_client_ip(request),
-        user_agent=get_user_agent(request),
-        extra_metadata={"registration": True}
-    )
-    db.add(enrollment_log)
-
-    await db.commit()
-    await db.refresh(new_user)
-
-    logger.info(
-        "zk_registration_success",
-        user_id=str(new_user.id),
-        email=new_user.email,
-        kdf_algorithm=new_user.kdf_algorithm
-    )
-
-    # Create access token
-    access_token = create_access_token(data={"sub": str(new_user.id)})
-
-    # Build response data
-    response_data = {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": str(new_user.id),
-            "email": new_user.email,
-            "username": new_user.username,
-            "recovery_phrase_enabled": new_user.recovery_phrase_enabled
-        }
-    }
-
-    # Set HTTP-only cookie for automatic authentication after registration
-    response = JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=access_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=COOKIE_HTTPONLY,
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
-        path="/"
-    )
-
-    return response
+# REMOVED: Legacy /register-zk endpoint that bypassed email verification.
+# Use the 3-step email verification flow: /register-zk/init -> /verify -> /complete
 
 
 @router.post("/login-zk", response_model=LoginZKResponse, dependencies=[Depends(rate_limit_login)])
@@ -859,24 +700,27 @@ async def login_zero_knowledge(
 
 @router.post("/logout")
 async def logout(
+    request: Request,
     user = Depends(get_current_user)
 ):
     """
-    Logout user.
+    Logout user and invalidate their JWT token.
 
     In zero-knowledge mode, the master key is stored in client's sessionStorage.
-    This endpoint invalidates the server-side JWT token and clears the cookie.
+    This endpoint blacklists the JWT token in Redis and clears the cookie.
     Client must also clear their sessionStorage.
-
-    Args:
-        user: Current authenticated user
-
-    Returns:
-        Success message
     """
     logger.info("zk_logout", user_id=str(user.id))
 
-    # TODO: Implement token blacklist in Redis if needed
+    # Blacklist the token so it can't be reused
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        # Try Authorization header
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if token:
+        await blacklist_token(token)
 
     response_data = {
         "message": "Logged out successfully",
@@ -903,9 +747,9 @@ class UpgradeToZKRequest(BaseModel):
     master_key_iv: str  # Base64 encoded IV for AES-GCM
     kdf_salt: str  # Hex encoded
     kdf_algorithm: str = Field(default="pbkdf2", pattern="^(pbkdf2|argon2id)$")
-    kdf_iterations: int = Field(default=600000, ge=1)  # Argon2id uses 3, PBKDF2 uses 600000
-    kdf_memory: Optional[int] = Field(default=None, ge=16384)  # Min 16MB for Argon2id
-    kdf_parallelism: Optional[int] = Field(default=None, ge=1)
+    kdf_iterations: int = Field(default=600000, ge=1, le=10_000_000)
+    kdf_memory: Optional[int] = Field(default=None, ge=16384, le=1_048_576)  # 16MB-1GB
+    kdf_parallelism: Optional[int] = Field(default=None, ge=1, le=16)
 
 
 @router.post("/upgrade-to-zk")

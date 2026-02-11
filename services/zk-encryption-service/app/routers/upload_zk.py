@@ -50,7 +50,7 @@ class InitUploadRequest(BaseModel):
     # Encrypted filename (client-side encrypted with filename key derived from master key)
     encrypted_file_name: str = Field(..., max_length=1024)  # Base64 encoded encrypted filename
     file_name_iv: str = Field(..., max_length=64)  # Base64 encoded IV for filename encryption
-    file_size: int = Field(..., gt=0)
+    file_size: int = Field(..., gt=0, le=1_099_511_627_776)  # Max 1TB
     mime_type: str = Field(..., max_length=100)
     encrypted_file_key: str  # Base64 encoded - file key encrypted with master key
     file_key_iv: str  # Base64 encoded - IV used for file key encryption
@@ -59,13 +59,13 @@ class InitUploadRequest(BaseModel):
     # File encryption metadata (for client reference)
     encryption_algorithm: str = Field(default="AES-256-GCM")
     encryption_version: int = Field(default=2, ge=1, le=2)  # 1=V1 (basic), 2=V2 (HKDF+AAD) - default V2
-    chunk_size: int = Field(default=1048576)  # 1MB chunks
+    chunk_size: int = Field(default=1048576, ge=65536, le=10_485_760)  # 64KB-10MB
 
     # ZK Thumbnail (client-side generated and encrypted with derived key)
     encrypted_thumbnail: Optional[str] = None  # Base64 encoded encrypted thumbnail
     thumbnail_iv: Optional[str] = None  # Base64 encoded IV for thumbnail
-    thumbnail_width: Optional[int] = None  # Thumbnail width in pixels
-    thumbnail_height: Optional[int] = None  # Thumbnail height in pixels
+    thumbnail_width: Optional[int] = Field(default=None, ge=1, le=4096)
+    thumbnail_height: Optional[int] = Field(default=None, ge=1, le=4096)
 
 
 class InitUploadResponse(BaseModel):
@@ -146,11 +146,12 @@ async def forward_to_storage_service(
             method=method,
             endpoint=endpoint,
             status_code=e.response.status_code,
+            response_text=e.response.text,
             error=str(e)
         )
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"Storage service error: {e.response.text}"
+            detail="Storage service error"
         )
     except Exception as e:
         logger.error("storage_service_connection_failed", error=str(e), exc_info=True)
@@ -304,7 +305,7 @@ async def initialize_upload(
 @router.post("/upload/chunk/{upload_id}")
 async def upload_chunk(
     upload_id: str,
-    chunk_index: int = Form(...),
+    chunk_index: int = Form(..., ge=0),
     chunk: UploadFile = File(...),
     user=Depends(get_current_zk_user),
     db: AsyncSession = Depends(get_db)

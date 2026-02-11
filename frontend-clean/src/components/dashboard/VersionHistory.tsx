@@ -72,7 +72,7 @@ const VersionHistory: React.FC<VersionHistoryProps> = ({ file, onClose, onRestor
         await onRestore(String(versionNumber));
       }
 
-      alert(`Successfully restored to version ${versionNumber}`);
+      setError(''); // Clear any previous errors — restore succeeded
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('Failed to restore version:', err);

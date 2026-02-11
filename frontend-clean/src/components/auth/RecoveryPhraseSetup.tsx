@@ -72,7 +72,7 @@ Edge Cloud Storage - Zero-Knowledge Encryption
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `recovery-phrase-${Date.now()}.txt`;
+    a.download = 'edge-cloud-recovery-phrase.txt';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

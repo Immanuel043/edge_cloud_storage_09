@@ -195,6 +195,7 @@ export default function SubscriptionDashboard(): ReactElement {
                     </p>
                     {warningDisplay.action_label && (
                       <button
+                        // TODO: Replace global CustomEvent with React context/callback prop for openUpgradeModal
                         onClick={() => window.dispatchEvent(new CustomEvent('openUpgradeModal'))}
                         className={`mt-2 text-sm font-medium ${
                           warningDisplay.severity === 'critical' ? 'text-red-700 hover:text-red-800' : 'text-yellow-700 hover:text-yellow-800'

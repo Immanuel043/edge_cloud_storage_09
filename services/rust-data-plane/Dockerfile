@@ -26,14 +26,19 @@ RUN apt-get update && \
     apt-get install -y ca-certificates libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash appuser
+
 # Create directories
-RUN mkdir -p /tmp/edge-storage
+RUN mkdir -p /tmp/edge-storage && chown appuser:appuser /tmp/edge-storage
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/edge-storage-dataplane /usr/local/bin/edge-storage-dataplane
 
 # Make executable
 RUN chmod +x /usr/local/bin/edge-storage-dataplane
+
+USER appuser
 
 # Set environment defaults
 ENV SOCKET_PATH=/tmp/edge-storage-dataplane.sock

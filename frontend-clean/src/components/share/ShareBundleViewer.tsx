@@ -501,7 +501,7 @@ const ShareBundleViewer: React.FC = () => {
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setPassword(e.target.value)
                 }
-                onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
                   if (e.key === 'Enter' && password) {
                     handlePasswordSubmit();
                   }

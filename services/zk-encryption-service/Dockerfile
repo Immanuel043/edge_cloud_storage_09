@@ -32,6 +32,12 @@ COPY services/zk-encryption-service/app ./app
 # Create storage directory
 RUN mkdir -p /app/storage
 
+# Create non-root user and set ownership
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
 # Expose port
 EXPOSE 8002
 

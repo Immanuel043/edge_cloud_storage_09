@@ -448,6 +448,13 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     user_id = None
     try:
+        # Validate Origin header to prevent cross-site WebSocket hijacking
+        origin = websocket.headers.get("origin")
+        if origin and origin not in settings.CORS_ORIGINS:
+            logger.warning("websocket_origin_rejected", origin=origin)
+            await websocket.close(code=1008, reason="Origin not allowed")
+            return
+
         # Authenticate via session cookie (access_token is the cookie name)
         session_token = websocket.cookies.get("access_token")
         if not session_token:

@@ -196,11 +196,17 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
     };
   }, []);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — only active when player container has focus
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
     const handleKeyDown = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT') return;
+
+      // Only handle shortcuts when the player container or its children have focus
+      if (!container.contains(document.activeElement) && document.activeElement !== document.body) return;
 
       switch (e.key) {
         case ' ':

@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # Uses its own PostgreSQL instance/database
     # NOTE: Use ZK_DATABASE_URL to avoid conflict with storage service's DATABASE_URL
     ZK_DATABASE_URL: str = Field(
-        default="postgresql+asyncpg://zk_admin:secure_password@zk-postgres:5432/zk_db",
+        default="",
         env="ZK_DATABASE_URL"
     )
     
@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # JWT Settings (own auth, separate from storage service)
     SECRET_KEY: str = Field(
-        default="zk-secret-key-change-in-production",
+        default="",
         env="ZK_SECRET_KEY"
     )
     ALGORITHM: str = Field(default="HS256", env="ALGORITHM")
@@ -196,6 +196,19 @@ class Settings(BaseSettings):
     
     # Development Mode
     DEV_MODE: bool = Field(default=False, env="DEV_MODE")
+
+    def model_post_init(self, __context):
+        """Validate critical configuration on startup"""
+        if not self.ZK_DATABASE_URL:
+            raise ValueError(
+                "CRITICAL: ZK_DATABASE_URL environment variable is not set. "
+                "Set it to your PostgreSQL connection string."
+            )
+        if not self.SECRET_KEY:
+            raise ValueError(
+                "CRITICAL: ZK_SECRET_KEY environment variable is not set. "
+                "Generate one with: openssl rand -base64 32"
+            )
 
     class Config:
         env_file = ".env"

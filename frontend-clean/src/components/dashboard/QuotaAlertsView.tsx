@@ -16,6 +16,7 @@ import {
 import { API_URL } from '../../config/constants';
 import type { QuotaAlertsViewProps, QuotaPrediction, QuotaAlert } from './types';
 import { getErrorMessage } from './types';
+import { formatBytes } from '../../utils/helpers';
 
 interface AlertSeverity {
   bg: string;
@@ -34,13 +35,6 @@ const QuotaAlertsView: React.FC<QuotaAlertsViewProps> = ({ darkMode, storageStat
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [dismissing, setDismissing] = useState<string | null>(null);
 
-  const formatBytes = (bytes: number | undefined | null): string => {
-    if (!bytes || bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
 
   const fetchData = async (isRefresh = false): Promise<void> => {
     try {

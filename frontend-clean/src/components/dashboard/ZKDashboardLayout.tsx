@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo } from 'react';
 import {
-  Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home,
+  Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home, Check,
   Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
   ArrowUpDown, AlertTriangle, CreditCard
 } from 'lucide-react';
@@ -90,6 +90,14 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
   // Download state
   const [downloads, setDownloads] = useState<Record<string, DownloadItem>>({});
   const [corruptionError, setCorruptionError] = useState<CorruptionErrorInfo | null>(null);
+
+  // Inline folder creation state
+  const [isCreatingFolder, setIsCreatingFolder] = useState<boolean>(false);
+  const [newFolderName, setNewFolderName] = useState<string>('');
+  const newFolderInputRef = useRef<HTMLInputElement>(null);
+
+  // Delete error toast state
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -232,7 +240,7 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
       // Show completion toast
       setCompletedUploadCount(prev => prev + 1);
       setShowUploadCompleteToast(true);
-      setTimeout(() => setShowUploadCompleteToast(false), 5000);
+      setTimeout(() => { setShowUploadCompleteToast(false); setCompletedUploadCount(0); }, 5000);
 
       // Remove from list after delay
       setTimeout(() => {
@@ -413,10 +421,23 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
     }
   };
 
-  const handleCreateFolder = async (): Promise<void> => {
-    const name = prompt('Enter folder name:');
+  const handleCreateFolder = (): void => {
+    setIsCreatingFolder(true);
+    setNewFolderName('');
+    setTimeout(() => newFolderInputRef.current?.focus(), 0);
+  };
+
+  const submitNewFolder = async (): Promise<void> => {
+    const name = newFolderName.trim();
     if (!name) return;
+    setIsCreatingFolder(false);
+    setNewFolderName('');
     await createFolder(name);
+  };
+
+  const cancelNewFolder = (): void => {
+    setIsCreatingFolder(false);
+    setNewFolderName('');
   };
 
   // Handle share attempt - show blocked message
@@ -458,11 +479,17 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
     }
   };
 
-  // Handle file delete with confirmation
+  // Handle file delete with confirmation and error handling
   const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
     const displayName = fileName || 'this file';
     if (!window.confirm(`Are you sure you want to delete "${displayName}"?`)) return;
-    await deleteFile(fileId, fileName);
+    try {
+      await deleteFile(fileId, fileName);
+    } catch (error: unknown) {
+      const errorMessage = getErrorMessage(error);
+      setDeleteError(`Failed to delete "${displayName}": ${errorMessage}`);
+      setTimeout(() => setDeleteError(null), 6000);
+    }
   };
 
   // Drag and drop handlers
@@ -831,19 +858,63 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
                 <Upload size={20} />
                 Upload Encrypted
               </button>
-              <button
-                onClick={handleCreateFolder}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                  darkMode
-                    ? 'bg-gray-700 text-white hover:bg-gray-600'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-                title="New folder (Ctrl+N)"
-                type="button"
-              >
-                <FolderPlus size={20} />
-                New Folder
-              </button>
+              {isCreatingFolder ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={newFolderInputRef}
+                    type="text"
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') submitNewFolder();
+                      else if (e.key === 'Escape') cancelNewFolder();
+                    }}
+                    placeholder="Folder name"
+                    className={`px-3 py-2 rounded-lg border text-sm ${
+                      darkMode
+                        ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400'
+                        : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500'
+                    }`}
+                  />
+                  <button
+                    onClick={submitNewFolder}
+                    disabled={!newFolderName.trim()}
+                    className={`p-2 rounded-lg transition-colors ${
+                      newFolderName.trim()
+                        ? 'text-green-500 hover:bg-green-100 dark:hover:bg-green-900/30'
+                        : 'text-gray-400 cursor-not-allowed'
+                    }`}
+                    title="Create folder"
+                    type="button"
+                  >
+                    <Check size={20} />
+                  </button>
+                  <button
+                    onClick={cancelNewFolder}
+                    className={`p-2 rounded-lg transition-colors ${
+                      darkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-200'
+                    }`}
+                    title="Cancel"
+                    type="button"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleCreateFolder}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                    darkMode
+                      ? 'bg-gray-700 text-white hover:bg-gray-600'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                  title="New folder (Ctrl+N)"
+                  type="button"
+                >
+                  <FolderPlus size={20} />
+                  New Folder
+                </button>
+              )}
 
               {/* Spacer */}
               <div className="flex-1" />
@@ -979,7 +1050,7 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
               </p>
             </div>
             <button
-              onClick={() => setShowUploadCompleteToast(false)}
+              onClick={() => { setShowUploadCompleteToast(false); setCompletedUploadCount(0); }}
               className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
                 darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
               }`}
@@ -1025,6 +1096,38 @@ const ZKDashboardLayout: React.FC<ZKDashboardLayoutProps> = ({
             </div>
             <button
               onClick={() => setUploadError(null)}
+              className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
+                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+              }`}
+              type="button"
+            >
+              <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Error Toast */}
+      {deleteError && (
+        <div className="fixed top-4 right-4 z-50 animate-slide-in">
+          <div className={`flex items-start gap-3 px-6 py-4 rounded-xl shadow-2xl border max-w-md ${
+            darkMode
+              ? 'bg-gray-800 border-red-700/50'
+              : 'bg-white border-red-200'
+          }`}>
+            <div className="flex-shrink-0 mt-0.5">
+              <AlertTriangle size={24} className="text-red-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Delete Failed
+              </p>
+              <p className={`text-sm mt-1 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
+                {deleteError}
+              </p>
+            </div>
+            <button
+              onClick={() => setDeleteError(null)}
               className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
                 darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
               }`}

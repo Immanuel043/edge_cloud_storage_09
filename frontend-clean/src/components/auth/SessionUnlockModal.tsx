@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Lock, Unlock, AlertCircle, Key, ArrowLeft, Shield } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -58,10 +58,30 @@ const SessionUnlockModal: React.FC<SessionUnlockModalProps> = ({ isOpen, onClose
   // Recovery unlock state
   const [recoveryWords, setRecoveryWords] = useState<string[]>(Array(24).fill(''));
 
+  // Rate limiting state
+  const [failedAttempts, setFailedAttempts] = useState<number>(0);
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const lockoutTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Shared state
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [unlocked, setUnlocked] = useState<boolean>(false);
+
+  // Lockout timer
+  useEffect(() => {
+    if (lockoutUntil) {
+      lockoutTimerRef.current = setInterval(() => {
+        if (Date.now() >= lockoutUntil) {
+          setLockoutUntil(null);
+          setFailedAttempts(0);
+        }
+      }, 1000);
+      return () => {
+        if (lockoutTimerRef.current) clearInterval(lockoutTimerRef.current);
+      };
+    }
+  }, [lockoutUntil]);
 
   if (!isOpen) return null;
 
@@ -70,6 +90,14 @@ const SessionUnlockModal: React.FC<SessionUnlockModalProps> = ({ isOpen, onClose
   ): Promise<void> => {
     e.preventDefault();
     setError('');
+
+    // Rate limiting check
+    if (lockoutUntil && Date.now() < lockoutUntil) {
+      const remaining = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      setError(`Too many failed attempts. Please wait ${remaining} seconds.`);
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -81,11 +109,19 @@ const SessionUnlockModal: React.FC<SessionUnlockModalProps> = ({ isOpen, onClose
       const success = await unlockSession(password);
       if (success) {
         setUnlocked(true);
+        setFailedAttempts(0);
         setTimeout(() => {
           handleClose();
         }, 1000);
       } else {
-        setError('Incorrect password. Please try again.');
+        const newAttempts = failedAttempts + 1;
+        setFailedAttempts(newAttempts);
+        if (newAttempts >= 5) {
+          setLockoutUntil(Date.now() + 60000);
+          setError('Too many failed attempts. Please wait 60 seconds.');
+        } else {
+          setError('Incorrect password. Please try again.');
+        }
       }
     } catch (err: unknown) {
       setError(getErrorMessage(err) || 'Failed to unlock session. Please try again.');
@@ -161,14 +197,15 @@ const SessionUnlockModal: React.FC<SessionUnlockModalProps> = ({ isOpen, onClose
   };
 
   const handleClose = (): void => {
+    // Clear sensitive data immediately — don't defer to setTimeout
+    setPassword('');
+    setRecoveryWords(Array(24).fill(''));
+    setError('');
     onClose();
-    // Reset state after close
+    // Reset non-sensitive UI state after close animation
     setTimeout(() => {
       setMode('password');
-      setPassword('');
-      setRecoveryWords(Array(24).fill(''));
       setUnlocked(false);
-      setError('');
     }, 300);
   };
 

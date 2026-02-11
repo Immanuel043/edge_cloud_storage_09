@@ -5,6 +5,7 @@ import { Producer } from 'kafkajs';
 import { UploadController } from '../controllers/uploadController';
 import { upload } from '../middleware/upload';
 import { requireAuth } from '../middleware/auth';
+import { uploadLimiter } from '../middleware/rateLimit';
 
 export function createUploadRoutes(
   storageServiceUrl: string,
@@ -13,6 +14,7 @@ export function createUploadRoutes(
   kafkaProducer: Producer | null
 ): Router {
   const router = Router();
+  router.use(uploadLimiter);
   const uploadController = new UploadController(storageServiceUrl, redisCache, io, kafkaProducer);
 
   router.post('/init', requireAuth, (req, res) => {

@@ -44,7 +44,12 @@ const BulkActions: React.FC<BulkActionsProps> = ({
         Download
       </button>
       <button
-        onClick={(e) => handleClick(e, onDelete)}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (window.confirm(`Are you sure you want to delete ${selectedCount} selected file(s)?`)) {
+            onDelete();
+          }
+        }}
         className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium text-sm"
         title="Delete selected"
       >

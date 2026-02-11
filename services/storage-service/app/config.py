@@ -26,10 +26,7 @@ class Settings:
     ZK_SERVICE_INTERNAL_URL: str = os.getenv("ZK_SERVICE_INTERNAL_URL", "http://localhost:8002")
 
     # Database
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL", 
-        "postgresql+asyncpg://edge_admin:secure_password@localhost:5432/edge_cloud"
-    )
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     
     # Storage Paths
@@ -86,6 +83,7 @@ class Settings:
     
     # Development Mode
     DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"
+    DEV_MODE_CONFIRMATION_KEY: str = os.getenv("DEV_MODE_CONFIRMATION_KEY", "")
 
     # Email Configuration (Mailgun API)
     MAILGUN_ENABLED: bool = os.getenv("MAILGUN_ENABLED", "true").lower() == "true"
@@ -165,7 +163,7 @@ class Settings:
     ELASTICSEARCH_INDEX_PREFIX: str = os.getenv("ELASTICSEARCH_INDEX_PREFIX", "edge_storage")
     ELASTICSEARCH_RETRY_ON_TIMEOUT: bool = os.getenv("ELASTICSEARCH_RETRY_ON_TIMEOUT", "true").lower() == "true"
     ELASTICSEARCH_MAX_RETRIES: int = int(os.getenv("ELASTICSEARCH_MAX_RETRIES", 3))
-    ELASTICSEARCH_TIMEOUT: int = int(os.getenv("ELASTICSEARCH_TIMEOUT", 30))  # seconds
+    ELASTICSEARCH_TIMEOUT: int = int(os.getenv("ELASTICSEARCH_TIMEOUT", 10))  # seconds
 
     # Kafka Configuration
     KAFKA_BROKERS: str = os.getenv("KAFKA_BROKERS", "localhost:9092")
@@ -205,8 +203,20 @@ class Settings:
 
     def __init__(self):
         """Initialize settings with validation"""
+        self._validate_database_url()
         self._validate_encryption_keys()
         self._validate_dev_mode()
+
+    def _validate_database_url(self):
+        """Validate DATABASE_URL is set"""
+        if not self.DATABASE_URL:
+            error_msg = (
+                "CRITICAL: DATABASE_URL environment variable is not set. "
+                "Set it to your PostgreSQL connection string, e.g.: "
+                "postgresql+asyncpg://user:password@host:5432/dbname"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
     def _validate_encryption_keys(self):
         """Validate encryption keys are properly configured"""
@@ -257,21 +267,30 @@ class Settings:
         if self.DEV_MODE:
             environment = os.getenv("ENVIRONMENT", "development").lower()
 
-            # CRITICAL: Prevent DEV_MODE in production
-            if environment == "production":
+            # CRITICAL: Only allow DEV_MODE on explicitly local environments
+            if environment not in ("development", "local", "test"):
                 error_msg = (
-                    "CRITICAL SECURITY ERROR: DEV_MODE cannot be enabled in production environment. "
-                    "This bypasses all payment verification and poses a severe security risk. "
-                    "Please set DEV_MODE=false or remove the ENVIRONMENT=production setting."
+                    f"CRITICAL SECURITY ERROR: DEV_MODE cannot be enabled when "
+                    f"ENVIRONMENT={environment}. DEV_MODE bypasses all payment "
+                    f"verification and is only allowed for development/local/test."
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
-            # Warning for non-production environments
+            # Require confirmation key to prevent accidental activation
+            if not self.DEV_MODE_CONFIRMATION_KEY:
+                error_msg = (
+                    "SECURITY ERROR: DEV_MODE=true requires DEV_MODE_CONFIRMATION_KEY to be set. "
+                    "This prevents accidental activation. Generate a random key and set it as "
+                    "DEV_MODE_CONFIRMATION_KEY in your .env file."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
             logger.warning("=" * 80)
-            logger.warning("⚠️  DEV_MODE IS ENABLED - PAYMENT VERIFICATION BYPASSED!")
-            logger.warning("⚠️  This should NEVER be enabled in production")
-            logger.warning("⚠️  All payment requests will succeed without actual charges")
+            logger.warning("DEV_MODE IS ENABLED - PAYMENT VERIFICATION BYPASSED!")
+            logger.warning("This should NEVER be enabled in production.")
+            logger.warning("ENVIRONMENT=%s", environment)
             logger.warning("=" * 80)
 
 settings = Settings()

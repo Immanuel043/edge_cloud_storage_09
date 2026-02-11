@@ -32,8 +32,12 @@ RUN npm ci --omit=dev
 # Copy compiled JavaScript from builder
 COPY --from=builder /app/dist ./dist
 
-# Create logs directory
-RUN mkdir -p logs
+# Create logs directory and non-root user
+RUN mkdir -p logs && \
+    addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    chown -R appuser:appgroup /app
+
+USER appuser
 
 EXPOSE 3000
 

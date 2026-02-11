@@ -86,8 +86,8 @@ class RenameFileRequest(BaseModel):
 @router.get("/files", response_model=FileListResponse)
 async def list_files(
     folder_id: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     is_deleted: Optional[bool] = Query(None, description="Filter by deleted status: true for trash, false for active files"),
     user=Depends(get_current_zk_user),
     db: AsyncSession = Depends(get_db)
@@ -110,15 +110,13 @@ async def list_files(
     """
     from app.models.database import ZKObject
 
-    # Log the received parameter value and type for debugging
     logger.info(
         "zk_list_files",
         user_id=str(user.id),
         folder_id=folder_id,
         limit=limit,
         offset=offset,
-        is_deleted=is_deleted,
-        is_deleted_type=type(is_deleted).__name__
+        is_deleted=is_deleted
     )
 
     # Build query - ONLY return ZK-encrypted files (encryption_mode = 'client_zk')
@@ -137,12 +135,10 @@ async def list_files(
         else:
             deleted_filter = bool(is_deleted)
         query = query.where(ZKObject.is_deleted == deleted_filter)
-        logger.info(f"Filtering by is_deleted={deleted_filter} (received: {is_deleted}, type: {type(is_deleted).__name__})")
     else:
         # Default behavior: only return non-deleted files
         deleted_filter = False
         query = query.where(ZKObject.is_deleted == False)
-        logger.info("Using default filter: is_deleted=False (parameter not provided)")
 
     if folder_id:
         query = query.where(ZKObject.folder_id == folder_id)

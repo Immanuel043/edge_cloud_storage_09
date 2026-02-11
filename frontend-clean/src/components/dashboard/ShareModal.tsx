@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, Copy, Check, Lock, Clock, Download } from 'lucide-react';
 import type { ShareModalProps } from './types';
 import type { LucideIcon } from 'lucide-react';
@@ -16,6 +16,13 @@ interface InfoItem {
  */
 const ShareModal: React.FC<ShareModalProps> = ({ shareData, onClose, darkMode }) => {
   const [copied, setCopied] = useState<boolean>(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   const shareUrl = shareData?.share_url ?? '';
 
@@ -24,7 +31,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ shareData, onClose, darkMode })
     try {
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
     } catch {
       // Fallback: select text for manual copy or show failure message
       console.warn('Clipboard write failed. User may need to copy manually.');
@@ -39,7 +46,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ shareData, onClose, darkMode })
         document.execCommand('copy');
         document.body.removeChild(textarea);
         setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
       } catch {
         alert('Copy failed. Please select and copy the link manually.');
       }

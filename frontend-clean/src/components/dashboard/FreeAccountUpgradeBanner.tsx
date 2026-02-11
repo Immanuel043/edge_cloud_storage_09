@@ -29,14 +29,11 @@ const FreeAccountUpgradeBanner: React.FC<FreeAccountUpgradeBannerProps> = ({ dar
       subRecord?.tier_name === 'free' ||
       (typeof subRecord?.plan_code === 'string' && subRecord.plan_code.includes('free'));
 
-    if (isFree && !isPermanentlyDismissed()) {
+    const isDismissed = localStorage.getItem('free_upgrade_banner_dismissed') === 'true';
+    if (isFree && !isDismissed) {
       setIsVisible(true);
     }
   }, [subscription, loading]);
-
-  const isPermanentlyDismissed = (): boolean => {
-    return localStorage.getItem('free_upgrade_banner_dismissed') === 'true';
-  };
 
   const handleDismiss = (): void => {
     localStorage.setItem('free_upgrade_banner_dismissed', 'true');
