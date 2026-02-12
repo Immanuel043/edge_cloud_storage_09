@@ -19,43 +19,35 @@ depends_on = None
 def upgrade():
     """Add trial period tracking and payment method fields."""
 
-    # Rename trial_ends_at to trial_end for consistency
-    op.alter_column(
-        'user_subscriptions',
-        'trial_ends_at',
-        new_column_name='trial_end',
-        existing_type=sa.DateTime(timezone=True),
-        existing_nullable=True
-    )
+    # Use raw SQL with IF NOT EXISTS guards to handle columns that may already exist
+    # from earlier migrations (20251101_0000, create_subscription_tables)
+    conn = op.get_bind()
 
-    # Add trial_start field
-    op.add_column(
-        'user_subscriptions',
-        sa.Column('trial_start', sa.DateTime(timezone=True), nullable=True)
-    )
+    # Rename trial_ends_at to trial_end (only if trial_ends_at exists and trial_end doesn't)
+    result = conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'user_subscriptions' AND column_name = 'trial_ends_at'"
+    ))
+    if result.fetchone():
+        op.alter_column(
+            'user_subscriptions',
+            'trial_ends_at',
+            new_column_name='trial_end',
+            existing_type=sa.DateTime(timezone=True),
+            existing_nullable=True
+        )
 
-    # Add payment method fields for auto-conversion
-    op.add_column(
-        'user_subscriptions',
-        sa.Column('stripe_payment_method_id', sa.String(255), nullable=True)
-    )
+    # Add columns only if they don't already exist
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS trial_start TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS stripe_payment_method_id VARCHAR(255)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS razorpay_payment_method_id VARCHAR(255)")
+    op.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ")
 
-    op.add_column(
-        'user_subscriptions',
-        sa.Column('razorpay_payment_method_id', sa.String(255), nullable=True)
-    )
-
-    # Add cancelled_at field for tracking
-    op.add_column(
-        'user_subscriptions',
-        sa.Column('cancelled_at', sa.DateTime(timezone=True), nullable=True)
-    )
-
-    # Create index on trial_end for efficient expiry queries
-    op.create_index(
-        'idx_user_subscriptions_trial_end',
-        'user_subscriptions',
-        ['trial_end']
+    # Create index (only if it doesn't exist)
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_trial_end "
+        "ON user_subscriptions (trial_end)"
     )
 
 

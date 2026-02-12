@@ -68,6 +68,17 @@ export interface ErrorResponse {
   message?: string;
 }
 
+function extractErrorMessage(error: ErrorResponse, fallback: string): string {
+  if (!error.detail) return error.message ?? fallback;
+  if (typeof error.detail === 'string') return error.detail;
+  if (Array.isArray(error.detail)) return error.detail.map(e => e.msg).join(', ');
+  if (typeof error.detail === 'object') {
+    const d = error.detail as Record<string, unknown>;
+    return (d.message as string) ?? (d.error as string) ?? fallback;
+  }
+  return fallback;
+}
+
 class AuthService {
   async login(email: string, password: string): Promise<AuthResponse> {
     await rateLimiter.checkLimit();
@@ -254,7 +265,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? 'Failed to send verification code');
+      throw new Error(extractErrorMessage(error, 'Failed to send verification code'));
     }
 
     return await response.json();
@@ -278,7 +289,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? 'Invalid verification code');
+      throw new Error(extractErrorMessage(error, 'Invalid verification code'));
     }
 
     return await response.json();
@@ -313,7 +324,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? 'Registration failed');
+      throw new Error(extractErrorMessage(error, 'Registration failed'));
     }
 
     return await response.json();
@@ -334,7 +345,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? 'Failed to resend code');
+      throw new Error(extractErrorMessage(error, 'Failed to resend code'));
     }
 
     return await response.json();
@@ -358,7 +369,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? error.message ?? 'Failed to send verification code');
+      throw new Error(extractErrorMessage(error, 'Failed to send verification code'));
     }
 
     return await response.json();
@@ -383,7 +394,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? error.message ?? 'Invalid verification code');
+      throw new Error(extractErrorMessage(error, 'Invalid verification code'));
     }
 
     return await response.json();
@@ -429,7 +440,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? error.message ?? 'Registration failed');
+      throw new Error(extractErrorMessage(error, 'Registration failed'));
     }
 
     return await response.json();
@@ -451,7 +462,7 @@ class AuthService {
 
     if (!response.ok) {
       const error = (await response.json()) as ErrorResponse;
-      throw new Error(error.detail?.toString() ?? error.message ?? 'Failed to resend code');
+      throw new Error(extractErrorMessage(error, 'Failed to resend code'));
     }
 
     return await response.json();

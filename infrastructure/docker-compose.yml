@@ -246,20 +246,21 @@ services:
     environment:
       RUST_LOG: info
       STORAGE_ROOT: /app/storage
-      SOCKET_PATH: /tmp/edge-storage-dataplane.sock
+      SOCKET_PATH: /run/dataplane/edge-storage-dataplane.sock
       USE_SCM_RIGHTS: "true"
       COMPRESSION_LEVEL: 3
     volumes:
       # Shared socket volume with storage-service
-      - dataplane-socket:/tmp
+      - dataplane-socket:/run/dataplane
       # Shared storage for chunk files (same path as storage-service)
       - storage_data:/app/storage
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "test -S /tmp/edge-storage-dataplane.sock"]
+      test: ["CMD-SHELL", "test -S /run/dataplane/edge-storage-dataplane.sock"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -372,7 +373,7 @@ services:
       # Add temp directory with size limit
      - /tmp/upload_temp:/tmp/upload_temp
       # Shared socket volume with rust-dataplane for full mode
-     - dataplane-socket:/tmp
+     - dataplane-socket:/run/dataplane
     # Local docker-compose resource limits (works with many compose setups)
     mem_limit: 8g
     cpus: "4.0"

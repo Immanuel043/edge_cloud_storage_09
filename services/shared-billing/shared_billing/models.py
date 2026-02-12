@@ -108,17 +108,20 @@ class UserSubscription(Base):
     current_period_start = Column(DateTime(timezone=True))
     current_period_end = Column(DateTime(timezone=True))
     cancelled_at = Column(DateTime(timezone=True))
-    trial_ends_at = Column(DateTime(timezone=True))
+    trial_start = Column(DateTime(timezone=True))
+    trial_end = Column(DateTime(timezone=True))
 
     # Payment Gateway Integration
     payment_gateway = Column(String(20))  # 'razorpay' or 'stripe'
     # Stripe Integration
     stripe_subscription_id = Column(String(255))
     stripe_customer_id = Column(String(255))
+    stripe_payment_method_id = Column(String(255))
     # Razorpay Integration
     razorpay_subscription_id = Column(String(255))
     razorpay_order_id = Column(String(255))
     razorpay_payment_id = Column(String(255))
+    razorpay_payment_method_id = Column(String(255))
     # Common Payment Fields
     payment_method = Column(String(50))
     last_payment_at = Column(DateTime(timezone=True))

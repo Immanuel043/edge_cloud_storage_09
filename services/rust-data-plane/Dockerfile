@@ -32,6 +32,9 @@ RUN useradd --create-home --shell /bin/bash appuser
 # Create directories
 RUN mkdir -p /tmp/edge-storage && chown appuser:appuser /tmp/edge-storage
 
+# Create dedicated socket directory (avoids permission issues with volume mounts on /tmp)
+RUN mkdir -p /run/dataplane && chown appuser:appuser /run/dataplane
+
 # Copy binary from builder
 COPY --from=builder /build/target/release/edge-storage-dataplane /usr/local/bin/edge-storage-dataplane
 
@@ -41,7 +44,7 @@ RUN chmod +x /usr/local/bin/edge-storage-dataplane
 USER appuser
 
 # Set environment defaults
-ENV SOCKET_PATH=/tmp/edge-storage-dataplane.sock
+ENV SOCKET_PATH=/run/dataplane/edge-storage-dataplane.sock
 ENV STORAGE_ROOT=/tmp/edge-storage
 ENV COMPRESSION_LEVEL=3
 ENV RUST_LOG=info

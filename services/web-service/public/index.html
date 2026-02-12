@@ -13,8 +13,14 @@
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
       }
     </script>
-    <script type="module" crossorigin src="/assets/index-B8Da9lEO.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Dr2BToQW.css">
+    <!-- Argon2 for ZK encryption key derivation - loaded via script tag for reliable WASM loading -->
+    <script>
+      // Set WASM path BEFORE loading argon2-browser.js
+      window.argon2WasmPath = '/argon2.wasm';
+    </script>
+    <script src="/argon2-browser.js"></script>
+    <script type="module" crossorigin src="/assets/index-BrWF4j3b.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DqBHzCmh.css">
   </head>
   <body>
     <div id="root"></div>

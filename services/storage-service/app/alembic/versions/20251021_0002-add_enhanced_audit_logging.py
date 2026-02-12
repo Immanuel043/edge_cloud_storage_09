@@ -66,7 +66,7 @@ def upgrade():
 
         # Additional data
         sa.Column('details', postgresql.JSONB()),
-        sa.Column('metadata', postgresql.JSONB()),
+        sa.Column('audit_metadata', postgresql.JSONB()),
 
         # Compliance
         sa.Column('is_compliance_relevant', sa.Boolean(), server_default='false'),
@@ -118,7 +118,7 @@ def upgrade():
         sa.Column('resolved_at', sa.DateTime(timezone=True)),
         sa.Column('resolution', sa.Text()),
         sa.Column('actions_taken', postgresql.JSONB()),
-        sa.Column('metadata', postgresql.JSONB()),
+        sa.Column('alert_metadata', postgresql.JSONB()),
     )
 
     # Create indexes for security_alerts
@@ -144,7 +144,7 @@ def upgrade():
         sa.Column('issues_found', sa.Integer(), server_default='0'),
         sa.Column('issues_resolved', sa.Integer(), server_default='0'),
         sa.Column('report_file_path', sa.String(1000)),
-        sa.Column('metadata', postgresql.JSONB()),
+        sa.Column('report_metadata', postgresql.JSONB()),
     )
 
     # Create indexes for compliance_reports

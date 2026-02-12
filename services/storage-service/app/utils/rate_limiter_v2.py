@@ -105,9 +105,10 @@ async def rate_limit_callback(request: Request, response: Response, pexpire: int
     retry_after = int(pexpire / 1000) if pexpire else 60
 
     # Log rate limit hit
+    client_ip = request.client.host if request.client else "unknown"
     logger.warning(
         f"Rate limit exceeded for {request.url.path} "
-        f"from {get_user_identifier(request)} "
+        f"from {client_ip} "
         f"(retry after {retry_after}s)"
     )
 

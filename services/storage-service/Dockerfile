@@ -53,9 +53,12 @@ RUN mkdir -p /app/storage/{cache,warm,cold,temp,backup} && \
 COPY services/storage-service/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Create dedicated socket directory for rust-dataplane IPC
+RUN mkdir -p /run/dataplane
+
 # Create non-root user and set ownership
 RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app /entrypoint.sh
+    chown -R appuser:appuser /app /entrypoint.sh /run/dataplane
 
 USER appuser
 
