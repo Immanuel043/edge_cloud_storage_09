@@ -107,8 +107,8 @@ class UserSubscriptionStatus(BaseModel):
 
 class SubscriptionDashboard(BaseModel):
     """Complete dashboard data in single response."""
-    # Frontend expects these field names
-    subscription: UserSubscriptionStatus
+    # Frontend expects 'current_subscription' field name
+    current_subscription: UserSubscriptionStatus
     available_plans: List[PlanCard]
     usage: Optional[Dict[str, Any]] = None  # Match frontend expectation
     warnings: List[Dict[str, Any]]
@@ -269,7 +269,7 @@ async def get_subscription_dashboard(
     if plan.price_monthly is None or plan.price_monthly == 0:
         price_display = "Free"
     else:
-        price_display = f"${float(plan.price_monthly):.2f}/mo"
+        price_display = f"\u20b9{int(plan.price_monthly)}/mo"
 
     # Format next billing date
     next_billing_date = None
@@ -310,7 +310,7 @@ async def get_subscription_dashboard(
         if p.price_monthly is None or p.price_monthly == 0:
             price_display = "Free"
         else:
-            price_display = f"${p.price_monthly:.2f}/mo"
+            price_display = f"\u20b9{int(p.price_monthly)}/mo"
 
         plan_card = PlanCard(
             plan_code=p.plan_code,
@@ -372,7 +372,7 @@ async def get_subscription_dashboard(
     }
 
     return SubscriptionDashboard(
-        subscription=current_sub,
+        current_subscription=current_sub,
         available_plans=plan_cards,
         usage=usage_dict,
         warnings=warnings,

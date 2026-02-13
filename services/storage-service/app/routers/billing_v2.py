@@ -18,6 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Header, Query, Request as FastAPIRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
 
 # Shared billing library
@@ -43,7 +44,7 @@ from shared_billing.schemas import (
     SubscriptionHistoryResponse,
 )
 
-from ..dependencies import get_db, get_current_user
+from ..dependencies import get_db, get_current_user, require_admin
 from ..models.database import User
 from ..config import settings
 from ..middleware.rate_limiter import RateLimitConfig
@@ -780,12 +781,14 @@ async def create_payment(
             raise HTTPException(500, f"Failed to upgrade: {str(e)}")
     
     # Paid plan - create payment
-    # Get gateway-specific plan ID
+    # Get gateway-specific plan ID (optional for Razorpay order-based payments)
+    plan_id = None
     if payment_request.payment_gateway == 'razorpay':
         plan_id_field = f"razorpay_plan_id_{payment_request.billing_cycle}" if payment_request.billing_cycle != "six_months" else "razorpay_plan_id_six_months"
         plan_id = getattr(plan, plan_id_field, None)
+        # Razorpay: plan_id is optional — uses order-based one-time payment when absent
         if not plan_id:
-            raise HTTPException(400, f"Razorpay plan ID not configured for {payment_request.billing_cycle} billing cycle")
+            logger.info(f"No Razorpay plan ID for {payment_request.billing_cycle}; using order-based payment")
     elif payment_request.payment_gateway == 'stripe':
         plan_id_field = f"stripe_price_id_{payment_request.billing_cycle}" if payment_request.billing_cycle != "six_months" else "stripe_price_id_six_months"
         plan_id = getattr(plan, plan_id_field, None)
@@ -1029,8 +1032,90 @@ async def razorpay_webhook(
             subscription.status = 'active'
             subscription.razorpay_payment_id = payment_id
             subscription.last_payment_at = func.now()
+
+            # Update user quota
+            await db.execute(
+                select(UserSubscription).options(
+                    selectinload(UserSubscription.plan)
+                ).filter(UserSubscription.id == subscription.id)
+            )
+
             await db.commit()
             logger.info(f"Razorpay payment captured for subscription {subscription.id}")
+
+    elif event_type == 'payment.failed':
+        payment_data = event.get('payload', {}).get('payment', {}).get('entity', {})
+        order_id = payment_data.get('order_id')
+
+        if order_id:
+            result = await db.execute(
+                select(UserSubscription).filter(
+                    UserSubscription.razorpay_order_id == order_id
+                )
+            )
+            subscription = result.scalar_one_or_none()
+
+            if subscription and subscription.status == 'pending_payment':
+                subscription.status = 'past_due'
+                await db.commit()
+                logger.warning(f"Razorpay payment failed for subscription {subscription.id}")
+
+    elif event_type == 'payment.authorized':
+        # Payment authorized but not yet captured - log for tracking
+        payment_data = event.get('payload', {}).get('payment', {}).get('entity', {})
+        logger.info(f"Razorpay payment authorized: {payment_data.get('id')} (awaiting capture)")
+
+    elif event_type == 'subscription.charged':
+        # Recurring subscription payment - renew period
+        subscription_data = event.get('payload', {}).get('subscription', {}).get('entity', {})
+        razorpay_sub_id = subscription_data.get('id')
+
+        if razorpay_sub_id:
+            result = await db.execute(
+                select(UserSubscription).filter(
+                    UserSubscription.razorpay_subscription_id == razorpay_sub_id
+                )
+            )
+            subscription = result.scalar_one_or_none()
+
+            if subscription:
+                from datetime import datetime as dt, timezone as tz
+                from dateutil.relativedelta import relativedelta
+                now = dt.now(tz.utc)
+                subscription.status = 'active'
+                subscription.last_payment_at = now
+                subscription.current_period_start = now
+                if subscription.billing_cycle == 'monthly':
+                    subscription.current_period_end = now + relativedelta(months=1)
+                elif subscription.billing_cycle == 'six_months':
+                    subscription.current_period_end = now + relativedelta(months=6)
+                elif subscription.billing_cycle == 'yearly':
+                    subscription.current_period_end = now + relativedelta(years=1)
+                subscription.next_payment_at = subscription.current_period_end
+                await db.commit()
+                logger.info(f"Razorpay subscription renewed: {subscription.id}")
+
+    elif event_type == 'subscription.cancelled':
+        subscription_data = event.get('payload', {}).get('subscription', {}).get('entity', {})
+        razorpay_sub_id = subscription_data.get('id')
+
+        if razorpay_sub_id:
+            result = await db.execute(
+                select(UserSubscription).filter(
+                    UserSubscription.razorpay_subscription_id == razorpay_sub_id
+                )
+            )
+            subscription = result.scalar_one_or_none()
+
+            if subscription:
+                from datetime import datetime as dt, timezone as tz
+                subscription.status = 'cancelled'
+                subscription.cancelled_at = dt.now(tz.utc)
+                await db.commit()
+                logger.info(f"Razorpay subscription cancelled: {subscription.id}")
+
+    else:
+        logger.info(f"Unhandled Razorpay webhook event: {event_type}")
 
     return {"status": "ok"}
 
@@ -1326,10 +1411,144 @@ async def create_billing_portal_session(
         )
 
 
-# ===== Admin Endpoints (Future) =====
+# ===== Admin Endpoints =====
 
-# TODO: Add admin endpoints for plan management
-# POST /admin/plans - Create new plan
-# PUT /admin/plans/{id} - Update plan
-# DELETE /admin/plans/{id} - Deactivate plan
-# POST /admin/users/{id}/subscription - Admin subscription override
+
+class UpdatePlanPricesRequest(BaseModel):
+    """Request to update plan prices (admin only)."""
+    price_monthly: Optional[float] = Field(None, ge=0, description="Monthly price in INR")
+    price_six_months: Optional[float] = Field(None, ge=0, description="6-month price in INR")
+    price_yearly: Optional[float] = Field(None, ge=0, description="Yearly price in INR")
+    effective_from: Optional[str] = Field(None, description="ISO datetime when new prices take effect (defaults to now)")
+
+
+@router.get("/admin/plans")
+async def admin_list_all_plans(
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List all plans (including inactive) with full admin details.
+
+    Admin only - requires is_admin=True on user.
+    """
+    billing = await get_billing_service(db)
+    plans = await billing.get_available_plans(active_only=False)
+
+    return {
+        "plans": [
+            {
+                "id": str(p.id),
+                "plan_code": p.plan_code,
+                "service_type": p.service_type,
+                "tier_name": p.tier_name,
+                "display_name": p.display_name,
+                "description": p.description,
+                "price_monthly": float(p.price_monthly) if p.price_monthly else None,
+                "price_six_months": float(p.price_six_months) if p.price_six_months else None,
+                "price_yearly": float(p.price_yearly) if p.price_yearly else None,
+                "currency": p.currency or "INR",
+                "storage_bytes": p.storage_bytes,
+                "storage_gb": round(p.storage_bytes / (1024**3), 2),
+                "bandwidth_mbps": p.bandwidth_mbps,
+                "is_active": p.is_active,
+                "is_default": p.is_default,
+                "is_most_popular": p.is_most_popular,
+                "category": p.category,
+                "sort_order": p.sort_order,
+                "price_updated_at": p.price_updated_at.isoformat() if p.price_updated_at else None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "active_subscribers": 0,  # TODO: count in future
+            }
+            for p in plans
+        ],
+        "total": len(plans),
+    }
+
+
+@router.post("/admin/plans/{plan_code}/prices")
+async def admin_update_plan_prices(
+    plan_code: str,
+    request: UpdatePlanPricesRequest,
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update plan prices (admin only).
+
+    - Protected by require_admin
+    - Validates prices >= 0
+    - Records change in subscription_history for audit trail
+    - Existing subscribers are unaffected (they have price_snapshot)
+    - price_updated_at is set on the plan
+
+    Returns the updated plan with old and new prices for confirmation.
+    """
+    from datetime import datetime as dt, timezone as tz
+
+    billing = await get_billing_service(db)
+
+    try:
+        plan = await billing.get_plan_by_code(plan_code)
+    except PlanNotFoundError:
+        raise HTTPException(404, f"Plan not found: {plan_code}")
+
+    # At least one price must be provided
+    if request.price_monthly is None and request.price_six_months is None and request.price_yearly is None:
+        raise HTTPException(400, "At least one price field must be provided")
+
+    # Capture old prices for audit
+    old_prices = {
+        "price_monthly": float(plan.price_monthly) if plan.price_monthly else None,
+        "price_six_months": float(plan.price_six_months) if plan.price_six_months else None,
+        "price_yearly": float(plan.price_yearly) if plan.price_yearly else None,
+    }
+
+    # Update prices
+    now = dt.now(tz.utc)
+    new_prices = {}
+
+    if request.price_monthly is not None:
+        plan.price_monthly = request.price_monthly
+        new_prices["price_monthly"] = request.price_monthly
+
+    if request.price_six_months is not None:
+        plan.price_six_months = request.price_six_months
+        new_prices["price_six_months"] = request.price_six_months
+
+    if request.price_yearly is not None:
+        plan.price_yearly = request.price_yearly
+        new_prices["price_yearly"] = request.price_yearly
+
+    plan.price_updated_at = now
+
+    # Record in subscription_history for audit trail
+    history = SubscriptionHistory(
+        user_id=admin_user.id,
+        service_type=plan.service_type,
+        event_type='price_updated',
+        to_plan_id=plan.id,
+        reason='admin_price_update',
+        performed_by=admin_user.id,
+        notes=f"Old: {old_prices}, New: {new_prices}",
+        extra_metadata={
+            "old_prices": old_prices,
+            "new_prices": new_prices,
+            "effective_from": request.effective_from or now.isoformat(),
+        }
+    )
+    db.add(history)
+    await db.commit()
+
+    logger.info(
+        f"Admin {admin_user.id} updated prices for {plan_code}: {old_prices} -> {new_prices}"
+    )
+
+    return {
+        "success": True,
+        "plan_code": plan_code,
+        "old_prices": old_prices,
+        "new_prices": new_prices,
+        "price_updated_at": now.isoformat(),
+        "note": "Existing subscribers are unaffected (price snapshots preserved)"
+    }

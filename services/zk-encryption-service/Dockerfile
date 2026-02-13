@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     curl \
     procps \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
@@ -29,12 +30,16 @@ COPY services/zk-encryption-service/alembic.ini .
 # Copy application code (includes app/alembic/ directory with migrations)
 COPY services/zk-encryption-service/app ./app
 
+# Copy entrypoint script
+COPY services/zk-encryption-service/entrypoint.sh /entrypoint.sh
+
 # Create storage directory
 RUN mkdir -p /app/storage
 
 # Create non-root user and set ownership
 RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app && \
+    chmod +x /entrypoint.sh
 
 USER appuser
 
@@ -46,4 +51,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8002/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
+ENTRYPOINT ["/entrypoint.sh"]

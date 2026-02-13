@@ -48,7 +48,7 @@ class SubscriptionPlan(Base):
     razorpay_plan_id_monthly = Column(String(255))  # Razorpay plan ID for monthly
     razorpay_plan_id_six_months = Column(String(255))  # Razorpay plan ID for 6-month
     razorpay_plan_id_yearly = Column(String(255))  # Razorpay plan ID for yearly
-    currency = Column(String(3), default='USD')
+    currency = Column(String(3), default='INR')
 
     # Quotas and Limits
     storage_bytes = Column(BigInteger, nullable=False)
@@ -67,6 +67,7 @@ class SubscriptionPlan(Base):
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    price_updated_at = Column(DateTime(timezone=True))
 
     # Relationships
     subscriptions = relationship("UserSubscription", back_populates="plan")
@@ -126,6 +127,10 @@ class UserSubscription(Base):
     payment_method = Column(String(50))
     last_payment_at = Column(DateTime(timezone=True))
     next_payment_at = Column(DateTime(timezone=True))
+
+    # Price snapshot - captures exact price at purchase time
+    # Stores: {price_monthly, price_six_months, price_yearly, currency, captured_at}
+    price_snapshot = Column(JSONB)
 
     # Metadata
     extra_metadata = Column(JSONB, default={})

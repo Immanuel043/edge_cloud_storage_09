@@ -1,8 +1,8 @@
 /**
  * Bootstrap Mode Verification
  *
- * Verifies user's service mode on app load by checking both services.
- * Corrects localStorage if mismatch detected (e.g., after clearing localStorage).
+ * Verifies user's service mode on app load by checking the current service first.
+ * Only probes the other service as a fallback if the current one has no active session.
  *
  * This utility helps recover from situations where:
  * - User clears localStorage but still has active session cookies
@@ -62,11 +62,12 @@ async function checkActiveSession(service: 'zk' | 'normal'): Promise<SessionChec
 /**
  * Verify service mode matches actual sessions
  *
- * Checks both ZK and Normal services to determine which one has an active session,
- * then corrects localStorage if it doesn't match.
+ * Checks the CURRENT service first (based on localStorage). Only probes the
+ * other service if the current one has no active session. This avoids
+ * unnecessary cross-service 401 errors on every page load.
  *
- * IMPORTANT: Only corrects localStorage if there's a clear mismatch.
- * If no sessions are detected, trusts localStorage (user might be logged out).
+ * Fallback logic still corrects localStorage if the user has an active session
+ * on the other service (e.g., after clearing localStorage).
  *
  * @returns Correct ZK mode (true for ZK, false for Normal)
  */
@@ -76,47 +77,37 @@ export async function verifyServiceMode(): Promise<boolean> {
   // Get current localStorage mode
   const storedZKMode = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
 
-  // Check both services in parallel for active sessions
-  const [zkCheck, normalCheck] = await Promise.all([
-    checkActiveSession('zk'),
-    checkActiveSession('normal'),
-  ]);
+  // Check the current (expected) service first
+  const primaryService: 'zk' | 'normal' = storedZKMode ? 'zk' : 'normal';
+  const primaryCheck = await checkActiveSession(primaryService);
 
-  console.log('[Bootstrap] Session checks:', { zkCheck, normalCheck, storedZKMode });
-
-  // Determine correct mode based on active sessions
-  let correctZKMode: boolean;
-
-  if (zkCheck.hasActiveSession && !normalCheck.hasActiveSession) {
-    // Only ZK session found
-    correctZKMode = true;
-    console.log('[Bootstrap] Active ZK session detected (only)');
-  } else if (normalCheck.hasActiveSession && !zkCheck.hasActiveSession) {
-    // Only Normal session found
-    correctZKMode = false;
-    console.log('[Bootstrap] Active Normal session detected (only)');
-  } else if (zkCheck.hasActiveSession && normalCheck.hasActiveSession) {
-    // Both sessions found (unusual) - prefer ZK for security
-    correctZKMode = true;
-    console.log('[Bootstrap] Both sessions detected, preferring ZK');
-  } else {
-    // No active sessions - trust localStorage (user is logged out or fresh)
-    correctZKMode = storedZKMode;
-    console.log('[Bootstrap] No active sessions detected, trusting localStorage:', correctZKMode);
+  if (primaryCheck.hasActiveSession) {
+    // Happy path: current service has active session, no need to check the other
+    console.log(`[Bootstrap] Active ${primaryService} session confirmed`);
+    return storedZKMode;
   }
 
-  // Correct localStorage only if there's a real mismatch with active session
-  if (correctZKMode !== storedZKMode && (zkCheck.hasActiveSession || normalCheck.hasActiveSession)) {
-    console.log(`[Bootstrap] Mode mismatch with active session! Correcting: ${storedZKMode} → ${correctZKMode}`);
+  // Primary service has no session — check the other service as fallback
+  const fallbackService: 'zk' | 'normal' = storedZKMode ? 'normal' : 'zk';
+  const fallbackCheck = await checkActiveSession(fallbackService);
+
+  if (fallbackCheck.hasActiveSession) {
+    // Mismatch: user has session on the OTHER service — correct localStorage
+    const correctZKMode = fallbackService === 'zk';
+    console.log(`[Bootstrap] Mode mismatch! Active session on ${fallbackService}. Correcting: ${storedZKMode} → ${correctZKMode}`);
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, String(correctZKMode));
 
     // Dispatch event to trigger provider switch
     window.dispatchEvent(
       new CustomEvent('zk-mode-changed', { detail: { enabled: correctZKMode } })
     );
+
+    return correctZKMode;
   }
 
-  return correctZKMode;
+  // No active sessions on either service — trust localStorage (user is logged out)
+  console.log('[Bootstrap] No active sessions detected, trusting localStorage:', storedZKMode);
+  return storedZKMode;
 }
 
 /**

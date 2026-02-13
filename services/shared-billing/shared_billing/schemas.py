@@ -22,7 +22,7 @@ class SubscriptionPlanSchema(BaseModel):
     price_monthly: Optional[Decimal] = None
     price_six_months: Optional[Decimal] = None  # NEW: 6-month pricing
     price_yearly: Optional[Decimal] = None
-    currency: str = "USD"
+    currency: str = "INR"
     
     # Quotas
     storage_bytes: int
@@ -93,10 +93,13 @@ class UserSubscriptionSchema(BaseModel):
     stripe_subscription_id: Optional[str] = None
     has_payment_method: bool = False
     next_payment_at: Optional[datetime] = None
-    
+
+    # Price snapshot at time of purchase
+    price_snapshot: Optional[Dict[str, Any]] = None
+
     class Config:
         from_attributes = True
-    
+
     @classmethod
     def from_orm(cls, subscription):
         """Convert SQLAlchemy model to Pydantic schema."""
@@ -114,6 +117,7 @@ class UserSubscriptionSchema(BaseModel):
             stripe_subscription_id=subscription.stripe_subscription_id,
             has_payment_method=subscription.payment_method is not None,
             next_payment_at=subscription.next_payment_at,
+            price_snapshot=subscription.price_snapshot,
         )
 
 

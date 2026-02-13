@@ -287,21 +287,25 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }: PlanCardProps): Rea
   const getPrice = useCallback((): string => {
     if (isFree) return 'Free';
 
+    const formatPrice = (p: number): string => {
+      return Number.isInteger(p) ? `₹${p}` : `₹${p.toFixed(2)}`;
+    };
+
     // For yearly-only plans, always show yearly price
     if (!hasMonthly && !hasSixMonths && hasYearly) {
-      return `₹${plan.price_yearly}`;
+      return formatPrice(plan.price_yearly ?? 0);
     }
 
     // For plans with multiple billing options
     switch (billingCycle) {
       case 'monthly':
-        return hasMonthly ? `₹${plan.price_monthly}` : `₹${plan.price_yearly ?? 0}`;
+        return hasMonthly ? formatPrice(plan.price_monthly ?? 0) : formatPrice(plan.price_yearly ?? 0);
       case 'six_months':
-        return hasSixMonths ? `₹${plan.price_six_months}` : `₹${plan.price_yearly ?? 0}`;
+        return hasSixMonths ? formatPrice(plan.price_six_months ?? 0) : formatPrice(plan.price_yearly ?? 0);
       case 'yearly':
-        return hasYearly ? `₹${plan.price_yearly}` : `₹${plan.price_monthly ?? 0}`;
+        return hasYearly ? formatPrice(plan.price_yearly ?? 0) : formatPrice(plan.price_monthly ?? 0);
       default:
-        return `₹${plan.price_monthly ?? plan.price_yearly ?? 0}`;
+        return formatPrice(plan.price_monthly ?? plan.price_yearly ?? 0);
     }
   }, [isFree, hasMonthly, hasSixMonths, hasYearly, billingCycle, plan]);
 
@@ -403,42 +407,48 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }: PlanCardProps): Rea
               {hasMonthly && (
                 <button
                   onClick={() => setBillingCycle('monthly')}
-                  className={`px-2 py-1 text-xs rounded ${
+                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
                     billingCycle === 'monthly'
                       ? darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'
                       : darkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
                 >
-                  Mo
+                  Monthly
                 </button>
               )}
               {hasSixMonths && (
                 <button
                   onClick={() => setBillingCycle('six_months')}
-                  className={`px-2 py-1 text-xs rounded ${
+                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
                     billingCycle === 'six_months'
                       ? darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'
                       : darkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
                 >
-                  6Mo
+                  6 Months
                 </button>
               )}
               {hasYearly && (
                 <button
                   onClick={() => setBillingCycle('yearly')}
-                  className={`px-2 py-1 text-xs rounded ${
+                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
                     billingCycle === 'yearly'
                       ? darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'
                       : darkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
                 >
-                  Yr
+                  Yearly
                 </button>
               )}
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              per {billingCycle === 'monthly' ? 'month' : billingCycle === 'six_months' ? '6 months' : 'year'}
+              {billingCycle === 'monthly' ? 'per month' : billingCycle === 'six_months' ? 'per 6 months' : 'per year'}
+              {hasMonthly && plan.price_monthly && billingCycle !== 'monthly' && (() => {
+                const months = billingCycle === 'six_months' ? 6 : 12;
+                const cyclePrice = billingCycle === 'six_months' ? plan.price_six_months : plan.price_yearly;
+                const savings = cyclePrice ? Math.round((1 - cyclePrice / (plan.price_monthly * months)) * 100) : 0;
+                return savings > 0 ? ` · Save ${savings}%` : '';
+              })()}
             </div>
           </>
         )}

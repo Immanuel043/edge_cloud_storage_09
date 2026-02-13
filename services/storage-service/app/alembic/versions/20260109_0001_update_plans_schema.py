@@ -93,7 +93,7 @@ def upgrade():
         """
     )
 
-    # 2. normal_basic (200GB, $0.99/mo, $4.99/6mo, $8.99/yr) - MOST POPULAR
+    # 2. normal_basic (200GB, ₹99/mo, ₹499/6mo, ₹899/yr) - MOST POPULAR
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -104,7 +104,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'normal_basic', 'normal', 'basic', 'Basic Storage', 'Perfect for personal use with 200GB storage',
-                0.99, 4.99, 8.99,
+                99, 499, 899,
                 214748364800, 25, 50, 5,
                 '{"support": "email", "versioning": 10, "ai_features": false}'::jsonb,
                 TRUE, FALSE, TRUE, 'individual', 1,
@@ -132,7 +132,7 @@ def upgrade():
         """
     )
 
-    # 3. normal_pro (1TB, $1.99/mo, $7.99/6mo, $12.99/yr)
+    # 3. normal_pro (1TB, ₹199/mo, ₹999/6mo, ₹1799/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -143,7 +143,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'normal_pro', 'normal', 'pro', 'Pro Storage', 'Designed for creators and power users with 1TB high-performance storage',
-                1.99, 7.99, 12.99,
+                199, 999, 1799,
                 1099511627776, 100, 200, 10,
                 '{"support": "priority", "versioning": 50, "ai_features": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 2,
@@ -171,7 +171,7 @@ def upgrade():
         """
     )
 
-    # 4. normal_pro_plus (2TB, $2.99/mo, $12.99/6mo, $22.99/yr)
+    # 4. normal_pro_plus (2TB, ₹299/mo, ₹1499/6mo, ₹2499/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -182,7 +182,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'normal_pro_plus', 'normal', 'pro_plus', 'Pro Plus Storage', 'For power users needing 2TB high-performance storage',
-                2.99, 12.99, 22.99,
+                299, 1499, 2499,
                 2199023255552, 150, 300, 15,
                 '{"support": "priority", "versioning": 100, "ai_features": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 3,
@@ -210,7 +210,7 @@ def upgrade():
         """
     )
 
-    # 5. normal_pro_ultra (3TB, $3.99/mo, $19.99/6mo, $32.99/yr)
+    # 5. normal_pro_ultra (3TB, ₹399/mo, ₹1999/6mo, ₹3499/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -221,7 +221,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'normal_pro_ultra', 'normal', 'pro_ultra', 'Pro Ultra Storage', 'High-capacity 3TB storage for heavy creators and professionals',
-                3.99, 19.99, 32.99,
+                399, 1999, 3499,
                 3298534883328, 200, 400, 20,
                 '{"support": "priority", "versioning": 150, "ai_features": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 4,
@@ -249,7 +249,7 @@ def upgrade():
         """
     )
 
-    # 6. normal_solo_max (5TB, $5.99/mo, $31.99/6mo, $54.99/yr)
+    # 6. normal_solo_max (5TB, ₹599/mo, ₹2999/6mo, ₹5499/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -260,7 +260,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'normal_solo_max', 'normal', 'solo_max', 'Solo Max Storage', 'Massive 5TB personal storage without collaboration features',
-                5.99, 31.99, 54.99,
+                599, 2999, 5499,
                 5497558138880, 300, 600, 25,
                 '{"support": "priority", "versioning": 200, "ai_features": true, "team_sharing": false}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 5,
@@ -292,7 +292,7 @@ def upgrade():
     # NORMAL STORAGE PLANS - Business
     ###################
 
-    # 7. normal_team (5TB, $5.99/mo, $34.99/6mo, $64.99/yr) - MOST POPULAR
+    # 7. normal_team (5TB, ₹799/mo, ₹3999/6mo, ₹6999/yr) - MOST POPULAR
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -303,7 +303,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'normal_team', 'normal', 'team', 'Team Storage', 'Collaboration-ready storage with 5TB capacity for teams',
-                5.99, 34.99, 64.99,
+                799, 3999, 6999,
                 5497558138880, 500, 1000, 25,
                 '{"support": "24/7", "versioning": 100, "ai_features": true, "team_sharing": true}'::jsonb,
                 TRUE, FALSE, TRUE, 'business', 6,
@@ -335,7 +335,7 @@ def upgrade():
     # ZK ENCRYPTION PLANS - Individual
     ###################
 
-    # 8. zk_pro (1TB, $3.99/mo, $16.99/6mo, $29.99/yr) - MOST POPULAR
+    # 8. zk_pro (1TB, ₹399/mo, ₹1999/6mo, ₹3499/yr) - MOST POPULAR
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -346,7 +346,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'zk_pro', 'zk', 'pro', 'ZK Pro', '1TB zero-knowledge encrypted personal vault',
-                3.99, 16.99, 29.99,
+                399, 1999, 3499,
                 1099511627776, 20, 40, 5,
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 10, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, TRUE, 'individual', 0,
@@ -374,7 +374,7 @@ def upgrade():
         """
     )
 
-    # 9. zk_pro_plus (2TB, $6.99/mo, $29.99/6mo, $54.99/yr)
+    # 9. zk_pro_plus (2TB, ₹699/mo, ₹3499/6mo, ₹5999/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -385,7 +385,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'zk_pro_plus', 'zk', 'pro_plus', 'ZK Pro Plus', '2TB zero-knowledge encrypted personal storage',
-                6.99, 29.99, 54.99,
+                699, 3499, 5999,
                 2199023255552, 30, 60, 7,
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 15, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 1,
@@ -413,7 +413,7 @@ def upgrade():
         """
     )
 
-    # 10. zk_ultra (3TB, $9.99/mo, $44.99/6mo, $79.99/yr)
+    # 10. zk_ultra (3TB, ₹999/mo, ₹4999/6mo, ₹8999/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -424,7 +424,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'zk_ultra', 'zk', 'ultra', 'ZK Ultra', '3TB zero-knowledge encrypted vault',
-                9.99, 44.99, 79.99,
+                999, 4999, 8999,
                 3298534883328, 40, 80, 10,
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 25, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 2,
@@ -452,7 +452,7 @@ def upgrade():
         """
     )
 
-    # 11. zk_max (5TB, $13.99/mo, $64.99/6mo, $119.99/yr)
+    # 11. zk_max (5TB, ₹1399/mo, ₹6999/6mo, ₹11999/yr)
     op.execute(
         """
             INSERT INTO subscription_plans (
@@ -463,7 +463,7 @@ def upgrade():
                 created_at, updated_at
             ) VALUES (
                 gen_random_uuid(), 'zk_max', 'zk', 'max', 'ZK Max', '5TB zero-knowledge encrypted personal vault',
-                13.99, 64.99, 119.99,
+                1399, 6999, 11999,
                 5497558138880, 60, 120, 15,
                 '{"support": "priority", "webauthn": true, "encryption": "zero_knowledge", "versioning": true, "hardware_keys": 40, "recovery_phrase": true}'::jsonb,
                 TRUE, FALSE, FALSE, 'individual', 3,

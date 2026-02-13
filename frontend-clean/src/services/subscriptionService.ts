@@ -265,7 +265,9 @@ class SubscriptionService {
         throw new Error(error.detail || 'Failed to fetch payment gateways');
       }
 
-      return await response.json();
+      const data = await response.json();
+      // Backend returns { gateways: [...] }, extract the array
+      return data.gateways || data;
     } catch (error) {
       console.error('Error fetching payment gateways:', error);
       throw error;

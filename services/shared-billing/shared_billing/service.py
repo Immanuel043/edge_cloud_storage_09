@@ -225,6 +225,15 @@ class BillingService:
             current_period_end = now + relativedelta(years=1)
             next_payment_at = current_period_end
 
+        # Capture price snapshot at time of purchase
+        price_snapshot = {
+            'price_monthly': float(plan.price_monthly) if plan.price_monthly else None,
+            'price_six_months': float(plan.price_six_months) if plan.price_six_months else None,
+            'price_yearly': float(plan.price_yearly) if plan.price_yearly else None,
+            'currency': plan.currency or 'INR',
+            'captured_at': now.isoformat(),
+        }
+
         # Create subscription
         subscription = UserSubscription(
             user_id=user_id,
@@ -238,6 +247,7 @@ class BillingService:
             next_payment_at=next_payment_at,
             stripe_subscription_id=stripe_subscription_id,
             stripe_customer_id=stripe_customer_id,
+            price_snapshot=price_snapshot,
         )
         
         self.db.add(subscription)
@@ -291,11 +301,19 @@ class BillingService:
                 f"Cannot upgrade from {old_plan.plan_code} to {new_plan.plan_code} (not a higher tier)"
             )
         
-        # Update subscription
+        # Update subscription with new plan and capture price snapshot
+        now = datetime.now(timezone.utc)
         subscription.plan_id = new_plan.id
         subscription.status = 'active'
-        subscription.updated_at = datetime.now(timezone.utc)
-        
+        subscription.updated_at = now
+        subscription.price_snapshot = {
+            'price_monthly': float(new_plan.price_monthly) if new_plan.price_monthly else None,
+            'price_six_months': float(new_plan.price_six_months) if new_plan.price_six_months else None,
+            'price_yearly': float(new_plan.price_yearly) if new_plan.price_yearly else None,
+            'currency': new_plan.currency or 'INR',
+            'captured_at': now.isoformat(),
+        }
+
         # Record history
         history = SubscriptionHistory(
             user_id=user_id,

@@ -2,11 +2,33 @@ import { useState, useEffect, useCallback, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, ArrowRight, HardDrive, Gauge, Check, AlertCircle, CreditCard } from 'lucide-react';
 import { useSubscription } from '../../contexts/SubscriptionContext';
+import { useAuth } from '../../contexts/AuthContext';
 import subscriptionService from '../../services/subscriptionService';
 import type { PlanChangeModalProps, PaymentGatewayInfo, FeatureObject, PlanDisplay } from '../../types/subscription-components.types';
 import type { PreviewChangeResponse } from '../../services/subscriptionService';
 import type { PricingPlan } from '../../types/pricing.types';
 import { isPaymentGatewayInfo } from '../../types/subscription-components.types';
+
+declare global {
+  interface Window {
+    Razorpay: new (options: Record<string, unknown>) => { open: () => void; on: (event: string, handler: () => void) => void };
+  }
+}
+
+/** Load Razorpay SDK dynamically (avoids cross-origin iframe on every page load) */
+let razorpayLoadPromise: Promise<void> | null = null;
+function loadRazorpaySDK(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve();
+  if (razorpayLoadPromise) return razorpayLoadPromise;
+  razorpayLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve();
+    script.onerror = () => { razorpayLoadPromise = null; reject(new Error('Failed to load Razorpay SDK')); };
+    document.head.appendChild(script);
+  });
+  return razorpayLoadPromise;
+}
 
 /**
  * PlanChangeModal
@@ -26,7 +48,8 @@ export default function PlanChangeModal({
   targetPlan,
 }: PlanChangeModalProps): ReactElement | null {
   const navigate = useNavigate();
-  const { subscription, upgrade, downgrade, previewChange, isUpgrade } = useSubscription();
+  const { subscription, upgrade, downgrade, previewChange, isUpgrade, refresh } = useSubscription();
+  const { user } = useAuth();
 
   const [preview, setPreview] = useState<PreviewChangeResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -95,17 +118,13 @@ export default function PlanChangeModal({
 
       // Check if plan is paid
       if (isUpgrading && planPrice > 0) {
-        // Paid plan - use payment gateway
-        if (!selectedGateway) {
-          setError('Please select a payment gateway');
-          setConfirming(false);
-          return;
-        }
+        // Paid plan - use payment gateway (default to razorpay if none configured, e.g. DEV_MODE)
+        const effectiveGateway = selectedGateway || 'razorpay';
 
         try {
           // Find the gateway object to get the gateway type
-          const gateway = paymentGateways.find((g) => (g.id || g.name) === selectedGateway);
-          const gatewayType = gateway?.gateway || 'stripe';
+          const gateway = paymentGateways.find((g) => (g.id || g.name) === effectiveGateway);
+          const gatewayType = (gateway?.id || gateway?.name || effectiveGateway) as 'razorpay' | 'stripe';
 
           const paymentResult = await subscriptionService.createPayment(
             targetPlan.plan_code,
@@ -113,20 +132,65 @@ export default function PlanChangeModal({
             gatewayType
           );
 
-          // If free plan upgrade, close modal and redirect to dashboard
-          if (paymentResult.free_plan) {
+          // If free plan upgrade (or DEV_MODE), close modal and redirect
+          if (paymentResult.free_plan || (paymentResult as Record<string, unknown>).dev_mode) {
+            await refresh();
             onClose();
-            setTimeout(() => {
-              navigate('/');
-            }, 500);
+            setTimeout(() => navigate('/'), 500);
             return;
           }
 
-          // For Razorpay, we might need to handle payment differently
-          // For Stripe, redirect happens automatically
+          // Stripe: redirect to hosted checkout page
           if (paymentResult.payment_url) {
-            // Redirect will happen automatically
             window.location.href = paymentResult.payment_url;
+            return;
+          }
+
+          // Razorpay: open checkout popup
+          if (gatewayType === 'razorpay' && paymentResult.gateway_data) {
+            const gd = paymentResult.gateway_data as Record<string, unknown>;
+            try {
+              await loadRazorpaySDK();
+            } catch {
+              setError('Failed to load Razorpay SDK. Please check your connection and try again.');
+              setConfirming(false);
+              return;
+            }
+            const rzpOptions: Record<string, unknown> = {
+              key: gd.razorpay_key_id,
+              amount: gd.amount,
+              currency: (gd.currency as string) || 'INR',
+              order_id: gd.order_id,
+              name: 'Edge Cloud Storage',
+              description: `${targetPlan.display_name} - ${selectedBillingCycle.replace('_', ' ')}`,
+              handler: async (response: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }) => {
+                try {
+                  await subscriptionService.verifyPayment(
+                    response.razorpay_payment_id,
+                    response.razorpay_order_id,
+                    response.razorpay_signature
+                  );
+                  await refresh();
+                  onClose();
+                  navigate('/');
+                } catch (verifyErr) {
+                  console.error('Payment verification failed:', verifyErr);
+                  setError('Payment verification failed. Please contact support.');
+                  setConfirming(false);
+                }
+              },
+              prefill: {
+                email: (user as { email?: string })?.email || '',
+              },
+              theme: { color: '#3B82F6' },
+              modal: {
+                ondismiss: () => {
+                  setConfirming(false);
+                },
+              },
+            };
+            const rzp = new window.Razorpay(rzpOptions);
+            rzp.open();
             return;
           }
         } catch (paymentErr: unknown) {
@@ -154,7 +218,7 @@ export default function PlanChangeModal({
     } finally {
       setConfirming(false);
     }
-  }, [targetPlan, isUpgrade, selectedGateway, selectedBillingCycle, paymentGateways, upgrade, downgrade, onClose, navigate]);
+  }, [targetPlan, isUpgrade, selectedGateway, selectedBillingCycle, paymentGateways, upgrade, downgrade, onClose, navigate, refresh, user]);
 
   if (!isOpen || !targetPlan || !subscription) return null;
 
@@ -330,20 +394,27 @@ export default function PlanChangeModal({
                         const priceKey = cycle === 'six_months' ? 'price_six_months' : `price_${cycle}`;
                         const planRecord = targetPlan as unknown as Record<string, unknown>;
                         const price = (planRecord[priceKey] as number | null | undefined) ?? 0;
+                        const monthlyPrice = (planRecord['price_monthly'] as number | null | undefined) ?? 0;
+                        const cycleLabel = cycle === 'monthly' ? 'Monthly' : cycle === 'six_months' ? '6 Months' : 'Yearly';
+                        const months = cycle === 'monthly' ? 1 : cycle === 'six_months' ? 6 : 12;
+                        const savings = monthlyPrice > 0 && months > 1
+                          ? Math.round((1 - price / (monthlyPrice * months)) * 100)
+                          : 0;
                         return (
                           <button
                             key={cycle}
                             onClick={() => setSelectedBillingCycle(cycle)}
-                            className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                            className={`px-4 py-3 rounded-lg border-2 transition-colors ${
                               selectedBillingCycle === cycle
                                 ? 'border-blue-600 bg-blue-50 text-blue-900'
                                 : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
                             }`}
                           >
-                            <div className="text-sm font-medium capitalize">{cycle.replace('_', '-')}</div>
-                            <div className="text-xs text-gray-600 mt-1">
-                              ₹{price.toFixed(2)}
-                            </div>
+                            <div className="text-sm font-medium">{cycleLabel}</div>
+                            <div className="text-base font-bold mt-1">₹{Math.round(price)}</div>
+                            {savings > 0 && (
+                              <div className="text-xs text-green-600 font-medium mt-0.5">Save {savings}%</div>
+                            )}
                           </button>
                         );
                       })}
