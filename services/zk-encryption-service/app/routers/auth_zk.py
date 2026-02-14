@@ -445,46 +445,57 @@ async def register_zk_complete(
     await db.commit()
     await db.refresh(user)
 
-    # Get plan limits (use shared_billing if available, fallback to settings)
+    # Get plan limits and create subscription using shared_billing
+    plan_code = payload.plan_code or "zk_pro"
+    storage_quota = 100 * 1024**3  # 100GB fallback
+
     try:
         from shared_billing import BillingService
         billing = BillingService(db, service_type='zk')
-        plan_code = payload.plan_code or "zk_pro"
+
+        # Get plan info
         plan = await billing.get_plan_by_code(plan_code)
         storage_quota = plan.storage_bytes
-    except Exception:
-        storage_quota = 100 * 1024**3  # 100GB fallback
 
-    # Update storage quota
-    await db.execute(
-        update(ZKUser)
-        .where(ZKUser.id == user.id)
-        .values(storage_quota=storage_quota)
-    )
-    await db.commit()
+        # Update storage quota
+        await db.execute(
+            update(ZKUser)
+            .where(ZKUser.id == user.id)
+            .values(storage_quota=storage_quota)
+        )
 
-    # Create subscription with selected plan and billing cycle
-    try:
-        from shared_billing import BillingService
-        billing = BillingService(db, service_type='zk')
+        # Create subscription
         billing_cycle = payload.billing_cycle if payload.billing_cycle else None
         await billing.create_subscription(user.id, plan_code, billing_cycle=billing_cycle)
+
     except Exception as e:
-        logger.warning(f"Failed to create subscription for ZK user {user.id}: {e}")
+        logger.warning(f"Billing setup failed for ZK user {user.id}: {e}")
+        # Rollback the failed billing transaction and apply fallback quota
+        await db.rollback()
+        await db.execute(
+            update(ZKUser)
+            .where(ZKUser.id == user.id)
+            .values(storage_quota=storage_quota)
+        )
+        await db.commit()
 
     # Log enrollment
-    enrollment_log = ZKEnrollmentHistory(
-        id=uuid4(),
-        user_id=user.id,
-        action="enabled",
-        to_tier="pro",
-        recovery_methods_configured=["phrase"] if payload.recovery_phrase_hash else [],
-        ip_address=get_client_ip(request),
-        user_agent=get_user_agent(request),
-        extra_metadata={"registration": True, "email_verified": True}
-    )
-    db.add(enrollment_log)
-    await db.commit()
+    try:
+        enrollment_log = ZKEnrollmentHistory(
+            id=uuid4(),
+            user_id=user.id,
+            action="enabled",
+            to_tier="pro",
+            recovery_methods_configured=["phrase"] if payload.recovery_phrase_hash else [],
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            extra_metadata={"registration": True, "email_verified": True}
+        )
+        db.add(enrollment_log)
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to log enrollment for ZK user {user.id}: {e}")
+        await db.rollback()
 
     logger.info(
         "zk_registration_complete",

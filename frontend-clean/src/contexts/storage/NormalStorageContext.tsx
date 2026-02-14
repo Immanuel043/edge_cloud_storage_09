@@ -156,7 +156,13 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
 
       const filesArray = rawFiles as FileItem[];
       const foldersArray = rawFolders as FolderItem[];
-      const statsData = rawStats as StorageStats;
+      const rawStatsObj = rawStats as Record<string, unknown>;
+      // Map backend fields (quota, total_files) to frontend fields (total, files_count)
+      const statsData: StorageStats = {
+        ...(rawStatsObj as unknown as StorageStats),
+        total: (rawStatsObj.quota as number) || 0,
+        files_count: (rawStatsObj.total_files as number) || 0,
+      };
 
       setFiles(filesArray);
       setFolders(foldersArray);
@@ -228,12 +234,13 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       ]);
 
       const filesArray = rawFiles as FileItem[];
-      setStorageStats(rawStats as StorageStats);
-
-      // Update file count
-      if (storageStats) {
-        setStorageStats({ ...storageStats, files_count: filesArray.length });
-      }
+      const rawStatsObj = rawStats as Record<string, unknown>;
+      const mappedStats: StorageStats = {
+        ...(rawStatsObj as unknown as StorageStats),
+        total: (rawStatsObj.quota as number) || 0,
+        files_count: (rawStatsObj.total_files as number) || filesArray.length,
+      };
+      setStorageStats(mappedStats);
     } catch (error) {
       console.error('[Normal] Failed to load storage stats:', error);
     }

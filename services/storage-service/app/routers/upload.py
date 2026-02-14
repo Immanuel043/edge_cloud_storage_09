@@ -359,7 +359,8 @@ async def upload_chunk(
                 db_bandwidth_override=current_user.bandwidth_limit_mbps
             )
             if not allowed:
-                if wait_time > 5.0:
+                wait_threshold = bandwidth_throttle_service.get_wait_threshold(current_user.plan_type)
+                if wait_time > wait_threshold:
                     # Return 429 with Retry-After for long waits
                     await bandwidth_throttle_service.release_stream_slot(user_id_str)
                     stream_slot_released = True  # Mark as released to prevent double-release
@@ -555,32 +556,25 @@ async def upload_direct(
         # ============ BANDWIDTH THROTTLING: Check bandwidth limit (plan-aware) ============
         file_size = int(request.headers.get("content-length", 0))
         if file_size > 0:
+            # Cap pre-check to STREAM_BUFFER_SIZE — the actual transfer is
+            # throttled chunk-by-chunk, so we only gate on a reasonable slice.
+            check_size = min(file_size, STREAM_BUFFER_SIZE)
             allowed, wait_time = await bandwidth_throttle_service.can_transfer(
                 user_id_str,
-                file_size,
+                check_size,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps
             )
             if not allowed:
-                if wait_time > 5.0:
-                    # Get the effective bandwidth limit for debugging
-                    from shared_billing import BillingService
-                    billing = BillingService(db, service_type='normal')
-
-                    try:
-                        plan_code = f"normal_{current_user.plan_type}"
-                        plan = await billing.get_plan_by_code(plan_code)
-                        default_bandwidth = plan.bandwidth_mbps
-                    except Exception:
-                        default_bandwidth = 5  # 5 Mbps fallback
-
-                    bandwidth_mbps = current_user.bandwidth_limit_mbps or default_bandwidth
+                wait_threshold = bandwidth_throttle_service.get_wait_threshold(current_user.plan_type)
+                if wait_time > wait_threshold:
+                    bandwidth_mbps = current_user.bandwidth_limit_mbps or 5
 
                     await bandwidth_throttle_service.release_stream_slot(user_id_str)
                     stream_slot_released = True  # Mark as released to prevent double-release
                     raise HTTPException(
                         status_code=429,
-                        detail=f"Bandwidth limit exceeded ({bandwidth_mbps} Mbps for {current_user.plan_type} plan). Please wait {int(wait_time)} seconds or try logging out and back in if you recently upgraded.",
+                        detail=f"Bandwidth limit exceeded ({bandwidth_mbps} Mbps for {current_user.plan_type} plan). Please wait {int(wait_time)} seconds.",
                         headers={"Retry-After": str(int(wait_time))}
                     )
                 await asyncio.sleep(min(wait_time, 1.0))

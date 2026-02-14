@@ -203,7 +203,13 @@ export function resetHealthStatus(): void {
 // ====================
 
 /**
- * Check if ZK mode is active based on auth context
+ * Check if ZK mode is active based on auth context.
+ *
+ * SECURITY: Requires BOTH zkEnabled (localStorage) AND zkSessionUnlocked (in-memory).
+ * This dual-condition design prevents privilege escalation via localStorage tampering.
+ * A user who manually sets zkEnabled to true still gets isZKModeActive=false because
+ * zkSessionUnlocked is false without a real ZK login and unlock.
+ *
  * @param authContext - Authentication context containing zkEnabled and zkSessionUnlocked
  * @returns True if ZK mode is active
  */

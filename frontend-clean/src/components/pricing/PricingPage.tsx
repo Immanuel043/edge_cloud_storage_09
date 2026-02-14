@@ -14,6 +14,7 @@ import type {
   BillingCycle,
   ServiceType,
   PlanCategory,
+  PlanFeatures,
 } from '../../types/pricing.types';
 import { isPlansResponse, isCategorizedPlans } from '../../types/pricing.types';
 
@@ -65,8 +66,8 @@ const mockPlansData: {
         display_name: 'Pro Storage',
         description: 'For creators and power users',
         price_monthly: 199,
-        price_six_months: 799,
-        price_yearly: 1299,
+        price_six_months: 999,
+        price_yearly: 1799,
         storage_gb: 1024,
         storage_bytes: 1099511627776,
         bandwidth_mbps: 100,
@@ -82,8 +83,8 @@ const mockPlansData: {
         display_name: 'Pro Plus Storage',
         description: 'For power users needing more',
         price_monthly: 299,
-        price_six_months: 1299,
-        price_yearly: 2299,
+        price_six_months: 1499,
+        price_yearly: 2499,
         storage_gb: 2048,
         storage_bytes: 2199023255552,
         bandwidth_mbps: 150,
@@ -100,7 +101,7 @@ const mockPlansData: {
         description: 'High-capacity for heavy creators',
         price_monthly: 399,
         price_six_months: 1999,
-        price_yearly: 3299,
+        price_yearly: 3499,
         storage_gb: 3072,
         storage_bytes: 3298534883328,
         bandwidth_mbps: 200,
@@ -116,7 +117,7 @@ const mockPlansData: {
         display_name: 'Solo Max Storage',
         description: 'Massive personal storage',
         price_monthly: 599,
-        price_six_months: 3199,
+        price_six_months: 2999,
         price_yearly: 5499,
         storage_gb: 5120,
         storage_bytes: 5497558138880,
@@ -134,9 +135,9 @@ const mockPlansData: {
         plan_code: 'normal_team',
         display_name: 'Team Storage',
         description: 'Collaboration-ready storage for teams',
-        price_monthly: 599,
-        price_six_months: 3499,
-        price_yearly: 6499,
+        price_monthly: 799,
+        price_six_months: 3999,
+        price_yearly: 6999,
         storage_gb: 5120,
         storage_bytes: 5497558138880,
         bandwidth_mbps: 500,
@@ -157,8 +158,8 @@ const mockPlansData: {
         display_name: 'ZK Pro',
         description: '1TB zero-knowledge encrypted vault',
         price_monthly: 399,
-        price_six_months: 1699,
-        price_yearly: 2999,
+        price_six_months: 1999,
+        price_yearly: 3499,
         storage_gb: 1024,
         storage_bytes: 1099511627776,
         bandwidth_mbps: 20,
@@ -181,8 +182,8 @@ const mockPlansData: {
         display_name: 'ZK Pro Plus',
         description: '2TB zero-knowledge encrypted storage',
         price_monthly: 699,
-        price_six_months: 2999,
-        price_yearly: 5499,
+        price_six_months: 3499,
+        price_yearly: 5999,
         storage_gb: 2048,
         storage_bytes: 2199023255552,
         bandwidth_mbps: 30,
@@ -205,8 +206,8 @@ const mockPlansData: {
         display_name: 'ZK Ultra',
         description: '3TB zero-knowledge encrypted vault',
         price_monthly: 999,
-        price_six_months: 4499,
-        price_yearly: 7999,
+        price_six_months: 4999,
+        price_yearly: 8999,
         storage_gb: 3072,
         storage_bytes: 3298534883328,
         bandwidth_mbps: 40,
@@ -229,7 +230,7 @@ const mockPlansData: {
         display_name: 'ZK Max',
         description: '5TB zero-knowledge encrypted personal vault',
         price_monthly: 1399,
-        price_six_months: 6499,
+        price_six_months: 6999,
         price_yearly: 11999,
         storage_gb: 5120,
         storage_bytes: 5497558138880,
@@ -536,9 +537,13 @@ const categories: PlanCategory[] = ['individual', 'business', 'enterprise'];
 export default function PricingPage(): ReactElement {
   const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, zkEnabled } = useAuth();
   const { availablePlans } = useSubscription();
-  
+
+  // Show relevant plan sections based on account type
+  const showEdgePlans = !isAuthenticated || !zkEnabled;
+  const showZkPlans = !isAuthenticated || zkEnabled;
+
   const [edgeCategory, setEdgeCategory] = useState<PlanCategory>('individual');
   const [zkCategory, setZkCategory] = useState<PlanCategory>('individual');
 
@@ -640,55 +645,51 @@ export default function PricingPage(): ReactElement {
         return;
       }
 
-      // Logged-in user: Find the plan and open the modal
-      // Note: availablePlans uses camelCase (planCode), but we need to match by plan_code
-      const plan = availablePlans.find((p) => {
-        // Handle both camelCase and snake_case
-        const planCodeMatch = (p as { planCode?: string; plan_code?: string }).planCode === planCode ||
-                              (p as { planCode?: string; plan_code?: string }).plan_code === planCode;
-        return planCodeMatch;
-      });
-      
-      if (plan) {
-        // Convert subscription plan to pricing plan format
-        // PlanChangeModal expects plan_code, display_name, etc.
-        const planData = plan as {
-          planCode?: string;
-          plan_code?: string;
-          displayName?: string;
-          display_name?: string;
-          priceMonthly?: number;
-          price_monthly?: number;
-          priceYearly?: number;
-          price_yearly?: number;
-          storageGb?: number;
-          storage_gb?: number;
-          bandwidthMbps?: number;
-          bandwidth_mbps?: number;
-          features?: Record<string, unknown>;
-        };
-        
-        const pricingPlan: PricingPlan = {
-          plan_code: planData.plan_code || planData.planCode || planCode,
-          display_name: planData.display_name || planData.displayName || planCode,
-          description: '',
-          price_monthly: planData.price_monthly ?? planData.priceMonthly ?? null,
-          price_six_months: null,
-          price_yearly: planData.price_yearly ?? planData.priceYearly ?? null,
-          storage_gb: planData.storage_gb ?? planData.storageGb ?? 0,
-          bandwidth_mbps: planData.bandwidth_mbps ?? planData.bandwidthMbps ?? 0,
-          max_concurrent_streams: 5, // Default value
-          features: planData.features || {},
-        };
-        setSelectedPlan(pricingPlan);
+      // Logged-in user: Find plan from fetched pricing data (has all price fields)
+      const allEdge = [...(edgePlans?.individual || []), ...(edgePlans?.business || []), ...(edgePlans?.enterprise || [])];
+      const allZk = [...(zkPlans?.individual || []), ...(zkPlans?.business || []), ...(zkPlans?.enterprise || [])];
+      const allFetched = [...allEdge, ...allZk];
+
+      // Try fetched plans first (already PricingPlan shape with all prices)
+      let foundPlan: PricingPlan | undefined = allFetched.find((p) => p.plan_code === planCode);
+
+      if (!foundPlan) {
+        // Fallback to availablePlans from dashboard (PlanCard shape)
+        const dashPlan = availablePlans.find((p) => {
+          const pc = p as { planCode?: string; plan_code?: string };
+          return pc.plan_code === planCode || pc.planCode === planCode;
+        });
+
+        if (dashPlan) {
+          const d = dashPlan as Record<string, unknown>;
+          const base: PricingPlan = {
+            plan_code: (d.plan_code || d.planCode || planCode) as string,
+            display_name: (d.display_name || d.displayName || planCode) as string,
+            description: (d.description || '') as string,
+            price_monthly: (d.price_monthly ?? d.priceMonthly ?? null) as number | null,
+            price_six_months: (d.price_six_months ?? null) as number | null,
+            price_yearly: (d.price_yearly ?? d.priceYearly ?? null) as number | null,
+            storage_gb: (d.storage_gb ?? d.storageGb ?? 0) as number,
+            bandwidth_mbps: (d.bandwidth_mbps ?? d.bandwidthMbps ?? 0) as number,
+            max_concurrent_streams: (d.max_concurrent_streams ?? d.max_streams ?? 5) as number,
+            features: (d.features || {}) as PlanFeatures,
+            is_most_popular: (d.is_most_popular ?? false) as boolean,
+          };
+          if (typeof d.storage_bytes === 'number') base.storage_bytes = d.storage_bytes;
+          if (typeof d.bandwidth_burst_mbps === 'number') base.bandwidth_burst_mbps = d.bandwidth_burst_mbps;
+          foundPlan = base;
+        }
+      }
+
+      if (foundPlan) {
+        setSelectedPlan(foundPlan);
         setModalOpen(true);
       } else {
         console.error('Plan not found:', planCode);
-        // Fallback: redirect to dashboard
         navigate('/');
       }
     },
-    [isAuthenticated, user, availablePlans, navigate]
+    [isAuthenticated, user, availablePlans, edgePlans, zkPlans, navigate]
   );
 
   const handleCloseModal = useCallback((): void => {
@@ -794,6 +795,7 @@ export default function PricingPage(): ReactElement {
           </div>
 
           {/* Edge Storage Section */}
+          {showEdgePlans && (
           <section className="mb-20">
             <div className="flex items-center gap-3 mb-8">
               <div className={`p-3 rounded-xl ${
@@ -860,8 +862,10 @@ export default function PricingPage(): ReactElement {
               )}
             </div>
           </section>
+          )}
 
           {/* Zero-Knowledge Encryption Section */}
+          {showZkPlans && (
           <section>
             <div className="flex items-center gap-3 mb-8">
               <div className={`p-3 rounded-xl ${
@@ -928,6 +932,7 @@ export default function PricingPage(): ReactElement {
               )}
             </div>
           </section>
+          )}
         </div>
       </main>
 

@@ -301,7 +301,14 @@ export interface ZKStorageConfig {
   readonly SESSION_TIMESTAMP_KEY: string;
 }
 
-/** ZK Storage Settings */
+/**
+ * ZK Storage Settings
+ *
+ * SECURITY: zkEnabled (ZK_ENABLED_KEY) is a client-side routing hint only.
+ * The backend never trusts localStorage. Auth is enforced via HTTP-only session
+ * cookies. ZK mode requires both zkEnabled AND zkSessionUnlocked (in-memory).
+ * Manually changing zkEnabled in localStorage cannot grant ZK access.
+ */
 export const ZK_STORAGE = {
   // LocalStorage keys (for non-sensitive data only)
   ZK_ENABLED_KEY: 'zkEnabled',

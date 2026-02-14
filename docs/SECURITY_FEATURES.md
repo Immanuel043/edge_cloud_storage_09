@@ -397,10 +397,51 @@ curl http://localhost:8001/api/v1/security/scanner/status
 
 ---
 
+---
+
+## 4. ZK Mode and localStorage Security
+
+### Overview
+
+The Zero-Knowledge (ZK) encryption mode uses `zkEnabled` in localStorage as a **client-side routing hint** to direct API calls to either the Normal storage service or the ZK encryption service. This design is secure: the backend never trusts localStorage for authorization.
+
+### Security Model
+
+**Two conditions must be true for ZK mode to be active:**
+1. `zkEnabled` from localStorage (routing hint)
+2. `zkSessionUnlocked` from in-memory session (requires successful ZK login and password unlock)
+
+Without both, the app routes to the Normal service. A normal user who manually sets `zkEnabled` to `true` in localStorage does not gain ZK access because:
+- `zkSessionUnlocked` remains false (no ZK master key in memory)
+- ZK service endpoints return 401 without valid ZK session cookies
+
+### Backend Trust Boundary
+
+- **Normal service** and **ZK service** use separate HTTP-only session cookies
+- Each service validates its own cookies; localStorage is never consulted by the backend
+- ZK login requires ZK credentials and creates ZK-specific cookies
+- A normal user's cookies do not work with ZK endpoints
+
+### Bootstrap Verification
+
+On app load, `bootstrapVerification.ts` checks which service has an active session and corrects localStorage if there is a mismatch (e.g., user cleared localStorage but still has session cookies). This recovers from storage corruption without weakening security.
+
+### Manual localStorage Tampering
+
+| Scenario | Result |
+|----------|--------|
+| Normal user sets `zkEnabled` to `true` | UI may switch to ZK flow, but ZK API calls fail with 401; no ZK data accessible |
+| Bootstrap verification runs | May reset `zkEnabled` based on actual session |
+| ZK user sets `zkEnabled` to `false` | UI routes to Normal service; ZK cookies are not sent, so no unintended access |
+
+**Conclusion:** Manually changing `zkEnabled` in localStorage does not grant ZK access, expose other users' data, or bypass encryption. localStorage is a client routing hint only; the server relies on session cookies and validates every request.
+
+---
+
 ## Future Enhancements (Phase 2)
 
 ### Planned Features:
-1. **Zero-Knowledge Encryption** - Client-side encryption keys
+1. **Zero-Knowledge Encryption** - Client-side encryption keys (implemented)
 2. **Ransomware Protection** - Immutable backups + snapshots
 3. **Blockchain Audit Logs** - Tamper-proof logging
 4. **ML-based Anomaly Detection** - Behavioral analytics

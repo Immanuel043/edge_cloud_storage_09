@@ -35,6 +35,7 @@ import {
 } from '../../utils/security';
 import { authService } from '../../services/authService';
 import * as zkAuthService from '../../services/zkAuthService';
+import { ZK_STORAGE } from '../../config/constants';
 import RecoveryPhraseSetup from './RecoveryPhraseSetup';
 import RecoveryPhraseConfirm from './RecoveryPhraseConfirm';
 import RecoveryModal from './RecoveryModal';
@@ -220,7 +221,7 @@ const FloatingOrb: React.FC<FloatingOrbProps> = ({
 const AuthPage: React.FC = () => {
   const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
-  const { login, loginZK, setupRecoveryPhrase } = useAuth();
+  const { login, loginZK } = useAuth();
 
   // Auth State
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -457,11 +458,10 @@ const AuthPage: React.FC = () => {
       const billingCycle = pendingFormData.billingCycle || 'monthly';
 
       if (enableZK) {
-        const { generateZKRegistrationData } = await import(
-          '../../services/zkEncryptionService'
-        );
-        const zkData = await generateZKRegistrationData(pendingFormData.password);
+        const zkEncryption = await import('../../services/zkEncryptionService');
+        const zkData = await zkEncryption.generateZKRegistrationData(pendingFormData.password);
 
+        // 1. Complete registration
         await authService.registerZKComplete(
           pendingFormData.email,
           pendingFormData.username,
@@ -472,13 +472,59 @@ const AuthPage: React.FC = () => {
           billingCycle
         );
 
-        if (!loginZK) {
-          throw new Error('ZK login is not available');
+        // 2. Login via direct API calls (sets HTTP-only auth cookie)
+        //    We intentionally bypass standaloneLoginZK to avoid triggering
+        //    the ZK mode switch (which remounts the tree and loses component state)
+        const kdfParams = await zkAuthService.getKDFParams(pendingFormData.email);
+        if (!kdfParams) throw new Error('Failed to get KDF parameters after registration');
+        const passwordHash = await zkEncryption.getPasswordHashForLogin(
+          pendingFormData.password,
+          kdfParams.kdf_salt,
+          kdfParams.kdf_iterations,
+          kdfParams.kdf_algorithm as 'argon2id' | 'pbkdf2'
+        );
+        const loginResponse = await zkAuthService.loginZK(pendingFormData.email, passwordHash);
+
+        // 3. Store ZK data in localStorage (but NOT ZK_ENABLED_KEY yet — prevents premature mode switch)
+        const masterKeyIV = loginResponse.master_key_iv || kdfParams.kdf_iv || '';
+        const zkDataObj = {
+          kdfSalt: kdfParams.kdf_salt,
+          kdfAlgorithm: kdfParams.kdf_algorithm,
+          kdfIterations: kdfParams.kdf_iterations,
+          encryptedMasterKey: loginResponse.encrypted_master_key,
+          masterKeyIV,
+          ...(kdfParams.kdf_memory !== undefined && { kdfMemory: kdfParams.kdf_memory }),
+        };
+        localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
+        localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, pendingFormData.email);
+
+        // 4. Generate recovery phrase (master key is already in memory from generateZKRegistrationData)
+        let recoveryPhraseText = '';
+        try {
+          const recoveryData = zkEncryption.generateRecoveryPhraseData();
+          await zkAuthService.enableRecoveryPhrase(
+            recoveryData.recoveryEncryptedMasterKey,
+            recoveryData.recoveryPhraseHash
+          );
+          localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
+          recoveryPhraseText = recoveryData.recoveryPhrase;
+        } catch (recoveryErr) {
+          console.warn('Recovery phrase setup failed, will skip:', recoveryErr);
         }
-        await loginZK(pendingFormData.email, pendingFormData.password);
 
         setLoading(false);
-        await handleRecoveryPhraseSetup(true);
+
+        if (recoveryPhraseText) {
+          // Show recovery phrase modal — mode switch deferred to onConfirm/onSkip
+          setRecoveryPhrase(recoveryPhraseText);
+          setShowRecoverySetup(true);
+        } else {
+          // Recovery phrase failed — activate ZK mode and navigate directly
+          console.log('ZK Registration complete (no recovery phrase) - activating ZK mode');
+          localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
+          window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
+          setTimeout(() => navigate('/'), 200);
+        }
       } else {
         await authService.registerComplete(
           pendingFormData.email,
@@ -515,22 +561,6 @@ const AuthPage: React.FC = () => {
   const handleBackToForm = (): void => {
     setRegistrationStep('form');
     setError('');
-  };
-
-  const handleRecoveryPhraseSetup = async (skipSessionCheck = false): Promise<void> => {
-    try {
-      if (!setupRecoveryPhrase) {
-        throw new Error('Recovery phrase setup is not available');
-      }
-      const result = await setupRecoveryPhrase(skipSessionCheck);
-      if (result.success) {
-        setRecoveryPhrase(result.recoveryPhrase);
-        setShowRecoverySetup(true);
-      }
-    } catch (err: unknown) {
-      console.error('Failed to setup recovery phrase:', getErrorMessage(err));
-      window.location.href = '/';
-    }
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
@@ -1774,10 +1804,13 @@ const AuthPage: React.FC = () => {
           onSkip={() => {
             setShowRecoverySetup(false);
             setRecoveryPhrase('');
-            console.log('ZK Registration skipped - redirecting to homepage');
+            console.log('ZK Registration skipped - activating ZK mode and redirecting');
+            // Activate ZK mode NOW (was deferred during registration to prevent premature tree remount)
+            localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
+            window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
             setTimeout(() => {
               navigate('/');
-            }, 100);
+            }, 200);
           }}
         />
       )}
@@ -1788,10 +1821,13 @@ const AuthPage: React.FC = () => {
           onConfirm={() => {
             setShowRecoveryConfirm(false);
             setRecoveryPhrase('');
-            console.log('ZK Registration complete - redirecting to homepage');
+            console.log('ZK Registration complete - activating ZK mode and redirecting');
+            // Activate ZK mode NOW (was deferred during registration to prevent premature tree remount)
+            localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
+            window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
             setTimeout(() => {
               navigate('/');
-            }, 100);
+            }, 200);
           }}
           onCancel={() => {
             setShowRecoveryConfirm(false);

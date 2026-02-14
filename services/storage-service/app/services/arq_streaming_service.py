@@ -274,7 +274,10 @@ class ARQStreamingService:
             )
 
             if not allowed:
-                if wait_time > 5.0:
+                wait_threshold = bandwidth_throttle_service.get_wait_threshold(
+                    getattr(session, 'plan_type', 'free') or 'free'
+                )
+                if wait_time > wait_threshold:
                     # Return 429 with Retry-After for long waits
                     raise HTTPException(
                         status_code=429,

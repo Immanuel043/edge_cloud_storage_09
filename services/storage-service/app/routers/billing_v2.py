@@ -100,6 +100,19 @@ class UpcomingPaymentResponse(BaseModel):
 
 # ===== Helper Functions =====
 
+def sync_user_plan_limits(user: User, plan: SubscriptionPlan) -> None:
+    """Sync the users table with the plan's limits after an upgrade/downgrade.
+
+    Updates plan_type, storage_quota, bandwidth, burst, and concurrent streams
+    so that throttling middleware uses the correct values immediately.
+    """
+    user.plan_type = plan.tier_name
+    user.storage_quota = plan.storage_bytes
+    user.bandwidth_limit_mbps = plan.bandwidth_mbps
+    user.bandwidth_burst_mbps = plan.bandwidth_burst_mbps
+    user.max_concurrent_streams = plan.max_concurrent_streams
+
+
 async def get_billing_service(db: AsyncSession) -> BillingService:
     """Get BillingService instance for Normal Storage."""
     return BillingService(db, service_type='normal')
@@ -127,8 +140,8 @@ async def get_user_subscription_or_create(
             billing_cycle=None
         )
 
-        # Update user's quota and subscription reference
-        user.storage_quota = subscription.plan.storage_bytes
+        # Update user's quota, plan limits, and subscription reference
+        sync_user_plan_limits(user, subscription.plan)
         user.current_subscription_id = subscription.id
         await db.commit()
 
@@ -265,8 +278,8 @@ async def create_subscription(
             billing_cycle=request.billing_cycle
         )
 
-        # Update user's quota
-        current_user.storage_quota = plan.storage_bytes
+        # Update user's quota and plan limits
+        sync_user_plan_limits(current_user, plan)
         current_user.current_subscription_id = subscription.id
         await db.commit()
 
@@ -357,8 +370,8 @@ async def upgrade_subscription(
                 reason='user_request'
             )
 
-            # Update user's quota
-            current_user.storage_quota = subscription.plan.storage_bytes
+            # Update user's quota and plan limits
+            sync_user_plan_limits(current_user, subscription.plan)
             await db.commit()
 
             logger.info(f"User {current_user.id} upgraded to {request.new_plan_code} (DEV_MODE={settings.DEV_MODE})")
@@ -409,8 +422,8 @@ async def downgrade_subscription(
             reason='user_request'
         )
 
-        # Update user's quota
-        current_user.storage_quota = subscription.plan.storage_bytes
+        # Update user's quota and plan limits
+        sync_user_plan_limits(current_user, subscription.plan)
         await db.commit()
 
         logger.info(f"User {current_user.id} downgraded to {request.new_plan_code}")
@@ -740,8 +753,8 @@ async def create_payment(
                 reason='user_request'
             )
 
-            # Update user's quota
-            current_user.storage_quota = subscription.plan.storage_bytes
+            # Update user's quota and plan limits
+            sync_user_plan_limits(current_user, subscription.plan)
             await db.commit()
 
             logger.info(f"DEV_MODE: Upgraded user {current_user.id} to {payment_request.plan_code} without payment")
@@ -766,10 +779,10 @@ async def create_payment(
                 reason='user_request'
             )
             
-            # Update user's quota
-            current_user.storage_quota = subscription.plan.storage_bytes
+            # Update user's quota and plan limits
+            sync_user_plan_limits(current_user, subscription.plan)
             await db.commit()
-            
+
             return {
                 "success": True,
                 "free_plan": True,
@@ -946,10 +959,10 @@ async def verify_payment(
         subscription.razorpay_payment_id = verify_request.payment_id if subscription.payment_gateway == 'razorpay' else None
         await db.commit()
         
-        # Update user quota
-        current_user.storage_quota = subscription.plan.storage_bytes
+        # Update user quota and plan limits
+        sync_user_plan_limits(current_user, subscription.plan)
         await db.commit()
-        
+
         return {
             "success": True,
             "verified": True,

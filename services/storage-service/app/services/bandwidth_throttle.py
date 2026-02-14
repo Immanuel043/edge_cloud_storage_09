@@ -93,8 +93,21 @@ class BandwidthThrottleService:
     MAX_STREAMS_PER_USER = 5  # Maximum concurrent streams
     STREAM_SLOT_TTL = 300  # 5 minutes TTL for stream slots
     MAX_WAIT_SLEEP = 1.0  # Max sleep time in async generator (Fix #4)
-    LONG_WAIT_THRESHOLD = 5.0  # Return 429 if wait exceeds this
+    LONG_WAIT_THRESHOLD = 5.0  # Return 429 if wait exceeds this (legacy default)
     RETRY_PENALTY_BASE = 1.5  # Base penalty multiplier for retries
+
+    # Plan-aware wait thresholds: lower bandwidth plans get longer thresholds
+    # because their token bucket drains more slowly.
+    PLAN_WAIT_THRESHOLDS = {
+        "free": 120.0,      # 5 Mbps — 50MB file needs ~76s
+        "basic": 30.0,      # 25 Mbps
+        "pro": 10.0,        # 100 Mbps
+        "pro_plus": 10.0,   # 150 Mbps
+        "pro_ultra": 10.0,  # 200 Mbps
+        "solo_max": 10.0,   # 300 Mbps
+        "team": 5.0,        # 500 Mbps
+    }
+    DEFAULT_WAIT_THRESHOLD = 30.0  # Fallback for unknown plans
 
     def __init__(self):
         self.default_limit_mbps = self.DEFAULT_LIMIT_MBPS
@@ -181,6 +194,16 @@ class BandwidthThrottleService:
         return (
             plan.get("bandwidth_mbps", self.DEFAULT_LIMIT_MBPS),
             plan.get("burst_mbps", self.DEFAULT_LIMIT_MBPS * 2)
+        )
+
+    def get_wait_threshold(self, plan_type: str = "free") -> float:
+        """
+        Get the maximum wait time before returning 429, adjusted per plan.
+        Lower-bandwidth plans get longer thresholds because their token
+        bucket drains more slowly.
+        """
+        return self.PLAN_WAIT_THRESHOLDS.get(
+            plan_type, self.DEFAULT_WAIT_THRESHOLD
         )
 
     async def get_user_limit_with_plan(
@@ -520,8 +543,9 @@ class BandwidthThrottleService:
 
             if not allowed:
                 # Fix #4: Return 429 for long waits instead of blocking
-                if raise_on_long_wait and wait_time > self.LONG_WAIT_THRESHOLD:
-                    logger.warning(f"User {user_id} bandwidth limit exceeded, wait={wait_time:.2f}s")
+                wait_threshold = self.get_wait_threshold(plan_type or "free")
+                if raise_on_long_wait and wait_time > wait_threshold:
+                    logger.warning(f"User {user_id} bandwidth limit exceeded, wait={wait_time:.2f}s (threshold={wait_threshold}s)")
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
@@ -536,7 +560,7 @@ class BandwidthThrottleService:
                 # If we only slept partial time, re-check
                 if wait_time > sleep_time:
                     allowed, remaining_wait = await self.can_transfer(user_id, chunk_size, limit_mbps)
-                    if not allowed and remaining_wait > self.LONG_WAIT_THRESHOLD:
+                    if not allowed and remaining_wait > wait_threshold:
                         raise HTTPException(
                             status_code=429,
                             detail=f"Bandwidth limit exceeded. Please retry after {int(remaining_wait)} seconds.",
@@ -550,7 +574,8 @@ class BandwidthThrottleService:
         user_id: str,
         data_generator: AsyncGenerator[bytes, None],
         retry_count: int = 0,
-        limit_mbps: Optional[float] = None
+        limit_mbps: Optional[float] = None,
+        plan_type: str = None
     ) -> AsyncGenerator[bytes, None]:
         """
         Transfer data with retry-aware throttling.
@@ -561,12 +586,15 @@ class BandwidthThrottleService:
             data_generator: Async generator yielding data chunks
             retry_count: Retry attempt number (0 = first attempt)
             limit_mbps: Bandwidth limit in Mbps
+            plan_type: User's subscription plan tier (for plan-aware threshold)
 
         Yields:
             Data chunks with appropriate delays
         """
         if limit_mbps is None:
             limit_mbps = await self.get_user_limit(user_id)
+
+        wait_threshold = self.get_wait_threshold(plan_type or "free")
 
         async for chunk in data_generator:
             chunk_size = len(chunk)
@@ -575,7 +603,7 @@ class BandwidthThrottleService:
             )
 
             if not allowed:
-                if wait_time > self.LONG_WAIT_THRESHOLD:
+                if wait_time > wait_threshold:
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",

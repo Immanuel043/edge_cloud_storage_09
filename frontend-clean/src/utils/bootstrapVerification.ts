@@ -8,6 +8,11 @@
  * - User clears localStorage but still has active session cookies
  * - Browser storage gets corrupted
  * - User switches devices/browsers
+ *
+ * SECURITY: Corrects localStorage when it mismatches actual backend sessions.
+ * The backend validates HTTP-only cookies, not localStorage. If localStorage
+ * says zkEnabled=true but user has no ZK session, ZK API calls would 401.
+ * When we detect session on the other service, we correct localStorage.
  */
 import { API_URL, ZK_SERVICE_URL, ZK_STORAGE } from '../config/constants';
 
