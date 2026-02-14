@@ -193,7 +193,7 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
 
     try {
       // ZK API: List files
-      const zkFilesResponse = await zkAuthService.listFiles({ limit: 1000 });
+      const zkFilesResponse = await zkAuthService.listFiles({ limit: 500 });
       console.log('[ZK] Files response:', zkFilesResponse);
 
       const zkFiles = zkFilesResponse.files || [];

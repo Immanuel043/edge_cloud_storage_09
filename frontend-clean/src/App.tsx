@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { bootstrapWithVerification } from './utils/bootstrapVerification';
@@ -104,42 +104,54 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
  * Sets up routing, context providers, and application structure.
  */
 const App: React.FC = () => {
-  // Run bootstrap verification on mount to auto-detect service mode
+  // Gate rendering behind bootstrap verification to prevent stale localStorage
+  // from causing wrong auth provider selection (e.g., deleted ZK account)
+  const [bootstrapped, setBootstrapped] = useState(false);
+
   useEffect(() => {
-    bootstrapWithVerification();
+    bootstrapWithVerification().then(() => setBootstrapped(true));
   }, []);
 
   return (
     <Router>
       <ThemeProvider>
         <NotificationProvider>
-          <AuthProvider>
-            <StorageProvider>
-              <SubscriptionProvider>
-                <Suspense fallback={<div>Loading app...</div>}>
-                  <Routes>
-                    <Route path="/auth" element={<AuthPage />} />
-                    <Route path="/pricing" element={<PricingPage />} />
-                    <Route path="/share/:token" element={<ShareViewer />} />
-                    <Route path="/share/bundle/:token" element={<ShareBundleViewer />} />
-                    <Route path="/billing/success" element={<BillingSuccessPage />} />
-                    <Route path="/billing/failure" element={<BillingFailurePage />} />
-                    <Route
-                      path="/"
-                      element={
-                        <ProtectedRoute>
-                          <Dashboard />
-                        </ProtectedRoute>
-                      }
-                    />
-                    {/* add more protected or public routes here */}
-                    <Route path="*" element={<Navigate to="/" replace />} />
-                  </Routes>
-                </Suspense>
-                <NotificationToast />
-              </SubscriptionProvider>
-            </StorageProvider>
-          </AuthProvider>
+          {bootstrapped ? (
+            <AuthProvider>
+              <StorageProvider>
+                <SubscriptionProvider>
+                  <Suspense fallback={<div>Loading app...</div>}>
+                    <Routes>
+                      <Route path="/auth" element={<AuthPage />} />
+                      <Route path="/pricing" element={<PricingPage />} />
+                      <Route path="/share/:token" element={<ShareViewer />} />
+                      <Route path="/share/bundle/:token" element={<ShareBundleViewer />} />
+                      <Route path="/billing/success" element={<BillingSuccessPage />} />
+                      <Route path="/billing/failure" element={<BillingFailurePage />} />
+                      <Route
+                        path="/"
+                        element={
+                          <ProtectedRoute>
+                            <Dashboard />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* add more protected or public routes here */}
+                      <Route path="*" element={<Navigate to="/" replace />} />
+                    </Routes>
+                  </Suspense>
+                  <NotificationToast />
+                </SubscriptionProvider>
+              </StorageProvider>
+            </AuthProvider>
+          ) : (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+              <div className="text-center">
+                <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                <p className="text-gray-500 dark:text-gray-400">Loading...</p>
+              </div>
+            </div>
+          )}
         </NotificationProvider>
       </ThemeProvider>
     </Router>

@@ -73,6 +73,8 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
   useEffect(() => {
     const initializeZKAuth = async (): Promise<void> => {
       try {
+        console.log('[ZK] Starting ZK bootstrap...');
+
         // Check if user is ZK-enabled
         const isZKUser = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
 
@@ -98,10 +100,44 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         const recoveryEnabled = localStorage.getItem(ZK_STORAGE.RECOVERY_ENABLED_KEY) === 'true';
         if (isMountedRef.current) setZkRecoveryEnabled(recoveryEnabled);
 
+        // Fast-path for fresh registration (avoids async getProfile race conditions)
+        // After registration, AuthPage stores user metadata in sessionStorage.
+        // This skips the async getProfile() call entirely — all state updates are
+        // synchronous, so isMountedRef can't go false during the operation.
+        const regHint = sessionStorage.getItem('zkRegistrationComplete');
+        if (regHint) {
+          sessionStorage.removeItem('zkRegistrationComplete');
+          try {
+            const regData = JSON.parse(regHint) as { userId: string; email: string; username: string; ts: number };
+            // TTL: ignore hints older than 2 minutes
+            if (Date.now() - regData.ts <= 2 * 60 * 1000) {
+              console.log('[ZK] Fresh registration detected, using fast-path bootstrap');
+              const user: User = {
+                id: regData.userId,
+                email: regData.email,
+                username: regData.username,
+                user_type: 'individual',
+                created_at: new Date().toISOString(),
+                zk_enabled: true,
+              };
+              if (isMountedRef.current) {
+                setUser(user);
+                setIsAuthenticated(true);
+                setZkSessionUnlocked(true);
+                setLoading(false);
+              }
+              return;
+            }
+            console.log('[ZK] Registration hint expired, falling back to getProfile');
+          } catch (e) {
+            console.warn('[ZK] Failed to parse registration hint, falling back to getProfile');
+          }
+        }
+
         // Try to get user profile from ZK service (uses HTTP-only cookie set by ZK login)
         // Use retry logic to handle race conditions after fresh login
         let retryCount = 0;
-        const maxRetries = 3;
+        const maxRetries = 1; // Bootstrap verification validates sessions before mount
         let profileLoaded = false;
 
         while (retryCount < maxRetries && !profileLoaded) {

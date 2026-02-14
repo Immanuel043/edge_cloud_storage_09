@@ -304,13 +304,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Listen for custom zk-mode-changed event (same-window, immediate)
     window.addEventListener('zk-mode-changed', checkZKMode);
 
-    // Poll for same-window changes (fallback)
-    const interval = setInterval(checkZKMode, 1000);
-
     return () => {
       window.removeEventListener('storage', checkZKMode);
       window.removeEventListener('zk-mode-changed', checkZKMode);
-      clearInterval(interval);
     };
   }, [checkZKMode]);
 

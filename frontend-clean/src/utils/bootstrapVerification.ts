@@ -110,9 +110,18 @@ export async function verifyServiceMode(): Promise<boolean> {
     return correctZKMode;
   }
 
-  // No active sessions on either service — trust localStorage (user is logged out)
-  console.log('[Bootstrap] No active sessions detected, trusting localStorage:', storedZKMode);
-  return storedZKMode;
+  // No active sessions on either service — user is logged out
+  if (storedZKMode) {
+    // Stale ZK localStorage — no backend session exists, clear it
+    console.log('[Bootstrap] No active sessions, clearing stale ZK localStorage');
+    localStorage.removeItem(ZK_STORAGE.ZK_ENABLED_KEY);
+    localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
+    localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
+    localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
+    return false;
+  }
+  console.log('[Bootstrap] No active sessions, user is logged out');
+  return false;
 }
 
 /**

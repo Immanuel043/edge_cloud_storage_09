@@ -221,7 +221,14 @@ const FloatingOrb: React.FC<FloatingOrbProps> = ({
 const AuthPage: React.FC = () => {
   const navigate = useNavigate();
   const { darkMode, toggleTheme } = useTheme();
-  const { login, loginZK } = useAuth();
+  const { login, loginZK, isAuthenticated, loading: authLoading } = useAuth();
+
+  // Redirect to dashboard if already authenticated (handles ZK mode switch after registration)
+  useEffect(() => {
+    if (isAuthenticated && !authLoading) {
+      navigate('/');
+    }
+  }, [isAuthenticated, authLoading, navigate]);
 
   // Auth State
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -485,6 +492,15 @@ const AuthPage: React.FC = () => {
         );
         const loginResponse = await zkAuthService.loginZK(pendingFormData.email, passwordHash);
 
+        // Store registration hint for ZKAuthProvider fast-path bootstrap
+        // (avoids async getProfile() call which has race conditions during mode switch)
+        sessionStorage.setItem('zkRegistrationComplete', JSON.stringify({
+          userId: loginResponse.user_id,
+          email: pendingFormData.email,
+          username: pendingFormData.username,
+          ts: Date.now(),
+        }));
+
         // 3. Store ZK data in localStorage (but NOT ZK_ENABLED_KEY yet — prevents premature mode switch)
         const masterKeyIV = loginResponse.master_key_iv || kdfParams.kdf_iv || '';
         const zkDataObj = {
@@ -519,11 +535,10 @@ const AuthPage: React.FC = () => {
           setRecoveryPhrase(recoveryPhraseText);
           setShowRecoverySetup(true);
         } else {
-          // Recovery phrase failed — activate ZK mode and navigate directly
+          // Recovery phrase failed — activate ZK mode (navigation handled by useEffect)
           console.log('ZK Registration complete (no recovery phrase) - activating ZK mode');
           localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
           window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
-          setTimeout(() => navigate('/'), 200);
         }
       } else {
         await authService.registerComplete(
@@ -1804,13 +1819,11 @@ const AuthPage: React.FC = () => {
           onSkip={() => {
             setShowRecoverySetup(false);
             setRecoveryPhrase('');
-            console.log('ZK Registration skipped - activating ZK mode and redirecting');
+            console.log('ZK Registration skipped - activating ZK mode');
             // Activate ZK mode NOW (was deferred during registration to prevent premature tree remount)
+            // Navigation is handled by the useEffect that watches isAuthenticated
             localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
             window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
-            setTimeout(() => {
-              navigate('/');
-            }, 200);
           }}
         />
       )}
@@ -1821,13 +1834,11 @@ const AuthPage: React.FC = () => {
           onConfirm={() => {
             setShowRecoveryConfirm(false);
             setRecoveryPhrase('');
-            console.log('ZK Registration complete - activating ZK mode and redirecting');
+            console.log('ZK Registration complete - activating ZK mode');
             // Activate ZK mode NOW (was deferred during registration to prevent premature tree remount)
+            // Navigation is handled by the useEffect that watches isAuthenticated
             localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, 'true');
             window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
-            setTimeout(() => {
-              navigate('/');
-            }, 200);
           }}
           onCancel={() => {
             setShowRecoveryConfirm(false);
