@@ -366,7 +366,7 @@ class BackgroundDeduplicationService:
                 print("Running garbage collection...")
 
                 async for db in get_db():
-                    from ..services.deduplication import deduplication_service
+                    from ..services.deduplication_old import deduplication_service
                     deleted_count = await deduplication_service.cleanup_unreferenced_blocks(db)
                     print(f"Garbage collection complete: {deleted_count} blocks cleaned")
                     break

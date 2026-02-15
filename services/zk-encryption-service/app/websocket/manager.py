@@ -5,6 +5,7 @@ Manages WebSocket connections and event broadcasting for real-time updates.
 Provides user-specific connection routing and automatic cleanup.
 """
 from typing import Dict, Set
+from uuid import UUID
 from fastapi import WebSocket
 from datetime import datetime, timezone
 import structlog
@@ -17,15 +18,15 @@ class ConnectionManager:
     """Manages WebSocket connections for real-time updates"""
 
     def __init__(self):
-        # user_id -> set of WebSocket connections
-        self.active_connections: Dict[int, Set[WebSocket]] = {}
+        # user_id (UUID) -> set of WebSocket connections
+        self.active_connections: Dict[UUID, Set[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket, user_id: int):
+    async def connect(self, websocket: WebSocket, user_id: UUID):
         """Register new WebSocket connection
 
         Args:
             websocket: WebSocket connection to register
-            user_id: User ID for routing messages
+            user_id: User ID (UUID) for routing messages
         """
         await websocket.accept()
 
@@ -39,12 +40,12 @@ class ConnectionManager:
             total_connections=len(self.active_connections[user_id])
         )
 
-    def disconnect(self, websocket: WebSocket, user_id: int):
+    def disconnect(self, websocket: WebSocket, user_id: UUID):
         """Remove WebSocket connection
 
         Args:
             websocket: WebSocket connection to remove
-            user_id: User ID for the connection
+            user_id: User ID (UUID) for the connection
         """
         if user_id in self.active_connections:
             self.active_connections[user_id].discard(websocket)
@@ -53,11 +54,11 @@ class ConnectionManager:
 
         logger.info("websocket_disconnected", user_id=user_id)
 
-    async def send_to_user(self, user_id: int, event: str, data: dict):
+    async def send_to_user(self, user_id: UUID, event: str, data: dict):
         """Send event to all connections for a specific user
 
         Args:
-            user_id: Target user ID
+            user_id: Target user ID (UUID)
             event: Event type (e.g., 'zk:file:uploaded')
             data: Event payload
         """
@@ -107,7 +108,7 @@ class ConnectionManager:
         return {
             "total_users": len(self.active_connections),
             "total_connections": sum(len(conns) for conns in self.active_connections.values()),
-            "users_online": list(self.active_connections.keys())
+            "users_online": [str(uid) for uid in self.active_connections.keys()]
         }
 
 

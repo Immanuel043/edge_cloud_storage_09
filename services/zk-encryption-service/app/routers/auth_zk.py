@@ -17,7 +17,7 @@ import bcrypt
 import structlog
 from datetime import datetime
 from typing import Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
@@ -91,12 +91,21 @@ async def get_current_user_from_cookie(session_token: str):
             detail="Invalid token"
         )
 
+    # ZK user IDs are UUIDs; parse and validate
+    try:
+        user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid token"
+        )
+
     # Get user from database using async context manager
     from app.database import async_session_maker
 
     async with async_session_maker() as db:
         result = await db.execute(
-            select(ZKUser).filter(ZKUser.id == int(user_id))
+            select(ZKUser).filter(ZKUser.id == user_uuid)
         )
         user = result.scalar_one_or_none()
 

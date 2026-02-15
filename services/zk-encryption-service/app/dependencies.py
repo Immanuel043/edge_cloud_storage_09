@@ -3,7 +3,7 @@ FastAPI Dependencies
 
 Dependency injection functions for authentication, database, and other shared resources.
 """
-import jwt
+from jose import jwt, JWTError, ExpiredSignatureError
 import hashlib
 import structlog
 from typing import Optional
@@ -72,7 +72,7 @@ async def blacklist_token(token: str) -> None:
             if ttl > 0:
                 redis = get_redis()
                 await redis.setex(f"{TOKEN_BLACKLIST_PREFIX}{jti}", ttl, "1")
-    except jwt.JWTError:
+    except JWTError:
         pass  # Token already invalid, no need to blacklist
 
 
@@ -105,13 +105,13 @@ def verify_token(token: str) -> Optional[dict]:
             algorithms=[settings.ALGORITHM]
         )
         return payload
-    except jwt.ExpiredSignatureError:
+    except ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except jwt.JWTError as e:
+    except JWTError as e:
         logger.warning("jwt_verification_failed", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
