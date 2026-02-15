@@ -79,6 +79,21 @@ async function checkActiveSession(service: 'zk' | 'normal'): Promise<SessionChec
 export async function verifyServiceMode(): Promise<boolean> {
   console.log('[Bootstrap] Verifying service mode...');
 
+  // If the user just logged out, don't re-enable ZK from a stale backend cookie.
+  // The logout function sets this marker before clearing localStorage.
+  // sessionStorage persists across page refresh but clears when the tab closes.
+  const logoutIntent = sessionStorage.getItem('zkLogoutIntent');
+  if (logoutIntent) {
+    sessionStorage.removeItem('zkLogoutIntent');
+    console.log('[Bootstrap] Logout intent detected, skipping fallback session check');
+    // Clear any stale ZK localStorage
+    localStorage.removeItem(ZK_STORAGE.ZK_ENABLED_KEY);
+    localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
+    localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
+    localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
+    return false;
+  }
+
   // Get current localStorage mode
   const storedZKMode = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
 
@@ -99,6 +114,15 @@ export async function verifyServiceMode(): Promise<boolean> {
   if (fallbackCheck.hasActiveSession) {
     // Mismatch: user has session on the OTHER service — correct localStorage
     const correctZKMode = fallbackService === 'zk';
+
+    // Don't re-enable ZK mode without encryption data in localStorage.
+    // ZK requires kdfSalt, encryptedMasterKey, etc. to derive the master key.
+    // Without them (e.g., after clearing storage), ZK mode is non-functional.
+    if (correctZKMode && !localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY)) {
+      console.log('[Bootstrap] ZK session cookie found but no ZK encryption data in localStorage — treating as logged out');
+      return false;
+    }
+
     console.log(`[Bootstrap] Mode mismatch! Active session on ${fallbackService}. Correcting: ${storedZKMode} → ${correctZKMode}`);
     localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, String(correctZKMode));
 

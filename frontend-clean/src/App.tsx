@@ -84,7 +84,7 @@ interface ProtectedRouteProps {
  * ProtectedRoute Component
  *
  * Wraps routes that require authentication.
- * Redirects to /auth if user is not authenticated.
+ * Redirects to /auth if user is not authenticated
  */
 const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();

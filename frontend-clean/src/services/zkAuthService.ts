@@ -1,7 +1,7 @@
 /**
  * Zero-Knowledge Authentication Service
  *
- * API calls to the ZK backend service for authentication and user management.
+ * API calls to the ZK backend service for authentication and user management
  * All sensitive cryptographic operations happen client-side; this service
  * only handles network communication with the backend.
  */

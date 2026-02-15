@@ -55,13 +55,9 @@ export const useAuth = (): AuthContextValue => {
     // Check on custom zk-mode-changed event (same-window, immediate)
     window.addEventListener('zk-mode-changed', checkZKMode);
 
-    // Poll periodically (fallback)
-    const interval = setInterval(checkZKMode, 1000);
-
     return () => {
       window.removeEventListener('storage', checkZKMode);
       window.removeEventListener('zk-mode-changed', checkZKMode);
-      clearInterval(interval);
     };
   }, [checkZKMode]);
 
@@ -117,6 +113,16 @@ export const useAuth = (): AuthContextValue => {
     if (!unlocked) {
       console.warn('[Router] Session unlock failed, user will need to unlock manually');
     }
+
+    // Store login hint in sessionStorage so ZKAuthProvider can bootstrap
+    // synchronously without an async getProfile() call (avoids race condition
+    // where isMountedRef goes false during the async operation).
+    sessionStorage.setItem('zkAuthComplete', JSON.stringify({
+      userId: response.user_id,
+      email,
+      username: email.split('@')[0] || email,
+      ts: Date.now(),
+    }));
 
     // Dispatch custom event to trigger immediate provider switch
     window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));

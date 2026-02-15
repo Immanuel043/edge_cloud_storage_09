@@ -351,11 +351,8 @@ const AuthPage: React.FC = () => {
             throw new Error('ZK login is not available');
           }
           await loginZK(formData.email, formData.password);
-          console.log('ZK login complete - redirecting to homepage');
-          localStorage.setItem('zkEnabled', 'true');
-          setTimeout(() => {
-            navigate('/');
-          }, 100);
+          console.log('ZK login complete - activating ZK mode');
+          // Navigation is handled by the useEffect watching isAuthenticated
         } else {
           await login(formData.email, formData.password);
           console.log('Normal login complete - redirecting to homepage');
@@ -494,7 +491,7 @@ const AuthPage: React.FC = () => {
 
         // Store registration hint for ZKAuthProvider fast-path bootstrap
         // (avoids async getProfile() call which has race conditions during mode switch)
-        sessionStorage.setItem('zkRegistrationComplete', JSON.stringify({
+        sessionStorage.setItem('zkAuthComplete', JSON.stringify({
           userId: loginResponse.user_id,
           email: pendingFormData.email,
           username: pendingFormData.username,

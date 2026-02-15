@@ -64,13 +64,14 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
 
   // ==================== BOOTSTRAP ====================
 
-  // Guard against state updates after unmount in async initialization
-  const isMountedRef = useRef(true);
   useEffect(() => {
-    return () => { isMountedRef.current = false; };
-  }, []);
+    // Use a local cancelled flag instead of a shared ref.
+    // React StrictMode double-invokes effects: mount → cleanup → mount.
+    // A shared ref (useRef) gets set to false during cleanup and never resets,
+    // causing the second invocation to bail out and never set loading=false.
+    // A local variable gives each invocation its own independent flag.
+    let cancelled = false;
 
-  useEffect(() => {
     const initializeZKAuth = async (): Promise<void> => {
       try {
         console.log('[ZK] Starting ZK bootstrap...');
@@ -79,18 +80,18 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         const isZKUser = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
 
         if (!isZKUser) {
-          if (isMountedRef.current) setLoading(false);
+          if (!cancelled) setLoading(false);
           return;
         }
 
-        if (isMountedRef.current) setZkEnabled(true);
+        if (!cancelled) setZkEnabled(true);
 
         // Load ZK data from localStorage
         const storedZkData = localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY);
         if (storedZkData) {
           try {
             const parsedZkData = JSON.parse(storedZkData) as ZKData;
-            if (isMountedRef.current) setZkData(parsedZkData);
+            if (!cancelled) setZkData(parsedZkData);
           } catch (error) {
             console.error('[ZK] Failed to parse stored ZK data:', error);
           }
@@ -98,29 +99,29 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
 
         // Check recovery status
         const recoveryEnabled = localStorage.getItem(ZK_STORAGE.RECOVERY_ENABLED_KEY) === 'true';
-        if (isMountedRef.current) setZkRecoveryEnabled(recoveryEnabled);
+        if (!cancelled) setZkRecoveryEnabled(recoveryEnabled);
 
-        // Fast-path for fresh registration (avoids async getProfile race conditions)
-        // After registration, AuthPage stores user metadata in sessionStorage.
+        // Fast-path for fresh login/registration (avoids async getProfile race conditions)
+        // After login or registration, a sessionStorage hint is stored with user metadata.
         // This skips the async getProfile() call entirely — all state updates are
-        // synchronous, so isMountedRef can't go false during the operation.
-        const regHint = sessionStorage.getItem('zkRegistrationComplete');
-        if (regHint) {
-          sessionStorage.removeItem('zkRegistrationComplete');
+        // synchronous, so the cancelled flag can't change during the operation.
+        const authHint = sessionStorage.getItem('zkAuthComplete');
+        if (authHint) {
+          sessionStorage.removeItem('zkAuthComplete');
           try {
-            const regData = JSON.parse(regHint) as { userId: string; email: string; username: string; ts: number };
+            const hintData = JSON.parse(authHint) as { userId: string; email: string; username: string; ts: number };
             // TTL: ignore hints older than 2 minutes
-            if (Date.now() - regData.ts <= 2 * 60 * 1000) {
-              console.log('[ZK] Fresh registration detected, using fast-path bootstrap');
+            if (Date.now() - hintData.ts <= 2 * 60 * 1000) {
+              console.log('[ZK] Fresh auth detected, using fast-path bootstrap');
               const user: User = {
-                id: regData.userId,
-                email: regData.email,
-                username: regData.username,
+                id: hintData.userId,
+                email: hintData.email,
+                username: hintData.username,
                 user_type: 'individual',
                 created_at: new Date().toISOString(),
                 zk_enabled: true,
               };
-              if (isMountedRef.current) {
+              if (!cancelled) {
                 setUser(user);
                 setIsAuthenticated(true);
                 setZkSessionUnlocked(true);
@@ -128,9 +129,9 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
               }
               return;
             }
-            console.log('[ZK] Registration hint expired, falling back to getProfile');
+            console.log('[ZK] Auth hint expired, falling back to getProfile');
           } catch (e) {
-            console.warn('[ZK] Failed to parse registration hint, falling back to getProfile');
+            console.warn('[ZK] Failed to parse auth hint, falling back to getProfile');
           }
         }
 
@@ -141,8 +142,8 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
         let profileLoaded = false;
 
         while (retryCount < maxRetries && !profileLoaded) {
-          // Bail out early if component unmounted during retry loop
-          if (!isMountedRef.current) return;
+          // Bail out early if effect was cleaned up
+          if (cancelled) return;
 
           try {
             // Add small delay for retries (except first attempt)
@@ -151,12 +152,12 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
             }
 
             // Check again after await
-            if (!isMountedRef.current) return;
+            if (cancelled) return;
 
             // Use ZK service profile endpoint (port 8002)
             const userProfile = await zkAuthService.getProfile();
 
-            if (!isMountedRef.current) return;
+            if (cancelled) return;
 
             const user: User = {
               id: userProfile.id,
@@ -192,7 +193,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
               // Dispatch custom event to trigger immediate provider switch
               window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: false } }));
 
-              if (isMountedRef.current) {
+              if (!cancelled) {
                 setZkEnabled(false);
                 setZkData(null);
               }
@@ -204,11 +205,13 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       } catch (error) {
         console.error('[ZK] Bootstrap error:', error);
       } finally {
-        if (isMountedRef.current) setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     void initializeZKAuth();
+
+    return () => { cancelled = true; };
   }, []);
 
   // ==================== SESSION TIMEOUT ====================
@@ -374,11 +377,15 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       localStorage.setItem(ZK_STORAGE.ZK_EMAIL_KEY, email);
       localStorage.setItem(ZK_STORAGE.ZK_DATA_KEY, JSON.stringify(zkDataObj));
 
-      // Check recovery status via separate call
-      const zkStatus = await zkAuthService.getZKStatus();
-      if (zkStatus.recovery_enabled) {
-        localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
-        setZkRecoveryEnabled(true);
+      // Check recovery status via separate call (non-fatal — don't kill login if this fails)
+      try {
+        const zkStatus = await zkAuthService.getZKStatus();
+        if (zkStatus.recovery_enabled) {
+          localStorage.setItem(ZK_STORAGE.RECOVERY_ENABLED_KEY, 'true');
+          setZkRecoveryEnabled(true);
+        }
+      } catch (statusError) {
+        console.warn('[ZK] Failed to fetch ZK status during login, continuing:', statusError);
       }
 
       setZkEnabled(true);
@@ -414,6 +421,7 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
       }
       setUser(user);
       setIsAuthenticated(true);
+      setLoading(false); // Ensure loading is false so redirect condition fires
 
       if (!unlocked) {
         setShowUnlockModal(true);
@@ -620,6 +628,10 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
     console.log('[ZK] Logging out...');
 
     try {
+      // Mark logout intent so bootstrap won't re-enable ZK from a stale backend cookie.
+      // sessionStorage persists across page refresh but clears when the tab closes.
+      sessionStorage.setItem('zkLogoutIntent', String(Date.now()));
+
       // Lock session (clear master key from memory)
       zkEncryptionService.lockZKSession();
 
