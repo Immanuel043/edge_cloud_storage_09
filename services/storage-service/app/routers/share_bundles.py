@@ -965,11 +965,6 @@ async def download_bundle_as_zip(
     if not files_data:
         raise HTTPException(status_code=404, detail="No files in bundle (all files may have been deleted)")
 
-    # Increment download count
-    bundle.download_count += 1
-    bundle.last_accessed = datetime.utcnow()
-    await db.commit()
-
     # Create ZIP in memory
     zip_buffer = io.BytesIO()
 
@@ -1008,18 +1003,28 @@ async def download_bundle_as_zip(
                 logger.error(f"Error adding file {file_obj.id} to ZIP: {e}")
                 continue
 
-    zip_buffer.seek(0)
+    # Get ZIP content as bytes for Content-Length
+    zip_bytes = zip_buffer.getvalue()
+    zip_size = len(zip_bytes)
+
+    if zip_size == 0:
+        raise HTTPException(status_code=500, detail="Failed to create ZIP - no files could be processed")
+
+    # Increment download count only after ZIP is successfully created
+    bundle.download_count += 1
+    bundle.last_accessed = datetime.utcnow()
+    await db.commit()
 
     # Generate ZIP filename
     safe_name = "".join(c for c in bundle.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
     zip_filename = f"{safe_name}.zip"
 
-    return StreamingResponse(
-        io.BytesIO(zip_buffer.read()),
+    return Response(
+        content=zip_bytes,
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{zip_filename}"',
-            "Content-Type": "application/zip",
+            "Content-Length": str(zip_size),
         }
     )
 
@@ -1083,7 +1088,7 @@ async def get_bundle_file_thumbnail(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Check if ZK encrypted (no thumbnails for ZK files in public shares)
-    if file_obj.is_encrypted or file_obj.encrypted_file_key:
+    if file_obj.encryption_mode == 'client_zk':
         raise HTTPException(status_code=404, detail="Thumbnails not available for encrypted files")
 
     # Validate size

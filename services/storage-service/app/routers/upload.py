@@ -1633,8 +1633,8 @@ async def run_video_optimization(
         )
 
         # Get new database session to update metadata
-        from ..database import get_async_session
-        async for db in get_async_session():
+        from ..database import get_db
+        async for db in get_db():
             try:
                 # Re-query the file object
                 result_query = await db.execute(

@@ -546,7 +546,7 @@ async def complete_upload(
             }
         )
     except Exception as e:
-        logger.error("websocket_emit_failed", error=str(e), event="zk:file:uploaded")
+        logger.error("websocket_emit_failed", error=str(e), ws_event="zk:file:uploaded")
 
     # Return encrypted filename (client will decrypt)
     return {

@@ -219,12 +219,21 @@ async def log_requests(request: Request, call_next):
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Handle HTTP exceptions with structured logging"""
-    logger.warning(
-        "http_exception",
-        status_code=exc.status_code,
-        detail=exc.detail,
-        path=request.url.path
+    # Suppress noisy logs for expected auth-check probes (401/403 on /me, 404 on /kdf-params)
+    path = request.url.path
+    is_auth_probe = (
+        (exc.status_code in (401, 403) and path.endswith("/zk/me"))
+        or (exc.status_code == 404 and "/kdf-params" in path)
     )
+    if is_auth_probe:
+        logger.debug("http_auth_probe", status_code=exc.status_code, path=path)
+    else:
+        logger.warning(
+            "http_exception",
+            status_code=exc.status_code,
+            detail=exc.detail,
+            path=path
+        )
 
     return JSONResponse(
         status_code=exc.status_code,

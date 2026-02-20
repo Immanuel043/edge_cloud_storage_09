@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
+from ..services.search_service import search_service
 from ..services.download_optimizer import download_optimizer
 from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..models.database import User, Object, ActivityLog, Favorite
@@ -1416,6 +1417,24 @@ async def rename_file(
             request
         )
 
+        # Update Elasticsearch index with new name
+        if search_service.connected:
+            try:
+                await search_service.index_file({
+                    'id': str(file_obj.id),
+                    'user_id': str(file_obj.user_id),
+                    'name': file_obj.file_name,
+                    'original_name': file_obj.file_name,
+                    'size': file_obj.file_size,
+                    'mime_type': file_obj.mime_type,
+                    'storage_tier': file_obj.storage_tier or 'cache',
+                    'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
+                    'created_at': file_obj.created_at.isoformat() if file_obj.created_at else None,
+                    'updated_at': file_obj.updated_at.isoformat() if file_obj.updated_at else None,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to update search index after rename: {e}")
+
         # Return updated file details
         return FileResponse(
             id=str(file_obj.id),
@@ -1539,6 +1558,13 @@ async def delete_file(
 
         await db.commit()
 
+        # Remove from Elasticsearch index
+        if search_service.connected:
+            try:
+                await search_service.delete_file(str(file_id))
+            except Exception as e:
+                logger.warning(f"Failed to remove file from search index: {e}")
+
         return {"status": "success", "message": "File moved to trash", "file_name": file_name}
 
     except Exception as e:
@@ -1639,6 +1665,24 @@ async def restore_from_trash(
         db.add(activity)
 
         await db.commit()
+
+        # Re-index in Elasticsearch
+        if search_service.connected:
+            try:
+                await search_service.index_file({
+                    'id': str(file_obj.id),
+                    'user_id': str(file_obj.user_id),
+                    'name': file_obj.file_name,
+                    'original_name': file_obj.file_name,
+                    'size': file_obj.file_size,
+                    'mime_type': file_obj.mime_type,
+                    'storage_tier': file_obj.storage_tier or 'cache',
+                    'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
+                    'created_at': file_obj.created_at.isoformat() if file_obj.created_at else None,
+                    'updated_at': file_obj.updated_at.isoformat() if file_obj.updated_at else None,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to re-index restored file: {e}")
 
         return {"status": "success", "message": "File restored from trash", "file_name": file_name}
 

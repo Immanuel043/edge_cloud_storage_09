@@ -74,6 +74,7 @@ const ShareBundleViewer: React.FC = () => {
   const [bundleInfo, setBundleInfo] = useState<BundleInfo | null>(null);
   const [previewFile, setPreviewFile] = useState<ShareFile | null>(null);
   const [downloading, setDownloading] = useState<boolean>(false);
+  const [downloadError, setDownloadError] = useState<string>('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -356,6 +357,7 @@ const ShareBundleViewer: React.FC = () => {
   };
 
   const handleDownloadFile = async (file: ShareFile): Promise<void> => {
+    setDownloadError('');
     try {
       const url = new URL(
         `${API_URL}/api/v1/share/bundle/${token}/file/${file.id}/stream`
@@ -369,7 +371,10 @@ const ShareBundleViewer: React.FC = () => {
         credentials: 'include',
         headers: dlHeaders,
       });
-      if (!response.ok) throw new Error('Download failed');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.detail || 'Download failed');
+      }
 
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
@@ -382,13 +387,14 @@ const ShareBundleViewer: React.FC = () => {
       window.URL.revokeObjectURL(downloadUrl);
     } catch (err: unknown) {
       console.error('Download failed:', getErrorMessage(err));
-      setError(getErrorMessage(err) || 'Download failed');
+      setDownloadError(getErrorMessage(err) || 'Download failed');
     }
   };
 
   const handleDownloadAll = async (): Promise<void> => {
     if (!bundleInfo?.allow_zip_download) return;
     setDownloading(true);
+    setDownloadError('');
 
     try {
       const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/download`);
@@ -401,7 +407,10 @@ const ShareBundleViewer: React.FC = () => {
         credentials: 'include',
         headers: zipHeaders,
       });
-      if (!response.ok) throw new Error('Download failed');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.detail || 'Download failed');
+      }
 
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
@@ -414,7 +423,7 @@ const ShareBundleViewer: React.FC = () => {
       window.URL.revokeObjectURL(downloadUrl);
     } catch (err: unknown) {
       console.error('Download all failed:', getErrorMessage(err));
-      setError(getErrorMessage(err) || 'Failed to download bundle');
+      setDownloadError(getErrorMessage(err) || 'Failed to download bundle');
     } finally {
       setDownloading(false);
     }
@@ -734,6 +743,21 @@ const ShareBundleViewer: React.FC = () => {
 
       {/* Content */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Download error banner */}
+        {downloadError && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="text-red-500 flex-shrink-0" size={20} />
+              <p className="text-red-700 text-sm font-medium">{downloadError}</p>
+            </div>
+            <button
+              onClick={() => setDownloadError('')}
+              className="text-red-400 hover:text-red-600 text-lg font-bold px-2"
+            >
+              x
+            </button>
+          </div>
+        )}
         {/* Bundle Info Card */}
         <div className="bg-gradient-to-r from-purple-500 to-pink-600 rounded-2xl p-6 mb-8 text-white">
           <div className="flex items-center justify-between">

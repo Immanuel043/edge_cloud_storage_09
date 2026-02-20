@@ -36,7 +36,12 @@ const VersionHistory: React.FC<VersionHistoryProps> = ({ file, onClose, onRestor
       }
 
       const data = await response.json() as VersionsResponse;
-      setVersions(data.versions || []);
+      const mapped = (data.versions || []).map((v) => ({
+        ...v,
+        version: v.version_number ?? v.version,
+        size: v.file_size ?? v.size,
+      }));
+      setVersions(mapped);
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('Failed to load versions:', err);

@@ -1,18 +1,12 @@
 /**
  * Bootstrap Mode Verification
  *
- * Verifies user's service mode on app load by checking the current service first.
- * Only probes the other service as a fallback if the current one has no active session.
+ * Verifies the user's service mode on app load by checking ONLY the current
+ * service (based on localStorage). Does NOT probe the other service to avoid
+ * leaking endpoint existence and generating noisy 403/404 errors in logs.
  *
- * This utility helps recover from situations where:
- * - User clears localStorage but still has active session cookies
- * - Browser storage gets corrupted
- * - User switches devices/browsers
- *
- * SECURITY: Corrects localStorage when it mismatches actual backend sessions.
- * The backend validates HTTP-only cookies, not localStorage. If localStorage
- * says zkEnabled=true but user has no ZK session, ZK API calls would 401.
- * When we detect session on the other service, we correct localStorage.
+ * If the current service has no active session, the user is treated as logged out.
+ * Users who cleared localStorage simply need to log in again.
  */
 import { API_URL, ZK_SERVICE_URL, ZK_STORAGE } from '../config/constants';
 
@@ -67,12 +61,9 @@ async function checkActiveSession(service: 'zk' | 'normal'): Promise<SessionChec
 /**
  * Verify service mode matches actual sessions
  *
- * Checks the CURRENT service first (based on localStorage). Only probes the
- * other service if the current one has no active session. This avoids
- * unnecessary cross-service 401 errors on every page load.
- *
- * Fallback logic still corrects localStorage if the user has an active session
- * on the other service (e.g., after clearing localStorage).
+ * Checks ONLY the current service (based on localStorage). If no active
+ * session exists, treats the user as logged out without probing the other
+ * service — this prevents cross-service 403/404 noise in logs and console.
  *
  * @returns Correct ZK mode (true for ZK, false for Normal)
  */
@@ -107,34 +98,11 @@ export async function verifyServiceMode(): Promise<boolean> {
     return storedZKMode;
   }
 
-  // Primary service has no session — check the other service as fallback
-  const fallbackService: 'zk' | 'normal' = storedZKMode ? 'normal' : 'zk';
-  const fallbackCheck = await checkActiveSession(fallbackService);
-
-  if (fallbackCheck.hasActiveSession) {
-    // Mismatch: user has session on the OTHER service — correct localStorage
-    const correctZKMode = fallbackService === 'zk';
-
-    // Don't re-enable ZK mode without encryption data in localStorage.
-    // ZK requires kdfSalt, encryptedMasterKey, etc. to derive the master key.
-    // Without them (e.g., after clearing storage), ZK mode is non-functional.
-    if (correctZKMode && !localStorage.getItem(ZK_STORAGE.ZK_DATA_KEY)) {
-      console.log('[Bootstrap] ZK session cookie found but no ZK encryption data in localStorage — treating as logged out');
-      return false;
-    }
-
-    console.log(`[Bootstrap] Mode mismatch! Active session on ${fallbackService}. Correcting: ${storedZKMode} → ${correctZKMode}`);
-    localStorage.setItem(ZK_STORAGE.ZK_ENABLED_KEY, String(correctZKMode));
-
-    // Dispatch event to trigger provider switch
-    window.dispatchEvent(
-      new CustomEvent('zk-mode-changed', { detail: { enabled: correctZKMode } })
-    );
-
-    return correctZKMode;
-  }
-
-  // No active sessions on either service — user is logged out
+  // No active session on current service — user is logged out.
+  // We intentionally do NOT probe the other service to avoid:
+  // 1. Leaking ZK endpoint existence to normal users (403 in console/logs)
+  // 2. Leaking normal endpoint existence to ZK users
+  // If localStorage was cleared, the user simply needs to log in again.
   if (storedZKMode) {
     // Stale ZK localStorage — no backend session exists, clear it
     console.log('[Bootstrap] No active sessions, clearing stale ZK localStorage');

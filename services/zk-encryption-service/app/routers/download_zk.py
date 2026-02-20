@@ -751,7 +751,7 @@ async def delete_file(
                 data={"fileId": file_id}
             )
         except Exception as e:
-            logger.error("websocket_emit_failed", error=str(e), event="zk:file:deleted")
+            logger.error("websocket_emit_failed", error=str(e), ws_event="zk:file:deleted")
 
         return {
             "message": "File permanently deleted",
@@ -787,7 +787,7 @@ async def delete_file(
                 data={"fileId": file_id}
             )
         except Exception as e:
-            logger.error("websocket_emit_failed", error=str(e), event="zk:file:deleted")
+            logger.error("websocket_emit_failed", error=str(e), ws_event="zk:file:deleted")
 
         return {
             "message": "File moved to trash",

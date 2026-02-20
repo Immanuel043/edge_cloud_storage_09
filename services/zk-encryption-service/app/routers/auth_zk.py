@@ -199,9 +199,8 @@ async def get_kdf_params(
     user = result.scalar_one_or_none()
 
     if not user:
-        # Security: Don't reveal if user exists
-        # Return fake parameters to prevent user enumeration
-        logger.warning("kdf_params_requested_nonexistent_user", email=email)
+        # Security: Don't log the email to avoid leaking PII in logs
+        logger.debug("kdf_params_requested_nonexistent_user")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"

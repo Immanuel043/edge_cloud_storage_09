@@ -340,10 +340,10 @@ async def remove_shared_access(
     return {"success": True, "message": "Removed from Shared with me"}
 
 
-@router.post("/share/{share_token}/info")
+@router.get("/share/{share_token}/info")
 async def get_share_info(
     share_token: str,
-    password: Optional[str] = Body(None, embed=True),
+    x_share_password: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Get information about a shared item (for viewer page)"""
@@ -367,9 +367,9 @@ async def get_share_info(
 
     # Verify password if required
     if share_link.password_hash:
-        if not password:
+        if not x_share_password:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(password, share_link.password_hash):
+        if not pwd_context.verify(x_share_password, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Increment view count
@@ -393,10 +393,10 @@ async def get_share_info(
     }
 
 
-@router.post("/share/{share_token}/folder/contents")
+@router.get("/share/{share_token}/folder/contents")
 async def get_shared_folder_contents(
     share_token: str,
-    password: Optional[str] = Body(None, embed=True),
+    x_share_password: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Get contents of a shared folder"""
@@ -419,9 +419,9 @@ async def get_shared_folder_contents(
 
     # Verify password
     if share_link.password_hash:
-        if not password:
+        if not x_share_password:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(password, share_link.password_hash):
+        if not pwd_context.verify(x_share_password, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Get all files in folder

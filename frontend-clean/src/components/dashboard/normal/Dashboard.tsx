@@ -123,7 +123,6 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const abortControllers = useRef<Record<string, AbortController>>({});
-  const [showDedupPanel] = useState<boolean>(false);
   const [dedupStats, setDedupStats] = useState<DeduplicationStats | null>(null);
   const [dedupLoading, setDedupLoading] = useState<boolean>(false);
   const [searchResults, setSearchResults] = useState<SearchResultsType | null>(null);
@@ -141,18 +140,14 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   useEffect(() => {
     // Don't attempt to load if auth is still loading or not authenticated
     if (authLoading || !isAuthenticated) {
-      console.log('Auth not ready for dedup load:', {
-        authLoading,
-        isAuthenticated
-      });
       return;
     }
 
-    // Only load dedup stats when the panel is actually opened
-    if (showDedupPanel) {
+    // Load dedup stats when the dedup view is active
+    if (activeView === 'dedup') {
       loadDedupStats();
     }
-  }, [isAuthenticated, authLoading, showDedupPanel]);
+  }, [isAuthenticated, authLoading, activeView]);
 
   // Watch for upload completion to show toast
   useEffect(() => {
@@ -206,18 +201,18 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
 
     setDedupLoading(true);
     try {
-      console.log('Loading dedup stats with cookie authentication');
-      const savings = await storageService.getDedupSavings('');
-      setDedupStats({ 
-        savings: (savings as { savings?: unknown })?.savings as DeduplicationStats['savings'] || null, 
-        analytics: null,
-        error: null 
+      const [savings, analytics] = await Promise.all([
+        storageService.getDedupSavings(''),
+        storageService.getDedupAnalytics(''),
+      ]);
+      setDedupStats({
+        savings: savings as DeduplicationStats['savings'],
+        analytics: analytics as DeduplicationStats['analytics'],
+        error: null
       });
-      console.log('Dedup stats loaded successfully:', savings);
     } catch (error: unknown) {
       const errorMessage = getErrorMessage(error);
       console.error('Failed to load dedup stats:', error);
-      // Only set error if component is still mounted
       setDedupStats({
         savings: null,
         analytics: null,

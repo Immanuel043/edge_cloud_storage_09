@@ -4,6 +4,7 @@ File versioning endpoints - Auto-versioning and version history
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from typing import List
@@ -209,7 +210,6 @@ async def download_file_version(
     db: AsyncSession = Depends(get_db),
 ):
     """Download a specific version of a file"""
-    from fastapi.responses import StreamingResponse
 
     # Verify file belongs to user
     result = await db.execute(
@@ -233,26 +233,36 @@ async def download_file_version(
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
 
-    # Decrypt and stream file from version
+    # Decrypt file from version storage
+    import os
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
-    async def stream_chunks():
-        if version.chunk_info and "chunks" in version.chunk_info:
-            # Chunked storage
-            for chunk_hash in version.chunk_info["chunks"]:
-                chunk_data = await storage_service.get_chunk(chunk_hash, file_key)
-                yield chunk_data
-        else:
-            # Single file storage
-            chunk_data = await storage_service.get_chunk(version.content_hash, file_key)
-            yield chunk_data
+    storage_type = version.chunk_info.get("storage_type") if version.chunk_info else None
 
-    return StreamingResponse(
-        stream_chunks(),
+    if storage_type == "single" and version.storage_path and os.path.exists(version.storage_path):
+        # Read encrypted file from disk and decrypt
+        with open(version.storage_path, 'rb') as f:
+            encrypted_data = f.read()
+        file_content = encryption_service.decrypt_file(encrypted_data, file_key)
+    elif storage_type == "inline" and version.chunk_info and "data" in version.chunk_info:
+        # Inline storage - data in chunk_info
+        import base64
+        encrypted_data = base64.b64decode(version.chunk_info["data"])
+        file_content = encryption_service.decrypt_file(encrypted_data, file_key)
+    elif version.storage_path and os.path.exists(version.storage_path):
+        # Fallback: try reading from storage_path
+        with open(version.storage_path, 'rb') as f:
+            encrypted_data = f.read()
+        file_content = encryption_service.decrypt_file(encrypted_data, file_key)
+    else:
+        raise HTTPException(status_code=404, detail="Version file data not found on disk")
+
+    return Response(
+        content=file_content,
         media_type=file_obj.mime_type or "application/octet-stream",
         headers={
             "Content-Disposition": f'attachment; filename="{file_obj.file_name}_v{version_number}"',
-            "Content-Length": str(version.file_size),
+            "Content-Length": str(len(file_content)),
         },
     )
 
