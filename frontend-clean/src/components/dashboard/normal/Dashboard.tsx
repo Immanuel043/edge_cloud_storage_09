@@ -19,6 +19,7 @@ import SubscriptionDashboard from '../../subscription/SubscriptionDashboard';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useStorage } from '../../../contexts/StorageContext';
+import { useNotification } from '../../../contexts/NotificationContext';
 import StorageStats from '../StorageStats';
 import QuickFilters from '../QuickFilters';
 import { API_URL } from '../../../config/constants';
@@ -96,6 +97,26 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     clearSelection,
     refreshFiles
   } = useStorage();
+  const { success: showSuccess } = useNotification();
+
+  // Wrapper around deleteFile to show toast with Undo
+  const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
+    await deleteFile(fileId, fileName);
+    showSuccess(`"${fileName || 'File'}" moved to trash`, {
+      duration: 6000,
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          try {
+            await storageService.restoreFromTrash(fileId);
+            await refreshFiles();
+          } catch {
+            // silently fail — file may already be permanently deleted
+          }
+        },
+      },
+    });
+  };
 
   const [activeView, setActiveView] = useState<ActiveViewType>('cloud-drive');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
@@ -713,7 +734,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             onFilePreview={setPreviewFile}
             onFileDownload={handleFileDownload}
             onFileShare={handleShare}
-            onFileDelete={deleteFile}
+            onFileDelete={handleDeleteFile}
             onVersionHistory={handleVersionHistory}
           />
         );
@@ -728,7 +749,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             onFilePreview={setPreviewFile}
             onFileDownload={handleFileDownload}
             onFileShare={handleShare}
-            onFileDelete={deleteFile}
+            onFileDelete={handleDeleteFile}
             onVersionHistory={handleVersionHistory}
           />
         );
@@ -743,7 +764,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             onFilePreview={setPreviewFile}
             onFileDownload={handleFileDownload}
             onFileShare={handleShare}
-            onFileDelete={deleteFile}
+            onFileDelete={handleDeleteFile}
             onVersionHistory={handleVersionHistory}
             onToggleFavorite={handleToggleFavorite}
             onRename={setRenameFile}
@@ -761,10 +782,14 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             onFileDownload={handleFileDownload}
             onFileShare={handleShare}
             onVersionHistory={handleVersionHistory}
-            onFileDelete={deleteFile}
+            onFileDelete={handleDeleteFile}
             onToggleFavorite={handleToggleFavorite}
             onFileInfo={setFileInfo}
             onRefresh={refreshFiles}
+            onRestore={async () => {
+              await refreshFiles();
+              showSuccess('File restored successfully');
+            }}
           />
         );
 
@@ -890,7 +915,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                         onFilePreview={setPreviewFile}
                         onFileDownload={handleFileDownload}
                         onFileShare={handleShare}
-                        onFileDelete={deleteFile}
+                        onFileDelete={handleDeleteFile}
                         onVersionHistory={handleVersionHistory}
                         onToggleFavorite={handleToggleFavorite}
                         onRename={setRenameFile}
@@ -908,7 +933,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                         onFilePreview={setPreviewFile}
                         onFileDownload={handleFileDownload}
                         onFileShare={handleShare}
-                        onFileDelete={deleteFile}
+                        onFileDelete={handleDeleteFile}
                         onVersionHistory={handleVersionHistory}
                         onToggleFavorite={handleToggleFavorite}
                         onRename={setRenameFile}

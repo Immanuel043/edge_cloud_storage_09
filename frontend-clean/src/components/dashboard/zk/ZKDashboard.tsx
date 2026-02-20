@@ -28,6 +28,8 @@ import FileCorruptionModal from '../FileCorruptionModal';
 import ShareOptionsModal from '../ShareOptionsModal';
 import ServiceModeBadge from '../ServiceModeBadge';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
+import { useNotification } from '../../../contexts/NotificationContext';
+import { storageService } from '../../../services/storageService';
 import { getFileType } from '../../../utils/helpers';
 import type { ZKDashboardLayoutProps, FileItem, FolderItem, UploadItem, DownloadItem, UploadProgressData, DownloadProgressData, UploadErrorInfo, CorruptionErrorInfo, SearchResults as SearchResultsType } from '../types';
 import { getErrorMessage } from '../types';
@@ -65,6 +67,26 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
   pendingDownload,
   onClearPendingDownload,
 }) => {
+  const { success: showSuccess } = useNotification();
+
+  const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
+    await deleteFile(fileId, fileName);
+    showSuccess(`"${fileName || 'File'}" moved to trash`, {
+      duration: 6000,
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          try {
+            await storageService.restoreFromTrash(fileId);
+            await refreshFiles();
+          } catch {
+            // silently fail
+          }
+        },
+      },
+    });
+  };
+
   // View state
   const [activeView, setActiveView] = useState<ActiveView>('cloud-drive');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -611,8 +633,12 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
           onFileDownload={handleFileDownload}
           onVersionHistory={() => {}}
           onFileShare={() => {}}
-          onFileDelete={deleteFile}
+          onFileDelete={handleDeleteFile}
           onRefresh={refreshFiles}
+          onRestore={async () => {
+            await refreshFiles();
+            showSuccess('File restored successfully');
+          }}
         />
       );
     }
@@ -674,7 +700,7 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
                     onFilePreview={setPreviewFile}
                     onFileDownload={handleFileDownload}
                     onFileShare={handleShare}
-                    onFileDelete={deleteFile}
+                    onFileDelete={handleDeleteFile}
                     onVersionHistory={() => {}}
                     onRename={setRenameFile}
                     onFileInfo={setFileInfo}
@@ -690,7 +716,7 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
                     onFilePreview={setPreviewFile}
                     onFileDownload={handleFileDownload}
                     onFileShare={handleShare}
-                    onFileDelete={deleteFile}
+                    onFileDelete={handleDeleteFile}
                     onVersionHistory={() => {}}
                     onRename={setRenameFile}
                     onFileInfo={setFileInfo}

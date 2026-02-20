@@ -390,8 +390,11 @@ const FileList: React.FC<FileListProps> = ({
                     <button
                       onClick={(e: React.MouseEvent) => {
                         e.stopPropagation();
-                        const action = trashedView ? 'permanently delete' : 'delete';
-                        if (window.confirm(`Are you sure you want to ${action} "${file.name}"?`)) {
+                        if (trashedView) {
+                          if (window.confirm(`Are you sure you want to permanently delete "${file.name}"?`)) {
+                            onFileDelete(file.id, file.name);
+                          }
+                        } else {
                           onFileDelete(file.id, file.name);
                         }
                         setOpenMenuId(null);

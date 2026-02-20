@@ -452,6 +452,10 @@ class StorageService {
       throw new Error((error as Record<string, string>).detail || 'Failed to restore file');
     }
 
+    // Invalidate file list cache so next refresh fetches fresh data
+    requestCache.invalidate(/^files-/);
+    requestCache.invalidate(/^folders-/);
+
     return await response.json();
   }
 
