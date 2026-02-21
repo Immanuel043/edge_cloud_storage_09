@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks, Response, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, update
 from typing import Optional, AsyncGenerator
 import uuid
 import json
@@ -44,7 +44,7 @@ from ..services.video_optimizer import video_optimizer
 from ..services.video_ingestion_service import video_ingestion_service
 from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..services.rust_dataplane_client import get_rust_client
-from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session
+from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session, update_upload_session_atomic
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -75,6 +75,45 @@ COMPRESSED_FORMATS = {'.zip', '.gz', '.rar', '.7z', '.bz2', '.xz',
 # Only compress these text-based formats
 COMPRESSIBLE_FORMATS = {'.txt', '.log', '.csv', '.json', '.xml', '.sql', 
                         '.html', '.css', '.js', '.py', '.java', '.c', '.cpp'}
+
+def _cleanup_rust_chunk(file_id: str, chunk_index: int):
+    """Clean up a chunk file written by Rust's storage path scheme.
+
+    Rust writes to: {STORAGE_ROOT}/files/{file_id}/chunks/chunk-{index:010}.enc
+    This removes the chunk and any empty parent directories left behind.
+    """
+    storage_root = settings.STORAGE_ROOT
+    chunk_path = os.path.join(storage_root, "files", file_id, "chunks", f"chunk-{chunk_index:010}.enc")
+    try:
+        if os.path.exists(chunk_path):
+            os.remove(chunk_path)
+            logger.debug(f"Cleaned up Rust chunk: {chunk_path}")
+            # Remove empty parent dirs
+            chunks_dir = os.path.dirname(chunk_path)
+            if os.path.isdir(chunks_dir) and not os.listdir(chunks_dir):
+                os.rmdir(chunks_dir)
+                file_dir = os.path.dirname(chunks_dir)
+                if os.path.isdir(file_dir) and not os.listdir(file_dir):
+                    os.rmdir(file_dir)
+    except OSError as e:
+        logger.warning(f"Failed to clean up Rust chunk {chunk_path}: {e}")
+
+
+def _cleanup_rust_file(file_id: str):
+    """Clean up all chunks written by Rust for a given file_id.
+
+    Removes the entire {STORAGE_ROOT}/files/{file_id}/ directory tree.
+    """
+    storage_root = settings.STORAGE_ROOT
+    file_dir = os.path.join(storage_root, "files", file_id)
+    try:
+        if os.path.isdir(file_dir):
+            import shutil
+            shutil.rmtree(file_dir)
+            logger.debug(f"Cleaned up Rust file directory: {file_dir}")
+    except OSError as e:
+        logger.warning(f"Failed to clean up Rust file directory {file_dir}: {e}")
+
 
 def should_compress(filename: str, size: int) -> bool:
     """Determine if file should be compressed based on type and size"""
@@ -231,8 +270,11 @@ async def init_upload(
 
     # Atomically reserve space in Redis to prevent concurrent uploads exceeding quota
     reserve_key = f"quota_reserved:{user_id_str}"
-    reserved = await redis_client.incrby(reserve_key, file_size)
-    await redis_client.expire(reserve_key, 7200)  # 2-hour TTL for cleanup
+    pipe = redis_client.pipeline()
+    pipe.incrby(reserve_key, file_size)
+    pipe.expire(reserve_key, 7200)  # 2-hour TTL for cleanup
+    results = await pipe.execute()
+    reserved = results[0]
     if storage_info['used'] + reserved > storage_info['quota']:
         # Over quota with reservation - undo and reject
         await redis_client.decrby(reserve_key, file_size)
@@ -379,6 +421,13 @@ async def upload_chunk(
         if session["user"] != str(current_user.id):
             raise HTTPException(status_code=403, detail="Unauthorized")
 
+        # Validate chunk_index is within bounds
+        if chunk_index < 0 or chunk_index >= session["chunks"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid chunk_index {chunk_index}, must be 0-{session['chunks']-1}"
+            )
+
         if chunk_index in session["done"]:
             return {"status": "already_uploaded", "chunk_index": chunk_index}
 
@@ -429,31 +478,37 @@ async def upload_chunk(
                         compress=use_compression,
                         filename=session.get("filename"),
                         file_size=session.get("size"),
+                        target_path=storage_path,
                     )
 
                     chunk_hash = result.get("hash", "").replace("sha256:", "")
 
-                    # Rust has already encrypted - no Python encryption needed
-                    # Just verify the encrypted file exists
+                    # Rust wrote directly to storage_path (zero-copy).
+                    # Verify it landed; fall back to copy only if paths diverge.
                     encrypted_path = result.get("encrypted_chunk_path")
-                    if encrypted_path and os.path.exists(encrypted_path):
-                        # Copy to our storage path if different
-                        if encrypted_path != storage_path:
-                            async with aiofiles.open(encrypted_path, 'rb') as src:
-                                encrypted_chunk = await src.read()
-                            async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
-                                await f.write(encrypted_chunk)
+                    if encrypted_path and encrypted_path == storage_path:
+                        # Zero-copy: Rust wrote directly — nothing to copy or clean up
+                        if not os.path.exists(storage_path):
+                            raise Exception(f"Rust reported success but chunk missing at {storage_path}")
+                    elif encrypted_path and os.path.exists(encrypted_path):
+                        # Defensive fallback: paths differ — copy and clean up
+                        logger.warning(f"target_path mismatch: expected {storage_path}, got {encrypted_path}; copying")
+                        async with aiofiles.open(encrypted_path, 'rb') as src:
+                            encrypted_chunk = await src.read()
+                        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                            await f.write(encrypted_chunk)
+                        _cleanup_rust_chunk(upload_id, chunk_index)
                     else:
                         raise Exception(f"Rust encrypted chunk not found at {encrypted_path}")
 
-                    logger.info(f"Chunk {chunk_index} processed fully via Rust (hash + compress + encrypt)")
+                    logger.info(f"Chunk {chunk_index} processed fully via Rust (zero-copy direct write)")
 
                 else:  # hybrid mode (default)
                     # Hybrid: Rust does hashing, Python does encryption
                     rust_client = get_rust_client(settings.RUST_DATAPLANE_SOCKET)
 
-                    logger.debug(f"Using hybrid Rust processing (ZK mode) for chunk {chunk_index}")
-                    result = await rust_client.process_zk_chunk(
+                    logger.debug(f"Using hybrid Rust processing (hash-only) for chunk {chunk_index}")
+                    result = await rust_client.process_hash_only(
                         chunk_data=chunk_data,
                         file_id=upload_id,
                         chunk_index=chunk_index,
@@ -475,6 +530,11 @@ async def upload_chunk(
 
             except Exception as e:
                 logger.warning(f"Rust processing failed for chunk {chunk_index}: {e}")
+
+                # Clean up any Rust-written chunk files from this failed attempt
+                if rust_mode == "full":
+                    _cleanup_rust_chunk(upload_id, chunk_index)
+
                 if not settings.RUST_DATAPLANE_FALLBACK_TO_PYTHON:
                     raise HTTPException(status_code=500, detail="Chunk processing failed")
 
@@ -496,13 +556,15 @@ async def upload_chunk(
             async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
                 await f.write(encrypted_chunk)
 
-        # Update session
-        session["done"].append(chunk_index)
-        session["hashes"].append(chunk_hash)
-        session["chunk_paths"][str(chunk_index)] = storage_path
+        # Atomically update session to prevent concurrent chunk upload race
+        def apply_chunk_update(s):
+            if chunk_index not in s["done"]:
+                s["done"].append(chunk_index)
+                s["hashes"].append(chunk_hash)
+            s["chunk_paths"][str(chunk_index)] = storage_path
+            return s
 
-        # Persist updated session to Redis + DB fallback
-        await save_upload_session(redis_client, db, upload_id, session)
+        session = await update_upload_session_atomic(redis_client, db, upload_id, apply_chunk_update)
 
         progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
 
@@ -750,8 +812,9 @@ async def complete_upload(
     
     # Verify upload completion
     if storage_strategy == "chunked":
-        if len(session["done"]) != session["chunks"]:
-            missing = set(range(session["chunks"])) - set(session["done"])
+        done_set = set(session["done"])
+        if len(done_set) != session["chunks"]:
+            missing = set(range(session["chunks"])) - done_set
             return {"status": "incomplete", "missing_chunks": list(missing)}
     
     
@@ -770,10 +833,16 @@ async def complete_upload(
         )
 
     # ============ QUOTA ENFORCEMENT ============
-    # Check quota BEFORE creating the file record
+    # Lock user row and check quota atomically to prevent TOCTOU race
     file_size = session["size"]
-    storage_quota = current_user.storage_quota or 0
-    storage_used = current_user.storage_used or 0
+    user_row = (await db.execute(
+        select(User.storage_used, User.storage_quota)
+        .where(User.id == current_user.id)
+        .with_for_update()
+    )).first()
+
+    storage_used = user_row.storage_used or 0
+    storage_quota = user_row.storage_quota or 0
 
     if storage_used + file_size > storage_quota:
         raise HTTPException(
@@ -884,9 +953,11 @@ async def complete_upload(
     try:
         db.add(file_obj)
 
-        # Update user storage usage
-        if hasattr(current_user, 'storage_used'):
-            current_user.storage_used = (current_user.storage_used or 0) + session["size"]
+        # Atomic increment of storage_used within the same transaction
+        await db.execute(
+            update(User).where(User.id == current_user.id)
+            .values(storage_used=User.storage_used + session["size"])
+        )
 
         # Release quota reservation (actual usage is now tracked in DB)
         try:
@@ -896,6 +967,12 @@ async def complete_upload(
 
         # Commit transaction
         await db.commit()
+
+        # Invalidate cached quota so subsequent checks see fresh values
+        try:
+            await redis_client.delete(f"quota:{str(current_user.id)}")
+        except Exception:
+            pass
 
         # Create initial version (Version 1) for version history
         initial_version = FileVersion(
@@ -929,12 +1006,22 @@ async def complete_upload(
         await db.rollback()
         logger.error(f"Upload completion failed for {session['name']}: {e}", exc_info=True)
 
+        # Release quota reservation that would otherwise leak until TTL
+        try:
+            await redis_client.decrby(f"quota_reserved:{current_user.id}", session["size"])
+        except Exception:
+            pass
+
         # Clean up uploaded files
         if storage_strategy == "single" and session.get("storage_path"):
             try:
                 os.remove(session.get("storage_path"))
             except Exception as cleanup_error:
                 logger.error(f"Failed to cleanup file: {cleanup_error}")
+
+        # Clean up Rust-written chunks if full Rust mode was used
+        if settings.RUST_DATAPLANE_ENABLED and settings.RUST_DATAPLANE_MODE == "full":
+            _cleanup_rust_file(upload_id)
 
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     

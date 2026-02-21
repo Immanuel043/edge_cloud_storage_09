@@ -175,6 +175,31 @@ impl ChunkStorage {
         })
     }
 
+    /// Store encrypted chunk at an arbitrary target path.
+    ///
+    /// Used when the caller specifies exactly where the chunk should be written
+    /// (e.g., Python tells Rust to write directly to its cache path).
+    ///
+    /// # Arguments
+    /// * `target_path` - Absolute path where the chunk should be written
+    /// * `data` - Encrypted chunk data
+    ///
+    /// # Returns
+    /// Path to stored chunk (same as `target_path`)
+    #[instrument(skip(self, data), fields(target_path = %target_path.display(), size = data.len()))]
+    pub fn store_chunk_at(
+        &mut self,
+        target_path: &Path,
+        data: &[u8],
+    ) -> Result<PathBuf, DataPlaneError> {
+        debug!(path = %target_path.display(), "Storing chunk at target path");
+
+        self.writer.write_atomic(target_path, data)?;
+
+        debug!("Chunk stored at target path successfully");
+        Ok(target_path.to_path_buf())
+    }
+
     /// Finalize upload session (force fsync if using PerSession strategy)
     pub fn finalize_session(&mut self, file_id: &str) -> Result<(), DataPlaneError> {
         let file_dir = self.get_file_directory(file_id);
@@ -370,6 +395,27 @@ mod tests {
 
         let chunks = storage.list_chunks(file_id).unwrap();
         assert_eq!(chunks, vec![large_index]);
+    }
+
+    #[test]
+    fn test_store_chunk_at() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+
+        // Create a custom target path inside the temp directory
+        let target_dir = temp_dir.path().join("custom").join("cache").join("ab");
+        let target_path = target_dir.join("upload_chunk_0.enc");
+
+        let data = b"Encrypted chunk data at custom path";
+        let result = storage.store_chunk_at(&target_path, data);
+        assert!(result.is_ok());
+
+        let returned_path = result.unwrap();
+        assert_eq!(returned_path, target_path);
+
+        // Verify the file was actually written
+        let contents = std::fs::read(&target_path).unwrap();
+        assert_eq!(contents, data);
     }
 
     #[test]

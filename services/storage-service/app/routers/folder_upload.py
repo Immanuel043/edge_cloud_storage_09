@@ -84,6 +84,22 @@ async def init_folder_upload(
             detail="Storage quota exceeded"
         )
 
+    # Atomically reserve space in Redis to prevent concurrent folder uploads exceeding quota
+    user_id_str = str(current_user.id)
+    reserve_key = f"quota_reserved:{user_id_str}"
+    pipe = redis_client.pipeline()
+    pipe.incrby(reserve_key, init_data.total_size)
+    pipe.expire(reserve_key, 7200)  # 2-hour TTL for cleanup
+    results = await pipe.execute()
+    reserved = results[0]
+    if (current_user.storage_used or 0) + reserved > (current_user.storage_quota or 0):
+        # Over quota with reservation — undo and reject
+        await redis_client.decrby(reserve_key, init_data.total_size)
+        raise HTTPException(
+            status_code=413,
+            detail="Storage quota exceeded (concurrent upload limit)"
+        )
+
     # Validate file count
     if init_data.total_files > folder_upload_service.MAX_FILES_PER_UPLOAD:
         raise HTTPException(
@@ -431,6 +447,14 @@ async def complete_folder_upload(
         {'status': 'completed'},
         redis_client
     )
+
+    # Release quota reservation (actual usage is tracked in DB per-file)
+    try:
+        total_size = session_data.get('total_size', 0)
+        if total_size > 0:
+            await redis_client.decrby(f"quota_reserved:{str(current_user.id)}", total_size)
+    except Exception:
+        pass
 
     # Log activity
     root_folder_id = session_data['created_folders'].get('')

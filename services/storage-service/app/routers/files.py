@@ -1778,6 +1778,12 @@ async def permanent_delete(
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
 
+        # Invalidate cached quota so subsequent checks see fresh values
+        try:
+            await redis_client.delete(f"quota:{str(current_user.id)}")
+        except Exception:
+            pass
+
         # Store file metadata before deletion
         file_name = file_obj.file_name
         freed_space = file_obj.file_size
@@ -1971,6 +1977,12 @@ async def empty_trash(
         # Update user storage
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - freed_space)
+
+        # Invalidate cached quota so subsequent checks see fresh values
+        try:
+            await redis_client.delete(f"quota:{str(current_user.id)}")
+        except Exception:
+            pass
 
         # Log activity
         activity = ActivityLog(

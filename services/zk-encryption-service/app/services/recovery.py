@@ -153,6 +153,12 @@ class RecoveryPhraseService:
         The server stores SHA-256(phrase) to verify during recovery
         without storing the actual phrase.
 
+        SECURITY NOTE (accepted risk): Uses plain SHA-256 which is GPU-friendly.
+        BIP39 phrases have 256 bits of entropy, making brute-force infeasible
+        for properly generated phrases. Upgrading to PBKDF2/argon2id would
+        require a data migration (rehashing all existing stored hashes).
+        Mitigated by: BIP39 enforcement ensures high-entropy phrases only.
+
         Args:
             phrase: Recovery phrase
 

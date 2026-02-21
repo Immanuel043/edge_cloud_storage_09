@@ -371,6 +371,16 @@ async def upload_chunk(
                 detail="Upload session not found"
             )
 
+        # Validate chunk_index is within bounds
+        # Use minimum allowed chunk_size (65536) for most permissive upper bound
+        min_chunk_size = 65536
+        max_chunks = (file_obj.file_size + min_chunk_size - 1) // min_chunk_size
+        if chunk_index >= max_chunks:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid chunk_index {chunk_index}, must be 0-{max_chunks - 1}"
+            )
+
         if file_obj.upload_status == "completed":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

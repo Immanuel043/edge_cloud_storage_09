@@ -23,6 +23,7 @@ from .services.search_service import search_service
 from .workers.quota_prediction_worker import quota_prediction_worker
 from .workers.storage_optimization_worker import storage_optimization_worker
 from .workers.video_processing_worker import VideoProcessingWorker
+from .workers.orphan_cleanup_worker import orphan_cleanup_worker
 
 # Initialize video processing worker
 video_processing_worker = VideoProcessingWorker()
@@ -127,6 +128,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Failed to start storage optimization worker: {e}")
 
+    # Start orphan cleanup worker (cleans expired upload sessions + orphan chunks)
+    try:
+        await orphan_cleanup_worker.start()
+        print("Orphan cleanup worker started")
+    except Exception as e:
+        print(f"Failed to start orphan cleanup worker: {e}")
+
     # Start video processing worker (Kafka consumer for video optimization)
     # Supervised: restarts on crash with backoff, up to 5 retries
     async def _supervised_video_worker():
@@ -200,6 +208,13 @@ async def lifespan(app: FastAPI):
             print("Storage optimization worker stopped")
         except Exception as e:
             print(f"Error stopping storage optimization worker: {e}")
+
+    # Stop orphan cleanup worker
+    try:
+        await orphan_cleanup_worker.stop()
+        print("Orphan cleanup worker stopped")
+    except Exception as e:
+        print(f"Error stopping orphan cleanup worker: {e}")
 
     # Stop video processing worker
     try:
@@ -411,6 +426,7 @@ async def health_check():
     health_status["checks"]["cold_storage_tiering"] = check_worker_status(cold_storage_service, "cold_storage")
     health_status["checks"]["quota_prediction"] = check_worker_status(quota_prediction_worker, "quota_prediction")
     health_status["checks"]["storage_optimization"] = check_worker_status(storage_optimization_worker, "storage_optimization")
+    health_status["checks"]["orphan_cleanup"] = check_worker_status(orphan_cleanup_worker, "orphan_cleanup")
 
     # Storage directories check
     storage_status = {}

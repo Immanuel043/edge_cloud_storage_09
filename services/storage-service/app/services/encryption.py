@@ -216,6 +216,8 @@ class EncryptionService:
                 file_key = base64.b64decode(file_key)
             except Exception:
                 pass
+            if len(file_key) != 32:
+                raise ValueError(f"Invalid file key: expected 32 bytes, got {len(file_key)}")
         nonce = os.urandom(NONCE_SIZE)
 
         if self.using_hardware:
@@ -234,6 +236,8 @@ class EncryptionService:
                 file_key = base64.b64decode(file_key)
             except Exception:
                 pass
+            if len(file_key) != 32:
+                raise ValueError(f"Invalid file key: expected 32 bytes, got {len(file_key)}")
         nonce = enc[:NONCE_SIZE]
         ct = enc[NONCE_SIZE:]
 
@@ -257,6 +261,8 @@ class EncryptionService:
                 file_key = base64.b64decode(file_key)
             except Exception:
                 pass
+            if len(file_key) != 32:
+                raise ValueError(f"Invalid file key: expected 32 bytes, got {len(file_key)}")
 
         # Use Rust-compatible AAD format: little-endian 8 bytes
         aad = chunk_index.to_bytes(8, 'little')
@@ -283,6 +289,8 @@ class EncryptionService:
                 file_key = base64.b64decode(file_key)
             except Exception:
                 pass
+            if len(file_key) != 32:
+                raise ValueError(f"Invalid file key: expected 32 bytes, got {len(file_key)}")
 
         # AAD format: Try Rust format (little-endian 8 bytes) first, fall back to legacy string format
         # Rust uses: chunk_index.to_le_bytes() (8 bytes binary)

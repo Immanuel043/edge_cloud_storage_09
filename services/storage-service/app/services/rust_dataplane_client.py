@@ -165,6 +165,39 @@ class RustDataPlaneClient:
             logger.error(f"Non-ZK chunk processing error: {e}")
             raise
 
+    async def process_hash_only(
+        self,
+        chunk_data: bytes,
+        file_id: str,
+        chunk_index: int,
+    ) -> Dict[str, Any]:
+        """
+        Process a chunk in hash-only mode (hybrid Rust processing).
+
+        Used in hybrid mode where Rust handles hashing and Python handles
+        compression + encryption. Delegates to the ZK endpoint which
+        performs hash-only processing without server-side encryption.
+
+        Args:
+            chunk_data: Raw chunk data to hash
+            file_id: File identifier for storage path
+            chunk_index: Index of this chunk
+
+        Returns:
+            Response containing:
+            - success: Whether operation succeeded
+            - hash: SHA-256 hash of chunk data
+
+        Raises:
+            httpx.HTTPStatusError: On HTTP error
+            Exception: On processing failure
+        """
+        return await self.process_zk_chunk(
+            chunk_data=chunk_data,
+            file_id=file_id,
+            chunk_index=chunk_index,
+        )
+
     async def process_zk_chunk(
         self,
         chunk_data: bytes,

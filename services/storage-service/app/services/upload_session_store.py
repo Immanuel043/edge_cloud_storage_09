@@ -12,7 +12,8 @@ On write, writes to both Redis and DB.
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Callable
+import redis.asyncio as redis_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -120,3 +121,78 @@ async def delete_upload_session(
         await db.commit()
     except Exception as e:
         logger.warning(f"Failed to delete upload session {upload_id} from DB: {e}")
+
+
+async def update_upload_session_atomic(
+    redis_client,
+    db,
+    upload_id: str,
+    update_fn: Callable[[dict], dict],
+    max_retries: int = 5,
+) -> Optional[dict]:
+    """
+    Atomically update an upload session using Redis WATCH/MULTI.
+
+    Prevents the read-modify-write race where two concurrent chunk uploads
+    both read the session, both append to done[], and one overwrites the other.
+
+    Args:
+        redis_client: Redis client
+        db: DB session (for best-effort persistence)
+        upload_id: Upload ID
+        update_fn: Function that receives current session dict, returns modified dict
+        max_retries: Max optimistic-lock retries before raising
+
+    Returns:
+        Updated session dict, or None if session not found
+    """
+    key = f"up:{upload_id}"
+    for attempt in range(max_retries):
+        try:
+            await redis_client.watch(key)
+            raw = await redis_client.get(key)
+            if not raw:
+                await redis_client.unwatch()
+                return None
+            session = json.loads(raw if isinstance(raw, str) else raw.decode())
+            session = update_fn(session)
+            pipe = redis_client.pipeline()
+            pipe.multi()
+            pipe.setex(key, REDIS_TTL, json.dumps(session))
+            await pipe.execute()
+            # Best-effort DB persistence
+            try:
+                await _persist_session_to_db(db, upload_id, session)
+            except Exception as e:
+                logger.warning(f"Failed to persist session {upload_id} to DB: {e}")
+            return session
+        except Exception as e:
+            # redis.WatchError or similar — retry
+            if "WATCH" in str(type(e).__name__).upper() or "watch" in str(e).lower():
+                continue
+            raise
+    raise Exception(f"Session update conflict after {max_retries} retries for {upload_id}")
+
+
+async def _persist_session_to_db(db, upload_id: str, session_data: dict) -> None:
+    """Best-effort persist session to DB."""
+    from ..models.database import UploadSession
+    from sqlalchemy.dialects.postgresql import insert
+
+    expires_at = datetime.utcnow() + timedelta(seconds=REDIS_TTL)
+    stmt = insert(UploadSession).values(
+        upload_id=upload_id,
+        user_id=session_data["user"],
+        session_data=session_data,
+        expires_at=expires_at,
+        updated_at=datetime.utcnow(),
+    ).on_conflict_do_update(
+        index_elements=["upload_id"],
+        set_={
+            "session_data": session_data,
+            "updated_at": datetime.utcnow(),
+            "expires_at": expires_at,
+        },
+    )
+    await db.execute(stmt)
+    await db.commit()

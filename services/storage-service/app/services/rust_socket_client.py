@@ -49,6 +49,7 @@ class RustSocketClient:
         compress: bool,
         filename: Optional[str] = None,
         file_size: Optional[int] = None,
+        target_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process chunk in Non-ZK mode with secure key passing via SCM_RIGHTS.
@@ -69,6 +70,7 @@ class RustSocketClient:
             compress: Whether to compress
             filename: Original filename (for compression detection)
             file_size: Total file size (for compression detection)
+            target_path: If provided, Rust writes directly to this path (zero-copy)
 
         Returns:
             Response dict containing:
@@ -123,6 +125,8 @@ class RustSocketClient:
                 headers["X-Filename"] = filename
             if file_size is not None:
                 headers["X-File-Size"] = str(file_size)
+            if target_path:
+                headers["X-Target-Path"] = target_path
 
             # Build HTTP/1.1 request
             http_request = self._build_http_request("POST", "/upload", headers)

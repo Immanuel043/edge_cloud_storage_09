@@ -7,6 +7,7 @@ use crate::server::response::{ChunkResponse, ErrorResponse};
 use crate::storage::ChunkStorage;
 use bytes::Bytes;
 use std::os::unix::io::RawFd;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, instrument};
@@ -70,7 +71,8 @@ impl UploadHandler {
                 let key_fd = key_fd.ok_or_else(|| {
                     ErrorResponse::bad_request("Missing key FD for Non-ZK mode".to_string())
                 })?;
-                self.handle_non_zk_upload(request, chunk_data, key_fd).await?
+                let target_path = request.target_path.clone();
+                self.handle_non_zk_upload(request, chunk_data, key_fd, target_path).await?
             }
         };
 
@@ -115,6 +117,7 @@ impl UploadHandler {
         request: UploadRequest,
         chunk_data: Bytes,
         key_fd: RawFd,
+        target_path: Option<String>,
     ) -> Result<ChunkResponse, ErrorResponse> {
         debug!("Processing Non-ZK mode upload");
 
@@ -147,10 +150,15 @@ impl UploadHandler {
             .process_non_zk_chunk(&chunk_data, &key, request.chunk_index, should_compress)
             .map_err(|e| ErrorResponse::internal_error(format!("Processing failed: {}", e)))?;
 
-        // Store encrypted chunk
+        // Store encrypted chunk — use target_path if provided, else default storage
         let mut storage = self.storage.lock().await;
-        let chunk_path = storage.store_chunk(&request.file_id, request.chunk_index, &processed.encrypted_data)
-            .map_err(|e| ErrorResponse::internal_error(format!("Storage failed: {}", e)))?;
+        let chunk_path = if let Some(ref tp) = target_path {
+            storage.store_chunk_at(&PathBuf::from(tp), &processed.encrypted_data)
+                .map_err(|e| ErrorResponse::internal_error(format!("Storage failed: {}", e)))?
+        } else {
+            storage.store_chunk(&request.file_id, request.chunk_index, &processed.encrypted_data)
+                .map_err(|e| ErrorResponse::internal_error(format!("Storage failed: {}", e)))?
+        };
 
         Ok(ChunkResponse {
             success: true,
@@ -295,6 +303,7 @@ mod tests {
             compress: false,
             filename: None,
             file_size: None,
+            target_path: None,
         };
 
         // Pre-encrypted data (simulating client-side encryption)
@@ -320,6 +329,7 @@ mod tests {
             compress: false,
             filename: None,
             file_size: None,
+            target_path: None,
         };
 
         let encrypted_data = Bytes::from(vec![0u8; 1024]);
@@ -344,6 +354,7 @@ mod tests {
             compress: false,
             filename: None,
             file_size: None,
+            target_path: None,
         };
 
         let data = Bytes::from(vec![0u8; 1024]);

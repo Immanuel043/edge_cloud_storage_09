@@ -29,6 +29,8 @@ pub struct UploadRequest {
     pub filename: Option<String>,
     /// File size (for format detection)
     pub file_size: Option<u64>,
+    /// Target path for direct write (bypasses Rust's default storage path)
+    pub target_path: Option<String>,
 }
 
 /// Download request from FastAPI
@@ -77,6 +79,7 @@ mod tests {
             compress: true,
             filename: Some("test.txt".to_string()),
             file_size: Some(1024 * 1024),
+            target_path: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();

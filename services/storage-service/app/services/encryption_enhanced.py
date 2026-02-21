@@ -255,11 +255,8 @@ class EnhancedEncryptionService:
         nonce = os.urandom(NONCE_SIZE)
         cipher = AESGCM(kek)
 
-        # Additional authenticated data: key version and timestamp
-        aad = json.dumps({
-            "version": kek_version,
-            "timestamp": datetime.utcnow().isoformat()
-        }).encode()
+        # Additional authenticated data: key version (deterministic, no timestamp)
+        aad = json.dumps({"version": kek_version}, sort_keys=True).encode()
 
         ciphertext = cipher.encrypt(nonce, dek, aad)
         wrapped = nonce + ciphertext
@@ -286,10 +283,7 @@ class EnhancedEncryptionService:
 
         # Try to decrypt with AAD first (new format)
         try:
-            aad = json.dumps({
-                "version": kek_version,
-                "timestamp": datetime.utcnow().isoformat()
-            }).encode()
+            aad = json.dumps({"version": kek_version}, sort_keys=True).encode()
             dek = cipher.decrypt(nonce, ciphertext, aad)
         except Exception:
             # Fallback: try without AAD (old format compatibility)

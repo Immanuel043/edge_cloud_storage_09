@@ -5,6 +5,7 @@ Handles encryption key management, recovery mechanisms, and ZK status.
 """
 import base64
 import hashlib
+import secrets
 import structlog
 from datetime import datetime
 from uuid import uuid4
@@ -299,7 +300,7 @@ async def verify_recovery_phrase(
     # Hash phrase and compare
     phrase_hash = recovery_service.hash_recovery_phrase(request_data.recovery_phrase)
 
-    if phrase_hash != user.recovery_phrase_hash:
+    if not secrets.compare_digest(phrase_hash, user.recovery_phrase_hash or ""):
         logger.warning("recovery_phrase_verification_failed", user_id=str(user.id))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

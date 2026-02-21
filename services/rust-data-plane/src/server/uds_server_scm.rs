@@ -295,6 +295,25 @@ impl UnixSocketServerWithScmRights {
             .find(|(k, _)| k == "x-file-size")
             .and_then(|(_, v)| v.parse::<u64>().ok());
 
+        let target_path = headers
+            .iter()
+            .find(|(k, _)| k == "x-target-path")
+            .map(|(_, v)| v.clone());
+
+        // Validate target_path: must be absolute and must not contain path traversal
+        if let Some(ref tp) = target_path {
+            if !tp.starts_with('/') || tp.contains("..") {
+                let err_json = serde_json::json!({
+                    "success": false,
+                    "error": "invalid_target_path",
+                    "message": "target_path must be an absolute path and must not contain '..'"
+                }).to_string();
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        }
+
         // Get Content-Length and enforce cap to prevent OOM
         let content_length = headers
             .iter()
@@ -343,6 +362,7 @@ impl UnixSocketServerWithScmRights {
             compress: should_compress,
             filename,
             file_size,
+            target_path,
         };
 
         // Call handler

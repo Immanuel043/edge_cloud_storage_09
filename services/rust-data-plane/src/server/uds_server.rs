@@ -250,6 +250,29 @@ impl UnixSocketServer {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
 
+        // Extract target path for direct write (bypasses Rust's default storage path)
+        let target_path = headers
+            .get("x-target-path")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        // Validate target_path: must be absolute and must not contain path traversal
+        if let Some(ref tp) = target_path {
+            if !tp.starts_with('/') || tp.contains("..") {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Full::new(Bytes::from(
+                        serde_json::json!({
+                            "success": false,
+                            "error": "invalid_target_path",
+                            "message": "target_path must be an absolute path and must not contain '..'"
+                        })
+                        .to_string(),
+                    )))
+                    .expect("invalid body type");
+            }
+        }
+
         // Extract key FD from header (in production, this would come from SCM_RIGHTS)
         // For now, we read the FD number from header as a placeholder
         let key_fd = headers
@@ -287,6 +310,7 @@ impl UnixSocketServer {
             compress,
             filename,
             file_size,
+            target_path,
         };
 
         // Call handler

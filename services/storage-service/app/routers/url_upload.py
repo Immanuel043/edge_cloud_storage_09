@@ -206,12 +206,26 @@ async def process_url_download(
             )
             db.add(file_obj)
 
-            # Update user storage
+            # Check quota before updating storage
             user_result = await db.execute(
                 select(User).where(User.id == user_id)
             )
             user = user_result.scalar_one_or_none()
             if user:
+                available = (user.storage_quota or 0) - (user.storage_used or 0)
+                if download_result['file_size'] > available:
+                    # Over quota — clean up downloaded file and fail
+                    if download_result.get('storage_path'):
+                        import os
+                        try:
+                            os.remove(download_result['storage_path'])
+                        except OSError:
+                            pass
+                    await db.rollback()
+                    raise URLUploadError(
+                        f"Storage quota exceeded. Available: {available} bytes, "
+                        f"File size: {download_result['file_size']} bytes"
+                    )
                 user.storage_used = (user.storage_used or 0) + download_result['file_size']
 
             # Update job record
