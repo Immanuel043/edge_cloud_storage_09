@@ -439,6 +439,66 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
     }
   };
 
+  // ==================== TRASH OPERATIONS (ZK) ====================
+
+  const getTrash = async (): Promise<FileItem[]> => {
+    const response = await zkAuthService.getTrash();
+    const zkFiles = response.files || [];
+
+    return zkFiles.map((metadata) => {
+      try {
+        const decryptedName = metadata.encrypted_file_name && metadata.file_name_iv
+          ? zkEncryptionService.decryptFilenameSafe(
+              metadata.encrypted_file_name,
+              metadata.file_name_iv,
+              `Encrypted File ${metadata.file_id.slice(0, 8)}`
+            )
+          : `Encrypted File ${metadata.file_id.slice(0, 8)}`;
+
+        return {
+          id: metadata.file_id,
+          name: decryptedName,
+          size: metadata.file_size,
+          mime_type: metadata.mime_type,
+          created_at: metadata.created_at,
+          updated_at: metadata.created_at,
+          is_encrypted: true,
+          encryption_version: metadata.encryption_version,
+          encrypted_file_key: metadata.encrypted_file_key,
+          file_key_iv: metadata.file_key_iv,
+          encrypted_file_name: metadata.encrypted_file_name,
+          file_name_iv: metadata.file_name_iv,
+          chunk_size: metadata.chunk_size,
+        };
+      } catch (error) {
+        console.error('[ZK Trash] Failed to decrypt filename:', error);
+        return {
+          id: metadata.file_id,
+          name: '[Encrypted File]',
+          size: metadata.file_size || 0,
+          mime_type: metadata.mime_type || 'application/octet-stream',
+          created_at: metadata.created_at,
+          updated_at: metadata.created_at,
+          is_encrypted: true,
+        };
+      }
+    });
+  };
+
+  const restoreFromTrash = async (fileId: string): Promise<void> => {
+    await zkAuthService.restoreFromTrash(fileId);
+    await loadFiles();
+    await loadStorageStats();
+  };
+
+  const permanentDeleteFile = async (fileId: string): Promise<void> => {
+    await zkAuthService.permanentDelete(fileId);
+  };
+
+  const emptyTrashAll = async (): Promise<void> => {
+    await zkAuthService.emptyTrash();
+  };
+
   // ==================== NOT SUPPORTED IN ZK MODE ====================
 
   const createFolder = async (): Promise<void> => {
@@ -655,6 +715,12 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
     createFolder,
     createShareLink,
     bulkDelete,
+
+    // Trash operations
+    getTrash,
+    restoreFromTrash,
+    permanentDelete: permanentDeleteFile,
+    emptyTrash: emptyTrashAll,
 
     // Data loading
     loadFiles,

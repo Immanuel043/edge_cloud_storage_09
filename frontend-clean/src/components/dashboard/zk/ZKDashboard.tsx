@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { ZK_SERVICE_URL } from '../../../config/constants';
 import zkEncryptionService from '../../../services/zkEncryptionService';
-import { UploadError, UPLOAD_ERROR_TYPES } from '../../../services/zkAuthService';
+import { UploadError, UPLOAD_ERROR_TYPES, restoreFromTrash as zkRestoreFromTrash } from '../../../services/zkAuthService';
 import TrashView from '../TrashView';
 import ZKStorageStats from '../ZKStorageStats';
 import ZKEncryptionStatus from '../ZKEncryptionStatus';
@@ -29,7 +29,6 @@ import ShareOptionsModal from '../ShareOptionsModal';
 import ServiceModeBadge from '../ServiceModeBadge';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { useNotification } from '../../../contexts/NotificationContext';
-import { storageService } from '../../../services/storageService';
 import { getFileType } from '../../../utils/helpers';
 import type { ZKDashboardLayoutProps, FileItem, FolderItem, UploadItem, DownloadItem, UploadProgressData, DownloadProgressData, UploadErrorInfo, CorruptionErrorInfo, SearchResults as SearchResultsType } from '../types';
 import { getErrorMessage } from '../types';
@@ -77,7 +76,7 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
         label: 'Undo',
         onClick: async () => {
           try {
-            await storageService.restoreFromTrash(fileId);
+            await zkRestoreFromTrash(fileId);
             await refreshFiles();
           } catch {
             // silently fail

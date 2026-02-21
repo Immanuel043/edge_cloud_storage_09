@@ -694,6 +694,50 @@ export async function deleteFile(fileId: string): Promise<{ message: string }> {
   return response;
 }
 
+// ==================== Trash Operations ====================
+
+/**
+ * Get trashed files for current ZK user
+ */
+export async function getTrash(): Promise<{ files: FileMetadata[] }> {
+  const url = `${ZK_ENDPOINTS.FILES_LIST}?is_deleted=true&limit=1000`;
+  const response = await zkFetch<{ files: FileMetadata[] }>(url);
+  return response;
+}
+
+/**
+ * Restore a file from trash
+ */
+export async function restoreFromTrash(fileId: string): Promise<{ message: string }> {
+  const url = `${ZK_ENDPOINTS.FILES_LIST}/${fileId}/restore`;
+  const response = await zkFetch<{ message: string }>(url, {
+    method: 'POST',
+  });
+  return response;
+}
+
+/**
+ * Permanently delete a file (bypasses trash)
+ */
+export async function permanentDelete(fileId: string): Promise<{ message: string }> {
+  const url = `${ZK_ENDPOINTS.FILES_LIST}/${fileId}?permanent=true`;
+  const response = await zkFetch<{ message: string }>(url, {
+    method: 'DELETE',
+  });
+  return response;
+}
+
+/**
+ * Empty all files from trash
+ */
+export async function emptyTrash(): Promise<{ message: string }> {
+  const url = `${ZK_ENDPOINTS.FILES_LIST}/empty-trash`;
+  const response = await zkFetch<{ message: string }>(url, {
+    method: 'POST',
+  });
+  return response;
+}
+
 // ==================== Upload Management ====================
 
 /**
@@ -788,6 +832,12 @@ export default {
   downloadChunk,
   deleteFile,
   getStorageUsage,
+
+  // Trash Operations
+  getTrash,
+  restoreFromTrash,
+  permanentDelete,
+  emptyTrash,
 
   // Health
   checkHealth,

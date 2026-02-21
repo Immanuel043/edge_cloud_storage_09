@@ -8,25 +8,10 @@
  * - Downloads: normalDownloadService or zkStorageService
  */
 
-import { API_URL, ZK_SERVICE_URL, ZK_STORAGE } from '../config/constants';
+import { API_URL } from '../config/constants';
 import { sanitizeInput } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
-import * as zkEncryptionService from './zkEncryptionService';
-
-// ==================== Type Definitions ====================
-
-interface FileMetadata {
-  file_id?: string;
-  id?: string;
-  file_name?: string;
-  encrypted_file_key?: string;
-  file_key_iv?: string;
-  file_size?: number;
-  chunk_size?: number;
-  encryption_mode?: string;
-  [key: string]: unknown;
-}
 
 // ==================== Storage Service ====================
 
@@ -358,21 +343,9 @@ class StorageService {
   async getTrash(): Promise<unknown[]> {
     await rateLimiter.checkLimit();
 
-    const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
-    const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
-    const useZKService = zkEnabled && zkSessionUnlocked;
-
-    const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
-    const endpoint = useZKService
-      ? `${baseUrl}/api/v1/zk/files?is_deleted=true&limit=1000`
-      : `${baseUrl}/api/v1/files/trash`;
-
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${API_URL}/api/v1/files/trash`, {
       method: 'GET',
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
 
     if (!response.ok) {
@@ -380,45 +353,6 @@ class StorageService {
     }
 
     const data = await response.json();
-
-    if (useZKService && (data as Record<string, unknown>).files) {
-      const files = (data as Record<string, unknown>).files as FileMetadata[];
-      const decryptedFiles = files.map((file) => {
-        try {
-          if (file.encrypted_file_key && file.file_key_iv) {
-            const decryptedName = zkEncryptionService.decryptFilename(
-              (file as Record<string, unknown>).encrypted_file_name as string,
-              (file as Record<string, unknown>).file_name_iv as string
-            );
-            return {
-              ...file,
-              id: file.file_id || file.id,
-              name: decryptedName,
-              size: file.file_size,
-              mimeType: (file as Record<string, unknown>).mime_type,
-              uploadedAt: (file as Record<string, unknown>).uploaded_at,
-              encrypted_file_name: (file as Record<string, unknown>).encrypted_file_name,
-              file_name_iv: (file as Record<string, unknown>).file_name_iv,
-              encrypted_file_key: file.encrypted_file_key,
-              file_key_iv: file.file_key_iv,
-              is_encrypted: true,
-            };
-          }
-          return file;
-        } catch (error) {
-          console.error('[Trash] Failed to decrypt filename:', error);
-          return {
-            ...file,
-            id: file.file_id || file.id,
-            name: '[Encrypted File]',
-            size: file.file_size || 0,
-            mimeType: (file as Record<string, unknown>).mime_type || 'application/octet-stream',
-          };
-        }
-      });
-      return decryptedFiles;
-    }
-
     if (Array.isArray(data)) {
       return data;
     }
@@ -430,21 +364,9 @@ class StorageService {
   async restoreFromTrash(fileId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
-    const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
-    const useZKService = zkEnabled && zkSessionUnlocked;
-
-    const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
-    const endpoint = useZKService
-      ? `${baseUrl}/api/v1/zk/files/${fileId}/restore`
-      : `${baseUrl}/api/v1/files/trash/${fileId}/restore`;
-
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/restore`, {
       method: 'POST',
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
 
     if (!response.ok) {
@@ -452,7 +374,6 @@ class StorageService {
       throw new Error((error as Record<string, string>).detail || 'Failed to restore file');
     }
 
-    // Invalidate file list cache so next refresh fetches fresh data
     requestCache.invalidate(/^files-/);
     requestCache.invalidate(/^folders-/);
 
@@ -462,21 +383,9 @@ class StorageService {
   async permanentDelete(fileId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
-    const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
-    const useZKService = zkEnabled && zkSessionUnlocked;
-
-    const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
-    const endpoint = useZKService
-      ? `${baseUrl}/api/v1/zk/files/${fileId}?permanent=true`
-      : `${baseUrl}/api/v1/files/trash/${fileId}/permanent`;
-
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/permanent`, {
       method: 'DELETE',
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
 
     if (!response.ok) {
@@ -490,21 +399,9 @@ class StorageService {
   async emptyTrash(): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const zkEnabled = localStorage.getItem(ZK_STORAGE.ZK_ENABLED_KEY) === 'true';
-    const zkSessionUnlocked = zkEncryptionService.isZKSessionUnlocked();
-    const useZKService = zkEnabled && zkSessionUnlocked;
-
-    const baseUrl = useZKService ? ZK_SERVICE_URL : API_URL;
-    const endpoint = useZKService
-      ? `${baseUrl}/api/v1/zk/files/empty-trash`
-      : `${baseUrl}/api/v1/files/trash/empty`;
-
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${API_URL}/api/v1/files/trash/empty`, {
       method: 'POST',
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
 
     if (!response.ok) {

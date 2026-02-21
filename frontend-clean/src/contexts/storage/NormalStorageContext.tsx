@@ -479,6 +479,29 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     }
   };
 
+  // ==================== TRASH OPERATIONS (NORMAL) ====================
+
+  const getTrash = async (): Promise<FileItem[]> => {
+    const data = await storageService.getTrash();
+    return data as FileItem[];
+  };
+
+  const restoreFromTrash = async (fileId: string): Promise<void> => {
+    await storageService.restoreFromTrash(fileId);
+    requestCache.invalidate(/^files-/);
+    requestCache.invalidate(/^folders-/);
+    await loadFiles();
+    await loadStorageStats();
+  };
+
+  const permanentDeleteFile = async (fileId: string): Promise<void> => {
+    await storageService.permanentDelete(fileId);
+  };
+
+  const emptyTrashAll = async (): Promise<void> => {
+    await storageService.emptyTrash();
+  };
+
   // ==================== MIGRATION (NOT SUPPORTED) ====================
 
   const updateMigrationStats = async (): Promise<void> => {
@@ -580,6 +603,12 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     createFolder,
     createShareLink,
     bulkDelete,
+
+    // Trash operations
+    getTrash,
+    restoreFromTrash,
+    permanentDelete: permanentDeleteFile,
+    emptyTrash: emptyTrashAll,
 
     // Data loading
     loadFiles,

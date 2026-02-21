@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Trash2, RefreshCw, Trash, AlertTriangle, X } from 'lucide-react';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
-import { storageService } from '../../services/storageService';
+import { useStorage } from '../../contexts/StorageContext';
 import type { TrashViewProps, FileItem } from './types';
 import { getErrorMessage } from './types';
 
@@ -136,11 +136,18 @@ const TrashView: React.FC<TrashViewProps> = ({
   });
   const [emptyTrashModal, setEmptyTrashModal] = useState<boolean>(false);
 
+  const {
+    getTrash,
+    restoreFromTrash: contextRestoreFromTrash,
+    permanentDelete: contextPermanentDelete,
+    emptyTrash: contextEmptyTrash,
+  } = useStorage();
+
   const fetchTrashedFiles = async (): Promise<void> => {
     try {
       setLoading(true);
       setError(null);
-      const data = await storageService.getTrash();
+      const data = await getTrash();
       setTrashedFiles(data as FileItem[]);
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
@@ -158,7 +165,7 @@ const TrashView: React.FC<TrashViewProps> = ({
 
   const handleRestore = async (fileId: string): Promise<void> => {
     try {
-      await storageService.restoreFromTrash(fileId);
+      await contextRestoreFromTrash(fileId);
       // Remove from trash list
       setTrashedFiles(prev => prev.filter(f => f.id !== fileId));
       if (onRestore) {
@@ -180,7 +187,7 @@ const TrashView: React.FC<TrashViewProps> = ({
     if (!fileId) return;
 
     try {
-      await storageService.permanentDelete(fileId);
+      await contextPermanentDelete(fileId);
       // Remove from trash list
       setTrashedFiles(prev => prev.filter(f => f.id !== fileId));
       setDeleteModal({ isOpen: false, fileId: null, fileName: null });
@@ -198,7 +205,7 @@ const TrashView: React.FC<TrashViewProps> = ({
   const confirmEmptyTrash = async (): Promise<void> => {
     try {
       setEmptying(true);
-      await storageService.emptyTrash();
+      await contextEmptyTrash();
       setTrashedFiles([]);
       setEmptyTrashModal(false);
     } catch (err: unknown) {
