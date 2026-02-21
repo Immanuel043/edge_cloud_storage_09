@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import * as zkEncryptionService from '../../services/zkEncryptionService';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Sun,
@@ -462,8 +463,7 @@ const AuthPage: React.FC = () => {
       const billingCycle = pendingFormData.billingCycle || 'monthly';
 
       if (enableZK) {
-        const zkEncryption = await import('../../services/zkEncryptionService');
-        const zkData = await zkEncryption.generateZKRegistrationData(pendingFormData.password);
+        const zkData = await zkEncryptionService.generateZKRegistrationData(pendingFormData.password);
 
         // 1. Complete registration
         await authService.registerZKComplete(
@@ -481,7 +481,7 @@ const AuthPage: React.FC = () => {
         //    the ZK mode switch (which remounts the tree and loses component state)
         const kdfParams = await zkAuthService.getKDFParams(pendingFormData.email);
         if (!kdfParams) throw new Error('Failed to get KDF parameters after registration');
-        const passwordHash = await zkEncryption.getPasswordHashForLogin(
+        const passwordHash = await zkEncryptionService.getPasswordHashForLogin(
           pendingFormData.password,
           kdfParams.kdf_salt,
           kdfParams.kdf_iterations,
@@ -514,7 +514,7 @@ const AuthPage: React.FC = () => {
         // 4. Generate recovery phrase (master key is already in memory from generateZKRegistrationData)
         let recoveryPhraseText = '';
         try {
-          const recoveryData = zkEncryption.generateRecoveryPhraseData();
+          const recoveryData = zkEncryptionService.generateRecoveryPhraseData();
           await zkAuthService.enableRecoveryPhrase(
             recoveryData.recoveryEncryptedMasterKey,
             recoveryData.recoveryPhraseHash

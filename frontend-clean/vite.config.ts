@@ -84,6 +84,24 @@ export default defineConfig({
         }
         warn(warning)
       },
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react-dom') || id.includes('react-router')) {
+              return 'vendor-react'
+            }
+            if (id.includes('@noble') || id.includes('@scure/bip39') || id.includes('bip39')) {
+              return 'vendor-crypto'
+            }
+            if (id.includes('lucide-react')) {
+              return 'vendor-ui'
+            }
+            if (id.includes('fflate') || id.includes('buffer')) {
+              return 'vendor-utils'
+            }
+          }
+        },
+      },
     },
   },
   optimizeDeps: {

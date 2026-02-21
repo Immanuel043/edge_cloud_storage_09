@@ -7,6 +7,7 @@ import {
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
+import API_CONFIG from '../../config/api';
 import PlanChangeModal from '../subscription/PlanChangeModal';
 import type {
   PricingPlan,
@@ -572,9 +573,6 @@ export default function PricingPage(): ReactElement {
       setError(null);
       
       try {
-        // Import API config dynamically
-        const API_CONFIG = (await import('../../config/api')).default;
-
         // TODO: Replace raw fetch calls with a centralized API service (e.g., apiService.getPlans())
         // Fetch Normal Storage plans
         const edgeResponse = await fetch(

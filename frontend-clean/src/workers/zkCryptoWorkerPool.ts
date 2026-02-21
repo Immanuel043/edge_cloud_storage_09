@@ -8,6 +8,7 @@
 // Vite worker import
 // @ts-ignore - Vite worker import syntax
 import CryptoWorker from './zkCryptoWorker?worker';
+import { deriveKeyArgon2id as deriveKeyArgon2idMain } from '../utils/zkCryptoV2';
 
 const MAX_WORKERS = Math.min(navigator.hardwareConcurrency ?? 4, 8);
 
@@ -168,9 +169,7 @@ class ZKCryptoWorkerPool {
    * because Vite module workers don't support the argon2-browser script
    */
   async deriveKeyArgon2id(password: string, salt: Uint8Array, options: DeriveKeyOptions = {}): Promise<Uint8Array> {
-    // Import the main thread argon2 function
-    const { deriveKeyArgon2id } = await import('../utils/zkCryptoV2');
-    return deriveKeyArgon2id(password, salt, options);
+    return deriveKeyArgon2idMain(password, salt, options);
   }
 
   /**

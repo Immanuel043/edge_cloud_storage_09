@@ -7,11 +7,11 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import { SubscriptionProvider } from './contexts/SubscriptionContext';
 import NotificationToast from './components/notifications/NotificationToast';
-import AuthPage from './components/auth/AuthPage';
-import Dashboard from './components/dashboard/Dashboard';
-import ShareViewer from './components/share/ShareViewer';
-import ShareBundleViewer from './components/share/ShareBundleViewer';
-import PricingPage from './components/pricing/PricingPage';
+const AuthPage = React.lazy(() => import('./components/auth/AuthPage'));
+const Dashboard = React.lazy(() => import('./components/dashboard/Dashboard'));
+const ShareViewer = React.lazy(() => import('./components/share/ShareViewer'));
+const ShareBundleViewer = React.lazy(() => import('./components/share/ShareBundleViewer'));
+const PricingPage = React.lazy(() => import('./components/pricing/PricingPage'));
 import { useAuth } from './contexts/AuthContext';
 
 /**
