@@ -414,18 +414,20 @@ class PreviewOptimizer:
                 # We've already decrypted the full file, so truncating wastes that work
                 mime = (file_obj.mime_type or '').lower()
                 is_video = mime.startswith('video/')
+                is_pdf = mime == 'application/pdf' or (file_obj.file_name or '').lower().endswith('.pdf')
 
                 async with aiofiles.open(temp_file_path, 'wb') as f:
-                    if is_partial and not is_video:
-                        # Non-video: write only first portion
+                    if is_partial and not is_video and not is_pdf:
+                        # Non-video, non-PDF: write only first portion
                         await f.write(file_data[:max_size])
                     else:
-                        # Video or small file: write full decrypted data
+                        # Video/PDF or small file: write full decrypted data
+                        # PDFs need the xref table at EOF; videos need the moov atom
                         await f.write(file_data)
-                        if is_video and is_partial:
+                        if (is_video or is_pdf) and is_partial:
                             logger.info(
-                                f"Video preview: wrote full {len(file_data)/1024/1024:.1f}MB "
-                                f"(not truncated to {max_size/1024/1024:.1f}MB to preserve moov atom)"
+                                f"{'PDF' if is_pdf else 'Video'} preview: wrote full {len(file_data)/1024/1024:.1f}MB "
+                                f"(not truncated to {max_size/1024/1024:.1f}MB to preserve {'xref table' if is_pdf else 'moov atom'})"
                             )
 
                 return temp_file_path, True  # Always complete since we wrote full decrypted data

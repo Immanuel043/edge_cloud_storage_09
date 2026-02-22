@@ -314,7 +314,7 @@ services:
       SKIP_SEED: ${SKIP_SEED:-false}
       # CRITICAL: Reduce chunk size for memory management
       CHUNK_SIZE: 33554432          # 32MB chunks instead of 64MB
-      MAX_FILE_SIZE: 21474836480    # 20GB
+      MAX_FILE_SIZE: 214748364800   # 200GB
       COMPRESSION_LEVEL: 3
       BACKUP_ENABLED: "false"
       USE_X_ACCEL: "1"

@@ -50,8 +50,8 @@ export const GiB: number = 1024 * MiB;
 /** Default chunk size for uploads (64 MiB) */
 export const CHUNK_SIZE: number = 64 * MiB;
 
-/** Maximum file size allowed (20 GiB) */
-export const MAX_FILE_SIZE: number = 20 * GiB;
+/** Maximum file size allowed (200 GiB) */
+export const MAX_FILE_SIZE: number = 200 * GiB;
 
 // ==================== Storage Tiers ====================
 

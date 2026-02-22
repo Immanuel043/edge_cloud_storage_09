@@ -174,6 +174,10 @@ class PreviewGenerator:
             # Open PDF
             doc = fitz.open(file_path)
 
+            if len(doc) == 0:
+                doc.close()
+                raise ValueError("PDF has no pages")
+
             # Get first page
             page = doc[0]
 

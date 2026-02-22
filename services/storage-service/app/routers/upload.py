@@ -44,7 +44,7 @@ from ..services.video_optimizer import video_optimizer
 from ..services.video_ingestion_service import video_ingestion_service
 from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..services.rust_dataplane_client import get_rust_client
-from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session, update_upload_session_atomic
+from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session, update_upload_session_atomic, REDIS_TTL
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -272,7 +272,7 @@ async def init_upload(
     reserve_key = f"quota_reserved:{user_id_str}"
     pipe = redis_client.pipeline()
     pipe.incrby(reserve_key, file_size)
-    pipe.expire(reserve_key, 7200)  # 2-hour TTL for cleanup
+    pipe.expire(reserve_key, 86400)  # 24-hour TTL for cleanup
     results = await pipe.execute()
     reserved = results[0]
     if storage_info['used'] + reserved > storage_info['quota']:
@@ -697,7 +697,7 @@ async def upload_direct(
 
         session["hash"] = file_hash
 
-        await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+        await redis_client.setex(f"up:{upload_id}", REDIS_TTL, json.dumps(session))
 
         return {
             "status": "success",

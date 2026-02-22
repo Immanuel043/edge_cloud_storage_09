@@ -29,6 +29,7 @@ import asyncio
 # Import our services
 from ..services.production_upload_service import production_upload_service
 from ..services.background_deduplication import background_dedup_service
+from ..services.upload_session_store import REDIS_TTL
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
 
@@ -116,7 +117,7 @@ async def init_upload(
         "start": datetime.utcnow().isoformat(),
     }
     
-    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session_data))
+    await redis_client.setex(f"up:{upload_id}", REDIS_TTL, json.dumps(session_data))
     
     upload_initiated.labels(
         plan_type=getattr(current_user, 'plan_type', 'free'),
@@ -183,7 +184,7 @@ async def upload_chunk(
     session["chunk_paths"][str(chunk_index)] = result["storage_path"]
     
     asyncio.create_task(
-        redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+        redis_client.setex(f"up:{upload_id}", REDIS_TTL, json.dumps(session))
     )
     
     progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
@@ -272,7 +273,7 @@ async def upload_chunks_bulk(
         else:
             failed += 1
     
-    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+    await redis_client.setex(f"up:{upload_id}", REDIS_TTL, json.dumps(session))
     
     progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
     
@@ -347,7 +348,7 @@ async def upload_direct(
     
     session["hash"] = file_hash
     
-    await redis_client.setex(f"up:{upload_id}", 3600, json.dumps(session))
+    await redis_client.setex(f"up:{upload_id}", REDIS_TTL, json.dumps(session))
     
     return {
         "status": "success",

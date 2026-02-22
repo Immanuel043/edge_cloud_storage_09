@@ -2,7 +2,7 @@
 """
 Upload session persistence layer.
 
-Primary: Redis (fast, with 1-hour TTL)
+Primary: Redis (fast, with 24-hour TTL)
 Fallback: PostgreSQL (survives Redis restarts)
 
 On read, tries Redis first. If missing, checks DB and repopulates Redis.
@@ -17,7 +17,7 @@ import redis.asyncio as redis_exceptions
 
 logger = logging.getLogger(__name__)
 
-REDIS_TTL = 3600  # 1 hour
+REDIS_TTL = 86400  # 24 hours
 
 
 async def save_upload_session(
