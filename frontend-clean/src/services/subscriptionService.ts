@@ -155,13 +155,32 @@ interface CreateCheckoutSessionResponse {
   session_id: string;
 }
 
-interface SubscriptionHistoryEntry {
+export interface SubscriptionHistoryEntry {
   id: string;
   plan_code: string;
   started_at: string;
   ended_at?: string;
   amount_paid?: number;
   billing_cycle: BillingCycle;
+  event_type?: string;
+  from_plan_code?: string;
+  to_plan_code?: string;
+  reason?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpcomingPayment {
+  amount: number;
+  currency: string;
+  due_date: string;
+  plan_code: string;
+  plan_name: string;
+  billing_cycle: BillingCycle;
+  payment_gateway?: string;
+}
+
+export interface BillingPortalSession {
+  url: string;
 }
 
 interface ErrorResponse {
@@ -652,6 +671,57 @@ class SubscriptionService {
       return await response.json();
     } catch (error) {
       console.error('Error fetching recommendations:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get upcoming payment information
+   */
+  async getUpcomingPayment(): Promise<UpcomingPayment | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/billing/upcoming-payment`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) return null;
+        const error = (await response.json()) as ErrorResponse;
+        throw new Error(error.detail || 'Failed to fetch upcoming payment');
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching upcoming payment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a Stripe billing portal session for managing payment methods and invoices
+   */
+  async createBillingPortalSession(): Promise<BillingPortalSession> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/billing/portal`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const error = (await response.json()) as ErrorResponse;
+        throw new Error(error.detail || 'Failed to create billing portal session');
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error creating billing portal session:', error);
       throw error;
     }
   }
