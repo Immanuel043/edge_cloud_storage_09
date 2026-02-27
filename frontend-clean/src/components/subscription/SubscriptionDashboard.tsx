@@ -30,7 +30,11 @@ import { isSubscriptionDisplay, isUsageDisplay } from '../../types/subscription-
  * - Upgrade recommendations
  * - Subscription history
  */
-export default function SubscriptionDashboard(): ReactElement {
+interface SubscriptionDashboardProps {
+  onOpenPaymentPortal?: () => void;
+}
+
+export default function SubscriptionDashboard({ onOpenPaymentPortal }: SubscriptionDashboardProps = {}): ReactElement {
   const navigate = useNavigate();
   const {
     subscription,
@@ -274,6 +278,15 @@ export default function SubscriptionDashboard(): ReactElement {
                 <p className="text-lg font-bold text-gray-900">
                   {new Date(subscriptionDisplay.next_billing_date).toLocaleDateString()}
                 </p>
+                {subscriptionDisplay.days_until_renewal != null && (
+                  <p className={`text-sm font-medium mt-1 ${
+                    subscriptionDisplay.days_until_renewal > 14 ? 'text-green-600' :
+                    subscriptionDisplay.days_until_renewal > 7 ? 'text-yellow-600' :
+                    'text-red-600'
+                  }`}>
+                    {subscriptionDisplay.days_until_renewal} day{subscriptionDisplay.days_until_renewal !== 1 ? 's' : ''} remaining
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -306,9 +319,20 @@ export default function SubscriptionDashboard(): ReactElement {
                 style={{ width: `${Math.min(usageDisplay.storage_percent, 100)}%` }}
               />
             </div>
-            <p className="text-sm text-gray-600 mt-1">
-              {usageDisplay.storage_percent.toFixed(1)}% used
-            </p>
+            <div className="flex items-center justify-between mt-1">
+              <p className="text-sm text-gray-600">
+                {usageDisplay.storage_percent.toFixed(1)}% used
+              </p>
+              {usageDisplay.storage_remaining_display && (
+                <p className={`text-sm font-medium ${
+                  usageDisplay.storage_percent >= 95 ? 'text-red-600' :
+                  usageDisplay.storage_percent >= 80 ? 'text-yellow-600' :
+                  'text-green-600'
+                }`}>
+                  {usageDisplay.storage_remaining_display}
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Bandwidth Usage (if available) */}
@@ -378,24 +402,20 @@ export default function SubscriptionDashboard(): ReactElement {
         </button>
       </div>
 
-      {/* Billing Portal Link (for Stripe customers) */}
-      {subscriptionDisplay && !subscriptionDisplay.plan_code.includes('free') && (
-        <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
-          <h3 className="font-semibold text-gray-900 mb-3">Payment & Invoices</h3>
-          <p className="text-sm text-gray-600 mb-4">
-            Manage your payment methods and view past invoices in the Stripe billing portal.
-          </p>
-          <a
-            href="/api/v1/billing/portal"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <ExternalLink className="w-4 h-4" />
-            Open Billing Portal
-          </a>
-        </div>
-      )}
+      {/* Payment Portal Link */}
+      <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+        <h3 className="font-semibold text-gray-900 mb-3">Payment & Invoices</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          View payment history, manage payment methods, and track your invoices.
+        </p>
+        <button
+          onClick={onOpenPaymentPortal}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          <ExternalLink className="w-4 h-4" />
+          Open Payment Portal
+        </button>
+      </div>
 
       {/* Plan Change Modal */}
       {selectedPlan && (

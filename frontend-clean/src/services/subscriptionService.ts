@@ -22,6 +22,7 @@ type PaymentGateway = 'razorpay' | 'stripe';
 export interface SubscriptionDashboard {
   current_subscription: Subscription;
   available_plans: Plan[];
+  usage?: Record<string, unknown> | null;
   warnings?: Warning[];
   recommendations?: Recommendation[];
 }
@@ -157,15 +158,17 @@ interface CreateCheckoutSessionResponse {
 
 export interface SubscriptionHistoryEntry {
   id: string;
-  plan_code: string;
-  started_at: string;
+  plan_code?: string;
+  started_at?: string;
+  created_at?: string;
   ended_at?: string;
   amount_paid?: number;
-  billing_cycle: BillingCycle;
+  billing_cycle?: BillingCycle;
   event_type?: string;
   from_plan_code?: string;
   to_plan_code?: string;
   reason?: string;
+  notes?: string;
   metadata?: Record<string, unknown>;
 }
 

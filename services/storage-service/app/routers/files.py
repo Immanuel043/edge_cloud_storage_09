@@ -522,8 +522,8 @@ async def download_file(
 
     await db.commit()
 
-    # Decrypt key
-    file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+    # Decrypt key (None for unencrypted files, for defensive compatibility)
+    file_key = encryption_service.decrypt_key(file_obj.encryption_key) if file_obj.encryption_key else None
     
     # File metadata
     total_size = file_obj.file_size or 0
@@ -615,6 +615,18 @@ async def download_file(
     # Video compatibility stream (transcoded H.264 MP4)
     compat_path = None
     use_compat_stream = False
+
+    # Gate original download access to keep_both plans
+    if original and file_obj.optimized_path and file_obj.mime_type and file_obj.mime_type.startswith('video/'):
+        try:
+            from shared_billing import BillingService
+            billing_svc = BillingService(db, service_type='normal')
+            sub = await billing_svc.get_user_subscription(current_user.id, include_plan=True)
+            video_opt = (sub.plan.features or {}).get('video_optimization', False)
+            if video_opt != 'keep_both':
+                original = False  # Plan doesn't allow original access
+        except Exception:
+            pass  # Fail open
 
     # Skip video optimization if user explicitly requests original file
     skip_optimization = original
@@ -1774,6 +1786,13 @@ async def permanent_delete(
                         except Exception as e:
                             print(f"Failed to delete chunk {chunk_path}: {e}")
 
+        # Delete optimized video file if it exists
+        if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+            try:
+                os.remove(file_obj.optimized_path)
+            except Exception as e:
+                print(f"Failed to delete optimized file: {e}")
+
         # Update user storage
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
@@ -1914,6 +1933,13 @@ async def empty_trash(
                                     os.remove(chunk_path)
                                 except Exception as e:
                                     print(f"Failed to delete chunk: {e}")
+
+                # Delete optimized video file if it exists
+                if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+                    try:
+                        os.remove(file_obj.optimized_path)
+                    except Exception as e:
+                        print(f"Failed to delete optimized file: {e}")
 
                 freed_space += file_obj.file_size
                 deleted_count += 1

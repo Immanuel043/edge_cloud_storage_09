@@ -22,6 +22,7 @@ import SearchBar from '../SearchBar';
 import SearchResults from '../SearchResults';
 import SettingsView from '../SettingsView';
 import SubscriptionDashboard from '../../subscription/SubscriptionDashboard';
+import PaymentPortal from '../../payment/PaymentPortal';
 import KeyboardShortcuts from '../KeyboardShortcuts';
 import MigrationBanner from '../MigrationBanner';
 import FileCorruptionModal from '../FileCorruptionModal';
@@ -34,7 +35,7 @@ import type { ZKDashboardLayoutProps, FileItem, FolderItem, UploadItem, Download
 import { getErrorMessage } from '../types';
 
 type ViewMode = 'grid' | 'list';
-type ActiveView = 'cloud-drive' | 'settings' | 'billing' | 'trash';
+type ActiveView = 'cloud-drive' | 'settings' | 'billing' | 'payment-portal' | 'trash';
 type SortBy = 'name' | 'date' | 'size' | 'type';
 
 /**
@@ -618,7 +619,11 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
     }
 
     if (activeView === 'billing') {
-      return <SubscriptionDashboard />;
+      return <SubscriptionDashboard onOpenPaymentPortal={() => setActiveView('payment-portal')} />;
+    }
+
+    if (activeView === 'payment-portal') {
+      return <PaymentPortal onBack={() => setActiveView('billing')} darkMode={darkMode} />;
     }
 
     if (activeView === 'trash') {

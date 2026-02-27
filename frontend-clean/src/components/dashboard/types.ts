@@ -1039,20 +1039,21 @@ export interface PendingDownload {
 /**
  * Active View Type
  */
-export type ActiveViewType = 
-  | 'cloud-drive' 
-  | 'recents' 
-  | 'favorites' 
-  | 'shared-with-me' 
-  | 'trash' 
-  | 'dedup' 
-  | 'analytics' 
-  | 'auto-organize' 
-  | 'recommendations' 
-  | 'quota-alerts' 
-  | 'storage-optimization' 
-  | 'settings' 
-  | 'billing';
+export type ActiveViewType =
+  | 'cloud-drive'
+  | 'recents'
+  | 'favorites'
+  | 'shared-with-me'
+  | 'trash'
+  | 'dedup'
+  | 'analytics'
+  | 'auto-organize'
+  | 'recommendations'
+  | 'quota-alerts'
+  | 'storage-optimization'
+  | 'settings'
+  | 'billing'
+  | 'payment-portal';
 
 /**
  * Sort By Type
@@ -1122,7 +1123,7 @@ export interface ReindexResult {
 /**
  * Video Optimization Mode
  */
-export type VideoOptimizationMode = 'keep_both' | 'replace_original' | 'no_optimization';
+export type VideoOptimizationMode = 'keep_both' | 'optimized' | 'no_optimization';
 
 /**
  * Video Settings Response

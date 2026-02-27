@@ -248,6 +248,15 @@ class VideoProcessingWorker:
                     # Note: ZK encrypted files are handled by the separate ZK service
                     # and will never appear in this storage service
 
+                    # Fetch user's plan features for video optimization gating
+                    from shared_billing import BillingService
+                    try:
+                        billing = BillingService(db, service_type='normal')
+                        subscription = await billing.get_user_subscription(user.id, include_plan=True)
+                        plan_features = subscription.plan.features or {}
+                    except Exception:
+                        plan_features = {}
+
                     # Check if already processed (in case of duplicate messages)
                     if file_obj.video_processing_status in ('ready', 'skipped'):
                         logger.info(
@@ -260,7 +269,8 @@ class VideoProcessingWorker:
                         file_obj=file_obj,
                         user=user,
                         encryption_service=encryption_service,
-                        db_session=db
+                        db_session=db,
+                        plan_features=plan_features
                     )
 
                     if result['success']:

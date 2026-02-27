@@ -1133,33 +1133,46 @@ async def complete_upload(
     # This replaces the reactive transcoding that occurred on playback
     is_video = mime_type and mime_type.startswith('video/')
     if is_video:
+        # Check if user's plan includes video optimization
+        video_opt_enabled = False
         try:
-            producer = await get_kafka_producer()
-            queue_result = await video_ingestion_service.on_upload_complete(
-                file_id=str(file_id),
-                user_id=str(current_user.id),
-                file_name=session['name'],
-                file_size=session['size'],
-                mime_type=mime_type,
-                kafka_producer=producer
-            )
+            from shared_billing import BillingService
+            billing_svc = BillingService(db, service_type='normal')
+            sub = await billing_svc.get_user_subscription(current_user.id, include_plan=True)
+            video_opt_enabled = bool((sub.plan.features or {}).get('video_optimization'))
+        except Exception:
+            pass
 
-            if queue_result['queued']:
-                # Update database status to 'queued'
-                file_obj.video_processing_status = 'queued'
-                await db.commit()
-                logger.info(
-                    f"Queued video for proactive optimization: {session['name']} "
-                    f"({session['size'] / 1024 / 1024:.1f}MB)"
+        if video_opt_enabled:
+            try:
+                producer = await get_kafka_producer()
+                queue_result = await video_ingestion_service.on_upload_complete(
+                    file_id=str(file_id),
+                    user_id=str(current_user.id),
+                    file_name=session['name'],
+                    file_size=session['size'],
+                    mime_type=mime_type,
+                    kafka_producer=producer
                 )
-            else:
-                logger.info(
-                    f"Video not queued for optimization: {session['name']} "
-                    f"[reason={queue_result.get('reason', 'unknown')}]"
-                )
-        except Exception as e:
-            logger.error(f"Failed to queue video for proactive optimization: {e}")
-            # Non-fatal - video can still be transcoded on-demand
+
+                if queue_result['queued']:
+                    # Update database status to 'queued'
+                    file_obj.video_processing_status = 'queued'
+                    await db.commit()
+                    logger.info(
+                        f"Queued video for proactive optimization: {session['name']} "
+                        f"({session['size'] / 1024 / 1024:.1f}MB)"
+                    )
+                else:
+                    logger.info(
+                        f"Video not queued for optimization: {session['name']} "
+                        f"[reason={queue_result.get('reason', 'unknown')}]"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to queue video for proactive optimization: {e}")
+                # Non-fatal - video can still be transcoded on-demand
+        else:
+            logger.info(f"Skipping video optimization for {session['name']} (plan does not include it)")
 
     # ============ VIDEO PREVIEW QUEUEING (BACKGROUND) ============
     # Queue large videos (>50MB) for background preview generation

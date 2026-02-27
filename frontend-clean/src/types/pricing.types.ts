@@ -44,9 +44,12 @@ export interface PlanFeatures {
   
   /** Recovery phrase enabled */
   recovery_phrase?: boolean;
-  
+
   /** Encryption type */
   encryption?: EncryptionType;
+
+  /** Video optimization: false (none), 'optimized' (basic), 'keep_both' (full) */
+  video_optimization?: false | 'optimized' | 'keep_both';
 }
 
 /**

@@ -16,6 +16,7 @@ import AutoOrganizeView from '../AutoOrganizeView';
 import RecommendationsView from '../RecommendationsView';
 import SettingsView from '../SettingsView';
 import SubscriptionDashboard from '../../subscription/SubscriptionDashboard';
+import PaymentPortal from '../../payment/PaymentPortal';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useStorage } from '../../../contexts/StorageContext';
@@ -851,7 +852,15 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
 
       case 'billing':
         return (
-          <SubscriptionDashboard />
+          <SubscriptionDashboard onOpenPaymentPortal={() => setActiveView('payment-portal')} />
+        );
+
+      case 'payment-portal':
+        return (
+          <PaymentPortal
+            onBack={() => setActiveView('billing')}
+            darkMode={darkMode}
+          />
         );
 
       case 'cloud-drive':

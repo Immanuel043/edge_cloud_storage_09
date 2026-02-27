@@ -11,7 +11,6 @@ import {
   Loader2,
   HardDrive,
   Database,
-  Video,
   Search,
   RefreshCw
 } from 'lucide-react';
@@ -19,7 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useStorage } from '../../contexts/StorageContext';
 import { ZK_STORAGE } from '../../config/constants';
 import RecoverySettings from '../settings/RecoverySettings';
-import type { SettingsViewProps, IndexStatus, ReindexResult, VideoOptimizationMode, VideoSettingsResponse } from './types';
+import type { SettingsViewProps, IndexStatus, ReindexResult } from './types';
 import { getErrorMessage } from './types';
 import { API_URL } from '../../config/constants';
 import { formatBytes } from '../../utils/helpers';
@@ -63,33 +62,10 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
   const { user, zkEnabled } = useAuth();
   const { storageStats } = useStorage();
 
-  // Video optimization settings
-  const [videoMode, setVideoMode] = useState<VideoOptimizationMode>('keep_both');
-  const [videoModeLoading, setVideoModeLoading] = useState<boolean>(false);
-  const [videoModeError, setVideoModeError] = useState<string>('');
-
   // Search indexing state
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [isReindexing, setIsReindexing] = useState<boolean>(false);
   const [reindexResult, setReindexResult] = useState<ReindexResult | null>(null);
-
-  // Fetch current video optimization setting
-  useEffect(() => {
-    const fetchVideoSettings = async (): Promise<void> => {
-      try {
-        const response = await fetch(`${API_URL}/api/v1/users/settings/video-optimization`, {
-          credentials: 'include'
-        });
-        if (response.ok) {
-          const data = await response.json() as VideoSettingsResponse;
-          setVideoMode(data.mode);
-        }
-      } catch (e: unknown) {
-        console.error('Failed to fetch video settings:', e);
-      }
-    };
-    fetchVideoSettings();
-  }, []);
 
   // Fetch search index status
   useEffect(() => {
@@ -130,31 +106,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
       setReindexResult({ success: false, message: errorMessage });
     } finally {
       setIsReindexing(false);
-    }
-  };
-
-  const handleVideoModeChange = async (newMode: VideoOptimizationMode): Promise<void> => {
-    setVideoModeLoading(true);
-    setVideoModeError('');
-    try {
-      const response = await fetch(`${API_URL}/api/v1/users/settings/video-optimization`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({ mode: newMode })
-      });
-      if (response.ok) {
-        setVideoMode(newMode);
-      } else {
-        throw new Error('Failed to update setting');
-      }
-    } catch (e: unknown) {
-      const errorMessage = getErrorMessage(e);
-      setVideoModeError(errorMessage);
-    } finally {
-      setVideoModeLoading(false);
     }
   };
 
@@ -240,54 +191,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ darkMode }) => {
             </div>
           </div>
         </div>
-
-        {/* Video Optimization Settings - Only for non-ZK users */}
-        {!zkEnabled && (
-          <div className={`p-4 rounded-lg border ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-gray-50'}`}>
-            <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              <Video size={20} />
-              Video Optimization
-            </h2>
-            <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              Choose how videos are processed after upload. Optimized videos use H.264 codec for better browser compatibility.
-            </p>
-
-            <div className="space-y-3">
-              {([
-                { value: 'keep_both' as VideoOptimizationMode, label: 'Keep Both Versions', desc: 'Store original + optimized (recommended)' },
-                { value: 'replace_original' as VideoOptimizationMode, label: 'Replace Original', desc: 'Only keep optimized version (saves storage)' },
-                { value: 'no_optimization' as VideoOptimizationMode, label: 'No Optimization', desc: 'Keep original only, skip processing' }
-              ]).map(option => (
-                <label
-                  key={option.value}
-                  className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer border transition-colors ${
-                    videoMode === option.value
-                      ? darkMode ? 'border-blue-500 bg-blue-900/20' : 'border-blue-500 bg-blue-50'
-                      : darkMode ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-200 hover:bg-gray-100'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="videoMode"
-                    value={option.value}
-                    checked={videoMode === option.value}
-                    onChange={() => handleVideoModeChange(option.value)}
-                    disabled={videoModeLoading}
-                    className="mt-1"
-                  />
-                  <div>
-                    <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{option.label}</p>
-                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{option.desc}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
-
-            {videoModeError && (
-              <p className="text-red-500 text-sm mt-2">{videoModeError}</p>
-            )}
-          </div>
-        )}
 
         {/* Search & Indexing Section - Only for non-ZK users */}
         {!zkEnabled && (

@@ -129,7 +129,7 @@ export function SubscriptionProvider({ children }: SubscriptionProviderProps): R
 
       setSubscription(data.current_subscription as any);
       setAvailablePlans(data.available_plans as any || []);
-      setUsage(null);
+      setUsage((data.usage as Usage) ?? null);
       setWarnings(data.warnings as any || []);
       setRecommendations(data.recommendations as any || []);
 

@@ -141,7 +141,7 @@ class DownloadOptimizer:
     async def stream_single_file_optimized(
         self,
         file_path: str,
-        file_key: bytes,
+        file_key: Optional[bytes],
         encryption_service,
         start_byte: int = 0,
         end_byte: Optional[int] = None,
@@ -152,6 +152,8 @@ class DownloadOptimizer:
 
         KEY FIX: Never loads entire file into memory
         Decrypts and streams in chunks
+
+        Supports unencrypted files (file_key=None) for defensive compatibility.
         """
 
         file_size = os.path.getsize(file_path)
@@ -160,32 +162,34 @@ class DownloadOptimizer:
 
         logger.info(
             f"Streaming single file: {os.path.basename(file_path)} "
-            f"(range: {start_byte}-{end_byte}, size: {file_size/1024/1024:.1f}MB)"
+            f"(range: {start_byte}-{end_byte}, size: {file_size/1024/1024:.1f}MB, "
+            f"encrypted: {file_key is not None})"
         )
 
-        # For encrypted files, we need to decrypt the entire file first
-        # because AES-GCM requires the full ciphertext
-        # BUT we can stream the decrypted data in chunks
         async with aiofiles.open(file_path, 'rb') as f:
-            encrypted_data = await f.read()
+            raw_data = await f.read()
 
-        # Decrypt in thread to avoid blocking
-        loop = asyncio.get_event_loop()
-        decrypted_data = await loop.run_in_executor(
-            self.decrypt_executor,
-            encryption_service.decrypt_file,
-            encrypted_data,
-            file_key
-        )
-
-        # Handle decompression if needed
-        if compressed:
-            from ..utils.compression import compressor
+        if file_key:
+            # Encrypted file: decrypt in thread to avoid blocking
+            loop = asyncio.get_event_loop()
             decrypted_data = await loop.run_in_executor(
                 self.decrypt_executor,
-                compressor.decompress,
-                decrypted_data
+                encryption_service.decrypt_file,
+                raw_data,
+                file_key
             )
+
+            # Handle decompression if needed (only for encrypted files)
+            if compressed:
+                from ..utils.compression import compressor
+                decrypted_data = await loop.run_in_executor(
+                    self.decrypt_executor,
+                    compressor.decompress,
+                    decrypted_data
+                )
+        else:
+            # Unencrypted file (defensive compatibility)
+            decrypted_data = raw_data
 
         # Stream the requested range in optimal chunks
         chunk_size = self.get_optimal_chunk_size(len(decrypted_data))

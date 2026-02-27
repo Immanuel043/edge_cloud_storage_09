@@ -57,7 +57,7 @@ const mockPlansData: {
         bandwidth_mbps: 25,
         bandwidth_burst_mbps: 50,
         max_concurrent_streams: 5,
-        features: { support: 'email', versioning: 10, ai_features: false },
+        features: { support: 'email', versioning: 10, ai_features: false, video_optimization: 'optimized' as const },
         is_active: true,
         is_default: false,
         is_most_popular: false,
@@ -74,7 +74,7 @@ const mockPlansData: {
         bandwidth_mbps: 100,
         bandwidth_burst_mbps: 200,
         max_concurrent_streams: 10,
-        features: { support: 'priority', versioning: 50, ai_features: true },
+        features: { support: 'priority', versioning: 50, ai_features: true, video_optimization: 'optimized' as const },
         is_active: true,
         is_default: false,
         is_most_popular: true,
@@ -91,7 +91,7 @@ const mockPlansData: {
         bandwidth_mbps: 150,
         bandwidth_burst_mbps: 300,
         max_concurrent_streams: 15,
-        features: { support: 'priority', versioning: 100, ai_features: true },
+        features: { support: 'priority', versioning: 100, ai_features: true, video_optimization: 'keep_both' as const },
         is_active: true,
         is_default: false,
         is_most_popular: false,
@@ -108,7 +108,7 @@ const mockPlansData: {
         bandwidth_mbps: 200,
         bandwidth_burst_mbps: 400,
         max_concurrent_streams: 20,
-        features: { support: 'priority', versioning: 150, ai_features: true },
+        features: { support: 'priority', versioning: 150, ai_features: true, video_optimization: 'keep_both' as const },
         is_active: true,
         is_default: false,
         is_most_popular: false,
@@ -125,7 +125,7 @@ const mockPlansData: {
         bandwidth_mbps: 300,
         bandwidth_burst_mbps: 600,
         max_concurrent_streams: 25,
-        features: { support: 'priority', versioning: 200, ai_features: true, team_sharing: false },
+        features: { support: 'priority', versioning: 200, ai_features: true, team_sharing: false, video_optimization: 'keep_both' as const },
         is_active: true,
         is_default: false,
         is_most_popular: false,
@@ -144,7 +144,7 @@ const mockPlansData: {
         bandwidth_mbps: 500,
         bandwidth_burst_mbps: 1000,
         max_concurrent_streams: 25,
-        features: { support: '24/7', versioning: 100, ai_features: true, team_sharing: true },
+        features: { support: '24/7', versioning: 100, ai_features: true, team_sharing: true, video_optimization: 'keep_both' as const },
         is_active: true,
         is_default: false,
         is_most_popular: true,
@@ -352,7 +352,14 @@ function PlanCard({ plan, serviceType, darkMode, onSelect }: PlanCardProps): Rea
     if (plan.features.encryption === 'zero_knowledge') {
       features.push('Zero-Knowledge Encryption');
     }
-    
+
+    if (plan.features.video_optimization === 'optimized') {
+      features.push('Video Optimization');
+    } else if (plan.features.video_optimization === 'keep_both') {
+      features.push('Video Optimization');
+      features.push('Keep Both Video Versions');
+    }
+
     return features;
   }, [plan.features]);
 

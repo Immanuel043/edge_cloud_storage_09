@@ -513,62 +513,36 @@ async def update_theme(
 # VIDEO OPTIMIZATION SETTINGS
 # ============================================================================
 
-class VideoOptimizationSettings(BaseModel):
-    """Video optimization preference settings."""
-    mode: str  # 'keep_both', 'replace_original', 'no_optimization'
-
-
 @router.get("/users/settings/video-optimization")
 async def get_video_optimization_settings(
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Get user's video optimization preference.
+    Get user's video optimization mode (derived from subscription plan).
 
     Returns:
-        mode: 'keep_both' | 'replace_original' | 'no_optimization'
-        - keep_both: Store original + optimized MP4 (default)
-        - replace_original: Only keep optimized MP4 (saves storage)
-        - no_optimization: Skip proactive video optimization
+        mode: 'optimized' | 'keep_both' | 'no_optimization'
+        plan_gated: True (mode is determined by plan, not user setting)
     """
+    from shared_billing import BillingService
+    try:
+        billing = BillingService(db, service_type='normal')
+        subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
+        mode = (subscription.plan.features or {}).get('video_optimization', False)
+        if not mode:
+            mode = 'no_optimization'
+    except Exception:
+        mode = 'no_optimization'
+
     return {
-        "mode": getattr(current_user, 'video_optimization_mode', 'keep_both'),
+        "mode": mode,
+        "plan_gated": True,
         "description": {
-            "keep_both": "Store both original and optimized versions",
-            "replace_original": "Replace original with optimized version (saves storage)",
-            "no_optimization": "Disable automatic video optimization"
+            "optimized": "Videos are automatically optimized for browser playback",
+            "keep_both": "Both original and optimized versions accessible",
+            "no_optimization": "Video optimization not included in your plan"
         }
-    }
-
-
-@router.patch("/users/settings/video-optimization")
-async def update_video_optimization_settings(
-    settings: VideoOptimizationSettings,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Update user's video optimization preference.
-
-    Args:
-        mode: 'keep_both' | 'replace_original' | 'no_optimization'
-
-    Note: This affects future uploads only. Existing videos are not re-processed.
-    """
-    valid_modes = {'keep_both', 'replace_original', 'no_optimization'}
-
-    if settings.mode not in valid_modes:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid mode. Must be one of: {', '.join(valid_modes)}"
-        )
-
-    current_user.video_optimization_mode = settings.mode
-    await db.commit()
-
-    return {
-        "mode": settings.mode,
-        "message": f"Video optimization mode updated to '{settings.mode}'"
     }
 
 

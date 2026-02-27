@@ -5,6 +5,7 @@ Provides convenient endpoints specifically designed for frontend consumption.
 These endpoints combine data from multiple sources to reduce frontend API calls.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
@@ -98,6 +99,15 @@ class UserSubscriptionStatus(BaseModel):
     is_past_due: bool = False
     is_cancelled: bool = False
     days_until_renewal: Optional[int] = None
+
+    # Billing period details
+    billing_cycle: Optional[str] = None
+    current_period_start: Optional[str] = None
+    current_period_end: Optional[str] = None
+    storage_remaining_gb: float = 0.0
+    storage_remaining_display: str = ""
+    next_invoice_amount: Optional[float] = None
+    next_invoice_currency: str = "INR"
 
     # Actions available
     can_upgrade: bool
@@ -216,6 +226,29 @@ def format_plan_features(plan: SubscriptionPlan, service_type: str = 'normal') -
                     available=True
                 ))
 
+        # Video Optimization (plan-gated)
+        video_opt = plan.features.get('video_optimization', False)
+        if video_opt == 'optimized':
+            features.append(PlanFeature(
+                name="Video Optimization",
+                description="Automatic video optimization for playback",
+                available=True,
+                tooltip="Videos are transcoded to H.264 MP4 for instant browser playback"
+            ))
+        elif video_opt == 'keep_both':
+            features.append(PlanFeature(
+                name="Video Optimization",
+                description="Automatic video optimization for playback",
+                available=True,
+                tooltip="Videos are transcoded to H.264 MP4 for instant browser playback"
+            ))
+            features.append(PlanFeature(
+                name="Keep Both Video Versions",
+                description="Download original or play optimized",
+                available=True,
+                tooltip="Access both the original file and the optimized playback version"
+            ))
+
     return features
 
 
@@ -276,6 +309,26 @@ async def get_subscription_dashboard(
     if subscription.current_period_end:
         next_billing_date = subscription.current_period_end.isoformat()
 
+    # Compute billing period details
+    now = datetime.now(timezone.utc)
+    days_until_renewal = None
+    if subscription.current_period_end:
+        days_until_renewal = max(0, (subscription.current_period_end - now).days)
+
+    storage_remaining_gb = round(max(0, storage_quota_gb - storage_used_gb), 2)
+    storage_remaining_display = f"{storage_remaining_gb:.1f} GB remaining"
+
+    # Derive next invoice amount from plan pricing based on billing cycle
+    billing_cycle = getattr(subscription, 'billing_cycle', None)
+    next_invoice_amount = None
+    if billing_cycle and plan.price_monthly:
+        if billing_cycle == 'yearly' and plan.price_yearly:
+            next_invoice_amount = float(plan.price_yearly)
+        elif billing_cycle == 'six_months' and plan.price_six_months:
+            next_invoice_amount = float(plan.price_six_months)
+        else:
+            next_invoice_amount = float(plan.price_monthly)
+
     # Current subscription status
     current_sub = UserSubscriptionStatus(
         plan_code=plan.plan_code,
@@ -291,6 +344,13 @@ async def get_subscription_dashboard(
         bandwidth_quota_mbps=plan.bandwidth_mbps,
         is_past_due=(subscription.status == 'past_due'),
         is_cancelled=(subscription.status == 'cancelled'),
+        days_until_renewal=days_until_renewal,
+        billing_cycle=billing_cycle,
+        current_period_start=subscription.current_period_start.isoformat() if subscription.current_period_start else None,
+        current_period_end=subscription.current_period_end.isoformat() if subscription.current_period_end else None,
+        storage_remaining_gb=storage_remaining_gb,
+        storage_remaining_display=storage_remaining_display,
+        next_invoice_amount=next_invoice_amount,
         can_upgrade=(plan.sort_order < 3),  # Can upgrade if not on highest tier
         can_downgrade=(plan.sort_order > 0),
         can_cancel=(subscription.status == 'active')
@@ -367,6 +427,8 @@ async def get_subscription_dashboard(
         "storage_quota_gb": storage_quota_gb,
         "storage_quota_display": f"{storage_quota_gb:.0f} GB",
         "storage_percent": storage_percent,
+        "storage_remaining_gb": storage_remaining_gb,
+        "storage_remaining_display": storage_remaining_display,
         "bandwidth_quota_mbps": plan.bandwidth_mbps,
         "bandwidth_quota_display": f"{plan.bandwidth_mbps} Mbps"
     }

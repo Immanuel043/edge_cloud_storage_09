@@ -92,6 +92,15 @@ export interface SubscriptionDisplay {
   bandwidth_quota_mbps: number;
   next_billing_date?: string | null;
   tier?: number | undefined;
+  current_period_start?: string | null;
+  current_period_end?: string | null;
+  days_until_renewal?: number | null;
+  storage_used_gb?: number;
+  storage_remaining_gb?: number;
+  storage_remaining_display?: string;
+  storage_percent?: number;
+  next_invoice_amount?: number | null;
+  next_invoice_currency?: string;
 }
 
 /**
@@ -105,6 +114,8 @@ export interface UsageDisplay {
   bandwidth_used_display?: string;
   bandwidth_quota_display?: string;
   bandwidth_percent?: number;
+  storage_remaining_gb?: number;
+  storage_remaining_display?: string;
 }
 
 /**

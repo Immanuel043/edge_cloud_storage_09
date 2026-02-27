@@ -206,12 +206,22 @@ class VideoIngestionService:
         else:
             return 5
 
+    def _get_optimization_mode(self, plan_features: dict | None) -> str:
+        """Determine video optimization mode from plan features."""
+        if not plan_features:
+            return 'no_optimization'
+        mode = plan_features.get('video_optimization', False)
+        if mode in ('optimized', 'keep_both'):
+            return mode
+        return 'no_optimization'
+
     async def process_video(
         self,
         file_obj,
         user,
         encryption_service,
-        db_session
+        db_session,
+        plan_features: dict | None = None
     ) -> Dict[str, Any]:
         """
         Background processor - called by Kafka consumer worker.
@@ -258,8 +268,8 @@ class VideoIngestionService:
         start_time = datetime.utcnow()
 
         try:
-            # Check user's optimization preference
-            optimization_mode = getattr(user, 'video_optimization_mode', 'keep_both')
+            # Check plan-derived optimization mode
+            optimization_mode = self._get_optimization_mode(plan_features)
             if optimization_mode == 'no_optimization':
                 logger.info(f"User {user.id} has video optimization disabled, skipping {file_obj.file_name}")
                 file_obj.video_processing_status = 'skipped'
@@ -396,15 +406,9 @@ class VideoIngestionService:
             file_obj.video_processing_progress = 90
             await db_session.commit()
 
-            # Step 5: Handle storage preference
-            if result['optimized_path'] and optimization_mode == 'replace_original':
-                # User wants to replace original with optimized version
-                # This is complex with encrypted chunked storage - for now, we keep both
-                # TODO: Implement original deletion for 'replace_original' mode
-                logger.info(
-                    f"Note: 'replace_original' mode not yet implemented for encrypted storage. "
-                    f"Keeping both versions for {file_obj.file_name}"
-                )
+            # Step 5: Storage mode is plan-gated (always keep both files on disk)
+            # "optimized" plans: only optimized served to user
+            # "keep_both" plans: user can also download original
 
             # Step 6: Update final status
             end_time = datetime.utcnow()
