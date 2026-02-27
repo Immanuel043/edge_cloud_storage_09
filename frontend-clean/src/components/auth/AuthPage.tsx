@@ -9,21 +9,21 @@ import {
   Zap,
   Database,
   Lock,
-  Upload,
   Eye,
   EyeOff,
-  Sparkles,
   Search,
   Share2,
-  Activity,
   AlertTriangle,
   ArrowRight,
   Layers,
-  Gauge,
   Server,
   Brain,
-  Link as LinkIcon,
   Globe,
+  Video,
+  ScanLine,
+  History,
+  ShieldCheck,
+  FileText,
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -64,7 +64,7 @@ import { getErrorMessage } from './types';
 const BentoGrid: React.FC<BentoGridProps> = ({ children, className = '' }) => {
   return (
     <div
-      className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[minmax(160px,auto)] max-w-7xl mx-auto w-full ${className}`}
+      className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[minmax(160px,auto)] max-w-[88rem] mx-auto w-full px-6 ${className}`}
     >
       {children}
     </div>
@@ -135,7 +135,7 @@ const BentoCard: React.FC<BentoCardProps> = ({
           ? 'bg-gray-900/40 border-gray-800/50 hover:border-gray-700/80'
           : 'bg-white border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-lg'
       }
-      border transition-all duration-500
+      border transition-all duration-500 hover:-translate-y-1
       backdrop-blur-xl ${glowColors[glowColor]}
       ${sizeClasses[size]}
       ${className}
@@ -155,7 +155,7 @@ const BentoCard: React.FC<BentoCardProps> = ({
       <div className="relative z-10 p-5 h-full flex flex-col">
         <div className="flex items-center gap-3 mb-2">
           <div
-            className={`p-2 rounded-xl border transition-colors ${
+            className={`p-2 rounded-xl border transition-all duration-500 group-hover:scale-110 group-hover:rotate-3 ${
               darkMode
                 ? 'bg-white/5 border-white/10 text-white/80 group-hover:text-white'
                 : 'bg-gray-50 border-gray-200 text-gray-700 group-hover:text-gray-900 shadow-sm'
@@ -210,6 +210,56 @@ const FloatingOrb: React.FC<FloatingOrbProps> = ({
     style={{ animationDelay: `${delay}s` }}
   />
 );
+
+// ==================== Hooks ====================
+
+/**
+ * useCountUp - Animates a number from 0 to target when element enters viewport.
+ * Respects prefers-reduced-motion.
+ */
+const useCountUp = (target: number, duration = 1200) => {
+  const [value, setValue] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  const hasAnimated = useRef(false);
+
+  useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) {
+      setValue(target);
+      return;
+    }
+
+    const el = ref.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting && !hasAnimated.current) {
+          hasAnimated.current = true;
+          const start = performance.now();
+          const animate = (now: number) => {
+            const elapsed = now - start;
+            const progress = Math.min(elapsed / duration, 1);
+            // ease-out cubic
+            const eased = 1 - Math.pow(1 - progress, 3);
+            setValue(Math.round(eased * target));
+            if (progress < 1) {
+              requestAnimationFrame(animate);
+            }
+          };
+          requestAnimationFrame(animate);
+        }
+      },
+      { threshold: 0.3 }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [target, duration]);
+
+  return { value, ref };
+};
 
 // ==================== Main Component ====================
 
@@ -277,6 +327,12 @@ const AuthPage: React.FC = () => {
   const passwordStrength: PasswordStrengthResult | null = formData.password
     ? validatePasswordStrength(formData.password)
     : null;
+
+  // Animated stat counters
+  const uploadSpeed = useCountUp(40);
+  const maxCapacity = useCountUp(8);
+  const uptimeVal = useCountUp(999);
+  const storageSavings = useCountUp(60);
 
   // Extract plan, service, and billing cycle from URL parameters
   useEffect(() => {
@@ -616,7 +672,7 @@ const AuthPage: React.FC = () => {
   const featurePills = [
     { icon: Shield, label: 'AES-256 GCM', color: darkMode ? 'text-green-500' : 'text-green-600' },
     { icon: Brain, label: 'ML-Powered', color: darkMode ? 'text-purple-500' : 'text-purple-600' },
-    { icon: Layers, label: 'Auto-Tiering', color: darkMode ? 'text-blue-500' : 'text-blue-600' },
+    { icon: Video, label: 'Video Optimization', color: darkMode ? 'text-blue-500' : 'text-blue-600' },
   ];
 
   // Storage tiers
@@ -643,10 +699,10 @@ const AuthPage: React.FC = () => {
 
   // Performance stats
   const stats = [
-    { value: '40 MB/s', label: 'Upload Speed', icon: Zap, color: 'text-yellow-500' },
-    { value: '8 TB', label: 'Max Capacity', icon: Database, color: 'text-blue-500' },
-    { value: '500+', label: 'Concurrent Users', icon: Activity, color: 'text-green-500' },
-    { value: '60%', label: 'Storage Savings', icon: Layers, color: 'text-purple-500' },
+    { value: `${uploadSpeed.value} MB/s`, label: 'Upload Speed', icon: Zap, color: 'text-yellow-500', ref: uploadSpeed.ref },
+    { value: `${maxCapacity.value} TB`, label: 'Max Capacity', icon: Database, color: 'text-blue-500', ref: maxCapacity.ref },
+    { value: `${(uptimeVal.value / 10).toFixed(1)}%`, label: 'Uptime', icon: ShieldCheck, color: 'text-green-500', ref: uptimeVal.ref },
+    { value: `${storageSavings.value}%`, label: 'Storage Savings', icon: Layers, color: 'text-purple-500', ref: storageSavings.ref },
   ];
 
   return (
@@ -775,16 +831,17 @@ const AuthPage: React.FC = () => {
       <main className="pt-28 pb-20 px-6">
         <div className="max-w-7xl mx-auto">
           {/* Hero Section */}
-          <div className="grid lg:grid-cols-2 gap-16 items-center mb-32">
+          <div className="grid lg:grid-cols-2 gap-16 items-center mb-32 px-6">
             {/* Hero Left */}
             <div className="relative z-10">
               {/* Badge */}
               <div
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border mb-8 ${
+                className={`animate-fade-up inline-flex items-center gap-2 px-4 py-2 rounded-full border mb-8 ${
                   darkMode
                     ? 'bg-gradient-to-r from-blue-500/10 to-purple-500/10 border-blue-500/20'
                     : 'bg-gradient-to-r from-blue-50 to-purple-50 border-blue-200 shadow-sm'
                 }`}
+                style={{ '--fade-delay': '0ms' } as React.CSSProperties}
               >
                 <div className="relative flex h-2 w-2">
                   <span
@@ -808,7 +865,7 @@ const AuthPage: React.FC = () => {
               </div>
 
               {/* Main heading */}
-              <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.1] mb-8">
+              <h1 className="animate-fade-up text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.1] mb-8" style={{ '--fade-delay': '100ms' } as React.CSSProperties}>
                 File Storage,{' '}
                 <span className="relative">
                   <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-cyan-400">
@@ -820,9 +877,10 @@ const AuthPage: React.FC = () => {
 
               {/* Subtitle */}
               <p
-                className={`text-lg md:text-xl leading-relaxed mb-10 max-w-lg ${
+                className={`animate-fade-up text-lg md:text-xl leading-relaxed mb-10 max-w-lg ${
                   darkMode ? 'text-gray-400' : 'text-gray-700'
                 }`}
+                style={{ '--fade-delay': '200ms' } as React.CSSProperties}
               >
                 Enterprise-grade security with consumer-level simplicity. Your data,
                 encrypted with keys{' '}
@@ -833,7 +891,7 @@ const AuthPage: React.FC = () => {
               </p>
 
               {/* Feature pills */}
-              <div className="flex flex-wrap gap-3">
+              <div className="animate-fade-up flex flex-wrap gap-3" style={{ '--fade-delay': '300ms' } as React.CSSProperties}>
                 {featurePills.map((item, i) => (
                   <div
                     key={i}
@@ -857,7 +915,7 @@ const AuthPage: React.FC = () => {
             </div>
 
             {/* Auth Card Right */}
-            <div className="relative">
+            <div className="animate-fade-up relative" style={{ '--fade-delay': '200ms' } as React.CSSProperties}>
               {/* Glow effect behind card */}
               <div
                 className={`absolute -inset-4 bg-gradient-to-r from-blue-500/20 via-purple-500/20 to-cyan-500/20 rounded-3xl blur-3xl ${
@@ -1322,8 +1380,10 @@ const AuthPage: React.FC = () => {
             </div>
           </div>
 
+        </div>
+
           {/* Features Bento Grid */}
-          <div className="mb-32">
+          <div className="max-w-[88rem] mx-auto px-6 mb-32">
             <div className="text-center mb-12">
               <h2
                 className={`text-3xl md:text-4xl font-bold mb-4 ${
@@ -1341,7 +1401,7 @@ const AuthPage: React.FC = () => {
             </div>
 
             <BentoGrid>
-              {/* Large ZK Card */}
+              {/* 1. Zero-Knowledge Architecture (large) — KEEP */}
               <BentoCard
                 title="Zero-Knowledge Architecture"
                 description="Your encryption keys never leave your device. True end-to-end encryption where even we cannot access your data."
@@ -1396,76 +1456,128 @@ const AuthPage: React.FC = () => {
                 </div>
               </BentoCard>
 
-              {/* AI Analytics - Tall */}
+              {/* 2. Video Optimization (tall) — NEW */}
               <BentoCard
-                title="AI Analytics"
-                description="Predictive storage quotas and smart file organization powered by local ML models."
-                icon={Sparkles}
+                title="Video Optimization"
+                description="Automatic transcoding, adaptive bitrate streaming, and thumbnail generation for all video uploads."
+                icon={Video}
                 size="tall"
                 glowColor="purple"
                 darkMode={darkMode}
                 gradient="bg-gradient-to-b from-purple-600/10 to-transparent"
               >
-                <div className="space-y-3 mt-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
-                      Quota Prediction
-                    </span>
-                    <span
-                      className={darkMode ? 'text-green-400' : 'text-green-600'}
-                      style={{ fontFamily: 'monospace' }}
+                <div className="space-y-2.5 mt-2">
+                  {[
+                    { step: '1', label: 'Upload', status: 'complete' },
+                    { step: '2', label: 'Detect', status: 'complete' },
+                    { step: '3', label: 'Transcode', status: 'active' },
+                    { step: '4', label: 'Ready', status: 'pending' },
+                  ].map((item) => (
+                    <div
+                      key={item.step}
+                      className={`flex items-center gap-3 p-2 rounded-lg border text-xs ${
+                        item.status === 'complete'
+                          ? darkMode
+                            ? 'bg-green-500/10 border-green-500/20 text-green-400'
+                            : 'bg-green-50 border-green-200 text-green-600'
+                          : item.status === 'active'
+                            ? darkMode
+                              ? 'bg-purple-500/10 border-purple-500/20 text-purple-400'
+                              : 'bg-purple-50 border-purple-200 text-purple-600'
+                            : darkMode
+                              ? 'bg-white/5 border-white/10 text-gray-500'
+                              : 'bg-gray-50 border-gray-200 text-gray-400'
+                      }`}
                     >
-                      98% Acc
-                    </span>
+                      <span className="font-bold">{item.step}</span>
+                      <span>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </BentoCard>
+
+              {/* 3. AI Smart Tagging & OCR (wide) — NEW */}
+              <BentoCard
+                title="AI Smart Tagging & OCR"
+                description="Automatic content tagging, object detection, and OCR text extraction from images and documents."
+                icon={FileText}
+                size="wide"
+                glowColor="orange"
+                darkMode={darkMode}
+                gradient="bg-gradient-to-r from-orange-600/10 to-transparent"
+              >
+                <div className="mt-2">
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {['landscape', 'receipt', 'invoice', 'portrait'].map((tag) => (
+                      <span
+                        key={tag}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                          darkMode
+                            ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20'
+                            : 'bg-orange-50 text-orange-600 border border-orange-200'
+                        }`}
+                      >
+                        {tag}
+                      </span>
+                    ))}
                   </div>
                   <div
-                    className={`h-1.5 w-full rounded-full overflow-hidden ${
-                      darkMode ? 'bg-white/10' : 'bg-gray-200'
+                    className={`text-[10px] uppercase tracking-wider ${
+                      darkMode ? 'text-gray-500' : 'text-gray-500'
                     }`}
                   >
-                    <div className="h-full bg-gradient-to-r from-green-400 to-blue-500 w-[85%]" />
-                  </div>
-                  <div
-                    className={`p-2.5 rounded-lg border text-[11px] ${
-                      darkMode
-                        ? 'bg-white/5 border-white/10 text-gray-400'
-                        : 'bg-purple-50 border-purple-200 text-gray-600 shadow-sm'
-                    }`}
-                  >
-                    &quot;Your storage usage is trending up. Consider archiving &apos;Old
-                    Projects&apos;.&quot;
+                    + OCR text extraction
                   </div>
                 </div>
               </BentoCard>
 
-              {/* Deduplication */}
+              {/* 4. Virus Scanning & DLP (normal) — NEW */}
               <BentoCard
-                title="Deduplication"
-                description="Block-level dedup saves up to 60% storage automatically."
-                icon={Database}
+                title="Virus Scanning & DLP"
+                description="Real-time malware detection and data loss prevention on every upload."
+                icon={ScanLine}
                 glowColor="green"
                 darkMode={darkMode}
               >
-                <div className="flex items-center gap-2 mt-2">
-                  <div className={`text-lg font-bold ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
-                    60%
+                <div className="space-y-2 mt-2">
+                  <div className={`flex items-center justify-between text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    <span>Malware Scan</span>
+                    <span className={darkMode ? 'text-green-400' : 'text-green-600'}>Clean</span>
                   </div>
-                  <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                    avg. savings
+                  <div className={`flex items-center justify-between text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    <span>DLP Check</span>
+                    <span className={darkMode ? 'text-green-400' : 'text-green-600'}>No PII</span>
                   </div>
                 </div>
               </BentoCard>
 
-              {/* URL Upload */}
+              {/* 5. Smart Search (normal) — UPDATED */}
               <BentoCard
-                title="URL Upload"
-                description="Import files directly from any URL. No download required."
-                icon={LinkIcon}
-                glowColor="orange"
+                title="Smart Search"
+                description="AI-powered semantic search across all your files, metadata, and OCR-extracted text."
+                icon={Search}
+                glowColor="purple"
                 darkMode={darkMode}
-              />
+              >
+                <div
+                  className={`mt-2 p-2 rounded-lg border ${
+                    darkMode
+                      ? 'bg-white/5 border-white/10'
+                      : 'bg-gray-50 border-gray-200 shadow-sm'
+                  }`}
+                >
+                  <div
+                    className={`flex items-center gap-2 text-xs ${
+                      darkMode ? 'text-gray-500' : 'text-gray-600'
+                    }`}
+                  >
+                    <Search size={12} />
+                    <span>Search encrypted files...</span>
+                  </div>
+                </div>
+              </BentoCard>
 
-              {/* Performance - Wide */}
+              {/* 6. Lightning Fast (wide) — KEEP */}
               <BentoCard
                 title="Lightning Fast"
                 description="Parallel multipart uploads and smart CDN caching deliver blazing speeds."
@@ -1504,7 +1616,7 @@ const AuthPage: React.FC = () => {
                 </div>
               </BentoCard>
 
-              {/* Auto Tiering */}
+              {/* 7. Auto Tiering (normal) — KEEP */}
               <BentoCard
                 title="Auto Tiering"
                 description="Cold storage for rarely accessed files. Hot storage for active ones."
@@ -1524,194 +1636,81 @@ const AuthPage: React.FC = () => {
                 </div>
               </BentoCard>
 
-              {/* Sharing & Collaboration */}
+              {/* 8. Sharing & Collaboration (normal) — SHRUNK */}
               <BentoCard
                 title="Sharing & Collaboration"
                 description="Generate secure share links with expiration dates and password protection. Collaborate with teams."
                 icon={Share2}
-                size="wide"
                 glowColor="cyan"
                 darkMode={darkMode}
-                gradient="bg-gradient-to-r from-cyan-600/10 to-blue-600/10"
               >
                 <div className="flex items-center gap-3 mt-2">
                   <div className="flex -space-x-2">
                     {[...Array(4)].map((_, i) => (
                       <div
                         key={i}
-                        className={`w-6 h-6 rounded-full border-2 border-gray-900 ${
+                        className={`w-6 h-6 rounded-full border-2 ${
+                          darkMode ? 'border-gray-900' : 'border-white'
+                        } ${
                           ['bg-blue-500', 'bg-purple-500', 'bg-green-500', 'bg-orange-500'][i]
                         }`}
                       />
                     ))}
                   </div>
-                  <span className="text-xs text-gray-400">+ Team access</span>
+                  <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>+ Team access</span>
                 </div>
               </BentoCard>
 
-              {/* Smart Search */}
+              {/* 9. File Versioning (normal) — NEW */}
               <BentoCard
-                title="Smart Search"
-                description="AI-powered semantic search across all your files and metadata."
-                icon={Search}
-                glowColor="purple"
+                title="File Versioning"
+                description="Full version history with instant rollback. Never lose a previous version of your files."
+                icon={History}
+                glowColor="indigo"
                 darkMode={darkMode}
               >
-                <div
-                  className={`mt-2 p-2 rounded-lg border ${
-                    darkMode
-                      ? 'bg-white/5 border-white/10'
-                      : 'bg-gray-50 border-gray-200 shadow-sm'
-                  }`}
-                >
-                  <div
-                    className={`flex items-center gap-2 text-xs ${
-                      darkMode ? 'text-gray-500' : 'text-gray-600'
-                    }`}
-                  >
-                    <Search size={12} />
-                    <span>Search encrypted files...</span>
-                  </div>
-                </div>
-              </BentoCard>
-
-              {/* Universal Preview */}
-              <BentoCard
-                title="Universal Preview"
-                description="Preview images, PDFs, videos, documents, and code files directly."
-                icon={Eye}
-                glowColor="green"
-                darkMode={darkMode}
-              >
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {['PDF', 'IMG', 'VID', 'CODE'].map((type) => (
-                    <div
-                      key={type}
-                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                        darkMode
-                          ? 'bg-white/5 border border-white/10 text-gray-400'
-                          : 'bg-gray-100 border border-gray-200 text-gray-600'
-                      }`}
-                    >
-                      {type}
+                <div className="space-y-1.5 mt-2">
+                  {[
+                    { version: 'v3', label: 'Current', color: darkMode ? 'text-green-400' : 'text-green-600' },
+                    { version: 'v2', label: '2 days ago', color: darkMode ? 'text-gray-400' : 'text-gray-500' },
+                    { version: 'v1', label: '1 week ago', color: darkMode ? 'text-gray-500' : 'text-gray-400' },
+                  ].map((item) => (
+                    <div key={item.version} className={`flex items-center justify-between text-xs ${item.color}`}>
+                      <span className="font-medium">{item.version}</span>
+                      <span>{item.label}</span>
                     </div>
                   ))}
                 </div>
               </BentoCard>
 
-              {/* Resumable Uploads */}
+              {/* 10. GDPR & Compliance (normal) — NEW */}
               <BentoCard
-                title="Resumable Uploads"
-                description="Network interruption? No problem. Resume uploads exactly where you left off."
-                icon={Upload}
+                title="GDPR & Compliance"
+                description="Built-in compliance controls for GDPR, SOC 2, and enterprise security standards."
+                icon={ShieldCheck}
                 glowColor="green"
                 darkMode={darkMode}
               >
-                <div className="mt-2 space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
-                      project.zip
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {['GDPR', 'SOC 2', 'AES-256'].map((badge) => (
+                    <span
+                      key={badge}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                        darkMode
+                          ? 'bg-green-500/15 text-green-400 border border-green-500/20'
+                          : 'bg-green-50 text-green-600 border border-green-200'
+                      }`}
+                    >
+                      {badge}
                     </span>
-                    <span className={darkMode ? 'text-green-400' : 'text-green-600'}>75%</span>
-                  </div>
-                  <div
-                    className={`h-1.5 w-full rounded-full overflow-hidden ${
-                      darkMode ? 'bg-white/10' : 'bg-gray-200'
-                    }`}
-                  >
-                    <div className="h-full bg-gradient-to-r from-green-400 to-emerald-500 w-[75%]" />
-                  </div>
-                </div>
-              </BentoCard>
-
-              {/* Bandwidth Control */}
-              <BentoCard
-                title="Bandwidth Control"
-                description="Per-user bandwidth limits with token bucket algorithm for fair allocation."
-                icon={Gauge}
-                glowColor="indigo"
-                darkMode={darkMode}
-              >
-                <div className="mt-2 space-y-1">
-                  <div
-                    className={`h-1.5 w-full rounded-full overflow-hidden ${
-                      darkMode ? 'bg-white/10' : 'bg-gray-200'
-                    }`}
-                  >
-                    <div className="h-full bg-gradient-to-r from-indigo-400 to-purple-500 w-[65%]" />
-                  </div>
-                  <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                    65% allocated
-                  </div>
-                </div>
-              </BentoCard>
-
-              {/* End-to-End Encrypted */}
-              <BentoCard
-                title="End-to-End Encrypted"
-                description="Your data is encrypted before it leaves your device. Keys never touch our servers."
-                icon={Lock}
-                size="tall"
-                glowColor="green"
-                darkMode={darkMode}
-                gradient="bg-gradient-to-b from-green-600/10 to-transparent"
-              >
-                <div className="space-y-3 mt-4">
-                  <div
-                    className={`p-3 rounded-lg border ${
-                      darkMode
-                        ? 'bg-green-500/10 border-green-500/20'
-                        : 'bg-green-50 border-green-200 shadow-sm'
-                    }`}
-                  >
-                    <div
-                      className={`flex items-center gap-2 text-xs ${
-                        darkMode ? 'text-green-400' : 'text-green-600'
-                      }`}
-                    >
-                      <Lock size={12} />
-                      <span>Client-side encryption</span>
-                    </div>
-                  </div>
-                  <div
-                    className={`p-3 rounded-lg border ${
-                      darkMode
-                        ? 'bg-blue-500/10 border-blue-500/20'
-                        : 'bg-blue-50 border-blue-200 shadow-sm'
-                    }`}
-                  >
-                    <div
-                      className={`flex items-center gap-2 text-xs ${
-                        darkMode ? 'text-blue-400' : 'text-blue-600'
-                      }`}
-                    >
-                      <Shield size={12} />
-                      <span>Zero-knowledge proof</span>
-                    </div>
-                  </div>
-                  <div
-                    className={`p-3 rounded-lg border ${
-                      darkMode
-                        ? 'bg-purple-500/10 border-purple-500/20'
-                        : 'bg-purple-50 border-purple-200 shadow-sm'
-                    }`}
-                  >
-                    <div
-                      className={`flex items-center gap-2 text-xs ${
-                        darkMode ? 'text-purple-400' : 'text-purple-600'
-                      }`}
-                    >
-                      <Eye size={12} />
-                      <span>Only you can decrypt</span>
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </BentoCard>
             </BentoGrid>
           </div>
 
           {/* Performance Stats Bar */}
-          <div className="mb-20">
+          <div className="max-w-[88rem] mx-auto px-6 mb-20">
             <div
               className={`relative p-8 rounded-2xl border backdrop-blur-xl overflow-hidden ${
                 darkMode
@@ -1722,9 +1721,9 @@ const AuthPage: React.FC = () => {
               <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-cyan-500/5" />
               <div className="relative grid md:grid-cols-4 gap-8 text-center">
                 {stats.map((stat, i) => (
-                  <div key={i} className="flex flex-col items-center">
+                  <div key={i} ref={stat.ref} className="flex flex-col items-center">
                     <stat.icon className={`${stat.color} mb-2`} size={20} />
-                    <div className={`text-2xl md:text-3xl font-bold ${stat.color}`}>
+                    <div className={`text-2xl md:text-3xl font-bold tabular-nums ${stat.color}`}>
                       {stat.value}
                     </div>
                     <div
@@ -1739,15 +1738,15 @@ const AuthPage: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
       </main>
 
       {/* Footer */}
       <footer
-        className={`border-t py-10 ${
-          darkMode ? 'border-white/10 bg-gray-900/80' : 'border-gray-200 bg-white shadow-sm'
+        className={`relative py-10 ${
+          darkMode ? 'bg-gray-900/80' : 'bg-white shadow-sm'
         }`}
       >
+        <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-blue-500/50 to-transparent" />
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4">
           <div
             className={`flex items-center gap-2 ${
@@ -1764,46 +1763,34 @@ const AuthPage: React.FC = () => {
           >
             <a
               href="#"
-              className={`transition-colors ${
-                darkMode ? 'hover:text-white' : 'hover:text-gray-900'
+              className={`relative transition-colors after:absolute after:left-0 after:bottom-0 after:h-px after:w-0 hover:after:w-full after:transition-all after:duration-300 ${
+                darkMode ? 'hover:text-white after:bg-white' : 'hover:text-gray-900 after:bg-gray-900'
               }`}
             >
               Privacy
             </a>
             <a
               href="#"
-              className={`transition-colors ${
-                darkMode ? 'hover:text-white' : 'hover:text-gray-900'
+              className={`relative transition-colors after:absolute after:left-0 after:bottom-0 after:h-px after:w-0 hover:after:w-full after:transition-all after:duration-300 ${
+                darkMode ? 'hover:text-white after:bg-white' : 'hover:text-gray-900 after:bg-gray-900'
               }`}
             >
               Terms
             </a>
             <a
               href="#"
-              className={`transition-colors ${
-                darkMode ? 'hover:text-white' : 'hover:text-gray-900'
+              className={`relative transition-colors after:absolute after:left-0 after:bottom-0 after:h-px after:w-0 hover:after:w-full after:transition-all after:duration-300 ${
+                darkMode ? 'hover:text-white after:bg-white' : 'hover:text-gray-900 after:bg-gray-900'
               }`}
             >
               Contact
             </a>
           </div>
           <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-            &copy; 2025 Edge Cloud Storage. All rights reserved.
+            &copy; 2026 Edge Cloud Storage. All rights reserved.
           </div>
         </div>
       </footer>
-
-      {/* Floating animation keyframes */}
-      <style>{`
-        @keyframes float {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(30px, -30px) scale(1.05); }
-          66% { transform: translate(-20px, 20px) scale(0.95); }
-        }
-        .animate-float {
-          animation: float 20s ease-in-out infinite;
-        }
-      `}</style>
 
       {/* Modals */}
       {showRecoverySetup && (
