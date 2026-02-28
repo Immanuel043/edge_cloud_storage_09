@@ -1014,6 +1014,7 @@ async def get_file_preview(
     """
     from ..services.preview_generator import preview_generator
     from ..services.preview_optimizer import preview_optimizer
+    from ..services.preview_service import preview_service
     import base64
     import aiofiles
     import tempfile
@@ -1214,36 +1215,38 @@ async def get_file_preview(
                 temp_file_path = transcoded_path
                 use_transcoded = True
 
-        # If no transcoded version, download original file
+        # If no transcoded version, use singleflight on-demand generation
         if not use_transcoded:
-            temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+            result = await preview_service.generate_on_demand(
+                file_id=file_id,
                 file_obj=file_obj,
-                encryption_service=encryption_service
+                requested_size=size,
+                redis_client=redis,
             )
-
-            # If download returned None, it means the file is too large for sync preview
-            if temp_file_path is None:
-                logger.info(
-                    f"⏳ Preview queued for background processing: {file_obj.file_name} "
-                    f"({file_obj.file_size/1024/1024:.1f}MB) - returning placeholder"
-                )
-
+            if result is None:
                 return await _return_placeholder(
                     status="queued",
-                    reason="partial_download_unavailable"
+                    reason="generation_in_progress"
                 )
 
-            if not is_complete:
-                logger.info(
-                    f"⚡ Using partial download for preview "
-                    f"(saved {(file_obj.file_size - os.path.getsize(temp_file_path)) / 1024 / 1024:.1f}MB)"
-                )
+            preview_bytes, content_type = result
+            is_video_file = file_obj.mime_type and file_obj.mime_type.startswith('video/')
+            cache_ttl = 604800 if is_video_file else 2592000
+            return Response(
+                content=preview_bytes,
+                media_type=content_type,
+                headers={
+                    "Cache-Control": f"public, max-age={cache_ttl}",
+                    "X-Cache": "MISS",
+                    "X-Preview-Status": "generated"
+                }
+            )
 
-        # Step 2: Generate preview using preview_generator
+        # Transcoded video path: generate single size directly
         try:
             preview_bytes, content_type = await preview_generator.generate_preview(
                 file_path=temp_file_path,
-                mime_type='video/mp4' if use_transcoded else file_obj.mime_type,
+                mime_type='video/mp4',
                 size=size,
                 file_name=file_obj.file_name
             )
@@ -1254,15 +1257,10 @@ async def get_file_preview(
                 reason=str(exc)
             )
 
-        # Step 3: Cache the generated preview in Redis
-        # TTL: 7 days for videos (large, expensive to generate), 30 days for images/docs
-        is_video = file_obj.mime_type and file_obj.mime_type.startswith('video/')
-        cache_ttl = 604800 if is_video else 2592000  # 7 days vs 30 days
-
+        cache_ttl = 604800  # 7 days for video
         await redis.setex(cache_key, cache_ttl, preview_bytes)
-        logger.info(f"📦 Cached preview for {file_id} (size: {size}, TTL: {cache_ttl}s)")
+        logger.info(f"Cached transcoded preview for {file_id} (size: {size})")
 
-        # Step 4: Return preview
         return Response(
             content=preview_bytes,
             media_type=content_type,
@@ -1274,12 +1272,9 @@ async def get_file_preview(
         )
 
     finally:
-        # Clean up temp file (but NOT the transcoded file - that's permanent cache)
-        if temp_file_path and not use_transcoded and os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except Exception as e:
-                print(f"Warning: Failed to cleanup temp file {temp_file_path}: {e}")
+        # No temp file cleanup needed for non-transcoded path (handled by preview_service)
+        # For transcoded path, temp_file_path points to permanent cache - don't delete
+        pass
 
 
 @router.get("/{file_id}/preview/status")

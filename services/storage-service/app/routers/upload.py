@@ -699,6 +699,18 @@ async def upload_direct(
 
         await redis_client.setex(f"up:{upload_id}", REDIS_TTL, json.dumps(session))
 
+        # Fire-and-forget: generate previews from plaintext still in memory
+        from ..services.preview_service import preview_service
+        asyncio.create_task(
+            preview_service.generate_from_plaintext(
+                file_id=str(session["id"]),
+                plaintext_data=file_data,
+                mime_type=session.get("mime_type") or mimetypes.guess_type(session["name"])[0],
+                file_name=session["name"],
+                redis_client=redis_client,
+            )
+        )
+
         return {
             "status": "success",
             "upload_id": upload_id,
@@ -1278,6 +1290,19 @@ async def complete_upload(
         except Exception as e:
             logger.error(f"Failed to queue video preview for {session['name']}: {e}")
             # Non-fatal - preview can still be generated on-demand
+
+    # ============ PREVIEW PRE-GENERATION FOR NON-VIDEO CHUNKED FILES ============
+    # For non-video chunked files that didn't get upload-time preview generation
+    # (plaintext arrives in pieces for chunked uploads), pre-generate in background
+    if not is_video and storage_strategy != "inline":
+        from ..services.preview_service import preview_service
+        asyncio.create_task(
+            preview_service.generate_on_demand_background(
+                file_id=str(file_id),
+                file_obj=file_obj,
+                redis_client=redis_client,
+            )
+        )
 
     # ============ SEMANTIC EMBEDDING QUEUEING (BACKGROUND) ============
     # Queue file for semantic embedding generation (for AI-powered search)
