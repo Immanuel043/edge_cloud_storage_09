@@ -7,6 +7,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import { SubscriptionProvider } from './contexts/SubscriptionContext';
 import NotificationToast from './components/notifications/NotificationToast';
+import OfflineBanner from './components/common/OfflineBanner';
 const AuthPage = React.lazy(() => import('./components/auth/AuthPage'));
 const Dashboard = React.lazy(() => import('./components/dashboard/Dashboard'));
 const ShareViewer = React.lazy(() => import('./components/share/ShareViewer'));
@@ -120,6 +121,7 @@ const App: React.FC = () => {
             <AuthProvider>
               <StorageProvider>
                 <SubscriptionProvider>
+                  <OfflineBanner />
                   <Suspense fallback={<div>Loading app...</div>}>
                     <Routes>
                       <Route path="/auth" element={<AuthPage />} />

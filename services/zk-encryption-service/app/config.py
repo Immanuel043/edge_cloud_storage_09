@@ -165,6 +165,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(default=60, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
     RATE_LIMIT_RECOVERY_ATTEMPTS: int = Field(default=3, env="RATE_LIMIT_RECOVERY_ATTEMPTS")
 
+    # Company / Invoice Branding
+    COMPANY_NAME: str = Field(default="Edge Cloud ZK Storage", env="COMPANY_NAME")
+    COMPANY_ADDRESS: str = Field(default="", env="COMPANY_ADDRESS")
+    COMPANY_EMAIL: str = Field(default="", env="COMPANY_EMAIL")
+    COMPANY_PHONE: str = Field(default="", env="COMPANY_PHONE")
+    COMPANY_GST: str = Field(default="", env="COMPANY_GST")
+    COMPANY_LOGO_URL: str = Field(default="", env="COMPANY_LOGO_URL")
+
     # Email Configuration (Mailgun)
     MAILGUN_ENABLED: bool = Field(default=True, env="MAILGUN_ENABLED")
     MAILGUN_API_KEY: str = Field(default="", env="MAILGUN_API_KEY")

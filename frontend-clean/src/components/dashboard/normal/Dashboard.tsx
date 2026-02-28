@@ -98,7 +98,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     clearSelection,
     refreshFiles
   } = useStorage();
-  const { success: showSuccess } = useNotification();
+  const { success: showSuccess, info: showInfo } = useNotification();
 
   // Wrapper around deleteFile to show toast with Undo
   const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
@@ -145,6 +145,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const abortControllers = useRef<Record<string, AbortController>>({});
+  const fileRefs = useRef<Record<string, File>>({});
   const [dedupStats, setDedupStats] = useState<DeduplicationStats | null>(null);
   const [dedupLoading, setDedupLoading] = useState<boolean>(false);
   const [searchResults, setSearchResults] = useState<SearchResultsType | null>(null);
@@ -267,6 +268,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     const uploadId = crypto.randomUUID();
     const startTime = Date.now();
 
+    // Store File reference for potential retry
+    fileRefs.current[uploadId] = file;
+
     try {
       setUploads(prev => ({
         ...prev,
@@ -287,7 +291,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
       const controller = new AbortController();
       abortControllers.current[uploadId] = controller;
 
-      await uploadFile(file, (progressData) => {
+      const result = await uploadFile(file, (progressData) => {
         setUploads(prev => {
           const current = prev[uploadId];
           if (!current) return prev;
@@ -295,19 +299,33 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
           const chunksUploaded = progressData.chunksUploaded || 0;
           const totalChunks = progressData.totalChunks || 0;
           const bytesUploaded = progressData.bytesUploaded || 0;
+          const progressUploadId = (progressData as unknown as { uploadId?: string }).uploadId;
+          const updatedItem: UploadItem = {
+            ...current,
+            progress: progressData.progress,
+            chunksUploaded,
+            totalChunks,
+            bytesUploaded,
+            elapsedTime: Date.now() - startTime
+          };
+          if (progressUploadId) {
+            updatedItem.serverUploadId = progressUploadId;
+          }
+          return { ...prev, [uploadId]: updatedItem };
+        });
+      }, controller.signal);
+
+      // Capture serverUploadId from result
+      if (result.serverUploadId) {
+        setUploads(prev => {
+          const current = prev[uploadId];
+          if (!current) return prev;
           return {
             ...prev,
-            [uploadId]: {
-              ...current,
-              progress: progressData.progress,
-              chunksUploaded,
-              totalChunks,
-              bytesUploaded,
-              elapsedTime: Date.now() - startTime
-            }
+            [uploadId]: { ...current, serverUploadId: result.serverUploadId! }
           };
         });
-      });
+      }
 
       setUploads(prev => {
         const current = prev[uploadId];
@@ -322,6 +340,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
         };
       });
 
+      // Clean up file ref on success
+      delete fileRefs.current[uploadId];
+
       setTimeout(() => {
         setUploads(prev => {
           const newUploads = { ...prev };
@@ -334,6 +355,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
 
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'AbortError') {
+        // User cancel — clean up file ref
+        delete fileRefs.current[uploadId];
+
         setUploads(prev => {
           const current = prev[uploadId];
           if (!current) return prev;
@@ -342,10 +366,20 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             [uploadId]: { ...current, status: 'cancelled' }
           };
         });
+
+        // Auto-clear cancelled upload after 3 seconds
+        setTimeout(() => {
+          setUploads(prev => {
+            const newUploads = { ...prev };
+            delete newUploads[uploadId];
+            return newUploads;
+          });
+        }, 3000);
       } else {
         // Extract user-friendly error message
         const errorWithStatus = error as ErrorWithStatus;
-        let errorMessage = getErrorMessage(error);
+        const errorMessage = getErrorMessage(error);
+        const isNetworkError = errorMessage.includes('Internet connection lost');
 
         // For 429 errors, show specific guidance
         if (errorWithStatus.status === 429) {
@@ -377,19 +411,26 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             [uploadId]: {
               ...current,
               status: 'error',
-              error: errorMessage
+              error: errorMessage,
+              isNetworkError,
             }
           };
         });
 
-        // Auto-clear failed upload after 10 seconds
-        setTimeout(() => {
-          setUploads(prev => {
-            const newUploads = { ...prev };
-            delete newUploads[uploadId];
-            return newUploads;
-          });
-        }, 10000);
+        if (isNetworkError) {
+          // Keep file ref for retry — don't auto-clear network errors
+          // User will see retry button
+        } else {
+          // Non-network error — clean up file ref and auto-clear after 10 seconds
+          delete fileRefs.current[uploadId];
+          setTimeout(() => {
+            setUploads(prev => {
+              const newUploads = { ...prev };
+              delete newUploads[uploadId];
+              return newUploads;
+            });
+          }, 10000);
+        }
       }
     } finally {
       delete abortControllers.current[uploadId];
@@ -399,6 +440,63 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   const cancelUpload = (uploadId: string): void => {
     abortControllers.current[uploadId]?.abort();
   };
+
+  const retryUpload = (uploadId: string): void => {
+    const file = fileRefs.current[uploadId];
+    if (!file) {
+      // File lost (page refresh) — remove error entry
+      setUploads(prev => {
+        const newUploads = { ...prev };
+        delete newUploads[uploadId];
+        return newUploads;
+      });
+      return;
+    }
+
+    // Clean up the error entry and file ref
+    delete fileRefs.current[uploadId];
+    setUploads(prev => {
+      const newUploads = { ...prev };
+      delete newUploads[uploadId];
+      return newUploads;
+    });
+
+    // Re-upload — the context will detect the checkpoint and resume
+    void handleFileUpload(file);
+  };
+
+  // Notify user about interrupted uploads that can be resumed
+  useEffect(() => {
+    const checkpointPrefix = 'upload_checkpoint_';
+    const now = Date.now();
+    const maxAge = 24 * 60 * 60 * 1000;
+    let resumableCount = 0;
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(checkpointPrefix)) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const checkpoint = JSON.parse(raw) as { savedAt: number };
+            if (now - checkpoint.savedAt < maxAge) {
+              resumableCount++;
+            }
+          }
+        } catch {
+          // skip invalid entries
+        }
+      }
+    }
+
+    if (resumableCount > 0) {
+      showInfo(
+        `You have ${resumableCount} interrupted upload(s) that can be resumed. Re-select the file(s) to continue.`,
+        { duration: 8000 }
+      );
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCreateFolder = async (): Promise<void> => {
     const name = prompt('Enter folder name:');
@@ -1175,6 +1273,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             <UploadProgressComponent
               uploads={uploads}
               onCancel={cancelUpload}
+              onRetry={retryUpload}
               darkMode={darkMode}
             />
           )}

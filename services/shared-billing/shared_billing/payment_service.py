@@ -112,8 +112,9 @@ class PaymentService:
                     'razorpay_key_id': self.client.client.auth[0] if hasattr(self.client, 'client') else None
                 }
             else:
-                # Use order for one-time payments
-                receipt = f"{plan_code}_{user_id}_{billing_cycle}"
+                # Razorpay receipt max 40 chars — use short user ID suffix
+                short_uid = str(user_id).replace('-', '')[-8:]
+                receipt = f"{plan_code}_{short_uid}_{billing_cycle}"[:40]
                 order = self.client.create_order(
                     amount=amount,
                     currency=currency,

@@ -101,6 +101,8 @@ export interface UploadItem {
   error?: string;
   zkEnabled?: boolean;
   elapsedTime?: number;
+  serverUploadId?: string;
+  isNetworkError?: boolean;
 }
 
 /**
@@ -207,6 +209,7 @@ export interface QuickFiltersProps extends DarkModeProps {
 export interface UploadProgressProps extends DarkModeProps {
   uploads: Record<string, UploadItem>;
   onCancel: (id: string) => void;
+  onRetry?: (id: string) => void;
 }
 
 /**

@@ -200,6 +200,62 @@ class SubscriptionHistory(Base):
         return f"<SubscriptionHistory {self.event_type} user={self.user_id}>"
 
 
+class Invoice(Base):
+    """
+    Invoices generated for successful payments.
+
+    Each payment produces one invoice with a sequential number.
+    PDFs are generated on-demand from the stored data.
+    """
+    __tablename__ = 'invoices'
+
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+
+    # Sequential invoice number: EC-YYYYMM-XXXX
+    invoice_number = Column(String(30), unique=True, nullable=False, index=True)
+
+    # Reference
+    user_id = Column(PGUUID(as_uuid=True), nullable=False)
+    service_type = Column(String(20), nullable=False)  # 'normal' or 'zk'
+    subscription_id = Column(PGUUID(as_uuid=True), ForeignKey('user_subscriptions.id'))
+    user_email = Column(String(255))
+
+    # Plan details at time of invoice
+    plan_code = Column(String(50), nullable=False)
+    plan_name = Column(String(100), nullable=False)
+    billing_cycle = Column(String(20))  # 'monthly', 'six_months', 'yearly'
+
+    # Amount
+    amount = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String(3), default='INR', nullable=False)
+
+    # Payment gateway details
+    payment_gateway = Column(String(20))  # 'razorpay' or 'stripe'
+    razorpay_payment_id = Column(String(255))
+    razorpay_order_id = Column(String(255))
+    stripe_payment_intent_id = Column(String(255))
+
+    # Status
+    status = Column(String(20), nullable=False, default='paid')
+    # Status values: 'paid', 'failed', 'refunded'
+    paid_at = Column(DateTime(timezone=True))
+
+    # Metadata
+    extra_metadata = Column(JSONB, default={})
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index('idx_invoices_user', 'user_id', 'service_type'),
+        Index('idx_invoices_subscription', 'subscription_id'),
+        Index('idx_invoices_paid_at', 'paid_at'),
+        Index('idx_invoices_status', 'status'),
+        {'comment': 'Invoices generated for successful payments'}
+    )
+
+    def __repr__(self):
+        return f"<Invoice {self.invoice_number} user={self.user_id} amount={self.amount} {self.currency}>"
+
+
 class BillingNotification(Base):
     """
     Tracks billing notifications sent to users.

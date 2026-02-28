@@ -173,13 +173,35 @@ export interface SubscriptionHistoryEntry {
 }
 
 export interface UpcomingPayment {
-  amount: number;
+  amount_due: number;
   currency: string;
-  due_date: string;
+  payment_due_date: string;
   plan_code: string;
   plan_name: string;
   billing_cycle: BillingCycle;
+  days_until_payment: number;
   payment_gateway?: string;
+}
+
+export interface Invoice {
+  id: string;
+  invoice_number: string;
+  plan_code: string;
+  plan_name: string;
+  billing_cycle?: BillingCycle;
+  amount: number;
+  currency: string;
+  status: string;
+  payment_gateway?: string;
+  razorpay_payment_id?: string;
+  razorpay_order_id?: string;
+  paid_at?: string;
+  created_at: string;
+}
+
+export interface InvoiceListResponse {
+  invoices: Invoice[];
+  total: number;
 }
 
 export interface BillingPortalSession {
@@ -700,6 +722,66 @@ class SubscriptionService {
       return await response.json();
     } catch (error) {
       console.error('Error fetching upcoming payment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get invoices for the current user
+   */
+  async getInvoices(): Promise<InvoiceListResponse> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/billing/invoices`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) return { invoices: [], total: 0 };
+        const error = (await response.json()) as ErrorResponse;
+        throw new Error(error.detail || 'Failed to fetch invoices');
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching invoices:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Download an invoice PDF
+   */
+  async downloadInvoice(invoiceId: string): Promise<void> {
+    try {
+      const response = await fetch(
+        `${this.baseUrl}/api/v1/billing/invoices/${invoiceId}/download`,
+        {
+          method: 'GET',
+          credentials: 'include',
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to download invoice');
+      }
+
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch ? filenameMatch[1] : `invoice-${invoiceId}.pdf`;
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch (error) {
+      console.error('Error downloading invoice:', error);
       throw error;
     }
   }

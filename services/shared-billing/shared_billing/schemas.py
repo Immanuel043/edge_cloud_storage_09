@@ -89,10 +89,12 @@ class UserSubscriptionSchema(BaseModel):
     current_period_end: Optional[datetime] = None
     cancelled_at: Optional[datetime] = None
     
-    # Stripe
+    # Payment gateway
+    payment_gateway: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
     has_payment_method: bool = False
     next_payment_at: Optional[datetime] = None
+    last_payment_at: Optional[datetime] = None
 
     # Price snapshot at time of purchase
     price_snapshot: Optional[Dict[str, Any]] = None
@@ -114,9 +116,11 @@ class UserSubscriptionSchema(BaseModel):
             current_period_start=subscription.current_period_start,
             current_period_end=subscription.current_period_end,
             cancelled_at=subscription.cancelled_at,
+            payment_gateway=subscription.payment_gateway,
             stripe_subscription_id=subscription.stripe_subscription_id,
             has_payment_method=subscription.payment_method is not None,
             next_payment_at=subscription.next_payment_at,
+            last_payment_at=subscription.last_payment_at,
             price_snapshot=subscription.price_snapshot,
         )
 
@@ -146,6 +150,50 @@ class SubscriptionHistorySchema(BaseModel):
             notes=history.notes,
             created_at=history.created_at,
         )
+
+
+class InvoiceSchema(BaseModel):
+    """Schema for invoice list / detail responses."""
+    id: UUID
+    invoice_number: str
+    plan_code: str
+    plan_name: str
+    billing_cycle: Optional[str] = None
+    amount: Decimal
+    currency: str = "INR"
+    status: str
+    payment_gateway: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
+    razorpay_order_id: Optional[str] = None
+    paid_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+    @classmethod
+    def from_orm(cls, inv):
+        return cls(
+            id=inv.id,
+            invoice_number=inv.invoice_number,
+            plan_code=inv.plan_code,
+            plan_name=inv.plan_name,
+            billing_cycle=inv.billing_cycle,
+            amount=inv.amount,
+            currency=inv.currency,
+            status=inv.status,
+            payment_gateway=inv.payment_gateway,
+            razorpay_payment_id=inv.razorpay_payment_id,
+            razorpay_order_id=inv.razorpay_order_id,
+            paid_at=inv.paid_at,
+            created_at=inv.created_at,
+        )
+
+
+class InvoiceListResponse(BaseModel):
+    """Response for GET /invoices endpoint."""
+    invoices: List[InvoiceSchema]
+    total: int
 
 
 class PlanChangePreview(BaseModel):

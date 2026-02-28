@@ -700,7 +700,7 @@ export async function deleteFile(fileId: string): Promise<{ message: string }> {
  * Get trashed files for current ZK user
  */
 export async function getTrash(): Promise<{ files: FileMetadata[] }> {
-  const url = `${ZK_ENDPOINTS.FILES_LIST}?is_deleted=true&limit=1000`;
+  const url = `${ZK_ENDPOINTS.FILES_LIST}?is_deleted=true&limit=500`;
   const response = await zkFetch<{ files: FileMetadata[] }>(url);
   return response;
 }

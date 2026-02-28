@@ -101,6 +101,8 @@ export interface SubscriptionDisplay {
   storage_percent?: number;
   next_invoice_amount?: number | null;
   next_invoice_currency?: string;
+  payment_gateway?: 'razorpay' | 'stripe' | null;
+  last_payment_at?: string | null;
 }
 
 /**

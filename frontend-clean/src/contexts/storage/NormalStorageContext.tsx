@@ -8,7 +8,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../AuthContext';
 import { storageService } from '../../services/storageService';
-import { normalUploadService } from '../../services/normalUploadService';
+import { normalUploadService, type ServerUploadStatus } from '../../services/normalUploadService';
 import { normalDownloadService } from '../../services/normalDownloadService';
 import { websocketService } from '../../services/websocketService';
 import { offlineDB } from '../../utils/offlineStorage';
@@ -54,6 +54,7 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [dedupStats] = useState<DedupStats | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
 
@@ -133,6 +134,9 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       if (cachedFiles) setFiles(cachedFiles as unknown as FileItem[]);
       if (cachedFolders) setFolders(cachedFolders as unknown as FolderItem[]);
       if (cachedStats) setStorageStats(cachedStats as unknown as StorageStats);
+
+      const syncTime = await offlineDB.getLastSyncedAt();
+      if (syncTime) setLastSyncedAt(syncTime);
     } catch (error) {
       console.error('[Normal] Failed to load offline data:', error);
     }
@@ -173,6 +177,8 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
         await offlineDB.cacheFiles(filesArray);
         await offlineDB.cacheFolders(foldersArray);
         await offlineDB.cacheStats(statsData);
+        await offlineDB.saveSyncTimestamp();
+        setLastSyncedAt(new Date().toISOString());
       }
     } catch (error) {
       console.error('[Normal] Failed to load files:', error);
@@ -267,39 +273,198 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     ]);
   };
 
+  // ==================== UPLOAD CHECKPOINT HELPERS ====================
+  const CHECKPOINT_PREFIX = 'upload_checkpoint_';
+  const CHECKPOINT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+  interface UploadCheckpoint {
+    serverUploadId: string;
+    fileName: string;
+    fileSize: number;
+    fileType: string;
+    folderId: string | null;
+    strategy: string;
+    chunkSize: number;
+    totalChunks: number;
+    savedAt: number;
+  }
+
+  const getCheckpointKey = (fileName: string, fileSize: number): string =>
+    `${CHECKPOINT_PREFIX}${fileName}_${fileSize}`;
+
+  const saveCheckpoint = (data: UploadCheckpoint): void => {
+    try {
+      localStorage.setItem(getCheckpointKey(data.fileName, data.fileSize), JSON.stringify(data));
+    } catch {
+      // localStorage full or unavailable — non-critical
+    }
+  };
+
+  const loadCheckpoint = (fileName: string, fileSize: number): UploadCheckpoint | null => {
+    try {
+      const raw = localStorage.getItem(getCheckpointKey(fileName, fileSize));
+      if (!raw) return null;
+      const checkpoint = JSON.parse(raw) as UploadCheckpoint;
+      // Validate age
+      if (Date.now() - checkpoint.savedAt > CHECKPOINT_MAX_AGE_MS) {
+        localStorage.removeItem(getCheckpointKey(fileName, fileSize));
+        return null;
+      }
+      return checkpoint;
+    } catch {
+      return null;
+    }
+  };
+
+  const clearCheckpoint = (fileName: string, fileSize: number): void => {
+    try {
+      localStorage.removeItem(getCheckpointKey(fileName, fileSize));
+    } catch {
+      // non-critical
+    }
+  };
+
   // ==================== FILE UPLOAD (NORMAL) ====================
   // Delegated to normalUploadService for clean separation
 
   const uploadFile = async (
     file: File,
-    onProgress?: (progress: UploadProgress) => void
-  ): Promise<{ success: boolean; fileId?: string; encrypted?: boolean }> => {
+    onProgress?: (progress: UploadProgress) => void,
+    signal?: AbortSignal
+  ): Promise<{ success: boolean; fileId?: string; encrypted?: boolean; serverUploadId?: string }> => {
     if (!token) {
       throw new Error('No authentication token available');
     }
 
-    console.log('[Normal] Starting upload via normalUploadService:', file.name);
+    const progressCallback = (progressData: { progress: number; bytesUploaded: number; totalBytes: number; chunksUploaded: number; totalChunks: number }) => {
+      if (onProgress) {
+        onProgress({
+          progress: progressData.progress,
+          bytesUploaded: progressData.bytesUploaded,
+          totalBytes: progressData.totalBytes,
+          chunksUploaded: progressData.chunksUploaded,
+          totalChunks: progressData.totalChunks,
+          status: 'uploading' as const,
+        });
+      }
+    };
+
+    // Check for existing checkpoint (resume path)
+    const checkpoint = loadCheckpoint(file.name, file.size);
+    if (checkpoint) {
+      console.log('[Normal] Found checkpoint for', file.name, '— checking server session...');
+      const serverStatus: ServerUploadStatus | null = await normalUploadService.getServerUploadStatus(checkpoint.serverUploadId);
+
+      if (serverStatus && serverStatus.missing_chunks.length < serverStatus.total_chunks) {
+        // Server session alive with some chunks uploaded — resume
+        console.log('[Normal] Resuming upload:', checkpoint.serverUploadId,
+          `${serverStatus.uploaded_chunks.length}/${serverStatus.total_chunks} chunks done`);
+
+        try {
+          const result = await normalUploadService.resumeUpload(file, checkpoint.serverUploadId, serverStatus, {
+            folderId: currentFolder,
+            ...(signal ? { signal } : {}),
+            onProgress: progressCallback,
+            onChunkComplete: (_chunkIndex, uploadedCount, totalChunks) => {
+              // Update checkpoint timestamp on each chunk
+              saveCheckpoint({ ...checkpoint, savedAt: Date.now() });
+              if (onProgress) {
+                onProgress({
+                  progress: (uploadedCount / totalChunks) * 100,
+                  bytesUploaded: uploadedCount * serverStatus.chunk_size,
+                  totalBytes: file.size,
+                  chunksUploaded: uploadedCount,
+                  totalChunks,
+                  status: 'uploading' as const,
+                });
+              }
+            },
+            onError: (error) => {
+              console.error('[Normal] Resume error:', error);
+            },
+          });
+
+          // Success — clear checkpoint
+          clearCheckpoint(file.name, file.size);
+
+          // Send WebSocket notification
+          if (websocketService.isConnected) {
+            websocketService.send({
+              type: 'file_uploaded',
+              file_id: result.file_id,
+              file_name: file.name,
+              folder_id: currentFolder,
+            });
+          }
+
+          requestCache.invalidate(/^files-/);
+          requestCache.invalidate(/^folders-/);
+          await loadFiles();
+          await loadDedupStats();
+          await loadStorageStats();
+
+          return { success: true, fileId: result.file_id, encrypted: false, serverUploadId: checkpoint.serverUploadId };
+        } catch (error) {
+          const isNetwork = error instanceof Error && error.message.includes('Internet connection lost');
+          if (isNetwork) {
+            // Re-save checkpoint with fresh timestamp and rethrow
+            saveCheckpoint({ ...checkpoint, savedAt: Date.now() });
+            throw error;
+          }
+          // Other error during resume — clear checkpoint and fall through to fresh upload
+          console.warn('[Normal] Resume failed, starting fresh upload:', error);
+          clearCheckpoint(file.name, file.size);
+        }
+      } else {
+        // Server session expired or no chunks uploaded — clear stale checkpoint
+        console.log('[Normal] Checkpoint expired or no progress, clearing');
+        clearCheckpoint(file.name, file.size);
+      }
+    }
+
+    // Fresh upload path
+    console.log('[Normal] Starting fresh upload via normalUploadService:', file.name);
+
+    let capturedServerUploadId: string | undefined;
 
     try {
-      // Use the dedicated normal upload service
       const result = await normalUploadService.uploadFile(file, {
         folderId: currentFolder,
-        onProgress: (progressData) => {
-          if (onProgress) {
-            onProgress({
-              progress: progressData.progress,
-              bytesUploaded: progressData.bytesUploaded,
-              totalBytes: progressData.totalBytes,
-              chunksUploaded: progressData.chunksUploaded,
-              totalChunks: progressData.totalChunks,
-              status: 'uploading' as const,
+        ...(signal ? { signal } : {}),
+        onProgress: progressCallback,
+        onSessionCreated: (uploadId, chunkSize, totalChunks, strategy) => {
+          capturedServerUploadId = uploadId;
+          // Save initial checkpoint
+          if (strategy === 'chunked') {
+            saveCheckpoint({
+              serverUploadId: uploadId,
+              fileName: file.name,
+              fileSize: file.size,
+              fileType: file.type,
+              folderId: currentFolder,
+              strategy,
+              chunkSize,
+              totalChunks,
+              savedAt: Date.now(),
             });
+          }
+        },
+        onChunkComplete: (_chunkIndex, _uploadedCount, _totalChunks) => {
+          // Update checkpoint timestamp on each chunk
+          if (capturedServerUploadId) {
+            const existing = loadCheckpoint(file.name, file.size);
+            if (existing) {
+              saveCheckpoint({ ...existing, savedAt: Date.now() });
+            }
           }
         },
         onError: (error) => {
           console.error('[Normal] Upload error:', error);
         },
       });
+
+      // Success — clear checkpoint
+      clearCheckpoint(file.name, file.size);
 
       // Send WebSocket notification
       if (websocketService.isConnected) {
@@ -318,9 +483,15 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       await loadDedupStats();
       await loadStorageStats();
 
-      return { success: true, fileId: result.file_id, encrypted: false };
+      const uploadResult: { success: boolean; fileId: string; encrypted: boolean; serverUploadId?: string } = { success: true, fileId: result.file_id, encrypted: false };
+      if (capturedServerUploadId) {
+        uploadResult.serverUploadId = capturedServerUploadId;
+      }
+      return uploadResult;
     } catch (error) {
       console.error('[Normal] Upload failed:', error);
+      // Checkpoint was already saved by onSessionCreated + onChunkComplete during upload
+      // Don't clear it — it enables resume on retry
       throw error;
     }
   };
@@ -595,6 +766,7 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     selectedFiles,
     lastClickedIndex,
     isOnline,
+    lastSyncedAt,
 
     // File operations
     uploadFile,

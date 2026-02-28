@@ -20,7 +20,7 @@ class OfflineDB {
 
   constructor() {
     this.dbName = 'EdgeCloudOffline';
-    this.version = 1;
+    this.version = 2;
     this.db = null;
     this.init();
   }
@@ -49,6 +49,10 @@ class OfflineDB {
         if (!db.objectStoreNames.contains('stats')) {
           db.createObjectStore('stats', { keyPath: 'id' });
         }
+
+        if (!db.objectStoreNames.contains('syncMeta')) {
+          db.createObjectStore('syncMeta', { keyPath: 'id' });
+        }
       };
     });
   }
@@ -58,6 +62,9 @@ class OfflineDB {
 
     const transaction = this.db!.transaction(['files'], 'readwrite');
     const store = transaction.objectStore('files');
+
+    // Clear stale records so deleted files don't persist in cache
+    store.clear();
 
     // Filter out files without valid IDs (required for IndexedDB keyPath)
     const validFiles = files.filter(file => file && file.id != null);
@@ -87,6 +94,9 @@ class OfflineDB {
 
     const transaction = this.db!.transaction(['folders'], 'readwrite');
     const store = transaction.objectStore('folders');
+
+    // Clear stale records so deleted folders don't persist in cache
+    store.clear();
 
     folders.forEach(folder => store.put(folder));
 
@@ -132,6 +142,35 @@ class OfflineDB {
     return new Promise((resolve, reject) => {
       const request = store.get('current');
       request.onsuccess = () => resolve(request.result as StatsData | undefined);
+      request.onerror = () => reject(request.error);
+    });
+  }
+  async saveSyncTimestamp(): Promise<void> {
+    if (!this.db) await this.init();
+
+    const transaction = this.db!.transaction(['syncMeta'], 'readwrite');
+    const store = transaction.objectStore('syncMeta');
+
+    store.put({ id: 'lastSync', lastSyncedAt: new Date().toISOString() });
+
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
+
+  async getLastSyncedAt(): Promise<string | null> {
+    if (!this.db) await this.init();
+
+    const transaction = this.db!.transaction(['syncMeta'], 'readonly');
+    const store = transaction.objectStore('syncMeta');
+
+    return new Promise((resolve, reject) => {
+      const request = store.get('lastSync');
+      request.onsuccess = () => {
+        const result = request.result as { id: string; lastSyncedAt: string } | undefined;
+        resolve(result?.lastSyncedAt ?? null);
+      };
       request.onerror = () => reject(request.error);
     });
   }

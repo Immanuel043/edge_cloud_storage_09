@@ -1,19 +1,28 @@
 import React from 'react';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
+import { useStorage } from '../../contexts/StorageContext';
 
-/**
- * OfflineBanner Component
- *
- * Shows a fixed banner at the top of the screen when the user loses internet connection.
- * Automatically hides when connection is restored.
- *
- * Features:
- * - Uses useOnlineStatus hook for real-time network status
- * - Fixed positioning with high z-index
- * - Non-intrusive design
- */
+function formatTimeAgo(isoString: string): string {
+  const now = Date.now();
+  const then = new Date(isoString).getTime();
+  const diffMs = now - then;
+
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return 'just now';
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
 const OfflineBanner: React.FC = () => {
   const isOnline = useOnlineStatus();
+  const { lastSyncedAt } = useStorage();
 
   if (isOnline) return null;
 
@@ -35,7 +44,9 @@ const OfflineBanner: React.FC = () => {
       }}
     >
       <span style={{ marginRight: '0.5rem' }}>⚠️</span>
-      No internet connection. Some features may be unavailable.
+      {lastSyncedAt
+        ? `You're offline. Showing cached data from ${formatTimeAgo(lastSyncedAt)}.`
+        : 'No internet connection. Some features may be unavailable.'}
     </div>
   );
 };

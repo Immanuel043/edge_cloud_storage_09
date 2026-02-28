@@ -354,6 +354,14 @@ services:
       MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-noreply@yourdomain.com}
       MAILGUN_FROM_NAME: ${MAILGUN_FROM_NAME:-Edge Cloud Storage}
 
+      # Company / Invoice Branding
+      COMPANY_NAME: ${COMPANY_NAME:-Edge Cloud Storage}
+      COMPANY_ADDRESS: ${COMPANY_ADDRESS:-}
+      COMPANY_EMAIL: ${COMPANY_EMAIL:-}
+      COMPANY_PHONE: ${COMPANY_PHONE:-}
+      COMPANY_GST: ${COMPANY_GST:-}
+      COMPANY_LOGO_URL: ${COMPANY_LOGO_URL:-}
+
       # Video Transcoding Configuration
       ENABLE_SMART_TRANSCODE: "true"
       ENABLE_REMUX_OPTIMIZATION: "true"     # Fast copy for H.264+AAC in MOV containers (2-5s vs 8-12min)
@@ -466,6 +474,14 @@ services:
       MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
       MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-noreply@yourdomain.com}
       MAILGUN_FROM_NAME: ${MAILGUN_FROM_NAME:-Edge Cloud ZK Storage}
+
+      # Company / Invoice Branding
+      COMPANY_NAME: ${COMPANY_NAME:-Edge Cloud ZK Storage}
+      COMPANY_ADDRESS: ${COMPANY_ADDRESS:-}
+      COMPANY_EMAIL: ${COMPANY_EMAIL:-}
+      COMPANY_PHONE: ${COMPANY_PHONE:-}
+      COMPANY_GST: ${COMPANY_GST:-}
+      COMPANY_LOGO_URL: ${COMPANY_LOGO_URL:-}
 
       # Cookie security (false for HTTP development, true for HTTPS production)
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

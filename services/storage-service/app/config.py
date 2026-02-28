@@ -85,6 +85,14 @@ class Settings:
     DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"
     DEV_MODE_CONFIRMATION_KEY: str = os.getenv("DEV_MODE_CONFIRMATION_KEY", "")
 
+    # Company / Invoice Branding
+    COMPANY_NAME: str = os.getenv("COMPANY_NAME", "Edge Cloud Storage")
+    COMPANY_ADDRESS: str = os.getenv("COMPANY_ADDRESS", "")
+    COMPANY_EMAIL: str = os.getenv("COMPANY_EMAIL", "")
+    COMPANY_PHONE: str = os.getenv("COMPANY_PHONE", "")
+    COMPANY_GST: str = os.getenv("COMPANY_GST", "")
+    COMPANY_LOGO_URL: str = os.getenv("COMPANY_LOGO_URL", "")
+
     # Email Configuration (Mailgun API)
     MAILGUN_ENABLED: bool = os.getenv("MAILGUN_ENABLED", "true").lower() == "true"
     MAILGUN_API_KEY: str = os.getenv("MAILGUN_API_KEY", "")

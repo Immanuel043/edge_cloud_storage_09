@@ -322,7 +322,8 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
 
   const uploadFile = async (
     file: File,
-    onProgress?: (progress: UploadProgress) => void
+    onProgress?: (progress: UploadProgress) => void,
+    _signal?: AbortSignal
   ): Promise<{ success: boolean; fileId?: string; encrypted?: boolean }> => {
     console.log('[ZK] Starting ZK encrypted upload via zkUploadService:', file.name);
 
@@ -707,6 +708,7 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
     selectedFiles,
     lastClickedIndex,
     isOnline,
+    lastSyncedAt: null,
 
     // File operations
     uploadFile,

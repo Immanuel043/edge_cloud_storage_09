@@ -7,7 +7,7 @@ and ZK Encryption services.
 
 __version__ = "1.0.0"
 
-from .models import SubscriptionPlan, UserSubscription, SubscriptionHistory
+from .models import SubscriptionPlan, UserSubscription, SubscriptionHistory, Invoice
 from .service import BillingService
 from .payment_service import PaymentService
 from .razorpay_service import RazorpayService
@@ -26,6 +26,7 @@ __all__ = [
     "SubscriptionPlan",
     "UserSubscription",
     "SubscriptionHistory",
+    "Invoice",
     "BillingService",
     "PaymentService",
     "RazorpayService",

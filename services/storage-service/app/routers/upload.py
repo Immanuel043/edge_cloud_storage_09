@@ -752,6 +752,7 @@ async def get_upload_status(
             "strategy": storage_strategy,
             "file_name": session["name"],
             "file_size": session["size"],
+            "chunk_size": CHUNK_SIZE,
             "total_chunks": total_chunks,
             "uploaded_chunks": sorted(list(uploaded_chunks)),
             "missing_chunks": missing_chunks,
@@ -766,9 +767,80 @@ async def get_upload_status(
             "strategy": storage_strategy,
             "file_name": session["name"],
             "file_size": session["size"],
+            "chunk_size": 0,
+            "total_chunks": total_chunks if storage_strategy == "chunked" else 0,
+            "uploaded_chunks": [],
+            "missing_chunks": [],
             "progress": 100 if session.get("hash") else 0,
             "started_at": session.get("start"),
         }
+
+
+@router.delete("/cancel/{upload_id}")
+async def cancel_upload(
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Cancel an in-progress upload and clean up server-side resources.
+
+    - Deletes chunk files from disk
+    - Releases reserved quota
+    - Removes upload session from Redis and DB
+    """
+    redis_client = await get_redis()
+
+    session = await get_upload_session(redis_client, db, upload_id)
+    if not session:
+        # Already cleaned up or never existed — treat as success
+        return {"status": "cancelled", "chunks_deleted": 0, "bytes_freed": 0}
+
+    # Verify ownership
+    if session["user"] != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    chunks_deleted = 0
+    bytes_freed = session.get("size", 0)
+
+    # Delete chunk files from disk
+    for chunk_path in session.get("chunk_paths", []):
+        try:
+            if os.path.exists(chunk_path):
+                os.remove(chunk_path)
+                chunks_deleted += 1
+        except OSError as e:
+            logger.warning(f"Failed to delete chunk {chunk_path}: {e}")
+
+    # Delete single/inline storage file
+    storage_path = session.get("storage_path")
+    if storage_path:
+        try:
+            if os.path.exists(storage_path):
+                os.remove(storage_path)
+                chunks_deleted += 1
+        except OSError as e:
+            logger.warning(f"Failed to delete storage file {storage_path}: {e}")
+
+    # Release reserved quota
+    try:
+        await redis_client.decrby(f"quota_reserved:{current_user.id}", session.get("size", 0))
+    except Exception as e:
+        logger.warning(f"Failed to release quota for upload {upload_id}: {e}")
+
+    # Delete session
+    await delete_upload_session(redis_client, db, upload_id)
+
+    # Decrement active uploads metric
+    active_uploads.dec()
+
+    logger.info(f"Upload cancelled: {upload_id}, {chunks_deleted} chunks deleted, {bytes_freed} bytes freed")
+
+    return {
+        "status": "cancelled",
+        "chunks_deleted": chunks_deleted,
+        "bytes_freed": bytes_freed,
+    }
 
 
 @router.post("/resume/{upload_id}")
@@ -1433,6 +1505,8 @@ async def get_upload_status(
     return UploadStatusResponse(
         upload_id=upload_id,
         file_name=session["name"],
+        file_size=session.get("size"),
+        chunk_size=CHUNK_SIZE if session["strategy"] == "chunked" else 0,
         total_chunks=session["chunks"],
         uploaded_chunks=session["done"],
         missing_chunks=list(missing_chunks),

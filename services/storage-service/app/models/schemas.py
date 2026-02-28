@@ -283,6 +283,8 @@ class UploadInitResponse(BaseModel):
 class UploadStatusResponse(BaseModel):
     upload_id: str
     file_name: str
+    file_size: Optional[int] = None
+    chunk_size: Optional[int] = None
     total_chunks: int
     uploaded_chunks: List[int]
     missing_chunks: List[int]

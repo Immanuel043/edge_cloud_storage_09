@@ -33,7 +33,7 @@ from shared_billing import (
     QuotaExceededError,
     PaymentService,
 )
-from shared_billing.models import SubscriptionHistory
+from shared_billing.models import SubscriptionHistory, Invoice
 from shared_billing.schemas import (
     SubscriptionPlanSchema,
     UserSubscriptionSchema,
@@ -42,7 +42,10 @@ from shared_billing.schemas import (
     AvailablePlansResponse,
     SubscriptionResponse,
     SubscriptionHistoryResponse,
+    InvoiceSchema,
+    InvoiceListResponse,
 )
+from shared_billing.invoice_service import InvoiceService, CompanyConfig
 
 from ..dependencies import get_db, get_current_user, require_admin
 from ..models.database import User
@@ -166,6 +169,149 @@ async def apply_rate_limit(request: Request, rate_config: dict, endpoint_name: s
             rate_limit_config=rate_config,
             endpoint_name=endpoint_name
         )
+
+
+async def _activate_subscription_after_payment(
+    db: AsyncSession,
+    subscription: "UserSubscription",
+    user: "User",
+    payment_id: str,
+    billing: "BillingService",
+    source: str = "verify-payment",
+) -> None:
+    """
+    Activate and upgrade subscription after successful payment.
+
+    Reads target plan from extra_metadata (stored during create-payment),
+    upgrades plan_id, sets billing period dates, syncs user quotas, and
+    records a subscription_history entry.
+    """
+    from datetime import datetime as dt, timezone as tz
+    from dateutil.relativedelta import relativedelta
+
+    metadata = subscription.extra_metadata or {}
+    target_plan_code = metadata.get('target_plan_code')
+    target_billing_cycle = metadata.get('target_billing_cycle')
+
+    now = dt.now(tz.utc)
+    old_plan = subscription.plan
+
+    if target_plan_code:
+        try:
+            new_plan = await billing.get_plan_by_code(target_plan_code)
+        except PlanNotFoundError:
+            logger.error(f"Target plan {target_plan_code} not found during activation")
+            new_plan = None
+
+        if new_plan and new_plan.id != subscription.plan_id:
+            subscription.plan_id = new_plan.id
+
+            # Capture price snapshot at purchase time
+            subscription.price_snapshot = {
+                'price_monthly': float(new_plan.price_monthly) if new_plan.price_monthly else None,
+                'price_six_months': float(new_plan.price_six_months) if new_plan.price_six_months else None,
+                'price_yearly': float(new_plan.price_yearly) if new_plan.price_yearly else None,
+                'currency': new_plan.currency or 'INR',
+                'captured_at': now.isoformat(),
+            }
+
+            # Record upgrade in history
+            history = SubscriptionHistory(
+                user_id=subscription.user_id,
+                service_type=subscription.service_type,
+                subscription_id=subscription.id,
+                event_type='upgraded',
+                from_plan_id=old_plan.id if old_plan else None,
+                to_plan_id=new_plan.id,
+                reason=f'payment_verified ({source})',
+            )
+            db.add(history)
+            logger.info(
+                f"Upgraded subscription {subscription.id}: "
+                f"{old_plan.plan_code if old_plan else '?'} -> {new_plan.plan_code}"
+            )
+
+    # Set billing cycle and period dates
+    if target_billing_cycle:
+        subscription.billing_cycle = target_billing_cycle
+    subscription.current_period_start = now
+    if subscription.billing_cycle == 'monthly':
+        subscription.current_period_end = now + relativedelta(months=1)
+    elif subscription.billing_cycle == 'six_months':
+        subscription.current_period_end = now + relativedelta(months=6)
+    elif subscription.billing_cycle == 'yearly':
+        subscription.current_period_end = now + relativedelta(years=1)
+    subscription.next_payment_at = subscription.current_period_end
+
+    # Activate
+    subscription.status = 'active'
+    subscription.last_payment_at = now
+    if subscription.payment_gateway == 'razorpay':
+        subscription.razorpay_payment_id = payment_id
+
+    await db.commit()
+
+    # Reload plan relationship for sync_user_plan_limits
+    refreshed = await db.execute(
+        select(UserSubscription)
+        .options(selectinload(UserSubscription.plan))
+        .filter(UserSubscription.id == subscription.id)
+    )
+    refreshed_sub = refreshed.scalar_one()
+    subscription.plan = refreshed_sub.plan
+
+    if user is not None:
+        sync_user_plan_limits(user, subscription.plan)
+        await db.commit()
+
+    # Generate invoice (best-effort — never blocks payment flow)
+    try:
+        active_plan = subscription.plan
+        amount = metadata.get('target_plan_price')
+        if amount is None:
+            price_map = {
+                'monthly': active_plan.price_monthly,
+                'six_months': active_plan.price_six_months,
+                'yearly': active_plan.price_yearly,
+            }
+            amount = price_map.get(subscription.billing_cycle) or active_plan.price_monthly or 0
+
+        from decimal import Decimal
+        inv_svc = InvoiceService(db, service_type=subscription.service_type)
+        invoice = await inv_svc.create_invoice(
+            user_id=subscription.user_id,
+            user_email=user.email if user else "",
+            subscription_id=subscription.id,
+            plan_code=active_plan.plan_code,
+            plan_name=active_plan.display_name,
+            billing_cycle=subscription.billing_cycle or "",
+            amount=Decimal(str(amount)),
+            currency=active_plan.currency or "INR",
+            payment_gateway=subscription.payment_gateway or "",
+            razorpay_payment_id=subscription.razorpay_payment_id,
+            razorpay_order_id=subscription.razorpay_order_id,
+            paid_at=now,
+        )
+        await db.commit()
+
+        # Email the invoice (fire-and-forget)
+        try:
+            from ..services.email_service import email_service
+            company = _get_company_config()
+            pdf_bytes = inv_svc.generate_pdf(invoice, company)
+            await email_service.send_invoice_email(
+                to_email=user.email if user else "",
+                invoice_number=invoice.invoice_number,
+                plan_name=active_plan.display_name,
+                amount=str(amount),
+                currency=active_plan.currency or "INR",
+                pdf_bytes=pdf_bytes,
+            )
+        except Exception as email_err:
+            logger.warning(f"Invoice email failed (non-critical): {email_err}")
+
+    except Exception as inv_err:
+        logger.warning(f"Invoice generation failed (non-critical): {inv_err}")
 
 
 # ===== Plan Catalog Endpoints =====
@@ -521,7 +667,6 @@ async def get_upcoming_payment(
     Get upcoming payment information for dashboard banner.
 
     Returns payment due date, amount, and days until payment.
-    Only returns data if payment is within 7 days.
     Returns 404 if no upcoming payment or user is on free plan.
     """
     from datetime import datetime, timezone
@@ -539,25 +684,15 @@ async def get_upcoming_payment(
             detail="No active subscription found"
         )
 
-    # Check if user is on free plan (no payment required)
     if not subscription.next_payment_at or subscription.billing_cycle is None:
         raise HTTPException(
             status_code=404,
             detail="No upcoming payment - free plan"
         )
 
-    # Calculate days until payment
     now = datetime.now(timezone.utc)
     days_until = (subscription.next_payment_at - now).days
 
-    # Only return if within 7 days
-    if days_until > 7:
-        raise HTTPException(
-            status_code=404,
-            detail="No payment due within 7 days"
-        )
-
-    # Get amount for current billing cycle
     plan = subscription.plan
     if subscription.billing_cycle == 'monthly':
         amount = float(plan.price_monthly) if plan.price_monthly else 0
@@ -575,7 +710,7 @@ async def get_upcoming_payment(
         billing_cycle=subscription.billing_cycle,
         payment_due_date=subscription.next_payment_at.isoformat(),
         amount_due=amount,
-        currency="INR",
+        currency=plan.currency or "INR",
         days_until_payment=days_until,
         status=subscription.status
     )
@@ -838,13 +973,19 @@ async def create_payment(
             plan_id=plan_id
         )
         
-        # Store pending subscription
-        # Create subscription with pending_payment status
+        # Store pending subscription with target plan info for upgrade after payment
+        pending_metadata = {
+            'target_plan_code': payment_request.plan_code,
+            'target_plan_id': str(plan.id),
+            'target_billing_cycle': payment_request.billing_cycle,
+            'target_plan_price': float(plan_price),
+            'target_plan_currency': plan.currency or 'INR',
+        }
         try:
             current_subscription = await billing.get_user_subscription(current_user.id)
-            # Update existing subscription
             current_subscription.status = 'pending_payment'
             current_subscription.payment_gateway = payment_request.payment_gateway
+            current_subscription.extra_metadata = pending_metadata
             if payment_request.payment_gateway == 'razorpay':
                 current_subscription.razorpay_order_id = payment_result.get('order_id')
                 current_subscription.razorpay_subscription_id = payment_result.get('subscription_id')
@@ -853,7 +994,6 @@ async def create_payment(
                 current_subscription.stripe_subscription_id = payment_result.get('subscription_id')
             await db.commit()
         except SubscriptionNotFoundError:
-            # Create new pending subscription
             from shared_billing.models import UserSubscription as UserSubscriptionModel
             pending_subscription = UserSubscriptionModel(
                 user_id=current_user.id,
@@ -861,7 +1001,8 @@ async def create_payment(
                 plan_id=plan.id,
                 status='pending_payment',
                 billing_cycle=payment_request.billing_cycle,
-                payment_gateway=payment_request.payment_gateway
+                payment_gateway=payment_request.payment_gateway,
+                extra_metadata=pending_metadata,
             )
             if payment_request.payment_gateway == 'razorpay':
                 pending_subscription.razorpay_order_id = payment_result.get('order_id')
@@ -954,20 +1095,22 @@ async def verify_payment(
         if not is_verified:
             raise HTTPException(400, "Payment verification failed")
 
-        # Update subscription status
-        subscription.status = 'active'
-        subscription.razorpay_payment_id = verify_request.payment_id if subscription.payment_gateway == 'razorpay' else None
-        await db.commit()
-        
-        # Update user quota and plan limits
-        sync_user_plan_limits(current_user, subscription.plan)
-        await db.commit()
+        # Upgrade to the target plan stored during create-payment
+        await _activate_subscription_after_payment(
+            db=db,
+            subscription=subscription,
+            user=current_user,
+            payment_id=verify_request.payment_id,
+            billing=billing,
+        )
 
         return {
             "success": True,
             "verified": True,
             "subscription": UserSubscriptionSchema.from_orm(subscription)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Payment verification failed: {e}")
         raise HTTPException(400, f"Payment verification failed: {str(e)}")
@@ -983,40 +1126,39 @@ async def razorpay_webhook(
     
     Processes payment events and updates subscription status.
     """
-    # Get webhook signature
+    import json as _json
+
     signature = request.headers.get("X-Razorpay-Signature")
-    if not signature:
-        raise HTTPException(400, "Missing webhook signature")
-    
-    # Get payload
     payload = await request.body()
     payload_str = payload.decode('utf-8')
-    
-    # Initialize payment service
-    try:
-        payment_service = PaymentService(
-            gateway='razorpay',
-            razorpay_key_id=settings.RAZORPAY_KEY_ID,
-            razorpay_key_secret=settings.RAZORPAY_KEY_SECRET,
-            razorpay_webhook_secret=settings.RAZORPAY_WEBHOOK_SECRET,
-            stripe_secret_key="",
-            stripe_webhook_secret="",
-            stripe_publishable_key=""
-        )
-    except ValueError as e:
-        raise HTTPException(400, f"Payment gateway configuration error: {str(e)}")
-    
-    # Verify webhook
-    try:
-        event = payment_service.verify_webhook(payload, signature)
-    except ValueError as e:
-        logger.error(f"Invalid Razorpay webhook signature: {e}")
-        raise HTTPException(400, "Invalid webhook signature")
-    
-    # Process webhook event
+
+    # Verify webhook signature (skip if secret not configured AND using test keys)
+    is_test_mode = settings.RAZORPAY_KEY_ID.startswith('rzp_test_')
+    if settings.RAZORPAY_WEBHOOK_SECRET:
+        try:
+            payment_service = PaymentService(
+                gateway='razorpay',
+                razorpay_key_id=settings.RAZORPAY_KEY_ID,
+                razorpay_key_secret=settings.RAZORPAY_KEY_SECRET,
+                razorpay_webhook_secret=settings.RAZORPAY_WEBHOOK_SECRET,
+                stripe_secret_key="",
+                stripe_webhook_secret="",
+                stripe_publishable_key=""
+            )
+            event = payment_service.verify_webhook(payload, signature)
+        except (ValueError, Exception) as e:
+            logger.error(f"Invalid Razorpay webhook signature: {e}")
+            raise HTTPException(400, "Invalid webhook signature")
+    elif is_test_mode:
+        logger.warning("RAZORPAY_WEBHOOK_SECRET not set — skipping signature check (TEST MODE ONLY)")
+        event = _json.loads(payload_str)
+    else:
+        logger.error("RAZORPAY_WEBHOOK_SECRET not configured for production")
+        raise HTTPException(400, "Webhook secret not configured")
+
     event_type = event.get('event')
 
-    # Deduplicate webhook events using Redis
+    # Deduplicate
     event_id = event.get('event_id') or event.get('id')
     if event_id:
         from ..database import redis_client
@@ -1024,7 +1166,6 @@ async def razorpay_webhook(
             dedup_key = f"webhook:razorpay:{event_id}"
             already_processed = await redis_client.set(dedup_key, "1", ex=86400, nx=True)
             if not already_processed:
-                # NX returned None = key already existed = duplicate event
                 logger.info(f"Skipping duplicate Razorpay webhook event: {event_id}")
                 return {"status": "ok", "duplicate": True}
 
@@ -1033,28 +1174,31 @@ async def razorpay_webhook(
         payment_id = payment_data.get('id')
         order_id = payment_data.get('order_id')
 
-        # Find subscription by order_id
         result = await db.execute(
-            select(UserSubscription).filter(
-                UserSubscription.razorpay_order_id == order_id
-            )
+            select(UserSubscription)
+            .options(selectinload(UserSubscription.plan))
+            .filter(UserSubscription.razorpay_order_id == order_id)
         )
         subscription = result.scalar_one_or_none()
 
         if subscription:
-            subscription.status = 'active'
-            subscription.razorpay_payment_id = payment_id
-            subscription.last_payment_at = func.now()
+            if subscription.status == 'active' and subscription.razorpay_payment_id == payment_id:
+                logger.info(f"Subscription {subscription.id} already activated for payment {payment_id}")
+            else:
+                billing = BillingService(db, service_type=subscription.service_type)
+                # Lookup the user to sync quota limits
+                user_result = await db.execute(select(User).filter(User.id == subscription.user_id))
+                user_obj = user_result.scalar_one_or_none()
 
-            # Update user quota
-            await db.execute(
-                select(UserSubscription).options(
-                    selectinload(UserSubscription.plan)
-                ).filter(UserSubscription.id == subscription.id)
-            )
-
-            await db.commit()
-            logger.info(f"Razorpay payment captured for subscription {subscription.id}")
+                await _activate_subscription_after_payment(
+                    db=db,
+                    subscription=subscription,
+                    user=user_obj,
+                    payment_id=payment_id,
+                    billing=billing,
+                    source="webhook:payment.captured",
+                )
+                logger.info(f"Razorpay payment captured — subscription {subscription.id} activated")
 
     elif event_type == 'payment.failed':
         payment_data = event.get('payload', {}).get('payment', {}).get('entity', {})
@@ -1565,3 +1709,66 @@ async def admin_update_plan_prices(
         "price_updated_at": now.isoformat(),
         "note": "Existing subscribers are unaffected (price snapshots preserved)"
     }
+
+
+# ── Invoice Endpoints ─────────────────────────────────────────────────────────
+
+def _get_company_config() -> CompanyConfig:
+    return CompanyConfig(
+        name=settings.COMPANY_NAME,
+        address=settings.COMPANY_ADDRESS,
+        email=settings.COMPANY_EMAIL or settings.MAILGUN_FROM_EMAIL,
+        phone=settings.COMPANY_PHONE,
+        gst=settings.COMPANY_GST,
+        logo_url=settings.COMPANY_LOGO_URL,
+    )
+
+
+@router.get("/invoices", response_model=InvoiceListResponse)
+async def list_invoices(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List invoices for the current user."""
+    svc = InvoiceService(db, service_type="normal")
+    invoices = await svc.get_user_invoices(current_user.id, limit=limit, offset=offset)
+
+    result = await db.execute(
+        select(func.count())
+        .select_from(Invoice)
+        .where(Invoice.user_id == current_user.id,
+               Invoice.service_type == "normal")
+    )
+    total = result.scalar() or 0
+
+    return InvoiceListResponse(
+        invoices=[InvoiceSchema.from_orm(inv) for inv in invoices],
+        total=total,
+    )
+
+
+@router.get("/invoices/{invoice_id}/download")
+async def download_invoice(
+    invoice_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download a PDF invoice."""
+    from fastapi.responses import StreamingResponse
+    import io
+
+    svc = InvoiceService(db, service_type="normal")
+    invoice = await svc.get_invoice_by_id(invoice_id, current_user.id)
+    if not invoice:
+        raise HTTPException(404, "Invoice not found")
+
+    pdf_bytes = svc.generate_pdf(invoice, _get_company_config())
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{invoice.invoice_number}.pdf"'
+        },
+    )

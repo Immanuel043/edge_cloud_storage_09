@@ -26,11 +26,12 @@ import {
   AlertTriangle,
   Ban,
   Zap,
+  Download,
 } from 'lucide-react';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useAuth } from '../../contexts/AuthContext';
 import subscriptionService from '../../services/subscriptionService';
-import type { UpcomingPayment, SubscriptionHistoryEntry } from '../../services/subscriptionService';
+import type { UpcomingPayment, SubscriptionHistoryEntry, Invoice } from '../../services/subscriptionService';
 import {
   isSubscriptionDisplay,
 } from '../../types/subscription-components.types';
@@ -51,8 +52,10 @@ export default function PaymentPortal({ onBack, darkMode = false }: PaymentPorta
   const [activeTab, setActiveTab] = useState<PortalTab>('overview');
   const [upcomingPayment, setUpcomingPayment] = useState<UpcomingPayment | null>(null);
   const [history, setHistory] = useState<SubscriptionHistoryEntry[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loadingPayment, setLoadingPayment] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [loadingInvoices, setLoadingInvoices] = useState(true);
   const [portalLoading, setPortalLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -89,16 +92,29 @@ export default function PaymentPortal({ onBack, darkMode = false }: PaymentPorta
     }
   }, []);
 
+  const fetchInvoices = useCallback(async () => {
+    try {
+      setLoadingInvoices(true);
+      const data = await subscriptionService.getInvoices();
+      setInvoices(data.invoices ?? []);
+    } catch {
+      setInvoices([]);
+    } finally {
+      setLoadingInvoices(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchUpcomingPayment();
     fetchHistory();
-  }, [fetchUpcomingPayment, fetchHistory]);
+    fetchInvoices();
+  }, [fetchUpcomingPayment, fetchHistory, fetchInvoices]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([refresh(), fetchUpcomingPayment(), fetchHistory()]);
+    await Promise.all([refresh(), fetchUpcomingPayment(), fetchHistory(), fetchInvoices()]);
     setRefreshing(false);
-  }, [refresh, fetchUpcomingPayment, fetchHistory]);
+  }, [refresh, fetchUpcomingPayment, fetchHistory, fetchInvoices]);
 
   const handleOpenStripePortal = useCallback(async () => {
     try {
@@ -235,8 +251,8 @@ export default function PaymentPortal({ onBack, darkMode = false }: PaymentPorta
         )}
         {activeTab === 'invoices' && (
           <InvoicesTab
-            history={history}
-            loading={loadingHistory}
+            invoices={invoices}
+            loading={loadingInvoices}
             darkMode={darkMode}
           />
         )}
@@ -462,7 +478,7 @@ function OverviewTab({
             <div className="space-y-3">
               <div className="flex items-baseline justify-between">
                 <span className={`text-3xl font-bold ${textPrimary}`}>
-                  ₹{upcomingPayment.amount}
+                  ₹{upcomingPayment.amount_due}
                 </span>
                 <span className={`text-sm ${textSecondary}`}>
                   {upcomingPayment.billing_cycle === 'six_months' ? '6-month' : upcomingPayment.billing_cycle}
@@ -470,9 +486,9 @@ function OverviewTab({
               </div>
               <div className={`flex items-center gap-2 text-sm ${textSecondary}`}>
                 <Calendar className="w-4 h-4" />
-                Due {new Date(upcomingPayment.due_date).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}
+                Due {new Date(upcomingPayment.payment_due_date).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}
               </div>
-              <DaysUntilPayment dueDate={upcomingPayment.due_date} darkMode={darkMode} />
+              <DaysUntilPayment dueDate={upcomingPayment.payment_due_date} darkMode={darkMode} />
             </div>
           ) : subscription && !isFree ? (
             <div className="space-y-3">
@@ -769,6 +785,7 @@ function MethodsTab({
   portalLoading: boolean;
   onOpenStripePortal: () => void;
 }): ReactElement {
+  const navigate = useNavigate();
   const cardBg = darkMode ? 'bg-gray-800' : 'bg-white';
   const cardBorder = darkMode ? 'border-gray-700' : 'border-gray-200';
   const textPrimary = darkMode ? 'text-white' : 'text-gray-900';
@@ -786,32 +803,73 @@ function MethodsTab({
     );
   }
 
+  const isRazorpay = subscription?.payment_gateway === 'razorpay';
+  const isStripe = subscription?.payment_gateway === 'stripe';
+
   return (
     <div className="space-y-6">
-      {/* Stripe Portal Card */}
+      {/* Payment Gateway Card */}
       <div className={`rounded-xl border p-6 ${cardBg} ${cardBorder}`}>
         <div className="flex items-start gap-4">
           <div className={`p-3 rounded-xl ${darkMode ? 'bg-indigo-900/40' : 'bg-indigo-50'}`}>
             <CreditCard className={`w-6 h-6 ${darkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
           </div>
           <div className="flex-1">
-            <h3 className={`font-semibold text-lg ${textPrimary}`}>Manage Payment Methods</h3>
-            <p className={`text-sm mt-1 ${textSecondary}`}>
-              Add, update, or remove payment methods through the secure Stripe billing portal.
-              You can also view and download invoices.
-            </p>
-            <button
-              onClick={onOpenStripePortal}
-              disabled={portalLoading}
-              className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors text-sm disabled:opacity-50"
-            >
-              {portalLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <ExternalLink className="w-4 h-4" />
-              )}
-              Open Stripe Portal
-            </button>
+            {isRazorpay ? (
+              <>
+                <h3 className={`font-semibold text-lg ${textPrimary}`}>Payment via Razorpay</h3>
+                <p className={`text-sm mt-1 ${textSecondary}`}>
+                  Your subscription is managed through Razorpay. Payment is collected automatically
+                  at the start of each billing cycle. You can change your plan or renew from the pricing page.
+                </p>
+                {subscription?.last_payment_at && (
+                  <p className={`text-xs mt-2 ${textSecondary}`}>
+                    Last payment: {new Date(subscription.last_payment_at).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}
+                  </p>
+                )}
+                <button
+                  onClick={() => navigate('/pricing')}
+                  className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors text-sm"
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  Change Plan
+                </button>
+              </>
+            ) : isStripe ? (
+              <>
+                <h3 className={`font-semibold text-lg ${textPrimary}`}>Manage Payment Methods</h3>
+                <p className={`text-sm mt-1 ${textSecondary}`}>
+                  Add, update, or remove payment methods through the secure Stripe billing portal.
+                  You can also view and download invoices.
+                </p>
+                <button
+                  onClick={onOpenStripePortal}
+                  disabled={portalLoading}
+                  className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors text-sm disabled:opacity-50"
+                >
+                  {portalLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ExternalLink className="w-4 h-4" />
+                  )}
+                  Open Stripe Portal
+                </button>
+              </>
+            ) : (
+              <>
+                <h3 className={`font-semibold text-lg ${textPrimary}`}>Payment Information</h3>
+                <p className={`text-sm mt-1 ${textSecondary}`}>
+                  Your subscription is active. You can manage your plan from the pricing page.
+                </p>
+                <button
+                  onClick={() => navigate('/pricing')}
+                  className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors text-sm"
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  View Plans
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -830,9 +888,21 @@ function MethodsTab({
             />
             <InfoRow
               label="Next Billing"
-              value={subscription.next_billing_date ? new Date(subscription.next_billing_date).toLocaleDateString('en-IN') : 'N/A'}
+              value={subscription.next_billing_date ? new Date(subscription.next_billing_date).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' }) : 'N/A'}
               darkMode={darkMode}
             />
+            <InfoRow
+              label="Payment Method"
+              value={isRazorpay ? 'Razorpay' : isStripe ? 'Stripe' : 'N/A'}
+              darkMode={darkMode}
+            />
+            {subscription.current_period_end && (
+              <InfoRow
+                label="Current Period Ends"
+                value={new Date(subscription.current_period_end).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}
+                darkMode={darkMode}
+              />
+            )}
           </div>
         </div>
       )}
@@ -843,11 +913,11 @@ function MethodsTab({
 // ─── Invoices Tab ────────────────────────────────────────────────────────────
 
 function InvoicesTab({
-  history,
+  invoices,
   loading,
   darkMode,
 }: {
-  history: SubscriptionHistoryEntry[];
+  invoices: Invoice[];
   loading: boolean;
   darkMode: boolean;
 }): ReactElement {
@@ -855,10 +925,18 @@ function InvoicesTab({
   const cardBorder = darkMode ? 'border-gray-700' : 'border-gray-200';
   const textPrimary = darkMode ? 'text-white' : 'text-gray-900';
   const textSecondary = darkMode ? 'text-gray-400' : 'text-gray-600';
+  const [downloading, setDownloading] = useState<string | null>(null);
 
-  const paymentEntries = history.filter(
-    (e) => e.amount_paid != null && e.amount_paid > 0
-  );
+  const handleDownload = async (inv: Invoice) => {
+    try {
+      setDownloading(inv.id);
+      await subscriptionService.downloadInvoice(inv.id);
+    } catch (err) {
+      console.error('Download failed', err);
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -868,7 +946,7 @@ function InvoicesTab({
     );
   }
 
-  if (paymentEntries.length === 0) {
+  if (invoices.length === 0) {
     return (
       <div className={`rounded-xl border p-12 text-center ${cardBg} ${cardBorder}`}>
         <Receipt className={`w-12 h-12 mx-auto mb-4 ${darkMode ? 'text-gray-600' : 'text-gray-300'}`} />
@@ -882,48 +960,64 @@ function InvoicesTab({
 
   return (
     <div className={`rounded-xl border overflow-hidden ${cardBg} ${cardBorder}`}>
-      {/* Table Header */}
       <div className={`grid grid-cols-12 gap-4 px-6 py-3 text-xs font-medium uppercase tracking-wider ${
         darkMode ? 'bg-gray-700/50 text-gray-400' : 'bg-gray-50 text-gray-500'
       }`}>
-        <div className="col-span-3">Date</div>
+        <div className="col-span-2">Invoice</div>
+        <div className="col-span-2">Date</div>
         <div className="col-span-3">Plan</div>
-        <div className="col-span-2">Cycle</div>
         <div className="col-span-2">Amount</div>
-        <div className="col-span-2">Status</div>
+        <div className="col-span-1">Status</div>
+        <div className="col-span-2 text-right">Download</div>
       </div>
-      {/* Table Body */}
       <div className={`divide-y ${darkMode ? 'divide-gray-700' : 'divide-gray-100'}`}>
-        {paymentEntries.map((entry, index) => {
-          const eventType = entry.event_type || 'payment';
-          const isFailure = eventType.includes('failed');
+        {invoices.map((inv) => {
+          const isFailure = inv.status === 'failed';
+          const currencySymbol = inv.currency === 'INR' ? '₹' : '$';
           return (
             <div
-              key={entry.id || index}
+              key={inv.id}
               className={`grid grid-cols-12 gap-4 px-6 py-4 items-center text-sm ${
                 darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-50'
               } transition-colors`}
             >
-              <div className={`col-span-3 ${textSecondary}`}>
-                {new Date(entry.started_at || entry.created_at || '').toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}
-              </div>
-              <div className={`col-span-3 font-medium ${textPrimary}`}>
-                {formatPlanCode(entry.to_plan_code || entry.plan_code || '', false)}
+              <div className={`col-span-2 font-mono text-xs ${textSecondary}`}>
+                {inv.invoice_number}
               </div>
               <div className={`col-span-2 ${textSecondary}`}>
-                {entry.billing_cycle === 'six_months' ? '6 Months' : entry.billing_cycle ? entry.billing_cycle.charAt(0).toUpperCase() + entry.billing_cycle.slice(1) : 'N/A'}
+                {new Date(inv.paid_at || inv.created_at).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}
+              </div>
+              <div className={`col-span-3 font-medium ${textPrimary}`}>
+                {inv.plan_name}
               </div>
               <div className={`col-span-2 font-semibold ${textPrimary}`}>
-                ₹{entry.amount_paid}
+                {currencySymbol}{Number(inv.amount).toLocaleString('en-IN', { minimumFractionDigits: 0 })}
               </div>
-              <div className="col-span-2">
+              <div className="col-span-1">
                 <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
                   isFailure
                     ? darkMode ? 'bg-red-900/40 text-red-400' : 'bg-red-100 text-red-700'
                     : darkMode ? 'bg-green-900/40 text-green-400' : 'bg-green-100 text-green-700'
                 }`}>
-                  {isFailure ? 'Failed' : 'Paid'}
+                  {inv.status === 'paid' ? 'Paid' : inv.status === 'refunded' ? 'Refunded' : 'Failed'}
                 </span>
+              </div>
+              <div className="col-span-2 text-right">
+                <button
+                  onClick={() => handleDownload(inv)}
+                  disabled={downloading === inv.id}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    darkMode
+                      ? 'bg-blue-900/40 text-blue-400 hover:bg-blue-900/60'
+                      : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                  } disabled:opacity-50`}
+                >
+                  {downloading === inv.id
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Download className="w-3.5 h-3.5" />
+                  }
+                  PDF
+                </button>
               </div>
             </div>
           );

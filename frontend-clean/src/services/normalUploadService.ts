@@ -7,6 +7,7 @@
  * - Automatic retry with exponential backoff
  * - Progress tracking per chunk
  * - Network error resilience
+ * - Upload resume support (same-session retry + cross-session resume)
  */
 
 import { API_URL } from '../config/constants';
@@ -37,12 +38,27 @@ interface UploadProgressData {
   eta: number;
 }
 
+export interface ServerUploadStatus {
+  upload_id: string;
+  status: string;
+  strategy: 'inline' | 'single' | 'chunked';
+  file_name: string;
+  file_size: number;
+  chunk_size: number;
+  total_chunks: number;
+  uploaded_chunks: number[];
+  missing_chunks: number[];
+  progress: number;
+}
+
 interface UploadOptions {
   concurrency?: number;
   onProgress?: (data: UploadProgressData) => void;
   onChunkComplete?: (chunkIndex: number, uploadedCount: number, totalChunks: number) => void;
+  onSessionCreated?: (uploadId: string, chunkSize: number, totalChunks: number, strategy: string) => void;
   onError?: (error: Error) => void;
   folderId?: string | null;
+  signal?: AbortSignal;
 }
 
 interface UploadContext {
@@ -58,6 +74,7 @@ interface UploadContext {
   onProgress?: ((data: UploadProgressData) => void) | undefined;
   onChunkComplete?: ((chunkIndex: number, uploadedCount: number, totalChunks: number) => void) | undefined;
   onError?: ((error: Error) => void) | undefined;
+  abortSignal?: AbortSignal;
 }
 
 interface UploadCompleteResponse {
@@ -92,7 +109,7 @@ class NormalUploadService {
    * Initialize a new upload session
    * Uses server-side encryption
    */
-  async initUpload(file: File, folderId: string | null = null): Promise<UploadInitNormalResponse> {
+  async initUpload(file: File, folderId: string | null = null, signal?: AbortSignal): Promise<UploadInitNormalResponse> {
     // Build query parameters (backend expects query params, not JSON body)
     const params = new URLSearchParams();
     params.append('file_name', file.name);
@@ -104,14 +121,15 @@ class NormalUploadService {
     const response = await fetch(`${API_BASE_URL}/api/v1/upload/init?${params.toString()}`, {
       method: 'POST',
       credentials: 'include',
+      ...(signal ? { signal } : {}),
     });
 
     if (!response.ok) {
       const error = (await response.json()) as { detail?: string | Array<{ msg: string }> };
-      const errorMessage = typeof error.detail === 'string' 
-        ? error.detail 
-        : Array.isArray(error.detail) 
-          ? error.detail.map(e => e.msg).join(', ') 
+      const errorMessage = typeof error.detail === 'string'
+        ? error.detail
+        : Array.isArray(error.detail)
+          ? error.detail.map(e => e.msg).join(', ')
           : 'Failed to initialize upload';
       throw new Error(errorMessage);
     }
@@ -129,21 +147,31 @@ class NormalUploadService {
    *
    * @param file - File to upload
    * @param options - Upload options
-   * @returns Upload result
+   * @returns Upload result with serverUploadId
    */
-  async uploadFile(file: File, options: UploadOptions = {}): Promise<UploadCompleteResponse> {
+  async uploadFile(file: File, options: UploadOptions = {}): Promise<UploadCompleteResponse & { serverUploadId?: string }> {
     const {
       concurrency = this.defaultConcurrency,
       onProgress,
       onChunkComplete,
+      onSessionCreated,
       onError,
       folderId = null,
+      signal,
     } = options;
+
+    let serverUploadId: string | null = null;
 
     try {
       // Step 1: Initialize upload
-      const initData = await this.initUpload(file, folderId);
+      const initData = await this.initUpload(file, folderId, signal);
       const { upload_id, storage_strategy, chunk_size, total_chunks } = initData;
+      serverUploadId = upload_id;
+
+      // Fire session created callback so context can checkpoint
+      if (onSessionCreated) {
+        onSessionCreated(upload_id, chunk_size, total_chunks, storage_strategy);
+      }
 
       // Create upload context
       const uploadContext: UploadContext = {
@@ -159,6 +187,7 @@ class NormalUploadService {
         onProgress,
         onChunkComplete,
         onError,
+        ...(signal ? { abortSignal: signal } : {}),
       };
 
       this.activeUploads.set(upload_id, uploadContext);
@@ -172,15 +201,161 @@ class NormalUploadService {
       }
 
       // Step 3: Complete upload
-      const result = await this._completeUpload(upload_id);
+      const result = await this._completeUpload(upload_id, signal);
 
       this.activeUploads.delete(upload_id);
-      return result;
+      return { ...result, serverUploadId: upload_id };
     } catch (error) {
+      if (serverUploadId) {
+        this.activeUploads.delete(serverUploadId);
+
+        // Only cancel on server for user-initiated cancels and non-network errors
+        // Network errors should preserve the session for resume
+        const isAbort = error instanceof DOMException && error.name === 'AbortError';
+        const isNetwork = error instanceof Error && error.message.includes('Internet connection lost');
+
+        if (isAbort) {
+          // User cancelled — destroy server session
+          this._cancelOnServer(serverUploadId);
+        } else if (!isNetwork) {
+          // Other errors — destroy server session
+          this._cancelOnServer(serverUploadId);
+        }
+        // Network errors: do NOT cancel — preserve session for resume
+      }
       if (onError && error instanceof Error) {
         onError(error);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Get server-side upload status for resume
+   * Returns null if session expired (404) or network error
+   */
+  async getServerUploadStatus(uploadId: string): Promise<ServerUploadStatus | null> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/upload/status/${uploadId}`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        // 404 = session expired, 403 = different user
+        return null;
+      }
+
+      return (await response.json()) as ServerUploadStatus;
+    } catch {
+      // Network error — can't check status
+      return null;
+    }
+  }
+
+  /**
+   * Resume an upload using an existing server session
+   * Picks up where the previous upload left off
+   */
+  async resumeUpload(
+    file: File,
+    serverUploadId: string,
+    serverStatus: ServerUploadStatus,
+    options: UploadOptions = {}
+  ): Promise<UploadCompleteResponse & { serverUploadId?: string }> {
+    const {
+      concurrency = this.defaultConcurrency,
+      onProgress,
+      onChunkComplete,
+      onError,
+      signal,
+    } = options;
+
+    try {
+      // Build context from server status (not from initUpload)
+      const uploadContext: UploadContext = {
+        uploadId: serverUploadId,
+        file,
+        strategy: serverStatus.strategy,
+        chunkSize: serverStatus.chunk_size,
+        totalChunks: serverStatus.total_chunks,
+        uploadedChunks: new Set(serverStatus.uploaded_chunks),
+        failedChunks: new Set(),
+        startTime: Date.now(),
+        bytesUploaded: serverStatus.uploaded_chunks.length * serverStatus.chunk_size,
+        onProgress,
+        onChunkComplete,
+        onError,
+        ...(signal ? { abortSignal: signal } : {}),
+      };
+
+      this.activeUploads.set(serverUploadId, uploadContext);
+
+      // Report initial progress immediately (UI shows "50% — resuming")
+      this._updateProgress(uploadContext);
+
+      if (serverStatus.strategy === 'chunked') {
+        if (serverStatus.missing_chunks.length > 0) {
+          // Upload only the missing chunks
+          await this._uploadMissingChunks(uploadContext, serverStatus.missing_chunks, concurrency);
+        }
+        // else: all chunks already uploaded, just complete
+      } else {
+        // Non-chunked: if not complete, re-upload directly
+        if (serverStatus.progress < 100) {
+          await this._uploadDirect(uploadContext);
+        }
+      }
+
+      // Complete upload
+      const result = await this._completeUpload(serverUploadId, signal);
+
+      this.activeUploads.delete(serverUploadId);
+      return { ...result, serverUploadId };
+    } catch (error) {
+      if (serverUploadId) {
+        this.activeUploads.delete(serverUploadId);
+
+        // Only cancel on AbortError (user cancel), preserve session on network errors
+        const isAbort = error instanceof DOMException && error.name === 'AbortError';
+        if (isAbort) {
+          this._cancelOnServer(serverUploadId);
+        }
+        // Network and other errors during resume: preserve session
+      }
+      if (onError && error instanceof Error) {
+        onError(error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Upload only the missing chunks (for resume)
+   */
+  private async _uploadMissingChunks(
+    context: UploadContext,
+    missingChunks: number[],
+    concurrency: number
+  ): Promise<void> {
+    // Create queue from missing chunks only
+    const chunkQueue = [...missingChunks];
+
+    // Create worker pool
+    const workerCount = Math.min(concurrency, chunkQueue.length);
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < workerCount; i++) {
+      workers.push(this._chunkUploadWorker(context, chunkQueue));
+    }
+
+    // Wait for all workers to complete
+    await Promise.all(workers);
+
+    // Verify all chunks uploaded
+    if (context.uploadedChunks.size !== context.totalChunks) {
+      throw new Error(
+        `Upload incomplete: ${context.uploadedChunks.size}/${context.totalChunks} chunks uploaded`
+      );
     }
   }
 
@@ -215,6 +390,10 @@ class NormalUploadService {
    */
   private async _chunkUploadWorker(context: UploadContext, chunkQueue: number[]): Promise<void> {
     while (chunkQueue.length > 0) {
+      if (context.abortSignal?.aborted) {
+        throw new DOMException('Upload cancelled', 'AbortError');
+      }
+
       const chunkIndex = chunkQueue.shift();
       if (chunkIndex === undefined) break;
 
@@ -229,6 +408,16 @@ class NormalUploadService {
         // Update progress
         this._updateProgress(context);
       } catch (error) {
+        // Propagate abort errors immediately — don't retry
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error;
+        }
+
+        // Propagate network errors — don't re-queue endlessly
+        if (error instanceof Error && error.message.includes('Internet connection lost')) {
+          throw error;
+        }
+
         console.error(`Failed to upload chunk ${chunkIndex}:`, error);
         context.failedChunks.add(chunkIndex);
 
@@ -268,6 +457,7 @@ class NormalUploadService {
           method: 'POST',
           credentials: 'include',
           body: formData,
+          ...(context.abortSignal ? { signal: context.abortSignal } : {}),
         }
       );
 
@@ -282,6 +472,11 @@ class NormalUploadService {
 
       return result;
     } catch (error) {
+      // Don't retry AbortErrors — rethrow immediately
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw error;
+      }
+
       // Retry with exponential backoff
       if (retryCount < this.maxRetries) {
         const delay = this.retryDelay * Math.pow(2, retryCount);
@@ -293,6 +488,11 @@ class NormalUploadService {
 
         await this._sleep(delay);
         return this._uploadChunkWithRetry(context, chunkIndex, retryCount + 1);
+      }
+
+      // After retries exhausted, provide network-specific error message
+      if (this._isNetworkError(error)) {
+        throw new Error('Upload failed: Internet connection lost. Please check your connection and try again.');
       }
 
       throw error;
@@ -311,29 +511,41 @@ class NormalUploadService {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/upload/direct/${uploadId}`, {
-      method: 'POST',
-      credentials: 'include',
-      body: formData,
-    });
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/upload/direct/${uploadId}`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+        ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+      });
 
-    if (!response.ok) {
-      throw new Error(`Upload failed: ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.statusText}`);
+      }
+
+      context.bytesUploaded = file.size;
+      this._updateProgress(context);
+
+      return response.json();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw error;
+      }
+      if (this._isNetworkError(error)) {
+        throw new Error('Upload failed: Internet connection lost. Please check your connection and try again.');
+      }
+      throw error;
     }
-
-    context.bytesUploaded = file.size;
-    this._updateProgress(context);
-
-    return response.json();
   }
 
   /**
    * Complete the upload
    */
-  private async _completeUpload(uploadId: string): Promise<UploadCompleteResponse> {
+  private async _completeUpload(uploadId: string, signal?: AbortSignal): Promise<UploadCompleteResponse> {
     const response = await fetch(`${API_BASE_URL}/api/v1/upload/complete/${uploadId}`, {
       method: 'POST',
       credentials: 'include',
+      ...(signal ? { signal } : {}),
     });
 
     if (!response.ok) {
@@ -342,6 +554,29 @@ class NormalUploadService {
     }
 
     return response.json() as Promise<UploadCompleteResponse>;
+  }
+
+  /**
+   * Best-effort server-side cancel — fire and forget
+   */
+  private _cancelOnServer(uploadId: string): void {
+    fetch(`${API_BASE_URL}/api/v1/upload/cancel/${uploadId}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    }).catch(() => {
+      // Best-effort: swallow errors — orphan cleanup worker handles leftovers
+    });
+  }
+
+  /**
+   * Check if an error is a network connectivity error
+   */
+  private _isNetworkError(error: unknown): boolean {
+    if (error instanceof TypeError) {
+      const msg = error.message.toLowerCase();
+      return msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('networkerror');
+    }
+    return false;
   }
 
   /**

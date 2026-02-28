@@ -112,7 +112,7 @@ export interface StorageContextValue {
   navigateToFolder: (folderId: string | null, folderName?: string) => void;
 
   // File operations
-  uploadFile: (file: File, onProgress?: (progress: UploadProgress) => void) => Promise<{ success: boolean; fileId?: string; encrypted?: boolean }>;
+  uploadFile: (file: File, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal) => Promise<{ success: boolean; fileId?: string; encrypted?: boolean; serverUploadId?: string }>;
   downloadFile: (fileId: string, fileName: string, onProgress?: (progress: Record<string, unknown>) => void) => Promise<void>;
   deleteFile: (fileId: string, fileName?: string) => Promise<void>;
 
@@ -152,4 +152,5 @@ export interface StorageContextValue {
   // Utility
   getAllItems: () => Array<FileItem | FolderItem>;
   isOnline: boolean;
+  lastSyncedAt: string | null;
 }

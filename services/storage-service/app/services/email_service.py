@@ -104,7 +104,8 @@ class EmailService:
         to_email: str,
         subject: str,
         html_content: str,
-        text_content: Optional[str] = None
+        text_content: Optional[str] = None,
+        attachments: Optional[list] = None,
     ) -> bool:
         """
         Generic method to send email via Mailgun API.
@@ -114,6 +115,7 @@ class EmailService:
             subject: Email subject
             html_content: HTML email body
             text_content: Plain text email body (optional)
+            attachments: List of (filename, content_bytes, mime_type) tuples
 
         Returns:
             True if email sent successfully, False otherwise
@@ -137,11 +139,19 @@ class EmailService:
             if text_content:
                 data["text"] = text_content
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            files_payload = None
+            if attachments:
+                files_payload = [
+                    ("attachment", (fname, fbytes, fmime))
+                    for fname, fbytes, fmime in attachments
+                ]
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     self.api_url,
                     auth=("api", self.api_key),
-                    data=data
+                    data=data,
+                    files=files_payload,
                 )
 
                 if response.status_code == 200:
@@ -160,6 +170,41 @@ class EmailService:
                 exc_info=True
             )
             return False
+
+    async def send_invoice_email(
+        self,
+        to_email: str,
+        invoice_number: str,
+        plan_name: str,
+        amount: str,
+        currency: str,
+        pdf_bytes: bytes,
+    ) -> bool:
+        """Send an invoice email with the PDF attached."""
+        try:
+            template = self.jinja_env.get_template("invoice_email.html")
+            html_content = template.render(
+                invoice_number=invoice_number,
+                plan_name=plan_name,
+                amount=amount,
+                currency=currency,
+                app_name=self.from_name,
+            )
+        except Exception:
+            html_content = (
+                f"<p>Your invoice <b>{invoice_number}</b> for "
+                f"<b>{plan_name}</b> ({currency} {amount}) is attached.</p>"
+            )
+
+        return await self.send_email(
+            to_email=to_email,
+            subject=f"Invoice {invoice_number} - {self.from_name}",
+            html_content=html_content,
+            text_content=f"Your invoice {invoice_number} for {plan_name} ({currency} {amount}) is attached.",
+            attachments=[
+                (f"{invoice_number}.pdf", pdf_bytes, "application/pdf"),
+            ],
+        )
 
 
 # Global service instance

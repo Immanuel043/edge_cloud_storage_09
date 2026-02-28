@@ -1,12 +1,12 @@
 import React from 'react';
-import { X, CheckCircle, AlertCircle, Clock, Lock, Shield } from 'lucide-react';
+import { X, CheckCircle, AlertCircle, Clock, Lock, Shield, RefreshCw } from 'lucide-react';
 import { formatDuration, formatBytes } from '../../utils/helpers';
 import type { UploadProgressProps, UploadItem } from './types';
 
 /**
  * UploadProgress - Shows upload progress with ZK encryption support
  */
-const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, darkMode }) => {
+const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, onRetry, darkMode }) => {
   return (
     <div className={`mb-6 p-4 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
       <h3 className={`text-lg font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
@@ -54,6 +54,16 @@ const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, dark
                 <CheckCircle size={16} className="text-green-500" />
               )}
               {upload.status === 'error' && <AlertCircle size={16} className="text-red-500" />}
+              {upload.status === 'error' && onRetry && upload.isNetworkError && (
+                <button
+                  onClick={() => onRetry(id)}
+                  className="text-blue-500 hover:text-blue-600 flex items-center gap-1 text-xs"
+                  title="Retry upload"
+                >
+                  <RefreshCw size={14} />
+                  Retry
+                </button>
+              )}
             </div>
           </div>
           <div

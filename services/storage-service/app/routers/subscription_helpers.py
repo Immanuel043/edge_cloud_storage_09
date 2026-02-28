@@ -109,6 +109,10 @@ class UserSubscriptionStatus(BaseModel):
     next_invoice_amount: Optional[float] = None
     next_invoice_currency: str = "INR"
 
+    # Payment details
+    payment_gateway: Optional[str] = None
+    last_payment_at: Optional[str] = None
+
     # Actions available
     can_upgrade: bool
     can_downgrade: bool
@@ -351,7 +355,9 @@ async def get_subscription_dashboard(
         storage_remaining_gb=storage_remaining_gb,
         storage_remaining_display=storage_remaining_display,
         next_invoice_amount=next_invoice_amount,
-        can_upgrade=(plan.sort_order < 3),  # Can upgrade if not on highest tier
+        payment_gateway=getattr(subscription, 'payment_gateway', None),
+        last_payment_at=subscription.last_payment_at.isoformat() if getattr(subscription, 'last_payment_at', None) else None,
+        can_upgrade=(plan.sort_order < 3),
         can_downgrade=(plan.sort_order > 0),
         can_cancel=(subscription.status == 'active')
     )
