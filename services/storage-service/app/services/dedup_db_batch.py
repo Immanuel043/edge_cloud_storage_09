@@ -109,6 +109,10 @@ class BatchedDeduplicationWriter:
                 )
 
                 # Step 3: Merge from staging to main table (single lock)
+                # GROUP BY deduplicates rows with the same block_hash within
+                # the batch — without this, PostgreSQL raises
+                # "ON CONFLICT DO UPDATE command cannot affect row a second time"
+                # when a file contains repeated identical chunks.
                 await db.execute(text("""
                     INSERT INTO content_blocks (id, block_hash, file_id, block_size, block_offset, reference_count, created_at)
                     SELECT
@@ -116,10 +120,11 @@ class BatchedDeduplicationWriter:
                         block_hash,
                         file_id,
                         block_size,
-                        block_offset,
+                        MIN(block_offset),
                         1,
                         CURRENT_TIMESTAMP
                     FROM chunk_staging
+                    GROUP BY block_hash, file_id, block_size
                     ON CONFLICT (block_hash) DO UPDATE
                     SET reference_count = content_blocks.reference_count + 1
                 """))

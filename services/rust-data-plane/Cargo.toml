@@ -57,6 +57,7 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = "0.4"
 fs2 = "0.4"
 scopeguard = "1.2"
+libc = "0.2"
 
 # Platform-specific (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]

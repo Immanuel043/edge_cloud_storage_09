@@ -144,9 +144,34 @@ impl UnixSocketServerWithScmRights {
         // Receive initial data + potential FD via SCM_RIGHTS
         // Use spawn_blocking and return the data with the result
         let (bytes_read, received_fd, buffer) = tokio::task::spawn_blocking(move || {
+            // Tokio sets accepted sockets to non-blocking mode. recvmsg() is a raw
+            // syscall that returns EAGAIN on a non-blocking FD if data hasn't arrived
+            // yet, which kills the connection (Python sees "Broken pipe").
+            // Temporarily switch to blocking mode so recvmsg waits for the data +
+            // SCM_RIGHTS ancillary message, then restore non-blocking for Tokio.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFL);
+                if flags == -1 {
+                    return Err(nix::Error::last().into());
+                }
+                if libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) == -1 {
+                    return Err(nix::Error::last().into());
+                }
+            }
+
             let mut buf = buffer;
             let mut anc_buf = ancillary_buffer;
-            match recv_with_scm_rights(fd, &mut buf, &mut anc_buf) {
+            let result = recv_with_scm_rights(fd, &mut buf, &mut anc_buf);
+
+            // Restore non-blocking mode for subsequent tokio async reads
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFL);
+                if flags != -1 {
+                    libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                }
+            }
+
+            match result {
                 Ok((bytes, fd_opt)) => Ok((bytes, fd_opt, buf)),
                 Err(e) => Err(e),
             }
