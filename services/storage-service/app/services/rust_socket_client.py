@@ -86,7 +86,7 @@ class RustSocketClient:
             ValueError: If response is invalid
             Exception: If processing fails
         """
-        # Validate inputs
+        # Validate inputs (lightweight, OK on event loop)
         if not isinstance(chunk_data, bytes):
             raise ValueError("chunk_data must be bytes")
         if not isinstance(file_key, bytes):
@@ -94,6 +94,25 @@ class RustSocketClient:
         if len(file_key) != 32:
             raise ValueError(f"file_key must be 32 bytes, got {len(file_key)}")
 
+        # Offload all blocking socket I/O to a thread to keep the event loop free
+        return await asyncio.to_thread(
+            self._process_non_zk_sync,
+            chunk_data, file_key, file_id, chunk_index,
+            compress, filename, file_size, target_path,
+        )
+
+    def _process_non_zk_sync(
+        self,
+        chunk_data: bytes,
+        file_key: bytes,
+        file_id: str,
+        chunk_index: int,
+        compress: bool,
+        filename: Optional[str],
+        file_size: Optional[int],
+        target_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """Synchronous blocking implementation — runs in a worker thread."""
         key_fd = None
         sock = None
 
@@ -286,6 +305,10 @@ class RustSocketClient:
         Raises:
             ConnectionError: If health check fails
         """
+        return await asyncio.to_thread(self._health_check_sync)
+
+    def _health_check_sync(self) -> Dict[str, Any]:
+        """Synchronous blocking health check — runs in a worker thread."""
         sock = None
         try:
             # Create socket

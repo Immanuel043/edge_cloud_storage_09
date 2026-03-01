@@ -106,8 +106,9 @@ impl AtomicWriter {
 
         temp_file.write_all(data).map_err(|e| DataPlaneError::Io(e))?;
 
-        // Fsync temp file if strategy requires
-        if self.fsync_mode.should_fsync() || self.fsync_mode.force_fsync() {
+        // Fsync temp file if strategy requires (PerSession defers to finalize_session)
+        let do_fsync = self.fsync_mode.should_fsync();
+        if do_fsync {
             fsync_file(&temp_file).map_err(|e| DataPlaneError::Io(e))?;
         }
 
@@ -127,7 +128,7 @@ impl AtomicWriter {
         })?;
 
         // Fsync parent directory for metadata durability
-        if self.fsync_mode.force_fsync() {
+        if do_fsync {
             if let Some(parent) = path.parent() {
                 if let Ok(dir) = File::open(parent) {
                     if let Err(e) = fsync_directory(&dir) {

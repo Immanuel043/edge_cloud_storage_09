@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, CheckCircle, AlertCircle, Clock, Lock, Shield, RefreshCw } from 'lucide-react';
+import { CheckCircle, AlertCircle, Clock, Lock, Shield, RefreshCw } from 'lucide-react';
 import { formatDuration, formatBytes } from '../../utils/helpers';
 import type { UploadProgressProps, UploadItem } from './types';
 
@@ -44,10 +44,10 @@ const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, onRe
               {upload.status === 'uploading' && (
                 <button
                   onClick={() => onCancel(id)}
-                  className="text-red-500 hover:text-red-600"
+                  className="text-red-500 hover:text-red-600 text-xs font-medium"
                   title="Cancel upload"
                 >
-                  <X size={16} />
+                  Cancel
                 </button>
               )}
               {upload.status === 'complete' && (
