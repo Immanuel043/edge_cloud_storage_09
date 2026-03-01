@@ -12,7 +12,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tokio::sync::broadcast;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
 
 /// Server configuration
@@ -51,9 +50,9 @@ pub struct UnixSocketServer {
 impl UnixSocketServer {
     /// Create new server
     pub fn new(config: ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let storage = Arc::new(Mutex::new(
+        let storage = Arc::new(
             ChunkStorage::new(&config.storage_root, config.write_options.clone())
-        ));
+        );
 
         let upload_handler = Arc::new(
             UploadHandler::new(Arc::clone(&storage), config.compression_level)?

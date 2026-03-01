@@ -20,7 +20,7 @@ use tracing::{debug, instrument};
 /// ```
 pub struct ChunkStorage {
     storage_root: PathBuf,
-    writer: AtomicWriter,
+    write_options: WriteOptions,
 }
 
 impl ChunkStorage {
@@ -28,7 +28,7 @@ impl ChunkStorage {
     pub fn new(storage_root: impl AsRef<Path>, write_options: WriteOptions) -> Self {
         Self {
             storage_root: storage_root.as_ref().to_path_buf(),
-            writer: AtomicWriter::new(write_options),
+            write_options,
         }
     }
 
@@ -43,7 +43,7 @@ impl ChunkStorage {
     /// Path to stored chunk
     #[instrument(skip(self, data), fields(file_id = %file_id, chunk_index = chunk_index, size = data.len()))]
     pub fn store_chunk(
-        &mut self,
+        &self,
         file_id: &str,
         chunk_index: u64,
         data: &[u8],
@@ -52,7 +52,8 @@ impl ChunkStorage {
 
         debug!(path = %chunk_path.display(), "Storing chunk");
 
-        self.writer.write_atomic(&chunk_path, data)?;
+        let mut writer = AtomicWriter::new(self.write_options.clone());
+        writer.write_atomic(&chunk_path, data)?;
 
         debug!("Chunk stored successfully");
         Ok(chunk_path)
@@ -188,22 +189,24 @@ impl ChunkStorage {
     /// Path to stored chunk (same as `target_path`)
     #[instrument(skip(self, data), fields(target_path = %target_path.display(), size = data.len()))]
     pub fn store_chunk_at(
-        &mut self,
+        &self,
         target_path: &Path,
         data: &[u8],
     ) -> Result<PathBuf, DataPlaneError> {
         debug!(path = %target_path.display(), "Storing chunk at target path");
 
-        self.writer.write_atomic(target_path, data)?;
+        let mut writer = AtomicWriter::new(self.write_options.clone());
+        writer.write_atomic(target_path, data)?;
 
         debug!("Chunk stored at target path successfully");
         Ok(target_path.to_path_buf())
     }
 
     /// Finalize upload session (force fsync if using PerSession strategy)
-    pub fn finalize_session(&mut self, file_id: &str) -> Result<(), DataPlaneError> {
+    pub fn finalize_session(&self, file_id: &str) -> Result<(), DataPlaneError> {
         let file_dir = self.get_file_directory(file_id);
-        self.writer.finalize_session(&file_dir)
+        let mut writer = AtomicWriter::new(self.write_options.clone());
+        writer.finalize_session(&file_dir)
     }
 
     /// Get chunk file path
@@ -240,7 +243,7 @@ mod tests {
     #[test]
     fn test_store_and_retrieve_chunk() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let data = b"Encrypted chunk data";
         let file_id = "file-123";
@@ -254,7 +257,7 @@ mod tests {
     #[test]
     fn test_store_multiple_chunks() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-456";
 
@@ -272,7 +275,7 @@ mod tests {
     #[test]
     fn test_chunk_exists() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-789";
 
@@ -287,7 +290,7 @@ mod tests {
     #[test]
     fn test_list_chunks() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-list";
 
@@ -314,7 +317,7 @@ mod tests {
     #[test]
     fn test_delete_chunk() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-delete";
 
@@ -328,7 +331,7 @@ mod tests {
     #[test]
     fn test_delete_file() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-delete-all";
 
@@ -349,7 +352,7 @@ mod tests {
     #[test]
     fn test_get_stats() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-stats";
 
@@ -386,7 +389,7 @@ mod tests {
     #[test]
     fn test_large_chunk_index() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-large-index";
         let large_index = 9999999999u64;
@@ -400,7 +403,7 @@ mod tests {
     #[test]
     fn test_store_chunk_at() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         // Create a custom target path inside the temp directory
         let target_dir = temp_dir.path().join("custom").join("cache").join("ab");
@@ -421,7 +424,7 @@ mod tests {
     #[test]
     fn test_finalize_session() {
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
+        let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
 
         let file_id = "file-session";
 

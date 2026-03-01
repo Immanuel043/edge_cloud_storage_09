@@ -23,7 +23,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument};
 
 /// Maximum allowed chunk size (64MB) - prevents OOM from adversarial Content-Length
@@ -41,10 +40,10 @@ pub struct UnixSocketServerWithScmRights {
 impl UnixSocketServerWithScmRights {
     /// Create new server with SCM_RIGHTS support
     pub fn new(config: ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let storage = Arc::new(Mutex::new(ChunkStorage::new(
+        let storage = Arc::new(ChunkStorage::new(
             &config.storage_root,
             config.write_options.clone(),
-        )));
+        ));
 
         let upload_handler = Arc::new(
             UploadHandler::new(Arc::clone(&storage), config.compression_level)?

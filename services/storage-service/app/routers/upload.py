@@ -369,19 +369,21 @@ async def upload_chunk(
     user_id_str = str(current_user.id)
     stream_slot_released = False  # Track if stream slot was already released
 
-    # Get max streams for this user's plan (or override)
-    max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
-        user_id_str,
-        current_user.plan_type,
-        current_user.max_concurrent_streams
+    # Pipeline independent Redis calls concurrently
+    max_streams, stream_acquired, session = await asyncio.gather(
+        bandwidth_throttle_service.get_max_streams_with_plan(
+            user_id_str,
+            current_user.plan_type,
+            current_user.max_concurrent_streams
+        ),
+        bandwidth_throttle_service.acquire_stream_slot(
+            user_id_str,
+            plan_type=current_user.plan_type,
+            db_streams_override=current_user.max_concurrent_streams
+        ),
+        get_upload_session(redis_client, db, upload_id),
     )
 
-    # ============ BANDWIDTH THROTTLING: Acquire stream slot (plan-aware) ============
-    stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
-        user_id_str,
-        plan_type=current_user.plan_type,
-        db_streams_override=current_user.max_concurrent_streams
-    )
     if not stream_acquired:
         raise HTTPException(
             status_code=429,
@@ -413,8 +415,6 @@ async def upload_chunk(
                     )
                 # Short wait - apply throttling
                 await asyncio.sleep(min(wait_time, 1.0))
-
-        session = await get_upload_session(redis_client, db, upload_id)
         if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
 
@@ -488,9 +488,9 @@ async def upload_chunk(
                     encrypted_path = result.get("encrypted_chunk_path")
                     if encrypted_path and encrypted_path == storage_path:
                         # Zero-copy: Rust wrote directly — nothing to copy or clean up
-                        if not os.path.exists(storage_path):
+                        if not await asyncio.to_thread(os.path.exists, storage_path):
                             raise Exception(f"Rust reported success but chunk missing at {storage_path}")
-                    elif encrypted_path and os.path.exists(encrypted_path):
+                    elif encrypted_path and await asyncio.to_thread(os.path.exists, encrypted_path):
                         # Defensive fallback: paths differ — copy and clean up
                         logger.warning(f"target_path mismatch: expected {storage_path}, got {encrypted_path}; copying")
                         async with aiofiles.open(encrypted_path, 'rb') as src:

@@ -9,21 +9,20 @@ use bytes::Bytes;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error, instrument};
 
 /// Upload handler - processes upload requests
 pub struct UploadHandler {
-    zk_processor: ZkModeProcessor,
-    non_zk_processor: NonZkModeProcessor,
-    storage: Arc<Mutex<ChunkStorage>>,
+    zk_processor: Arc<ZkModeProcessor>,
+    non_zk_processor: Arc<NonZkModeProcessor>,
+    storage: Arc<ChunkStorage>,
 }
 
 impl UploadHandler {
-    pub fn new(storage: Arc<Mutex<ChunkStorage>>, compression_level: i32) -> Result<Self, DataPlaneError> {
+    pub fn new(storage: Arc<ChunkStorage>, compression_level: i32) -> Result<Self, DataPlaneError> {
         Ok(Self {
-            zk_processor: ZkModeProcessor::new(),
-            non_zk_processor: NonZkModeProcessor::new(compression_level)?,
+            zk_processor: Arc::new(ZkModeProcessor::new()),
+            non_zk_processor: Arc::new(NonZkModeProcessor::new(compression_level)?),
             storage,
         })
     }
@@ -36,11 +35,9 @@ impl UploadHandler {
         chunk_data: Bytes,
         key_fd: Option<RawFd>,
     ) -> Result<ChunkResponse, ErrorResponse> {
-        // Parse mode
         let mode = ProcessingMode::from_header(&request.mode)
             .map_err(|e| ErrorResponse::bad_request(format!("Invalid mode: {}", e)))?;
 
-        // Enforce mode security (close key_fd on violation - it would otherwise leak)
         ModeEnforcer::enforce(mode, key_fd.is_some())
             .map_err(|e| {
                 if let Some(fd) = key_fd {
@@ -62,7 +59,6 @@ impl UploadHandler {
                 }
             })?;
 
-        // Process based on mode
         let response = match mode {
             ProcessingMode::ZK => {
                 self.handle_zk_upload(request, chunk_data).await?
@@ -80,6 +76,9 @@ impl UploadHandler {
     }
 
     /// Handle ZK mode upload (server blind)
+    ///
+    /// CPU-bound hashing and blocking I/O are offloaded to a blocking thread
+    /// so the tokio async runtime stays responsive under concurrent load.
     async fn handle_zk_upload(
         &self,
         request: UploadRequest,
@@ -87,31 +86,39 @@ impl UploadHandler {
     ) -> Result<ChunkResponse, ErrorResponse> {
         debug!("Processing ZK mode upload");
 
-        // Verify chunk format
         self.zk_processor.verify_chunk_format(&chunk_data)
             .map_err(|e| ErrorResponse::bad_request(format!("Invalid chunk format: {}", e)))?;
 
-        // Hash only (server blind operation)
-        let processed = self.zk_processor.process_zk_chunk(&chunk_data, request.chunk_index)
-            .map_err(|e| ErrorResponse::internal_error(format!("Processing failed: {}", e)))?;
+        let zk_processor = Arc::clone(&self.zk_processor);
+        let storage = Arc::clone(&self.storage);
+        let file_id = request.file_id.clone();
+        let chunk_index = request.chunk_index;
 
-        // Store encrypted chunk (already encrypted by client)
-        let mut storage = self.storage.lock().await;
-        storage.store_chunk(&request.file_id, request.chunk_index, &chunk_data)
-            .map_err(|e| ErrorResponse::internal_error(format!("Storage failed: {}", e)))?;
+        let (content_hash, chunk_size) = tokio::task::spawn_blocking(move || {
+            let processed = zk_processor.process_zk_chunk(&chunk_data, chunk_index)?;
+            storage.store_chunk(&file_id, chunk_index, &chunk_data)?;
+            Ok::<_, DataPlaneError>((processed.content_hash, processed.chunk_size))
+        })
+        .await
+        .map_err(|e| ErrorResponse::internal_error(format!("Task join error: {}", e)))?
+        .map_err(|e| ErrorResponse::internal_error(format!("Processing failed: {}", e)))?;
 
         Ok(ChunkResponse {
             success: true,
-            hash: processed.content_hash,
-            original_size: processed.chunk_size,
-            encrypted_size: processed.chunk_size,
+            hash: content_hash,
+            original_size: chunk_size,
+            encrypted_size: chunk_size,
             compressed: false,
             compression_ratio: None,
-            encrypted_chunk_path: None,  // ZK mode doesn't store encrypted chunks
+            encrypted_chunk_path: None,
         })
     }
 
     /// Handle Non-ZK mode upload (server-side encryption)
+    ///
+    /// The full pipeline (hash, compress, encrypt, write) is offloaded to a
+    /// blocking thread to avoid starving the tokio runtime with ~300 ms of
+    /// CPU + I/O work per 32 MB chunk.
     async fn handle_non_zk_upload(
         &self,
         request: UploadRequest,
@@ -121,7 +128,6 @@ impl UploadHandler {
     ) -> Result<ChunkResponse, ErrorResponse> {
         debug!("Processing Non-ZK mode upload");
 
-        // Read key from memfd
         #[cfg(target_os = "linux")]
         let key = crate::crypto::memfd::read_key_from_memfd(key_fd)
             .map_err(|e| ErrorResponse::internal_error(format!("Failed to read key: {}", e)))?;
@@ -130,7 +136,6 @@ impl UploadHandler {
         let key = crate::crypto::memfd_macos::read_key_from_memfd(key_fd)
             .map_err(|e| ErrorResponse::internal_error(format!("Failed to read key: {}", e)))?;
 
-        // Determine if compression should be used
         let should_compress = if request.compress {
             if let (Some(filename), Some(file_size)) = (&request.filename, request.file_size) {
                 should_compress(filename, file_size)
@@ -141,32 +146,45 @@ impl UploadHandler {
             false
         };
 
-        // Verify chunk format
         self.non_zk_processor.verify_chunk_format(&chunk_data)
             .map_err(|e| ErrorResponse::bad_request(format!("Invalid chunk format: {}", e)))?;
 
-        // Process: hash → compress → encrypt
-        let processed = self.non_zk_processor
-            .process_non_zk_chunk(&chunk_data, &key, request.chunk_index, should_compress)
-            .map_err(|e| ErrorResponse::internal_error(format!("Processing failed: {}", e)))?;
+        let processor = Arc::clone(&self.non_zk_processor);
+        let storage = Arc::clone(&self.storage);
+        let file_id = request.file_id.clone();
+        let chunk_index = request.chunk_index;
 
-        // Store encrypted chunk — use target_path if provided, else default storage
-        let mut storage = self.storage.lock().await;
-        let chunk_path = if let Some(ref tp) = target_path {
-            storage.store_chunk_at(&PathBuf::from(tp), &processed.encrypted_data)
-                .map_err(|e| ErrorResponse::internal_error(format!("Storage failed: {}", e)))?
-        } else {
-            storage.store_chunk(&request.file_id, request.chunk_index, &processed.encrypted_data)
-                .map_err(|e| ErrorResponse::internal_error(format!("Storage failed: {}", e)))?
-        };
+        let (original_hash, original_size, encrypted_size, was_compressed, compression_ratio, chunk_path) =
+            tokio::task::spawn_blocking(move || {
+                let processed = processor
+                    .process_non_zk_chunk(&chunk_data, &key, chunk_index, should_compress)?;
+
+                let chunk_path = if let Some(ref tp) = target_path {
+                    storage.store_chunk_at(&PathBuf::from(tp), &processed.encrypted_data)?
+                } else {
+                    storage.store_chunk(&file_id, chunk_index, &processed.encrypted_data)?
+                };
+
+                Ok::<_, DataPlaneError>((
+                    processed.original_hash,
+                    processed.stats.original_size,
+                    processed.stats.encrypted_size,
+                    processed.was_compressed,
+                    processed.stats.compression_ratio,
+                    chunk_path,
+                ))
+            })
+            .await
+            .map_err(|e| ErrorResponse::internal_error(format!("Task join error: {}", e)))?
+            .map_err(|e| ErrorResponse::internal_error(format!("Processing failed: {}", e)))?;
 
         Ok(ChunkResponse {
             success: true,
-            hash: processed.original_hash,
-            original_size: processed.stats.original_size,
-            encrypted_size: processed.stats.encrypted_size,
-            compressed: processed.was_compressed,
-            compression_ratio: processed.stats.compression_ratio,
+            hash: original_hash,
+            original_size,
+            encrypted_size,
+            compressed: was_compressed,
+            compression_ratio,
             encrypted_chunk_path: Some(chunk_path.to_string_lossy().to_string()),
         })
     }
@@ -174,14 +192,14 @@ impl UploadHandler {
 
 /// Download handler - processes download requests
 pub struct DownloadHandler {
-    non_zk_processor: NonZkModeProcessor,
-    storage: Arc<Mutex<ChunkStorage>>,
+    non_zk_processor: Arc<NonZkModeProcessor>,
+    storage: Arc<ChunkStorage>,
 }
 
 impl DownloadHandler {
-    pub fn new(storage: Arc<Mutex<ChunkStorage>>, compression_level: i32) -> Result<Self, DataPlaneError> {
+    pub fn new(storage: Arc<ChunkStorage>, compression_level: i32) -> Result<Self, DataPlaneError> {
         Ok(Self {
-            non_zk_processor: NonZkModeProcessor::new(compression_level)?,
+            non_zk_processor: Arc::new(NonZkModeProcessor::new(compression_level)?),
             storage,
         })
     }
@@ -193,11 +211,9 @@ impl DownloadHandler {
         request: DownloadRequest,
         key_fd: Option<RawFd>,
     ) -> Result<Vec<u8>, ErrorResponse> {
-        // Parse mode
         let mode = ProcessingMode::from_header(&request.mode)
             .map_err(|e| ErrorResponse::bad_request(format!("Invalid mode: {}", e)))?;
 
-        // Enforce mode security (close key_fd on violation - it would otherwise leak)
         ModeEnforcer::enforce(mode, key_fd.is_some())
             .map_err(|e| {
                 if let Some(fd) = key_fd {
@@ -207,26 +223,33 @@ impl DownloadHandler {
                 ErrorResponse::security_violation(format!("Security violation: {}", e))
             })?;
 
-        // Retrieve encrypted chunk (close key_fd on error - would otherwise leak)
-        let storage = self.storage.lock().await;
-        let encrypted_data = storage.retrieve_chunk(&request.file_id, request.chunk_index)
-            .map_err(|e| {
-                if let Some(fd) = key_fd {
-                    crate::server::fd_guard::close_key_fd(fd);
-                }
-                ErrorResponse::bad_request(format!("Chunk not found: {}", e))
-            })?;
-        drop(storage);
+        let storage = Arc::clone(&self.storage);
+        let file_id = request.file_id.clone();
+        let chunk_index = request.chunk_index;
 
-        // Process based on mode
+        let encrypted_data = tokio::task::spawn_blocking(move || {
+            storage.retrieve_chunk(&file_id, chunk_index)
+        })
+        .await
+        .map_err(|e| {
+            if let Some(fd) = key_fd {
+                crate::server::fd_guard::close_key_fd(fd);
+            }
+            ErrorResponse::internal_error(format!("Task join error: {}", e))
+        })?
+        .map_err(|e| {
+            if let Some(fd) = key_fd {
+                crate::server::fd_guard::close_key_fd(fd);
+            }
+            ErrorResponse::bad_request(format!("Chunk not found: {}", e))
+        })?;
+
         match mode {
             ProcessingMode::ZK => {
-                // ZK mode: return encrypted data as-is (client will decrypt)
                 debug!("Returning ZK mode chunk (encrypted)");
                 Ok(encrypted_data)
             }
             ProcessingMode::NonZK => {
-                // Non-ZK mode: decrypt and decompress
                 let key_fd = key_fd.ok_or_else(|| {
                     ErrorResponse::bad_request("Missing key FD for Non-ZK mode".to_string())
                 })?;
@@ -246,7 +269,6 @@ impl DownloadHandler {
     ) -> Result<Vec<u8>, ErrorResponse> {
         debug!("Processing Non-ZK mode download");
 
-        // Read key from memfd
         #[cfg(target_os = "linux")]
         let key = crate::crypto::memfd::read_key_from_memfd(key_fd)
             .map_err(|e| ErrorResponse::internal_error(format!("Failed to read key: {}", e)))?;
@@ -255,10 +277,14 @@ impl DownloadHandler {
         let key = crate::crypto::memfd_macos::read_key_from_memfd(key_fd)
             .map_err(|e| ErrorResponse::internal_error(format!("Failed to read key: {}", e)))?;
 
-        // Decrypt and decompress
-        let plaintext = self.non_zk_processor
-            .decrypt_non_zk_chunk(&encrypted_data, &key, chunk_index, was_compressed)
-            .map_err(|e| ErrorResponse::internal_error(format!("Decryption failed: {}", e)))?;
+        let processor = Arc::clone(&self.non_zk_processor);
+
+        let plaintext = tokio::task::spawn_blocking(move || {
+            processor.decrypt_non_zk_chunk(&encrypted_data, &key, chunk_index, was_compressed)
+        })
+        .await
+        .map_err(|e| ErrorResponse::internal_error(format!("Task join error: {}", e)))?
+        .map_err(|e| ErrorResponse::internal_error(format!("Decryption failed: {}", e)))?;
 
         debug!(decrypted_size = plaintext.len(), "Decryption completed");
         Ok(plaintext)
@@ -271,10 +297,10 @@ mod tests {
     use crate::storage::WriteOptions;
     use tempfile::TempDir;
 
-    fn create_test_storage() -> (Arc<Mutex<ChunkStorage>>, TempDir) {
+    fn create_test_storage() -> (Arc<ChunkStorage>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let storage = ChunkStorage::new(temp_dir.path(), WriteOptions::default());
-        (Arc::new(Mutex::new(storage)), temp_dir)
+        (Arc::new(storage), temp_dir)
     }
 
     #[tokio::test]
@@ -306,7 +332,6 @@ mod tests {
             target_path: None,
         };
 
-        // Pre-encrypted data (simulating client-side encryption)
         let encrypted_data = Bytes::from(vec![0u8; 1024]);
 
         let result = handler.handle_upload(request, encrypted_data, None).await;
@@ -334,12 +359,11 @@ mod tests {
 
         let encrypted_data = Bytes::from(vec![0u8; 1024]);
 
-        // ZK mode with key FD should fail (security violation)
         let result = handler.handle_upload(request, encrypted_data, Some(99)).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 403); // Security violation
+        assert_eq!(err.status_code, 403);
     }
 
     #[tokio::test]
@@ -363,6 +387,6 @@ mod tests {
         assert!(result.is_err());
 
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400); // Bad request
+        assert_eq!(err.status_code, 400);
     }
 }
