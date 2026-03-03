@@ -73,7 +73,7 @@ def upgrade() -> None:
     sa.Column('backup_location', sa.String(length=500), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('last_accessed', sa.DateTime(), nullable=True),
-    sa.Column('storage_type', sa.String(length=20), nullable=True),
+    sa.Column('storage_type', sa.String(length=30), nullable=True),
     sa.Column('storage_key', sa.String(length=500), nullable=True),
     sa.Column('object_path', sa.String(length=500), nullable=True),
     sa.Column('current_version', sa.Integer(), nullable=True),

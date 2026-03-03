@@ -100,6 +100,7 @@ impl UnixSocketServerWithScmRights {
                         let download_handler = Arc::clone(&self.download_handler);
                         let circuit_breaker = Arc::clone(&self.circuit_breaker);
                         let rate_limiter = Arc::clone(&self.rate_limiter);
+                        let compression_level = self.config.compression_level;
 
                         // Spawn connection handler
                         tokio::spawn(async move {
@@ -109,6 +110,7 @@ impl UnixSocketServerWithScmRights {
                                 download_handler,
                                 circuit_breaker,
                                 rate_limiter,
+                                compression_level,
                             )
                             .await
                             {
@@ -134,6 +136,7 @@ impl UnixSocketServerWithScmRights {
         download_handler: Arc<DownloadHandler>,
         circuit_breaker: Arc<CircuitBreaker>,
         rate_limiter: Arc<RateLimiter>,
+        compression_level: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fd = stream.as_raw_fd();
 
@@ -247,6 +250,18 @@ impl UnixSocketServerWithScmRights {
                     received_fd,
                     download_handler,
                     circuit_breaker,
+                    &mut stream,
+                )
+                .await
+            }
+
+            ("POST", "/dedup-chunk") => {
+                Self::handle_dedup_chunk(
+                    &buffer,
+                    bytes_read,
+                    body_start,
+                    &headers,
+                    compression_level,
                     &mut stream,
                 )
                 .await
@@ -519,5 +534,51 @@ impl UnixSocketServerWithScmRights {
                 Ok(())
             }
         }
+    }
+
+    /// Handle dedup-chunk request (no SCM_RIGHTS needed -- key is content-derived)
+    #[instrument(skip(buffer, headers, stream))]
+    async fn handle_dedup_chunk(
+        buffer: &[u8],
+        bytes_read: usize,
+        body_start: usize,
+        headers: &[(String, String)],
+        compression_level: i32,
+        stream: &mut UnixStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::server::dedup_handler::{DedupChunkRequest, process_dedup_chunk};
+
+        let dedup_req = match DedupChunkRequest::from_raw_headers(headers) {
+            Ok(r) => r,
+            Err(e) => {
+                let json = serde_json::to_string(&e)?;
+                let resp = build_http_response(400, "Bad Request", &json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        let body = &buffer[body_start..bytes_read];
+
+        let body_owned = body.to_vec();
+        let result = tokio::task::spawn_blocking(move || {
+            process_dedup_chunk(&dedup_req, &body_owned, compression_level)
+        })
+        .await?;
+
+        match result {
+            Ok(resp) => {
+                let json = serde_json::to_string(&resp)?;
+                let response = build_http_response(200, "OK", &json, &[]);
+                stream.write_all(&response).await?;
+            }
+            Err(err_resp) => {
+                let json = serde_json::to_string(&err_resp)?;
+                let response = build_http_response(err_resp.status_code, "Error", &json, &[]);
+                stream.write_all(&response).await?;
+            }
+        }
+
+        Ok(())
     }
 }

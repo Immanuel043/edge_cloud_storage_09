@@ -351,8 +351,6 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
         });
       }, 3000);
 
-      if (refreshFiles) await refreshFiles();
-
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'AbortError') {
         // User cancel — clean up file ref

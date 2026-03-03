@@ -113,7 +113,7 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
 
     const unsubFileUploaded = websocketService.on('file_uploaded', handleFileUploaded);
     const unsubFileDeleted = websocketService.on('file_deleted', handleFileDeleted);
-    const unsubStorageUpdate = websocketService.on('storage_updated', handleStorageUpdate);
+    const unsubStorageUpdate = websocketService.on('storage_update', handleStorageUpdate);
 
     return () => {
       unsubFileUploaded();
@@ -387,21 +387,22 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
           // Success — clear checkpoint
           clearCheckpoint(file.name, file.size);
 
-          // Send WebSocket notification
-          if (websocketService.isConnected) {
-            websocketService.send({
-              type: 'file_uploaded',
-              file_id: result.file_id,
-              file_name: file.name,
-              folder_id: currentFolder,
-            });
-          }
+          // Optimistic UI: inject file immediately
+          const optimisticFile: FileItem = {
+            id: result.file_id,
+            name: file.name,
+            size: file.size,
+            mime_type: file.type || 'application/octet-stream',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            is_encrypted: true,
+            folder_id: currentFolder,
+          };
+          setFiles(prev => [optimisticFile, ...prev]);
 
           requestCache.invalidate(/^files-/);
           requestCache.invalidate(/^folders-/);
-          await loadFiles();
-          await loadDedupStats();
-          await loadStorageStats();
+          loadFiles().catch(() => {});
 
           return { success: true, fileId: result.file_id, encrypted: false, serverUploadId: checkpoint.serverUploadId };
         } catch (error) {
@@ -466,22 +467,24 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       // Success — clear checkpoint
       clearCheckpoint(file.name, file.size);
 
-      // Send WebSocket notification
-      if (websocketService.isConnected) {
-        websocketService.send({
-          type: 'file_uploaded',
-          file_id: result.file_id,
-          file_name: file.name,
-          folder_id: currentFolder,
-        });
-      }
+      // Optimistic UI: inject the new file into state immediately so the
+      // dashboard shows it without waiting for a server round-trip.
+      const optimisticFile: FileItem = {
+        id: result.file_id,
+        name: file.name,
+        size: file.size,
+        mime_type: file.type || 'application/octet-stream',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        is_encrypted: true,
+        folder_id: currentFolder,
+      };
+      setFiles(prev => [optimisticFile, ...prev]);
 
-      // Clear cache and refresh
+      // Background refresh: reconcile optimistic state with server truth
       requestCache.invalidate(/^files-/);
       requestCache.invalidate(/^folders-/);
-      await loadFiles();
-      await loadDedupStats();
-      await loadStorageStats();
+      loadFiles().catch(() => {});
 
       const uploadResult: { success: boolean; fileId: string; encrypted: boolean; serverUploadId?: string } = { success: true, fileId: result.file_id, encrypted: false };
       if (capturedServerUploadId) {

@@ -290,6 +290,14 @@ class PreviewService:
             ext = os.path.splitext(file_obj.file_name or '')[1].lower()
             is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
 
+            _LARGE_VIDEO_THRESHOLD = 50 * 1024 * 1024  # 50MB
+            if is_video and file_obj.file_size > _LARGE_VIDEO_THRESHOLD:
+                logger.info(
+                    f"Skipping synchronous preview for large video {file_id} "
+                    f"({file_obj.file_size / 1024 / 1024:.1f}MB) - use Kafka worker"
+                )
+                return None
+
             if is_video and video_transcoder.is_cached(file_id):
                 transcoded_path = os.path.join(
                     video_transcoder.OUTPUT_DIR, f"{file_id}.mp4"

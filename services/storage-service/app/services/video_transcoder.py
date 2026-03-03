@@ -3,17 +3,39 @@
 import os
 import asyncio
 import logging
+import struct
 import subprocess
 import copy
 import json
 import re
 from types import SimpleNamespace
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 
 from .preview_optimizer import preview_optimizer
 
 logger = logging.getLogger(__name__)
+
+# Minimal valid ftyp box: tells ffprobe the file is ISO MP4
+_SYNTHETIC_FTYP = b'\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp41'
+_HEAD_PROBE_CHUNKS = 2  # 64MB — covers head-moov MP4s and all non-MP4 formats
+_TAIL_PROBE_CHUNKS = 2  # 64MB — covers moov atoms up to ~64MB (hours of video)
+
+
+def _find_moov_atom(data: bytes) -> Optional[Tuple[int, int]]:
+    """Find moov atom in raw bytes. Returns (offset, size) or None."""
+    search_start = 4  # Need at least 4 bytes before for box size
+    while True:
+        idx = data.find(b'moov', search_start)
+        if idx == -1:
+            return None
+        # Read the 4 bytes before 'moov' as the box size (big-endian uint32)
+        box_size = struct.unpack('>I', data[idx - 4:idx])[0]
+        box_start = idx - 4
+        # Validate: moov box must be >= 8 bytes and fully contained in buffer
+        if 8 <= box_size <= len(data) - box_start:
+            return (box_start, box_size)
+        search_start = idx + 4
 
 
 class VideoTranscodeError(Exception):
@@ -234,23 +256,144 @@ class VideoTranscoder:
             object_path=file_obj.object_path
         )
 
+    async def _run_ffprobe_async(self, probe_path: str, label: str) -> Optional[Dict]:
+        """Run ffprobe on a file and return parsed metadata, or None on failure.
+
+        Uses ``asyncio.create_subprocess_exec`` so the event loop is never
+        blocked (unlike the old ``subprocess.run`` approach).
+        """
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            probe_path,
+        ]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=5,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            logger.debug(f"ffprobe timed out for {label}")
+            return None
+        except Exception as e:
+            logger.debug(f"ffprobe exec error for {label}: {e}")
+            return None
+
+        if proc.returncode != 0:
+            stderr_text = (stderr_bytes or b"").decode(errors="replace")[:200]
+            logger.debug(f"ffprobe failed for {label}: stderr={stderr_text}")
+            return None
+
+        stdout_text = (stdout_bytes or b"").decode(errors="replace")
+        if not stdout_text or stdout_text.strip() == '{}':
+            logger.debug(f"ffprobe returned empty output for {label}")
+            return None
+
+        data = json.loads(stdout_text)
+        video_stream = next(
+            (s for s in data.get('streams', []) if s.get('codec_type') == 'video'), None
+        )
+        audio_stream = next(
+            (s for s in data.get('streams', []) if s.get('codec_type') == 'audio'), None
+        )
+        format_info = data.get('format', {})
+
+        if not video_stream:
+            logger.debug(f"No video stream found in {label}")
+            return None
+
+        return {
+            'codec_name': video_stream.get('codec_name'),
+            'audio_codec': audio_stream.get('codec_name') if audio_stream else None,
+            'duration': float(format_info.get('duration', 0)),
+            'width': video_stream.get('width'),
+            'height': video_stream.get('height'),
+            'bitrate': int(format_info.get('bit_rate', 0))
+        }
+
+    @staticmethod
+    def _build_probe_file(chunk_paths, encryption_service, file_key, chunk_indices, was_compressed, output_path):
+        """Sync helper: read, decrypt, decompress chunks and write to *output_path*.
+
+        Returns total bytes written.  Runs in a thread so the event loop is
+        never blocked by disk I/O or AES decryption.
+        """
+        from ..utils.compression import compressor as _compressor
+        total_bytes = 0
+        with open(output_path, 'wb') as out:
+            for i in chunk_indices:
+                chunk_path = chunk_paths.get(str(i))
+                if not chunk_path or not os.path.exists(chunk_path):
+                    logger.warning(f"Chunk {i} not found during probe build")
+                    continue
+                with open(chunk_path, 'rb') as f:
+                    encrypted_chunk = f.read()
+                decrypted = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
+                if was_compressed:
+                    decrypted = _compressor.decompress(decrypted)
+                out.write(decrypted)
+                total_bytes += len(decrypted)
+        return total_bytes
+
+    @staticmethod
+    def _read_tail_bytes(chunk_paths, encryption_service, file_key, tail_start, total_chunks, was_compressed):
+        """Sync helper: read and decrypt tail chunks into a bytearray.
+
+        Runs in a thread so the event loop is never blocked.
+        """
+        from ..utils.compression import compressor as _compressor
+        tail_bytes = bytearray()
+        for i in range(tail_start, total_chunks):
+            chunk_path = chunk_paths.get(str(i))
+            if not chunk_path or not os.path.exists(chunk_path):
+                logger.warning(f"Tail chunk {i} not found during probe")
+                continue
+            with open(chunk_path, 'rb') as f:
+                encrypted_chunk = f.read()
+            decrypted = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
+            if was_compressed:
+                decrypted = _compressor.decompress(decrypted)
+            tail_bytes.extend(decrypted)
+        return tail_bytes
+
     async def _probe_file_metadata(self, file_obj, encryption_service) -> Optional[Dict]:
         """
         Fast ffprobe inspection to extract codec, duration, resolution.
-        Falls back to None if probe fails (encrypted, corrupted, etc.).
+
+        Uses a two-pass head+tail strategy for tail-moov MP4 files:
+          Pass 1: Probe first 2 chunks (64MB) — works for head-moov MP4 and non-MP4.
+          Pass 2: If head fails and file is MP4/MOV, build synthetic ftyp+moov
+                  from the last 2 chunks and re-probe.
+
+        Always O(1): reads at most 4 chunks (128MB) regardless of file size.
 
         Returns dict with: codec_name, audio_codec, duration, width, height, bitrate
         Returns None on failure (don't block transcode)
         """
+        from ..utils.executors import run_in_heavy_pool
+
         if not os.getenv("ENABLE_SMART_TRANSCODE", "true").lower() == "true":
             return None
 
         probe_path = None
         temp_probe_file = None
+        tail_probe_file = None
         try:
-            # For chunked/content-addressed files, decrypt first 2 CONTIGUOUS chunks
-            # (preview_optimizer creates gappy files which don't work for ffprobe)
-            if file_obj.storage_type in ("chunked", "content_addressed"):
+            # For chunked/content-addressed/deduplicated files, use two-pass head+tail
+            if file_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
                 if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
                     return None
 
@@ -258,32 +401,119 @@ class VideoTranscoder:
                 if not chunk_paths:
                     return None
 
-                # Get file encryption key
+                total_chunks = len(chunk_paths)
                 file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
-                # Decrypt first 4 contiguous chunks (128MB - enough for most MP4 moov atoms)
+                # Check if chunks are compressed (matches preview_optimizer pattern)
+                was_compressed = False
+                if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict):
+                    was_compressed = file_obj.file_metadata.get("compressed", False)
+                elif file_obj.chunk_info and isinstance(file_obj.chunk_info, dict):
+                    was_compressed = file_obj.chunk_info.get("compressed", False)
+
+                # -------- Pass 1: Head probe (first 2 chunks, 64MB) --------
                 temp_probe_file = f"/tmp/probe_{file_obj.id}.partial"
-                max_chunks = min(4, len(chunk_paths))
+                head_count = min(_HEAD_PROBE_CHUNKS, total_chunks)
 
-                total_bytes = 0
-                with open(temp_probe_file, 'wb') as out:
-                    for i in range(max_chunks):
-                        chunk_path = chunk_paths.get(str(i))
-                        if not chunk_path or not os.path.exists(chunk_path):
-                            logger.warning(f"Chunk {i} not found for {file_obj.file_name}")
-                            continue
-
-                        with open(chunk_path, 'rb') as f:
-                            encrypted_chunk = f.read()
-
-                        # Use chunk-specific decryption with AAD (chunk_index)
-                        decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
-                        out.write(decrypted_chunk)
-                        total_bytes += len(decrypted_chunk)
-                        logger.debug(f"Decrypted chunk {i}: {len(decrypted_chunk)} bytes")
+                total_bytes = await run_in_heavy_pool(
+                    self._build_probe_file,
+                    chunk_paths, encryption_service, file_key,
+                    list(range(head_count)), was_compressed, temp_probe_file,
+                )
 
                 probe_path = temp_probe_file
-                logger.info(f"🔍 Probing chunked video with {max_chunks} contiguous chunks: {file_obj.file_name} ({total_bytes} bytes)")
+                logger.info(
+                    f"🔍 Head probe: {head_count} chunks ({total_bytes} bytes) "
+                    f"for {file_obj.file_name}"
+                )
+
+                head_result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
+                if head_result:
+                    logger.info(
+                        f"🔍 Probed {file_obj.file_name}: "
+                        f"{head_result['codec_name']}/{head_result['audio_codec']} "
+                        f"{head_result.get('width')}x{head_result.get('height')}"
+                    )
+                    return head_result
+
+                # -------- Pass 2: Tail probe (only for MP4/MOV containers) --------
+                ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+                mime = (file_obj.mime_type or '').lower()
+                mp4_exts = {'.mp4', '.m4v', '.mov', '.m4a', '.3gp', '.3g2'}
+                mp4_mimes = {
+                    'video/mp4', 'video/quicktime', 'video/x-m4v',
+                    'video/3gpp', 'video/3gpp2',
+                }
+
+                if ext not in mp4_exts and mime not in mp4_mimes:
+                    logger.info(
+                        f"Head probe failed for non-MP4 {file_obj.file_name}, "
+                        f"skipping tail probe"
+                    )
+                    return None
+
+                if total_chunks <= head_count:
+                    logger.info(
+                        f"Head probe failed and all chunks already read "
+                        f"for {file_obj.file_name}"
+                    )
+                    return None
+
+                # Read last N chunks into memory (offloaded to heavy pool)
+                tail_count = min(_TAIL_PROBE_CHUNKS, total_chunks - head_count)
+                tail_start = total_chunks - tail_count
+
+                tail_bytes = await run_in_heavy_pool(
+                    self._read_tail_bytes,
+                    chunk_paths, encryption_service, file_key,
+                    tail_start, total_chunks, was_compressed,
+                )
+
+                logger.info(
+                    f"🔍 Tail probe: read {tail_count} tail chunks "
+                    f"({len(tail_bytes)} bytes) for {file_obj.file_name}"
+                )
+
+                # Search for moov atom in tail bytes
+                moov = _find_moov_atom(bytes(tail_bytes))
+                if not moov:
+                    logger.warning(
+                        f"❌ No moov atom found in tail of {file_obj.file_name}"
+                    )
+                    return None
+
+                moov_offset, moov_size = moov
+                moov_bytes = bytes(tail_bytes[moov_offset:moov_offset + moov_size])
+
+                # Build synthetic ftyp + moov file for ffprobe
+                tail_probe_file = f"/tmp/probe_{file_obj.id}.synthetic"
+                with open(tail_probe_file, 'wb') as out:
+                    out.write(_SYNTHETIC_FTYP)
+                    out.write(moov_bytes)
+
+                logger.info(
+                    f"🔍 Tail probe: built synthetic file "
+                    f"({len(_SYNTHETIC_FTYP) + len(moov_bytes)} bytes, "
+                    f"moov={moov_size} bytes) for {file_obj.file_name}"
+                )
+
+                tail_result = await self._run_ffprobe_async(
+                    tail_probe_file, f"{file_obj.file_name} (tail)"
+                )
+                if tail_result:
+                    # Zero out bitrate — meaningless from synthetic file
+                    tail_result['bitrate'] = 0
+                    logger.info(
+                        f"🔍 Tail-probed {file_obj.file_name}: "
+                        f"{tail_result['codec_name']}/{tail_result['audio_codec']} "
+                        f"{tail_result.get('width')}x{tail_result.get('height')}"
+                    )
+                    return tail_result
+
+                logger.warning(
+                    f"❌ Both head and tail probes failed for {file_obj.file_name}"
+                )
+                return None
 
             # For single files, try probing the file directly
             elif file_obj.storage_type == "single" and file_obj.object_path:
@@ -295,69 +525,29 @@ class VideoTranscoder:
             if not probe_path or not os.path.exists(probe_path):
                 return None
 
-            # Run ffprobe (timeout after 5 seconds)
-            # Use -v error to see diagnostic info while keeping JSON output clean
-            cmd = [
-                'ffprobe',
-                '-v', 'error',
-                '-print_format', 'json',
-                '-show_format',
-                '-show_streams',
-                probe_path
-            ]
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-
-            if result.returncode != 0:
-                logger.warning(f"❌ ffprobe failed for {file_obj.file_name}: returncode={result.returncode}, stderr={result.stderr}, stdout={result.stdout}")
-                return None
-
-            if not result.stdout or result.stdout.strip() == '{}':
-                file_size = os.path.getsize(probe_path) if os.path.exists(probe_path) else 0
-                logger.warning(f"❌ ffprobe returned empty output for {file_obj.file_name} (file size: {file_size} bytes)")
-                return None
-
-            data = json.loads(result.stdout)
-            video_stream = next((s for s in data.get('streams', []) if s.get('codec_type') == 'video'), None)
-            audio_stream = next((s for s in data.get('streams', []) if s.get('codec_type') == 'audio'), None)
-            format_info = data.get('format', {})
-
-            if not video_stream:
-                logger.warning(f"❌ No video stream found in {file_obj.file_name}")
-                return None
-
-            probe_result = {
-                'codec_name': video_stream.get('codec_name'),
-                'audio_codec': audio_stream.get('codec_name') if audio_stream else None,
-                'duration': float(format_info.get('duration', 0)),
-                'width': video_stream.get('width'),
-                'height': video_stream.get('height'),
-                'bitrate': int(format_info.get('bit_rate', 0))
-            }
-
-            logger.info(
-                f"🔍 Probed {file_obj.file_name}: "
-                f"{probe_result['codec_name']}/{probe_result['audio_codec']} "
-                f"{probe_result.get('width')}x{probe_result.get('height')}"
-            )
-
-            return probe_result
+            result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
+            if result:
+                logger.info(
+                    f"🔍 Probed {file_obj.file_name}: "
+                    f"{result['codec_name']}/{result['audio_codec']} "
+                    f"{result.get('width')}x{result.get('height')}"
+                )
+            return result
 
         except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
-            logger.warning(f"❌ Probe exception for {file_obj.file_name}: {type(e).__name__}: {e}")
+            logger.warning(
+                f"❌ Probe exception for {file_obj.file_name}: "
+                f"{type(e).__name__}: {e}"
+            )
             return None
         finally:
-            # Clean up temp probe file
-            if temp_probe_file and os.path.exists(temp_probe_file):
-                try:
-                    os.remove(temp_probe_file)
-                except Exception:
-                    pass
+            # Clean up temp probe files
+            for path in (temp_probe_file, tail_probe_file):
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
 
     async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
         """Return path to compatible MP4 stream, or None if not needed."""

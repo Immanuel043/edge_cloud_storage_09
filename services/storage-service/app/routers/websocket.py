@@ -256,7 +256,86 @@ manager = EnhancedConnectionManager(
     heartbeat_interval=30
 )
 
-# Start heartbeat checker on startup
+async def _listen_preview_notifications():
+    """Subscribe to Redis Pub/Sub and bridge notifications to WebSocket clients.
+
+    Listens on two channels:
+    - preview_notifications: preview_ready events from the preview worker
+    - file_notifications: file_created events from the upload completion handler
+
+    Uses a synchronous Redis client in a thread to avoid async generator issues
+    with redis.asyncio Pub/Sub, then dispatches to the async event loop.
+    """
+    import redis as sync_redis
+    from ..config import settings
+    import threading
+
+    loop = asyncio.get_event_loop()
+
+    def _blocking_listener():
+        backoff = 1
+        while True:
+            try:
+                r = sync_redis.from_url(settings.REDIS_URL, decode_responses=True)
+                ps = r.pubsub()
+                ps.subscribe('preview_notifications', 'file_notifications')
+                logger.info("Subscribed to preview_notifications + file_notifications Redis channels")
+                backoff = 1
+
+                for message in ps.listen():
+                    if message['type'] != 'message':
+                        continue
+                    try:
+                        channel = message.get('channel', '')
+                        data = json.loads(message['data'])
+                        user_id = data.get('user_id')
+                        if not user_id:
+                            continue
+
+                        if channel == 'file_notifications':
+                            payload = {
+                                'type': 'notification',
+                                'event': 'file_uploaded',
+                                'data': {
+                                    'file_id': data.get('file_id'),
+                                    'file_name': data.get('file_name'),
+                                    'file_size': data.get('file_size'),
+                                    'mime_type': data.get('mime_type'),
+                                    'folder_id': data.get('folder_id'),
+                                    'storage_type': data.get('storage_type'),
+                                },
+                                'timestamp': datetime.utcnow().isoformat(),
+                            }
+                            asyncio.run_coroutine_threadsafe(
+                                manager.send_to_user(user_id, payload), loop
+                            )
+                            logger.info(f"Pushed file_uploaded to user {user_id} for file {data.get('file_id')}")
+                        else:
+                            payload = {
+                                'type': 'preview_ready',
+                                'file_id': data.get('file_id'),
+                                'status': data.get('status'),
+                                'error': data.get('error'),
+                                'timestamp': datetime.utcnow().isoformat(),
+                            }
+                            asyncio.run_coroutine_threadsafe(
+                                manager.send_to_user(user_id, payload), loop
+                            )
+                            logger.info(f"Pushed preview_ready to user {user_id} for file {data.get('file_id')}")
+
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Invalid notification message: {e}")
+
+            except Exception as e:
+                logger.error(f"Notification listener error: {e}, reconnecting in {backoff}s")
+                import time
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+
+    thread = threading.Thread(target=_blocking_listener, daemon=True)
+    thread.start()
+
+# Start heartbeat checker on startup (preview listener started from main.py lifespan)
 @router.on_event("startup")
 async def startup_event():
     asyncio.create_task(manager.check_heartbeats())
@@ -333,6 +412,18 @@ async def websocket_endpoint(
 
     redis_client = await get_redis()
 
+    # Server-side periodic ping keeps connection alive through proxies
+    async def _server_ping_loop():
+        try:
+            while True:
+                await asyncio.sleep(25)
+                if not await manager.send_json_safe(websocket, {"type": "ping"}):
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    ping_task = asyncio.create_task(_server_ping_loop())
+
     try:
         # Main message loop
         while True:
@@ -343,7 +434,7 @@ async def websocket_endpoint(
                     timeout=60.0  # 60 second timeout
                 )
             except asyncio.TimeoutError:
-                # Send ping on timeout
+                # Send ping on timeout (backup for the periodic ping loop)
                 if await manager.send_json_safe(websocket, {"type": "ping"}):
                     continue
                 else:
@@ -357,6 +448,7 @@ async def websocket_endpoint(
     except Exception as e:
         logger.error(f"WebSocket error for user {user_id}: {e}")
     finally:
+        ping_task.cancel()
         manager.disconnect(websocket)
         # Clean up Redis subscriptions
         try:

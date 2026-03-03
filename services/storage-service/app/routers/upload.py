@@ -556,15 +556,13 @@ async def upload_chunk(
             async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
                 await f.write(encrypted_chunk)
 
-        # Atomically update session to prevent concurrent chunk upload race
-        def apply_chunk_update(s):
-            if chunk_index not in s["done"]:
-                s["done"].append(chunk_index)
-                s["hashes"].append(chunk_hash)
-            s["chunk_paths"][str(chunk_index)] = storage_path
-            return s
-
-        session = await update_upload_session_atomic(redis_client, db, upload_id, apply_chunk_update)
+        # Atomically update session via Redis Lua script (single round-trip, no races)
+        session = await update_upload_session_atomic(
+            redis_client, db, upload_id,
+            chunk_index=chunk_index,
+            chunk_hash=chunk_hash,
+            storage_path=storage_path,
+        )
 
         progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
 
@@ -1085,6 +1083,21 @@ async def complete_upload(
             },
             request,
         )
+
+        # Notify connected WebSocket clients via Redis Pub/Sub
+        try:
+            await redis_client.publish('file_notifications', json.dumps({
+                'event': 'file_created',
+                'user_id': str(current_user.id),
+                'file_id': str(file_id),
+                'file_name': session["name"],
+                'file_size': session["size"],
+                'mime_type': mime_type,
+                'folder_id': session.get("folder"),
+                'storage_type': storage_strategy,
+            }))
+        except Exception:
+            pass
     except Exception as e:
         # Rollback on any database error
         await db.rollback()
@@ -1109,270 +1122,24 @@ async def complete_upload(
 
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
-    # ============ SMART DEDUPLICATION CLASSIFICATION ============
-    # Classify file to determine optimal dedup strategy
-    file_classification = None
-    enable_dedup = False
-
-    if storage_strategy in ["single", "chunked"] and session["size"] > 1_048_576:  # > 1MB
-        try:
-            # Get file path for classification
-            file_path = session.get("storage_path") if storage_strategy == "single" else None
-
-            # If chunked, we can't classify yet (no single file)
-            # For now, only classify single files
-            if file_path and os.path.exists(file_path):
-                file_classification = await dedup_classifier.classify_file(
-                    file_path=file_path,
-                    file_size=session["size"],
-                    filename=session["name"]
-                )
-
-                logger.info(
-                    f"📊 Classification: {session['name']} → "
-                    f"mode={file_classification.dedup_mode}, "
-                    f"reason={file_classification.reason}, "
-                    f"strategy={file_classification.chunk_strategy}"
-                )
-
-                # Store classification metadata in dedup_info
-                file_obj.dedup_info = {
-                    "classification_mode": file_classification.dedup_mode,
-                    "classification_reason": file_classification.reason,
-                    "classification_priority": file_classification.priority,
-                    "chunk_strategy": file_classification.chunk_strategy,
-                    "classified_at": datetime.utcnow().isoformat()
-                }
-                await db.commit()
-
-                # Enable dedup only if not skipped
-                enable_dedup = file_classification.dedup_mode in ['inline', 'async']
-            else:
-                # Fallback to old logic for chunked files
-                enable_dedup = session["size"] > 10 * 1024 * 1024
-
-        except Exception as e:
-            logger.error(f"Classification failed for {session['name']}: {e}")
-            # Fallback to old logic
-            enable_dedup = session["size"] > 10 * 1024 * 1024
-
-    if enable_dedup:
-        # Check if file exceeds 1GB limit - skip dedup for very large files
-        file_size = session.get("size", 0)
-        if file_size > 1024 * 1024 * 1024:  # 1GB
-            logger.info(
-                f"📦 Large file {session['name']} ({file_size/1024/1024/1024:.2f}GB) uploaded successfully. "
-                f"Deduplication skipped (> 1GB limit). Stored using efficient chunked storage."
-            )
-        else:
-            priority = file_classification.priority if file_classification else 2
-            logger.info(
-                f"📋 Queuing {session['name']} for background deduplication "
-                f"(priority={priority}, reason={file_classification.reason if file_classification else 'size-based'})"
-            )
-            # Queue job without awaiting - fire and forget
-            asyncio.create_task(
-                background_dedup_service.enqueue_for_dedup(
-                    file_id=str(file_id),
-                    upload_id=upload_id,
-                    user_id=str(current_user.id),
-                    session_data=session,
-                    priority=priority  # Pass priority from classification
-                )
-            )
-    elif file_classification and file_classification.dedup_mode == 'skip':
-        logger.info(
-            f"⏭️  Skipping dedup for {session['name']}: {file_classification.reason}"
-        )
-
-    # ============ SECURITY SCANNING (BACKGROUND) ============
-    # Run virus scan and DLP scan in background
-    asyncio.create_task(
-        run_security_scans(
-            file_id=file_id,
-            user_id=current_user.id,
-            file_name=session['name'],
-            file_size=session['size'],
-            mime_type=mime_type,
-            storage_strategy=storage_strategy,
-            file_obj=file_obj
-        )
-    )
-
-    # ============ VIDEO OPTIMIZATION (BACKGROUND) ============
-    # Run video faststart optimization for MOV/MP4 files (legacy single-file path)
-    if storage_strategy == "single" and file_obj.object_path:
-        asyncio.create_task(
-            run_video_optimization(
-                file_id=file_id,
-                file_name=session['name'],
-                file_path=file_obj.object_path,
-                mime_type=mime_type,
-                storage_strategy=storage_strategy
-            )
-        )
-
-    # ============ PROACTIVE VIDEO TRANSCODING (BACKGROUND) ============
-    # Queue video for proactive transcoding to ensure zero-latency playback
-    # This replaces the reactive transcoding that occurred on playback
-    is_video = mime_type and mime_type.startswith('video/')
-    if is_video:
-        # Check if user's plan includes video optimization
-        video_opt_enabled = False
-        try:
-            from shared_billing import BillingService
-            billing_svc = BillingService(db, service_type='normal')
-            sub = await billing_svc.get_user_subscription(current_user.id, include_plan=True)
-            video_opt_enabled = bool((sub.plan.features or {}).get('video_optimization'))
-        except Exception:
-            pass
-
-        if video_opt_enabled:
-            try:
-                producer = await get_kafka_producer()
-                queue_result = await video_ingestion_service.on_upload_complete(
-                    file_id=str(file_id),
-                    user_id=str(current_user.id),
-                    file_name=session['name'],
-                    file_size=session['size'],
-                    mime_type=mime_type,
-                    kafka_producer=producer
-                )
-
-                if queue_result['queued']:
-                    # Update database status to 'queued'
-                    file_obj.video_processing_status = 'queued'
-                    await db.commit()
-                    logger.info(
-                        f"Queued video for proactive optimization: {session['name']} "
-                        f"({session['size'] / 1024 / 1024:.1f}MB)"
-                    )
-                else:
-                    logger.info(
-                        f"Video not queued for optimization: {session['name']} "
-                        f"[reason={queue_result.get('reason', 'unknown')}]"
-                    )
-            except Exception as e:
-                logger.error(f"Failed to queue video for proactive optimization: {e}")
-                # Non-fatal - video can still be transcoded on-demand
-        else:
-            logger.info(f"Skipping video optimization for {session['name']} (plan does not include it)")
-
-    # ============ VIDEO PREVIEW QUEUEING (BACKGROUND) ============
-    # Queue large videos (>50MB) for background preview generation
-    PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50MB
-    is_video = mime_type and mime_type.startswith('video/')
-
-    if is_video and session["size"] > PREVIEW_QUEUE_THRESHOLD:
-        try:
-            producer = await get_kafka_producer()
-            if producer:
-                await producer.send_and_wait(
-                    'preview-processing',
-                    {
-                        'file_id': str(file_id),
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'file_name': session['name'],
-                        'file_size': session['size'],
-                        'mime_type': mime_type,
-                        'storage_type': storage_strategy
-                    }
-                )
-                # Set initial status in Redis
-                await redis_client.setex(
-                    f'preview:status:{file_id}',
-                    3600,  # 1 hour TTL
-                    json.dumps({'status': 'queued', 'queued_at': datetime.utcnow().isoformat()})
-                )
-                logger.info(f"🎬 Queued video preview for background processing: {session['name']} ({session['size'] / 1024 / 1024:.1f}MB)")
-            else:
-                logger.warning(f"Kafka producer not available, skipping preview queue for {session['name']}")
-        except Exception as e:
-            logger.error(f"Failed to queue video preview for {session['name']}: {e}")
-            # Non-fatal - preview can still be generated on-demand
-
-    # ============ PREVIEW PRE-GENERATION FOR NON-VIDEO CHUNKED FILES ============
-    # For non-video chunked files that didn't get upload-time preview generation
-    # (plaintext arrives in pieces for chunked uploads), pre-generate in background
-    if not is_video and storage_strategy != "inline":
-        from ..services.preview_service import preview_service
-        asyncio.create_task(
-            preview_service.generate_on_demand_background(
-                file_id=str(file_id),
-                file_obj=file_obj,
-                redis_client=redis_client,
-            )
-        )
-
-    # ============ SEMANTIC EMBEDDING QUEUEING (BACKGROUND) ============
-    # Queue file for semantic embedding generation (for AI-powered search)
-    if settings.SEMANTIC_SEARCH_ENABLED:
-        try:
-            producer = await get_kafka_producer()
-            if producer:
-                await producer.send_and_wait(
-                    'embedding-processing',
-                    {
-                        'file_id': str(file_id),
-                        'user_id': str(current_user.id),
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'file_name': session['name'],
-                        'mime_type': mime_type,
-                        'tags': session.get('tags', []),
-                        'description': session.get('description', ''),
-                        'ai_tags': []  # Will be populated by AI tagging service
-                    }
-                )
-                logger.debug(f"🧠 Queued file for semantic embedding: {session['name']}")
-        except Exception as e:
-            logger.warning(f"Failed to queue embedding for {session['name']}: {e}")
-            # Non-fatal - embedding can still be generated on-demand
-
-    # ============ FILE ANALYSIS QUEUEING (BACKGROUND) ============
-    # Queue file for AI analysis (OCR, metadata, auto-tagging)
-    if settings.ML_FEATURES_ENABLED:
-        try:
-            producer = await get_kafka_producer()
-            if producer:
-                await producer.send_and_wait(
-                    'file-analysis',
-                    {
-                        'file_id': str(file_id),
-                        'user_id': str(current_user.id),
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'file_name': session['name'],
-                        'mime_type': mime_type,
-                        'file_size': session['size']
-                    }
-                )
-                logger.debug(f"🏷️ Queued file for AI analysis: {session['name']}")
-        except Exception as e:
-            logger.warning(f"Failed to queue analysis for {session['name']}: {e}")
-            # Non-fatal - analysis can still be triggered manually
-
-    # Index file in Elasticsearch (best effort, non-blocking)
-    if settings.ELASTICSEARCH_ENABLED:
-        async def index_with_logging():
-            try:
-                indexed = await search_service.index_file({
-                    'id': file_id,
-                    'name': session['name'],
-                    'original_name': session['name'],
-                    'mime_type': mime_type,
-                    'size': session['size'],
-                    'hash': file_obj.content_hash,
-                    'storage_tier': 'cache',
-                    'folder_id': session.get('folder'),
-                    'user_id': current_user.id,
-                    'created_at': datetime.utcnow(),
-                    'updated_at': datetime.utcnow()
-                })
-                if not indexed:
-                    logger.warning(f"File {file_id} ({session['name']}) not indexed - search may not find it")
-            except Exception as e:
-                logger.error(f"Failed to index file {file_id}: {e}")
-
-        asyncio.create_task(index_with_logging())
+    # ============ NON-CRITICAL POST-UPLOAD WORK (BACKGROUND) ============
+    # Dedup classification, security scanning, video optimization, Kafka sends,
+    # preview generation, embedding, file analysis, and ES indexing all run in a
+    # single background task so the /complete response returns immediately.
+    asyncio.create_task(_run_post_upload_tasks(
+        file_id=file_id,
+        upload_id=upload_id,
+        user_id=current_user.id,
+        file_name=session["name"],
+        file_size=session["size"],
+        mime_type=mime_type,
+        storage_strategy=storage_strategy,
+        session_data=session,
+        file_obj=file_obj,
+        redis_client=redis_client,
+        content_hash=file_obj.content_hash,
+        object_path=file_obj.object_path if storage_strategy == "single" else None,
+    ))
 
     # Clean up session from Redis + DB
     await delete_upload_session(redis_client, db, upload_id)
@@ -1398,8 +1165,7 @@ async def complete_upload(
         "encrypted": True,
         "compressed": session.get("compress", False),
         "deduplication": {
-            "enabled": enable_dedup,
-            "status": "queued" if enable_dedup else "disabled"
+            "status": "pending"
         },
         "duration": round(duration, 2),
         "throughput_mbps": round(throughput, 2)
@@ -1905,3 +1671,263 @@ async def run_video_optimization(
 
     except Exception as e:
         logger.error(f"Video optimization failed for {file_name}: {e}", exc_info=True)
+
+
+# ============================================================================
+# CONSOLIDATED POST-UPLOAD BACKGROUND TASK
+# ============================================================================
+
+PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50 MB
+
+async def _run_post_upload_tasks(
+    file_id: uuid.UUID,
+    upload_id: str,
+    user_id: uuid.UUID,
+    file_name: str,
+    file_size: int,
+    mime_type: str,
+    storage_strategy: str,
+    session_data: dict,
+    file_obj: Object,
+    redis_client,
+    content_hash: str,
+    object_path: str | None,
+):
+    """All non-critical post-upload work in a single background coroutine.
+
+    Covers: dedup classification, security scanning, video optimization,
+    Kafka event fan-out (parallelized), preview generation, and ES indexing.
+    """
+    from ..database import async_session as _async_session
+
+    is_video = bool(mime_type and mime_type.startswith('video/'))
+
+    try:
+        # ===== SMART DEDUPLICATION CLASSIFICATION =====
+        file_classification = None
+        enable_dedup = False
+
+        if storage_strategy in ("single", "chunked") and file_size > 1_048_576:
+            try:
+                file_path = session_data.get("storage_path") if storage_strategy == "single" else None
+
+                if file_path and os.path.exists(file_path):
+                    file_classification = await dedup_classifier.classify_file(
+                        file_path=file_path,
+                        file_size=file_size,
+                        filename=file_name,
+                    )
+                    logger.info(
+                        f"Classification: {file_name} -> "
+                        f"mode={file_classification.dedup_mode}, "
+                        f"reason={file_classification.reason}, "
+                        f"strategy={file_classification.chunk_strategy}"
+                    )
+
+                    async with _async_session() as bg_db:
+                        await bg_db.execute(
+                            update(Object).where(Object.id == file_id).values(
+                                dedup_info={
+                                    "classification_mode": file_classification.dedup_mode,
+                                    "classification_reason": file_classification.reason,
+                                    "classification_priority": file_classification.priority,
+                                    "chunk_strategy": file_classification.chunk_strategy,
+                                    "classified_at": datetime.utcnow().isoformat(),
+                                }
+                            )
+                        )
+                        await bg_db.commit()
+
+                    enable_dedup = file_classification.dedup_mode in ("inline", "async")
+                else:
+                    enable_dedup = file_size > 10 * 1024 * 1024
+            except Exception as e:
+                logger.error(f"Classification failed for {file_name}: {e}")
+                enable_dedup = file_size > 10 * 1024 * 1024
+
+        if enable_dedup:
+            if file_size > 1024 * 1024 * 1024:
+                logger.info(
+                    f"Large file {file_name} ({file_size / 1024 / 1024 / 1024:.2f}GB) "
+                    f"uploaded. Deduplication skipped (> 1GB limit)."
+                )
+            else:
+                priority = file_classification.priority if file_classification else 2
+                logger.info(
+                    f"Queuing {file_name} for background dedup "
+                    f"(priority={priority}, reason="
+                    f"{file_classification.reason if file_classification else 'size-based'})"
+                )
+                await background_dedup_service.enqueue_for_dedup(
+                    file_id=str(file_id),
+                    upload_id=upload_id,
+                    user_id=str(user_id),
+                    session_data=session_data,
+                    priority=priority,
+                )
+        elif file_classification and file_classification.dedup_mode == "skip":
+            logger.info(f"Skipping dedup for {file_name}: {file_classification.reason}")
+
+        # ===== SECURITY SCANNING =====
+        await run_security_scans(
+            file_id=file_id,
+            user_id=user_id,
+            file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
+            storage_strategy=storage_strategy,
+            file_obj=file_obj,
+        )
+
+        # ===== VIDEO OPTIMIZATION =====
+        if storage_strategy == "single" and object_path:
+            await run_video_optimization(
+                file_id=file_id,
+                file_name=file_name,
+                file_path=object_path,
+                mime_type=mime_type,
+                storage_strategy=storage_strategy,
+            )
+
+        # ===== KAFKA SENDS (PARALLELIZED) =====
+        producer = await get_kafka_producer()
+        kafka_futures = []
+
+        if is_video:
+            video_opt_enabled = False
+            try:
+                async with _async_session() as bg_db:
+                    from shared_billing import BillingService
+                    billing_svc = BillingService(bg_db, service_type="normal")
+                    sub = await billing_svc.get_user_subscription(user_id, include_plan=True)
+                    video_opt_enabled = bool((sub.plan.features or {}).get("video_optimization"))
+            except Exception:
+                pass
+
+            if video_opt_enabled and producer:
+                async def _queue_video_ingestion():
+                    try:
+                        queue_result = await video_ingestion_service.on_upload_complete(
+                            file_id=str(file_id),
+                            user_id=str(user_id),
+                            file_name=file_name,
+                            file_size=file_size,
+                            mime_type=mime_type,
+                            kafka_producer=producer,
+                        )
+                        if queue_result["queued"]:
+                            async with _async_session() as bg_db:
+                                await bg_db.execute(
+                                    update(Object).where(Object.id == file_id)
+                                    .values(video_processing_status="queued")
+                                )
+                                await bg_db.commit()
+                            logger.info(f"Queued video for proactive optimization: {file_name}")
+                        else:
+                            logger.info(
+                                f"Video not queued: {file_name} "
+                                f"[reason={queue_result.get('reason', 'unknown')}]"
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to queue video for proactive optimization: {e}")
+
+                kafka_futures.append(_queue_video_ingestion())
+            elif not video_opt_enabled:
+                logger.info(f"Skipping video optimization for {file_name} (plan does not include it)")
+
+        if is_video and file_size > PREVIEW_QUEUE_THRESHOLD and producer:
+            async def _queue_video_preview():
+                try:
+                    await producer.send_and_wait(
+                        "preview-processing",
+                        {
+                            "file_id": str(file_id),
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "file_name": file_name,
+                            "file_size": file_size,
+                            "mime_type": mime_type,
+                            "storage_type": storage_strategy,
+                        },
+                    )
+                    await redis_client.setex(
+                        f"preview:status:{file_id}",
+                        3600,
+                        json.dumps({"status": "queued", "queued_at": datetime.utcnow().isoformat()}),
+                    )
+                    logger.info(f"Queued video preview: {file_name}")
+                except Exception as e:
+                    logger.error(f"Failed to queue video preview for {file_name}: {e}")
+
+            kafka_futures.append(_queue_video_preview())
+
+        if settings.SEMANTIC_SEARCH_ENABLED and producer:
+            kafka_futures.append(
+                producer.send_and_wait(
+                    "embedding-processing",
+                    {
+                        "file_id": str(file_id),
+                        "user_id": str(user_id),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "file_name": file_name,
+                        "mime_type": mime_type,
+                        "tags": session_data.get("tags", []),
+                        "description": session_data.get("description", ""),
+                        "ai_tags": [],
+                    },
+                )
+            )
+
+        if settings.ML_FEATURES_ENABLED and producer:
+            kafka_futures.append(
+                producer.send_and_wait(
+                    "file-analysis",
+                    {
+                        "file_id": str(file_id),
+                        "user_id": str(user_id),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "file_name": file_name,
+                        "mime_type": mime_type,
+                        "file_size": file_size,
+                    },
+                )
+            )
+
+        # ===== ELASTICSEARCH INDEXING (via Kafka worker) =====
+        if settings.ELASTICSEARCH_ENABLED and producer:
+            kafka_futures.append(
+                producer.send_and_wait(
+                    "es-indexing",
+                    {
+                        "file_id": str(file_id),
+                        "name": file_name,
+                        "mime_type": mime_type,
+                        "size": file_size,
+                        "hash": content_hash,
+                        "storage_tier": "cache",
+                        "folder_id": str(session_data.get("folder")) if session_data.get("folder") else None,
+                        "user_id": str(user_id),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
+            )
+
+        if kafka_futures:
+            results = await asyncio.gather(*kafka_futures, return_exceptions=True)
+            for idx, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.warning(f"Background Kafka task {idx} failed: {result}")
+
+        # ===== NON-VIDEO PREVIEW PRE-GENERATION =====
+        if not is_video and storage_strategy != "inline":
+            from ..services.preview_service import preview_service
+            await preview_service.generate_on_demand_background(
+                file_id=str(file_id),
+                file_obj=file_obj,
+                redis_client=redis_client,
+            )
+
+    except Exception as e:
+        logger.error(
+            f"Post-upload background processing failed for {file_name}: {e}",
+            exc_info=True,
+        )

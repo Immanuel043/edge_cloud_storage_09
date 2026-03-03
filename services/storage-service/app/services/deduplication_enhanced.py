@@ -13,6 +13,7 @@ from ..services.encryption import encryption_service
 from ..services.dedup_db_batch import batch_writer
 import json
 import xxhash  # For faster non-cryptographic hashing
+from ..utils.executors import run_in_heavy_pool
 from collections import defaultdict
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -51,11 +52,44 @@ class EnhancedDeduplicationService:
         self.hash_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="hash_worker")
         logger.info(f"Initialized hash executor with {max_workers} workers")
 
-        # Bloom filter for quick duplicate detection (optional)
-        self._init_bloom_filter()
+        # Use Rust byte processor if available (CDC + batch SHA-256 + bloom)
+        from ..utils.byte_processor import (
+            native_find_chunk_boundaries,
+            native_batch_sha256,
+            NativeBloomFilter,
+        )
+        if native_find_chunk_boundaries is not None:
+            self._native_cdc = native_find_chunk_boundaries
+            self._native_batch_sha256 = native_batch_sha256
+            logger.info("Using Rust byte processor for CDC + batch SHA-256")
+        else:
+            self._native_cdc = None
+            self._native_batch_sha256 = None
+            # Fall back to old C extension
+            try:
+                from ..utils.rolling_hash import native_find_chunk_boundaries as c_cdc
+                if c_cdc is not None:
+                    self._native_cdc = c_cdc
+                    logger.info("Using C rolling hash fallback for CDC")
+            except Exception:
+                pass
+            if self._native_cdc is None:
+                logger.info("No native CDC available, using Python fallback")
+
+        # Bloom filter: prefer Rust, fall back to pybloom_live
+        self._init_bloom_filter(NativeBloomFilter)
         
-    def _init_bloom_filter(self):
-        """Initialize bloom filter for quick duplicate detection"""
+    def _init_bloom_filter(self, NativeBloomFilter=None):
+        """Initialize bloom filter for quick duplicate detection."""
+        if NativeBloomFilter is not None:
+            try:
+                self.bloom_filter = NativeBloomFilter(capacity=1_000_000, error_rate=0.001)
+                self.bloom_enabled = True
+                logger.info("Using Rust bloom filter")
+                return
+            except Exception as exc:
+                logger.warning("Rust bloom filter init failed: %s", exc)
+
         try:
             from pybloom_live import BloomFilter
             self.bloom_filter = BloomFilter(capacity=1000000, error_rate=0.001)
@@ -72,32 +106,52 @@ class EnhancedDeduplicationService:
         """Calculate fast weak hash for initial duplicate detection"""
         return xxhash.xxh64(data).hexdigest()
 
-    async def calculate_hashes_parallel(self, chunks: List[bytes]) -> List[str]:
+    async def calculate_hashes_parallel(
+        self, chunks: List[bytes], boundaries: List[int] = None, file_data: bytes = None,
+    ) -> List[str]:
         """
-        Calculate SHA-256 hashes in batches with yielding to prevent blocking.
-        Processes 5000 chunks at a time to keep event loop responsive.
+        Calculate SHA-256 hashes for all chunks.
+
+        When the Rust batch hasher is available AND contiguous file_data +
+        boundaries are provided, hashes are computed in a single native call
+        (zero Python-per-chunk overhead).  Otherwise falls back to the Python
+        hashlib loop with executor batching.
         """
+        # Fast path: Rust batch SHA-256
+        if (
+            self._native_batch_sha256 is not None
+            and boundaries is not None
+            and file_data is not None
+        ):
+            logger.info("Batch-hashing %d chunks via Rust byte processor", len(boundaries))
+            return await run_in_heavy_pool(
+                self._native_batch_sha256, file_data, boundaries
+            )
+
+        # Slow path: Python hashlib with executor batching
         loop = asyncio.get_event_loop()
-        all_hashes = []
+        all_hashes: List[str] = []
         batch_size = 5000
 
         for batch_start in range(0, len(chunks), batch_size):
             batch_end = min(batch_start + batch_size, len(chunks))
             batch = chunks[batch_start:batch_end]
 
-            logger.info(f"Hashing batch {batch_start//batch_size + 1}/{(len(chunks) + batch_size - 1)//batch_size} ({len(batch)} chunks)")
+            logger.info(
+                "Hashing batch %d/%d (%d chunks)",
+                batch_start // batch_size + 1,
+                (len(chunks) + batch_size - 1) // batch_size,
+                len(batch),
+            )
 
-            # Create hash tasks for this batch
             hash_tasks = [
                 loop.run_in_executor(self.hash_executor, self.calculate_block_hash, chunk)
                 for chunk in batch
             ]
 
-            # Wait for batch to complete
             batch_hashes = await asyncio.gather(*hash_tasks)
             all_hashes.extend(batch_hashes)
 
-            # Yield to event loop after each batch
             await asyncio.sleep(0)
 
         return all_hashes
@@ -106,32 +160,48 @@ class EnhancedDeduplicationService:
         """
         Content-defined chunking using rolling hash.
         Returns list of chunk boundary positions.
+
+        Delegates to the native C implementation when available (~100x faster).
         """
+        if self._native_cdc is not None:
+            try:
+                return self._native_cdc(
+                    data,
+                    self.min_block_size,
+                    self.max_block_size,
+                    self.window_size,
+                    self.prime,
+                    self.modulus,
+                )
+            except Exception as exc:
+                logger.warning("Native CDC failed, falling back to Python: %s", exc)
+
+        return self._find_chunk_boundaries_py(data)
+
+    def _find_chunk_boundaries_py(self, data: bytes) -> List[int]:
+        """Pure-Python fallback for content-defined chunking."""
         if len(data) < self.min_block_size:
             return [len(data)]
-        
+
         boundaries = []
         hash_val = 0
-        
+
         for i in range(len(data)):
-            # Rolling hash calculation
             if i >= self.window_size:
-                hash_val = (hash_val * self.prime + data[i] - 
+                hash_val = (hash_val * self.prime + data[i] -
                            data[i - self.window_size] * (self.prime ** self.window_size)) % (2**32)
             else:
                 hash_val = (hash_val * self.prime + data[i]) % (2**32)
-            
-            # Check for boundary
+
             if i >= self.min_block_size:
                 if (hash_val & self.modulus) == self.modulus:
                     boundaries.append(i + 1)
                 elif i - (boundaries[-1] if boundaries else 0) >= self.max_block_size:
                     boundaries.append(i + 1)
-        
-        # Add final boundary
+
         if not boundaries or boundaries[-1] != len(data):
             boundaries.append(len(data))
-        
+
         return boundaries
     
     
@@ -160,7 +230,7 @@ class EnhancedDeduplicationService:
             return None  # Signal to caller to use regular storage
 
         blocks = []
-        boundaries = self.find_chunk_boundaries(file_data)
+        boundaries = await run_in_heavy_pool(self.find_chunk_boundaries, file_data)
 
         # Extract all chunks first
         chunks = []
@@ -170,9 +240,11 @@ class EnhancedDeduplicationService:
             chunks.append(chunk)
             start = boundary
 
-        # Calculate hashes in parallel for better performance
-        logger.info(f"Calculating hashes for {len(chunks)} chunks in parallel...")
-        block_hashes = await self.calculate_hashes_parallel(chunks)
+        # Calculate hashes -- single Rust call when available, else Python batches
+        logger.info(f"Calculating hashes for {len(chunks)} chunks...")
+        block_hashes = await self.calculate_hashes_parallel(
+            chunks, boundaries=boundaries, file_data=file_data,
+        )
 
         deduplicated_size = 0
         saved_size = 0
@@ -311,6 +383,71 @@ class EnhancedDeduplicationService:
         key = hashlib.pbkdf2_hmac('sha256', content_hash, salt, 100000, dklen=32)
         return key
 
+    async def _store_encrypted_block(
+        self,
+        block_data: bytes,
+        block_hash: str,
+        user_id: str,
+        cas_path: str,
+    ) -> bool:
+        """Convergent-encrypt and store a single dedup block.
+
+        Tries the Rust data plane first (PBKDF2 + AES-GCM + atomic write in
+        native code). Falls back to the Python implementation on failure.
+        Returns True on success.
+        """
+        # --- Rust fast path ---
+        if getattr(settings, 'RUST_DATAPLANE_ENABLED', False):
+            try:
+                from .rust_dataplane_client import get_rust_client
+                client = get_rust_client()
+                result = await client.dedup_chunk(
+                    block_data=block_data,
+                    block_hash=block_hash,
+                    user_id=user_id,
+                    cas_path=cas_path,
+                    should_compress=True,
+                )
+                if result.get("success"):
+                    logger.debug(
+                        "Block %s stored via Rust (%d bytes)",
+                        block_hash[:12], result.get("encrypted_size", 0),
+                    )
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Rust dedup_chunk failed for %s, falling back to Python: %s",
+                    block_hash[:12], exc,
+                )
+
+        # --- Python fallback ---
+        import hmac as _hmac
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+
+        block_key = self.derive_key_from_content(block_data, user_id)
+        synthetic_iv = _hmac.new(
+            block_key, block_hash.encode(), hashlib.sha256,
+        ).digest()[:12]
+
+        cipher = Cipher(
+            algorithms.AES(block_key),
+            modes.GCM(synthetic_iv),
+            backend=default_backend(),
+        )
+        encryptor = cipher.encryptor()
+        encrypted_data = encryptor.update(block_data) + encryptor.finalize()
+        block_to_store = synthetic_iv + encryptor.tag + encrypted_data
+
+        await asyncio.to_thread(
+            os.makedirs, os.path.dirname(cas_path), exist_ok=True,
+        )
+        async with aiofiles.open(cas_path, 'wb') as f:
+            await f.write(block_to_store)
+
+        logger.debug("Block %s stored via Python (%d bytes)", block_hash[:12], len(block_to_store))
+        return True
+
     async def store_deduplicated_file(
         self,
         file_data: bytes,
@@ -337,8 +474,8 @@ class EnhancedDeduplicationService:
                 logger.info(f"Skipping deduplication for {file_name} - using regular storage")
                 return None
             
-            # Calculate file-level hash
-            file_hash = self.calculate_block_hash(file_data)
+            # Calculate file-level hash (offloaded to heavy pool)
+            file_hash = await run_in_heavy_pool(self.calculate_block_hash, file_data)
             
             # Check for full-file duplicate
             query = select(Object).where(
@@ -416,60 +553,29 @@ class EnhancedDeduplicationService:
             
             for new_block in dedup_result['new_blocks']:
                 block_data = new_block['data']
-                
-                # Check if this block already exists in CAS
                 content_path = self.get_content_address(new_block['hash'])
-                
+
                 if not os.path.exists(content_path):
-                    # Block doesn't exist, store it
                     if encrypt:
-                        # Use convergent encryption - derive key from content with user-specific salt
-                        block_key = self.derive_key_from_content(block_data, user_id)
-
-                        # Encrypt using AES-GCM with the derived key
-                        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-                        from cryptography.hazmat.backends import default_backend
-                        import os as crypto_os
-
-                        # CRITICAL FIX: Use synthetic IV for convergent encryption
-                        # Derive deterministic IV using HMAC to maintain dedup while staying secure
-                        import hmac
-                        synthetic_iv = hmac.new(
-                            block_key,
-                            new_block['hash'].encode(),
-                            hashlib.sha256
-                        ).digest()[:12]
-                        nonce = synthetic_iv
-
-                        cipher = Cipher(
-                            algorithms.AES(block_key),
-                            modes.GCM(nonce),
-                            backend=default_backend()
+                        stored = await self._store_encrypted_block(
+                            block_data, new_block['hash'], user_id, content_path,
                         )
-                        encryptor = cipher.encryptor()
-                        encrypted_data = encryptor.update(block_data) + encryptor.finalize()
-
-                        # Store encrypted block with tag
-                        block_to_store = nonce + encryptor.tag + encrypted_data
-                        
-                        print(f"📦 Storing new block {new_block['hash'][:8]}... ({len(block_data)/1024:.1f}KB)")
+                        if not stored:
+                            logger.error("Failed to store block %s", new_block['hash'][:12])
                     else:
-                        block_to_store = block_data
-
-                    # Create directory if needed (non-blocking)
-                    await asyncio.to_thread(os.makedirs, os.path.dirname(content_path), exist_ok=True)
-
-                    # Store block
-                    async with aiofiles.open(content_path, 'wb') as f:
-                        await f.write(block_to_store)
+                        await asyncio.to_thread(
+                            os.makedirs, os.path.dirname(content_path), exist_ok=True,
+                        )
+                        async with aiofiles.open(content_path, 'wb') as f:
+                            await f.write(block_data)
                 else:
-                    print(f"♻️ Block {new_block['hash'][:8]}... already exists, reusing")
-                
+                    logger.debug("Block %s already exists, reusing", new_block['hash'][:8])
+
                 stored_blocks.append({
                     'hash': new_block['hash'],
                     'path': content_path,
                     'size': new_block['size'],
-                    'offset': new_block['offset']
+                    'offset': new_block['offset'],
                 })
             
             # Update existing object if provided, otherwise create new

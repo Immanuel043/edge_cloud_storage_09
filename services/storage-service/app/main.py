@@ -159,6 +159,35 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Failed to start video processing worker: {e}")
 
+    # Start WebSocket preview notification listener (Redis Pub/Sub -> WS push)
+    try:
+        from .routers.websocket import _listen_preview_notifications
+        asyncio.create_task(_listen_preview_notifications())
+        print("Preview notification WebSocket listener started")
+    except Exception as e:
+        print(f"Failed to start preview notification listener: {e}")
+
+    # Event loop lag monitor -- early warning for event loop starvation
+    import logging as _logging
+    _lag_logger = _logging.getLogger("app.eventloop_monitor")
+
+    async def _monitor_event_loop_lag():
+        loop = asyncio.get_event_loop()
+        while True:
+            t0 = loop.time()
+            await asyncio.sleep(0.5)
+            lag_ms = (loop.time() - t0 - 0.5) * 1000
+            if lag_ms > 500:
+                _lag_logger.error(f"CRITICAL event loop lag: {lag_ms:.0f}ms")
+            elif lag_ms > 100:
+                _lag_logger.warning(f"Event loop lag: {lag_ms:.0f}ms (threshold: 100ms)")
+
+    try:
+        asyncio.create_task(_monitor_event_loop_lag())
+        print("Event loop lag monitor started (warn >100ms, error >500ms)")
+    except Exception as e:
+        print(f"Failed to start event loop monitor: {e}")
+
     print("Application startup complete")
     yield
 

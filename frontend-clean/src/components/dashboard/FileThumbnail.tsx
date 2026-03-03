@@ -12,6 +12,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { API_URL, ZK_SERVICE_URL } from '../../config/constants';
+import websocketService from '../../services/websocketService';
 import {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
@@ -96,6 +97,9 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const imgRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
+  const abortCountRef = useRef<number>(0);
+  const wsReadyRef = useRef<boolean>(false);
+  const processingStartRef = useRef<number>(0);
 
   // Derive file name from various possible sources
   const fileName = file.name || file.file_name || 'Unknown File';
@@ -134,6 +138,32 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
     };
   }, []);
 
+  // Subscribe to WebSocket push notifications for preview readiness
+  useEffect(() => {
+    if (!canPreview) return;
+
+    const fileId = file.id || file.file_id;
+    if (!fileId) return;
+
+    console.log(`[FileThumbnail] WS subscription active for file ${fileId}`);
+    const unsubscribe = websocketService.on('preview_ready', (data: unknown) => {
+      const msg = data as { file_id?: string; status?: string };
+      console.log(`[FileThumbnail] WS preview_ready received:`, msg, `expecting fileId=${fileId}`);
+      if (msg.file_id !== fileId) return;
+
+      console.log(`[FileThumbnail] Match! Bumping retryCount for file ${fileId}, status=${msg.status}`);
+      if (msg.status === 'ready') {
+        wsReadyRef.current = true;
+        abortCountRef.current = 0;
+        setRetryCount((prev) => prev + 1);
+      } else if (msg.status === 'failed') {
+        setIsProcessing(false);
+      }
+    });
+
+    return unsubscribe;
+  }, [file.id, file.file_id, canPreview]);
+
   // Load thumbnail when visible
   useEffect(() => {
     if (!isVisible || !canPreview) {
@@ -144,8 +174,9 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
     let mounted = true;
     const controller = new AbortController();
 
-    // Timeout: 15s for videos, 8s for other files
-    const timeoutMs = isVideoFile ? 15000 : 8000;
+    const MAX_ABORT_RETRIES = 5;
+    const baseTimeout = isVideoFile ? 15000 : 8000;
+    const timeoutMs = wsReadyRef.current ? baseTimeout * 2 : baseTimeout;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const loadThumbnail = async (): Promise<void> => {
@@ -153,25 +184,30 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
         setLoading(true);
         setError(false);
 
-        // Set a timeout to abort the request if it takes too long
         timeoutId = setTimeout(() => {
           if (mounted) {
             controller.abort();
             setLoading(false);
             setError(false);
+            abortCountRef.current += 1;
 
-            if (isVideoFile && retryCount < 2) {
+            const shouldRetry =
+              wsReadyRef.current || abortCountRef.current <= MAX_ABORT_RETRIES;
+
+            if (shouldRetry) {
+              const delay = wsReadyRef.current
+                ? 2000
+                : Math.min(5000 * abortCountRef.current, 30000);
               setTimeout(() => {
-                if (mounted) {
-                  setRetryCount((prev) => prev + 1);
-                }
-              }, 10000);
+                if (mounted) setRetryCount((prev) => prev + 1);
+              }, delay);
+            } else {
+              setIsProcessing(false);
             }
           }
         }, timeoutMs);
 
-        // Add cache-busting for video files
-        const cacheBuster = isVideoFile ? `&_t=${file.updated_at || Date.now()}` : '';
+        const cacheBuster = `&_t=${file.updated_at || Date.now()}&_r=${retryCount}`;
         const fileId = file.id || file.file_id;
 
         // Determine if this is a ZK file
@@ -184,7 +220,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
         const response = await fetch(fetchUrl, {
           credentials: 'include',
           signal: controller.signal,
-          cache: 'no-cache',
+          cache: 'no-store',
         });
 
         // Clear timeout on successful response
@@ -205,13 +241,32 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
         // Handle 202 Accepted - preview is being generated
         if (response.status === 202) {
           if (mounted) {
+            // When WebSocket is connected, push is primary; poll infrequently as safety net
+            // When disconnected, poll more aggressively
+            const wsConnected = websocketService.isConnected;
+            const pollInterval = wsConnected ? 10000 : 5000;
+            const maxRetries = 60;
+
             try {
               const data = (await response.json()) as { retry_after?: number; status?: string };
-              const retryAfter = (data.retry_after || 5) * 1000;
+              const retryAfter = wsConnected ? pollInterval : (data.retry_after || 5) * 1000;
+
+              abortCountRef.current = 0;
+              if (!processingStartRef.current) {
+                processingStartRef.current = Date.now();
+              }
+
+              const MAX_PROCESSING_MS = 5 * 60 * 1000;
+              if (processingStartRef.current &&
+                  Date.now() - processingStartRef.current > MAX_PROCESSING_MS) {
+                setIsProcessing(false);
+                setLoading(false);
+                return;
+              }
 
               setIsProcessing(true);
 
-              if (retryCount < 10) {
+              if (retryCount < maxRetries) {
                 setTimeout(() => {
                   if (mounted) {
                     setRetryCount((prev) => prev + 1);
@@ -224,13 +279,26 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
               setLoading(false);
               setError(false);
             } catch {
+              abortCountRef.current = 0;
+              if (!processingStartRef.current) {
+                processingStartRef.current = Date.now();
+              }
+
+              const MAX_PROCESSING_MS = 5 * 60 * 1000;
+              if (processingStartRef.current &&
+                  Date.now() - processingStartRef.current > MAX_PROCESSING_MS) {
+                setIsProcessing(false);
+                setLoading(false);
+                return;
+              }
+
               setIsProcessing(true);
-              if (retryCount < 10) {
+              if (retryCount < maxRetries) {
                 setTimeout(() => {
                   if (mounted) {
                     setRetryCount((prev) => prev + 1);
                   }
-                }, 5000);
+                }, pollInterval);
               } else {
                 setIsProcessing(false);
               }
@@ -290,6 +358,9 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
               setThumbnailUrl(url);
               setLoading(false);
               setIsProcessing(false);
+              abortCountRef.current = 0;
+              wsReadyRef.current = false;
+              processingStartRef.current = 0;
             }
           } catch (zkError: unknown) {
             console.warn(
@@ -309,6 +380,9 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
             setThumbnailUrl(url);
             setLoading(false);
             setIsProcessing(false);
+            abortCountRef.current = 0;
+            wsReadyRef.current = false;
+            processingStartRef.current = 0;
           }
         }
       } catch (err: unknown) {

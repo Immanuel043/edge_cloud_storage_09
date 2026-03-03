@@ -2,6 +2,7 @@
 pub mod request;
 pub mod response;
 pub mod handlers;
+pub mod dedup_handler;
 pub mod fd_guard;
 pub mod uds_server;
 pub mod uds_server_scm;

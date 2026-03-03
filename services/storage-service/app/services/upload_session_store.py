@@ -12,12 +12,47 @@ On write, writes to both Redis and DB.
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Callable
-import redis.asyncio as redis_exceptions
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 REDIS_TTL = 86400  # 24 hours
+
+# Lua script for atomic chunk update — single round-trip, no WATCH needed.
+# KEYS[1] = "up:{upload_id}"
+# ARGV[1] = chunk_index, ARGV[2] = chunk_hash
+# ARGV[3] = storage_path, ARGV[4] = TTL
+UPDATE_CHUNK_LUA = """
+if cjson.encode_empty_table_as_object then
+  cjson.encode_empty_table_as_object(false)
+end
+
+local raw = redis.call("GET", KEYS[1])
+if not raw then return false end
+local session = cjson.decode(raw)
+local chunk_idx = tonumber(ARGV[1])
+
+local found = false
+if session["done"] then
+  for _, v in ipairs(session["done"]) do
+    if v == chunk_idx then found = true; break end
+  end
+end
+
+if not found then
+  if not session["done"] then session["done"] = {} end
+  if not session["hashes"] then session["hashes"] = {} end
+  table.insert(session["done"], chunk_idx)
+  table.insert(session["hashes"], ARGV[2])
+end
+
+if not session["chunk_paths"] then session["chunk_paths"] = {} end
+session["chunk_paths"][tostring(chunk_idx)] = ARGV[3]
+
+local updated = cjson.encode(session)
+redis.call("SETEX", KEYS[1], tonumber(ARGV[4]), updated)
+return updated
+"""
 
 
 async def save_upload_session(
@@ -127,51 +162,36 @@ async def update_upload_session_atomic(
     redis_client,
     db,
     upload_id: str,
-    update_fn: Callable[[dict], dict],
-    max_retries: int = 5,
+    *,
+    chunk_index: int,
+    chunk_hash: str,
+    storage_path: str,
 ) -> Optional[dict]:
     """
-    Atomically update an upload session using Redis WATCH/MULTI.
+    Atomically update an upload session using a Redis Lua script.
 
-    Prevents the read-modify-write race where two concurrent chunk uploads
-    both read the session, both append to done[], and one overwrites the other.
-
-    Args:
-        redis_client: Redis client
-        db: DB session (for best-effort persistence)
-        upload_id: Upload ID
-        update_fn: Function that receives current session dict, returns modified dict
-        max_retries: Max optimistic-lock retries before raising
+    Single round-trip, zero retries, true atomicity — the Lua script runs
+    entirely on the Redis server so concurrent chunk uploads cannot interleave.
 
     Returns:
-        Updated session dict, or None if session not found
+        Updated session dict, or None if session key not found
     """
     key = f"up:{upload_id}"
-    for attempt in range(max_retries):
-        try:
-            await redis_client.watch(key)
-            raw = await redis_client.get(key)
-            if not raw:
-                await redis_client.unwatch()
-                return None
-            session = json.loads(raw if isinstance(raw, str) else raw.decode())
-            session = update_fn(session)
-            pipe = redis_client.pipeline()
-            pipe.multi()
-            pipe.setex(key, REDIS_TTL, json.dumps(session))
-            await pipe.execute()
-            # Best-effort DB persistence
-            try:
-                await _persist_session_to_db(db, upload_id, session)
-            except Exception as e:
-                logger.warning(f"Failed to persist session {upload_id} to DB: {e}")
-            return session
-        except Exception as e:
-            # redis.WatchError or similar — retry
-            if "WATCH" in str(type(e).__name__).upper() or "watch" in str(e).lower():
-                continue
-            raise
-    raise Exception(f"Session update conflict after {max_retries} retries for {upload_id}")
+    result = await redis_client.eval(
+        UPDATE_CHUNK_LUA, 1, key,
+        str(chunk_index), chunk_hash, storage_path, str(REDIS_TTL),
+    )
+    if result is None:
+        return None
+    session = json.loads(result.decode("utf-8") if isinstance(result, bytes) else result)
+
+    # Best-effort DB persistence
+    try:
+        await _persist_session_to_db(db, upload_id, session)
+    except Exception as e:
+        logger.warning(f"Failed to persist session {upload_id} to DB: {e}")
+
+    return session
 
 
 async def _persist_session_to_db(db, upload_id: str, session_data: dict) -> None:

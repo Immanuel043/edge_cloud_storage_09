@@ -1,4 +1,13 @@
 # services/storage-service/Dockerfile
+
+# ── Stage 1: Build Rust cdylib for byte processing (CDC, SHA-256, bloom) ──
+FROM rust:1.83-slim AS rust-builder
+WORKDIR /build
+COPY services/edge-byte-processor/Cargo.toml services/edge-byte-processor/Cargo.lock* ./
+COPY services/edge-byte-processor/src ./src
+RUN cargo build --release
+
+# ── Stage 2: Python application ──
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -38,7 +47,9 @@ COPY services/storage-service/alembic.ini .
 
 # Copy application (this already includes app/alembic/ directory)
 COPY services/storage-service/app/ ./app/
-# REMOVED: COPY alembic/ ./alembic/  <-- This line was causing the error
+
+# Copy Rust cdylib from builder stage (replaces C rolling hash)
+COPY --from=rust-builder /build/target/release/libedge_byte_processor.so /app/app/utils/libedge_byte_processor.so
 
 # Create storage directories
 RUN mkdir -p /app/storage/{cache,warm,cold,temp,backup} && \

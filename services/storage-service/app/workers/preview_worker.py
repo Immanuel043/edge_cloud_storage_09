@@ -180,7 +180,24 @@ class PreviewWorker:
 
         logger.info(f"🎬 Processing preview for file {file_id}...")
 
+        # Distributed lock: prevent duplicate processing of the same file
+        lock_key = f"preview:lock:{file_id}"
+        acquired = await self.redis.set(lock_key, "1", nx=True, ex=600)
+        if not acquired:
+            status_raw = await self.redis.get(f"preview:status:{file_id}")
+            if status_raw:
+                try:
+                    info = json.loads(status_raw if isinstance(status_raw, str) else status_raw.decode())
+                    if info.get("status") == "ready":
+                        logger.info(f"Preview already ready for {file_id}, skipping duplicate")
+                        return
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            logger.info(f"Another worker is processing {file_id}, skipping")
+            return
+
         # Acquire semaphore to limit concurrent FFmpeg processes
+        file_obj = None
         async with self.semaphore:
             try:
                 # Update status to 'processing'
@@ -197,6 +214,7 @@ class PreviewWorker:
                     if not file_obj:
                         logger.warning(f"⚠️ File not found: {file_id}")
                         await self._set_status(file_id, 'failed', 'File not found')
+                        # No user_id available, skip notification
                         return
 
                     # Download file for preview (can take time - that's OK, we're in background!)
@@ -210,6 +228,7 @@ class PreviewWorker:
                     if not temp_file_path:
                         logger.error(f"❌ Failed to download file for preview: {file_id}")
                         await self._set_status(file_id, 'failed', 'Download failed')
+                        await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'Download failed')
                         return
 
                     try:
@@ -221,6 +240,7 @@ class PreviewWorker:
 
                         # Update status to 'ready'
                         await self._set_status(file_id, 'ready')
+                        await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
                         logger.info(f"✅ Preview ready for {file_obj.file_name}")
 
                     finally:
@@ -234,6 +254,16 @@ class PreviewWorker:
             except Exception as e:
                 logger.error(f"❌ Preview generation failed for {file_id}: {e}")
                 await self._set_status(file_id, 'failed', str(e)[:200])
+                try:
+                    if file_obj:
+                        await self._publish_notification(file_id, str(file_obj.user_id), 'failed', str(e)[:200])
+                except Exception:
+                    pass
+            finally:
+                try:
+                    await self.redis.delete(lock_key)
+                except Exception:
+                    pass
 
     async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str):
         """Generate preview and cache in Redis"""
@@ -254,20 +284,50 @@ class PreviewWorker:
             logger.warning(f"   ⚠️ Failed to generate {size} preview: {e}")
 
     async def _set_status(self, file_id: str, status: str, error: str = None):
-        """Update preview status in Redis"""
+        """Update preview status in Redis, preserving retry_count across transitions."""
         status_key = f"preview:status:{file_id}"
+        retry_count = 0
+
+        existing = await self.redis.get(status_key)
+        if existing:
+            try:
+                prev = json.loads(existing if isinstance(existing, str) else existing.decode())
+                retry_count = prev.get('retry_count', 0)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        if status == 'failed':
+            retry_count += 1
+
         status_data = {
             'status': status,
-            'updated_at': datetime.utcnow().isoformat()
+            'updated_at': datetime.utcnow().isoformat(),
         }
         if error:
             status_data['error'] = error
+        if retry_count > 0:
+            status_data['retry_count'] = retry_count
 
         await self.redis.setex(
             status_key,
-            3600,  # 1 hour TTL for status
+            3600,
             json.dumps(status_data)
         )
+
+    async def _publish_notification(self, file_id: str, user_id: str, status: str, error: str = None):
+        """Publish preview status change to Redis Pub/Sub for WebSocket push"""
+        try:
+            message = {
+                'file_id': file_id,
+                'user_id': user_id,
+                'status': status,
+            }
+            if error:
+                message['error'] = error
+            await self.redis.publish('preview_notifications', json.dumps(message))
+            logger.info(f"   Published preview notification: file={file_id} status={status}")
+        except Exception as e:
+            logger.warning(f"   Failed to publish preview notification: {e}")
 
 
 async def main():

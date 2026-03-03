@@ -26,6 +26,7 @@ type WebSocketEventType =
   | 'file_uploaded'
   | 'file_deleted'
   | 'storage_update'
+  | 'preview_ready'
   | 'message';
 
 type WebSocketEventCallback = (data?: unknown) => void;
@@ -93,8 +94,8 @@ class WebSocketService {
     this.pongTimeout = null;
     this.awaitingPong = false;
     this.pingIntervalMs = 60000;
-    this.pongTimeoutMs = 10000;
-    this.connectTimeoutMs = 15000;
+    this.pongTimeoutMs = 30000;
+    this.connectTimeoutMs = 30000;
     this.connectPromise = null;
     this.connectPromiseResolve = null;
     this.connectPromiseReject = null;

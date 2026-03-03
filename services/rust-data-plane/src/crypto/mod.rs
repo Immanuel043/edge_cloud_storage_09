@@ -1,4 +1,5 @@
 pub mod aes_gcm;
+pub mod convergent;
 pub mod hardware;
 pub mod key_manager;
 

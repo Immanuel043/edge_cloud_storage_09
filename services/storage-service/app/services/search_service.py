@@ -172,7 +172,8 @@ class SearchService:
                 await self.client.index(
                     index=self.files_index,
                     id=str(file_data['id']),
-                    document=doc
+                    document=doc,
+                    request_timeout=5,
                 )
                 logger.debug(f"Indexed file: {file_data['name']}")
                 return True

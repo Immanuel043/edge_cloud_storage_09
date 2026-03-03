@@ -1079,8 +1079,59 @@ async def get_file_preview(
     )
 
     if is_large_video:
+        from fastapi.responses import JSONResponse
+        from datetime import datetime
+
         status_key = f"preview:status:{file_id}"
         status_data = await redis.get(status_key)
+
+        async def _queue_preview_to_kafka(carry_retry_count: int = 0):
+            """Send preview request to Kafka worker. Returns True on success."""
+            from aiokafka import AIOKafkaProducer
+            from ..config import settings
+
+            if not hasattr(settings, 'KAFKA_BROKERS'):
+                return False
+
+            producer = AIOKafkaProducer(
+                bootstrap_servers=settings.KAFKA_BROKERS,
+                value_serializer=lambda v: json.dumps(v).encode()
+            )
+            await producer.start()
+            try:
+                await producer.send_and_wait(
+                    'preview-processing',
+                    {
+                        'file_id': str(file_id),
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'file_name': file_obj.file_name,
+                        'file_size': file_obj.file_size,
+                        'mime_type': file_obj.mime_type,
+                        'storage_type': file_obj.storage_type
+                    }
+                )
+                new_status = {
+                    'status': 'queued',
+                    'queued_at': datetime.utcnow().isoformat(),
+                }
+                if carry_retry_count > 0:
+                    new_status['retry_count'] = carry_retry_count
+                await redis.setex(status_key, 3600, json.dumps(new_status))
+                return True
+            finally:
+                await producer.stop()
+
+        def _return_202(status_val='processing', message=None):
+            return JSONResponse(
+                status_code=202,
+                content={
+                    'status': status_val,
+                    'message': message or f'Preview is being generated in background ({status_val})',
+                    'retry_after': 5,
+                    'file_id': file_id
+                },
+                headers={'Retry-After': '5'}
+            )
 
         if status_data:
             try:
@@ -1091,69 +1142,59 @@ async def get_file_preview(
 
                 if status in ['queued', 'processing']:
                     logger.info(f"🎬 Preview {status} for large video {file_id}, returning 202")
-                    from fastapi.responses import JSONResponse
-                    return JSONResponse(
-                        status_code=202,
-                        content={
-                            'status': status,
-                            'message': f'Preview is being generated in background ({status})',
-                            'retry_after': 5,
-                            'file_id': file_id
-                        },
-                        headers={'Retry-After': '5'}
-                    )
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Failed to parse preview status for {file_id}: {e}")
-        else:
-            # No status yet - queue for background processing (existing file before feature was added)
-            try:
-                from aiokafka import AIOKafkaProducer
-                from ..config import settings
-                from datetime import datetime
+                    return _return_202(status)
 
-                # Quick check if Kafka is configured
-                if hasattr(settings, 'KAFKA_BROKERS'):
-                    producer = AIOKafkaProducer(
-                        bootstrap_servers=settings.KAFKA_BROKERS,
-                        value_serializer=lambda v: json.dumps(v).encode()
-                    )
-                    await producer.start()
-                    try:
-                        await producer.send_and_wait(
-                            'preview-processing',
-                            {
-                                'file_id': str(file_id),
-                                'timestamp': datetime.utcnow().isoformat(),
-                                'file_name': file_obj.file_name,
-                                'file_size': file_obj.file_size,
-                                'mime_type': file_obj.mime_type,
-                                'storage_type': file_obj.storage_type
+                elif status == 'ready':
+                    cached_preview = await redis.get(cache_key)
+                    if cached_preview:
+                        logger.info(f"✅ Preview cache HIT (post-ready) for {file_id} (size: {size})")
+                        return Response(
+                            content=cached_preview,
+                            media_type='image/jpeg',
+                            headers={
+                                "Cache-Control": "public, max-age=2592000",
+                                "X-Cache": "HIT",
+                                "X-Preview-Status": "cached"
                             }
                         )
-                        # Set initial status
-                        await redis.setex(
-                            status_key,
-                            3600,
-                            json.dumps({'status': 'queued', 'queued_at': datetime.utcnow().isoformat()})
-                        )
-                        logger.info(f"🎬 Queued existing large video for background preview: {file_obj.file_name}")
-                    finally:
-                        await producer.stop()
+                    logger.warning(f"Preview status=ready but cache miss for {file_id}:{size}, re-queuing")
+                    try:
+                        await _queue_preview_to_kafka()
+                    except Exception as e:
+                        logger.warning(f"Failed to re-queue after cache miss for {file_id}: {e}")
+                    return _return_202('queued', 'Preview cache expired, re-generating')
 
-                    # Return 202 with placeholder
-                    from fastapi.responses import JSONResponse
-                    return JSONResponse(
-                        status_code=202,
-                        content={
-                            'status': 'queued',
-                            'message': 'Preview is being generated in background',
-                            'retry_after': 5,
-                            'file_id': file_id
-                        },
-                        headers={'Retry-After': '5'}
-                    )
+                elif status == 'failed':
+                    retry_count = status_info.get('retry_count', 0)
+                    if retry_count < 3:
+                        logger.info(f"Re-queuing failed preview for {file_id} (retry {retry_count + 1}/3)")
+                        try:
+                            await _queue_preview_to_kafka(carry_retry_count=retry_count)
+                        except Exception as e:
+                            logger.warning(f"Failed to re-queue preview for {file_id}: {e}")
+                        return _return_202('queued', 'Preview generation retrying')
+                    else:
+                        logger.warning(f"Preview generation failed after {retry_count} retries for {file_id}")
+                        return _return_202('failed', 'Preview generation failed after multiple attempts')
+
+                else:
+                    logger.info(f"🎬 Unknown preview status '{status}' for large video {file_id}, returning 202")
+                    return _return_202(status or 'processing')
+
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Failed to parse preview status for {file_id}: {e}")
+                return _return_202('processing', 'Preview is being processed')
+
+        else:
+            try:
+                queued = await _queue_preview_to_kafka()
+                if queued:
+                    logger.info(f"🎬 Queued existing large video for background preview: {file_obj.file_name}")
+                    return _return_202('queued', 'Preview is being generated in background')
             except Exception as e:
                 logger.warning(f"Failed to queue large video for background preview: {e}")
+
+            return _return_202('processing', 'Preview generation pending')
 
     size_tuple = preview_generator.SIZES.get(size, preview_generator.SIZES['medium'])
 

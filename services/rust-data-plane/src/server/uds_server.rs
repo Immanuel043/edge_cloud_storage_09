@@ -106,6 +106,7 @@ impl UnixSocketServer {
                         let download_handler = Arc::clone(&self.download_handler);
                         let circuit_breaker = Arc::clone(&self.circuit_breaker);
                         let rate_limiter = Arc::clone(&self.rate_limiter);
+                        let compression_level = self.config.compression_level;
 
                         // Spawn connection handler
                         tokio::spawn(async move {
@@ -118,6 +119,7 @@ impl UnixSocketServer {
                                     Arc::clone(&download_handler),
                                     Arc::clone(&circuit_breaker),
                                     Arc::clone(&rate_limiter),
+                                    compression_level,
                                 )
                             });
 
@@ -146,6 +148,7 @@ impl UnixSocketServer {
         download_handler: Arc<DownloadHandler>,
         circuit_breaker: Arc<CircuitBreaker>,
         rate_limiter: Arc<RateLimiter>,
+        compression_level: i32,
     ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let method = req.method().clone();
         let uri = req.uri().clone();
@@ -175,6 +178,9 @@ impl UnixSocketServer {
             }
             ("POST", "/download") => {
                 Self::handle_download_endpoint(req, download_handler, circuit_breaker).await
+            }
+            ("POST", "/dedup-chunk") => {
+                Self::handle_dedup_endpoint(req, compression_level).await
             }
             ("GET", "/health") => {
                 Self::handle_health_check().await
@@ -446,6 +452,80 @@ impl UnixSocketServer {
 
                 Response::builder()
                     .status(status_code)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+        }
+    }
+
+    /// Handle dedup-chunk endpoint (convergent encryption + CAS write)
+    #[instrument(skip(req))]
+    async fn handle_dedup_endpoint(
+        req: Request<Incoming>,
+        compression_level: i32,
+    ) -> Response<Full<Bytes>> {
+        use crate::server::dedup_handler::{DedupChunkRequest, process_dedup_chunk};
+
+        let headers = req.headers().clone();
+        let dedup_req = match DedupChunkRequest::from_headers(&headers) {
+            Ok(r) => r,
+            Err(e) => {
+                let json = serde_json::to_string(&e).unwrap_or_default();
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        let body_bytes = match req.collect().await.map(|b| b.to_bytes()) {
+            Ok(b) => b,
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"body_read_failed","message":"{}"}}"#,
+                    e
+                );
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        // CPU-heavy work: PBKDF2 + compress + encrypt + write -- offload
+        let result = tokio::task::spawn_blocking(move || {
+            process_dedup_chunk(&dedup_req, &body_bytes, compression_level)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(resp)) => {
+                let json = serde_json::to_string(&resp).unwrap_or_default();
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+            Ok(Err(e)) => {
+                let json = serde_json::to_string(&e).unwrap_or_default();
+                let status = StatusCode::from_u16(e.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"internal_error","message":"Task panicked: {}"}}"#,
+                    e
+                );
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(json)))
                     .expect("invalid body type")

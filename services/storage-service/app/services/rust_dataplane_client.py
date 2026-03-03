@@ -313,6 +313,67 @@ class RustDataPlaneClient:
             logger.error(f"Chunk download error: {e}")
             raise
 
+    async def dedup_chunk(
+        self,
+        block_data: bytes,
+        block_hash: str,
+        user_id: str,
+        cas_path: str,
+        should_compress: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Process a dedup block via Rust convergent encryption.
+
+        The Rust data plane derives the encryption key from the block content +
+        user salt (PBKDF2), compresses, encrypts, and atomically writes to the
+        CAS path.
+
+        Args:
+            block_data: Raw block bytes.
+            block_hash: Hex SHA-256 of block_data (pre-verified by caller).
+            user_id: User ID for salt derivation.
+            cas_path: Absolute destination path in the CAS store.
+            should_compress: Whether to attempt Zstd compression.
+
+        Returns:
+            Dict with ``success``, ``encrypted_size``, ``was_compressed``,
+            ``compression_ratio``.
+        """
+        headers = {
+            "x-block-hash": block_hash,
+            "x-user-id": user_id,
+            "x-cas-path": cas_path,
+            "x-should-compress": "true" if should_compress else "false",
+        }
+
+        try:
+            response = await self.client.post(
+                "/dedup-chunk",
+                content=block_data,
+                headers=headers,
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            logger.debug(
+                "Dedup chunk processed via Rust: hash=%s enc_size=%d compressed=%s",
+                block_hash[:12],
+                result.get("encrypted_size", 0),
+                result.get("was_compressed", False),
+            )
+            return result
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Dedup chunk Rust call failed: %d - %s",
+                e.response.status_code,
+                e.response.text,
+            )
+            raise
+        except Exception as e:
+            logger.error("Dedup chunk Rust call error: %s", e)
+            raise
+
 
 # Global client instance (singleton pattern)
 _rust_client: Optional[RustDataPlaneClient] = None
