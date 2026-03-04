@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import aiofiles
 import logging
 import struct
 import subprocess
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 
-from .preview_optimizer import preview_optimizer
+from .preview_optimizer import preview_optimizer, _fetch_from_cas
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +398,91 @@ class VideoTranscoder:
                 if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
                     return None
 
-                chunk_paths = file_obj.chunk_info.get('paths', {})
+                chunk_info = file_obj.chunk_info
+                chunk_paths = chunk_info.get('paths', {})
+
+                # Resolve deduplicated_reference to get actual file with chunk_info
+                resolved_obj = file_obj
+                if file_obj.storage_type == "deduplicated_reference":
+                    dedup_info = getattr(file_obj, "dedup_info", None) or {}
+                    ref_id = dedup_info.get("reference_file_id")
+                    if ref_id:
+                        from ..database import async_session
+                        from sqlalchemy import select
+                        from app.models.database import Object
+                        async with async_session() as session:
+                            result = await session.execute(
+                                select(Object).where(Object.id == ref_id)
+                            )
+                            ref_file = result.scalar_one_or_none()
+                            if ref_file and ref_file.chunk_info:
+                                resolved_obj = ref_file
+                                chunk_info = ref_file.chunk_info
+                                chunk_paths = chunk_info.get('paths', {})
+
+                # Content-addressed storage: use CAS block fetch for head/tail probe
+                if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+                    head_bytes = min(64 * 1024 * 1024, resolved_obj.file_size or 0)
+                    if head_bytes <= 0:
+                        return None
+                    temp_probe_file = f"/tmp/probe_{resolved_obj.id}.partial"
+                    written = await _fetch_from_cas(
+                        chunk_info, resolved_obj, 0, head_bytes - 1, temp_probe_file
+                    )
+                    if written <= 0:
+                        return None
+                    probe_path = temp_probe_file
+                    logger.info(
+                        f"🔍 Head probe: {written} bytes from CAS for {resolved_obj.file_name}"
+                    )
+                    head_result = await self._run_ffprobe_async(probe_path, resolved_obj.file_name)
+                    if head_result:
+                        return head_result
+
+                    ext = os.path.splitext(resolved_obj.file_name or '')[1].lower()
+                    mp4_exts = {'.mp4', '.m4v', '.mov', '.m4a', '.3gp', '.3g2'}
+                    if ext not in mp4_exts:
+                        return None
+                    tail_size = min(64 * 1024 * 1024, resolved_obj.file_size or 0)
+                    if tail_size <= 0:
+                        return None
+                    tail_start = max(0, (resolved_obj.file_size or 0) - tail_size)
+                    tail_probe_file = f"/tmp/probe_{resolved_obj.id}.tail"
+                    await _fetch_from_cas(
+                        chunk_info, resolved_obj,
+                        tail_start, (resolved_obj.file_size or 1) - 1,
+                        tail_probe_file
+                    )
+                    async with aiofiles.open(tail_probe_file, 'rb') as f:
+                        tail_bytes = await f.read()
+                    if os.path.exists(tail_probe_file):
+                        try:
+                            os.remove(tail_probe_file)
+                        except OSError:
+                            pass
+                    moov = _find_moov_atom(bytes(tail_bytes))
+                    if not moov:
+                        return None
+                    moov_offset, moov_size = moov
+                    moov_bytes = bytes(tail_bytes[moov_offset:moov_offset + moov_size])
+                    synth_path = f"/tmp/probe_{resolved_obj.id}.synthetic"
+
+                    def _write_synth(path: str, ftyp: bytes, moov: bytes):
+                        with open(path, 'wb') as out:
+                            out.write(ftyp)
+                            out.write(moov)
+
+                    await asyncio.to_thread(_write_synth, synth_path, _SYNTHETIC_FTYP, moov_bytes)
+                    tail_result = await self._run_ffprobe_async(
+                        synth_path, f"{resolved_obj.file_name} (tail)"
+                    )
+                    if os.path.exists(synth_path):
+                        try:
+                            os.remove(synth_path)
+                        except OSError:
+                            pass
+                    return tail_result
+
                 if not chunk_paths:
                     return None
 
@@ -485,11 +570,15 @@ class VideoTranscoder:
                 moov_offset, moov_size = moov
                 moov_bytes = bytes(tail_bytes[moov_offset:moov_offset + moov_size])
 
-                # Build synthetic ftyp + moov file for ffprobe
+                # Build synthetic ftyp + moov file for ffprobe (offload sync I/O)
                 tail_probe_file = f"/tmp/probe_{file_obj.id}.synthetic"
-                with open(tail_probe_file, 'wb') as out:
-                    out.write(_SYNTHETIC_FTYP)
-                    out.write(moov_bytes)
+
+                def _write_synth(path: str, ftyp: bytes, moov: bytes):
+                    with open(path, 'wb') as out:
+                        out.write(ftyp)
+                        out.write(moov)
+
+                await asyncio.to_thread(_write_synth, tail_probe_file, _SYNTHETIC_FTYP, moov_bytes)
 
                 logger.info(
                     f"🔍 Tail probe: built synthetic file "
@@ -816,30 +905,13 @@ class VideoTranscoder:
             temp_file_size = os.path.getsize(temp_source) if os.path.exists(temp_source) else 0
             logger.info(f"🔍 Downloaded temp file: {temp_source} ({temp_file_size / (1024*1024):.1f}MB)")
 
-            # Probe the temp file to verify it's readable by ffmpeg
-            probe_cmd = [
-                'ffprobe',
-                '-v', 'error',
-                '-print_format', 'json',
-                '-show_format',
-                '-show_streams',
-                temp_source
-            ]
+            # Probe the temp file to verify it's readable by ffmpeg (async, non-blocking)
             try:
-                probe_result = subprocess.run(
-                    probe_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if probe_result.returncode == 0 and probe_result.stdout:
-                    temp_probe = json.loads(probe_result.stdout)
-                    video_stream = next((s for s in temp_probe.get('streams', []) if s.get('codec_type') == 'video'), {})
-                    audio_stream = next((s for s in temp_probe.get('streams', []) if s.get('codec_type') == 'audio'), {})
-
-                    v_codec = video_stream.get('codec_name', 'unknown')
-                    a_codec = audio_stream.get('codec_name', 'unknown')
-                    duration = temp_probe.get('format', {}).get('duration', 'unknown')
+                probe_result = await self._run_ffprobe_async(temp_source, "temp")
+                if probe_result:
+                    v_codec = probe_result.get('codec_name') or 'unknown'
+                    a_codec = probe_result.get('audio_codec') or 'unknown'
+                    duration = probe_result.get('duration', 'unknown')
 
                     logger.info(f"✅ Temp file probe successful: video={v_codec}, audio={a_codec}, duration={duration}s")
 
@@ -851,11 +923,13 @@ class VideoTranscoder:
                         return
 
                 else:
-                    logger.error(f"❌ Temp file probe failed: returncode={probe_result.returncode}, stderr={probe_result.stderr[:200]}")
+                    logger.error("❌ Temp file probe failed: ffprobe returned no result")
                     raise VideoTranscodeError(
                         "Downloaded temp file is not a valid video file",
                         status_code=500
                     )
+            except VideoTranscodeError:
+                raise
             except Exception as e:
                 logger.error(f"❌ Exception probing temp file: {e}")
                 raise VideoTranscodeError(
@@ -1082,17 +1156,10 @@ class VideoTranscoder:
                 status_code=500
             )
 
-        # Verify moov atom using ffprobe
-        verify_cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-show_entries', 'format=format_name',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            target_path
-        ]
-        result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0 or not result.stdout.strip():
-            logger.error(f"Transcoded file validation failed: {result.stderr}")
+        # Verify moov atom using ffprobe (async, non-blocking)
+        verify_result = await self._run_ffprobe_async(target_path, "validate")
+        if not verify_result:
+            logger.error("Transcoded file validation failed: ffprobe returned no result")
             os.remove(target_path)
             raise VideoTranscodeError(
                 "Transcoding produced corrupted output file.",

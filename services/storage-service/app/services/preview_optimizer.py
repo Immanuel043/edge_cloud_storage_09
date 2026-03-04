@@ -121,6 +121,105 @@ def _is_fragmented_mp4(data: bytes) -> bool:
     return b'moof' in data or b'mfhd' in data
 
 
+# Zstd magic bytes for detecting compressed CAS blocks
+_ZSTD_MAGIC = bytes([0x28, 0xB5, 0x2F, 0xFD])
+
+
+async def _fetch_from_cas(
+    chunk_info: dict,
+    file_obj,
+    start_byte: int,
+    end_byte: int,
+    output_path: str,
+) -> int:
+    """
+    Reconstruct a byte range from content-addressed storage (CAS) blocks.
+
+    Reads blocks from CAS paths, performs convergent decryption, optional
+    decompression, and writes the requested range to output_path.
+
+    Returns:
+        Total bytes written.
+    """
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+
+    blocks = chunk_info['blocks']
+    stored_blocks = chunk_info['stored_blocks']
+    is_convergent = chunk_info.get('convergent_encryption', False)
+    user_id = str(file_obj.user_id)
+
+    block_map = {b['hash']: b for b in stored_blocks}
+    current_pos = 0
+    total_written = 0
+
+    async with aiofiles.open(output_path, 'wb') as output_f:
+        for block in blocks:
+            block_hash = block['hash']
+            block_size = block['size']
+            block_end = current_pos + block_size - 1
+
+            if block_end < start_byte:
+                current_pos += block_size
+                continue
+
+            if current_pos > end_byte:
+                break
+
+            stored_block = block_map.get(block_hash)
+            if not stored_block:
+                raise ValueError(f"Block {block_hash[:8]} not found in stored_blocks")
+
+            block_path = stored_block['path']
+            if not os.path.exists(block_path):
+                raise FileNotFoundError(f"Block file missing at {block_path}")
+
+            async with aiofiles.open(block_path, 'rb') as f:
+                encrypted_data = await f.read()
+
+            if is_convergent:
+                nonce = encrypted_data[:12]
+                tag = encrypted_data[12:28]
+                ciphertext = encrypted_data[28:]
+
+                content_hash_bytes = bytes.fromhex(block_hash)
+                salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
+                block_key = hashlib.pbkdf2_hmac(
+                    'sha256', content_hash_bytes, salt, 100000, dklen=32
+                )
+
+                cipher = Cipher(
+                    algorithms.AES(block_key),
+                    modes.GCM(nonce, tag),
+                    backend=default_backend()
+                )
+                decryptor = cipher.decryptor()
+                decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
+            else:
+                raise ValueError("Non-convergent CAS blocks require encryption_service")
+
+            if len(decrypted_block) >= 4 and decrypted_block[:4] == _ZSTD_MAGIC:
+                try:
+                    from ..utils.compression import decompressor as _zstd_decomp
+                    decrypted_block = _zstd_decomp.decompress(decrypted_block)
+                except Exception:
+                    pass
+
+            slice_start = max(0, start_byte - current_pos)
+            slice_end = min(block_size, end_byte - current_pos + 1)
+
+            if slice_start < slice_end and slice_start < len(decrypted_block):
+                to_write = decrypted_block[slice_start:slice_end]
+                await output_f.write(to_write)
+                total_written += len(to_write)
+
+            current_pos += block_size
+
+    logger.info(f"✓ CAS fetch complete: {total_written / 1024 / 1024:.1f}MB written")
+    return total_written
+
+
 async def _fetch_contiguous_range(
     start_byte: int,
     end_byte: int,
@@ -130,27 +229,38 @@ async def _fetch_contiguous_range(
     output_path: str,
     upload_id: str,
     chunk_size: int = 33554432,
-    was_compressed: bool = False
+    was_compressed: bool = False,
+    chunk_info: Optional[dict] = None,
+    file_obj=None,
 ) -> int:
     """
-    Stream a contiguous byte range from chunked storage to disk.
+    Stream a contiguous byte range from chunked or content-addressed storage to disk.
 
     This ensures ffmpeg receives a file with NO GAPS - critical for proper parsing.
+
+    If chunk_info contains 'blocks' and 'stored_blocks' (CAS storage), delegates
+    to _fetch_from_cas. Otherwise uses traditional chunk_paths.
 
     Args:
         start_byte: Starting byte offset (inclusive)
         end_byte: Ending byte offset (inclusive)
-        chunk_paths: Dict mapping chunk indices to paths
-        file_key: Decryption key
-        encryption_service: Service for decryption
+        chunk_paths: Dict mapping chunk indices to paths (ignored for CAS)
+        file_key: Decryption key (ignored for CAS)
+        encryption_service: Service for decryption (ignored for CAS)
         output_path: Where to write the contiguous data
-        upload_id: Upload ID for path construction
+        upload_id: Upload ID for path construction (ignored for CAS)
         chunk_size: Size of each chunk (default 32MB)
         was_compressed: Whether chunks are compressed
+        chunk_info: Optional full chunk_info (for CAS detection)
+        file_obj: Optional file object (required for CAS, for user_id)
 
     Returns:
         Total bytes written
     """
+    if chunk_info and 'blocks' in chunk_info and 'stored_blocks' in chunk_info and file_obj:
+        return await _fetch_from_cas(chunk_info, file_obj, start_byte, end_byte, output_path)
+
+    # Traditional chunked storage
     # Calculate which chunks span [start_byte, end_byte]
     start_chunk = start_byte // chunk_size
     end_chunk = end_byte // chunk_size
@@ -175,17 +285,23 @@ async def _fetch_contiguous_range(
                 logger.warning(f"Chunk {chunk_idx} not found at {chunk_path}")
                 continue
 
-            # Load and decrypt chunk
+            # Load and decrypt chunk (offload CPU-heavy decrypt/decompress)
             async with aiofiles.open(chunk_path, 'rb') as f:
                 encrypted_chunk = await f.read()
 
-            decrypted_chunk = encryption_service.decrypt_chunk(
-                encrypted_chunk, file_key, chunk_idx
-            )
+            from ..utils.executors import run_in_heavy_pool
 
-            if was_compressed:
-                from ..utils.compression import compressor
-                decrypted_chunk = compressor.decompress(decrypted_chunk)
+            def _decrypt_decompress(enc, enc_svc, key, idx, compressed):
+                dec = enc_svc.decrypt_chunk(enc, key, idx)
+                if compressed:
+                    from ..utils.compression import compressor
+                    dec = compressor.decompress(dec)
+                return dec
+
+            decrypted_chunk = await run_in_heavy_pool(
+                _decrypt_decompress,
+                encrypted_chunk, encryption_service, file_key, chunk_idx, was_compressed
+            )
 
             # Calculate which bytes from this chunk to write
             chunk_start_byte = chunk_idx * chunk_size
@@ -432,8 +548,8 @@ class PreviewOptimizer:
 
                 return temp_file_path, True  # Always complete since we wrote full decrypted data
 
-            else:  # chunked storage
-                # Download only first N chunks
+            else:  # chunked or content-addressed storage
+                # Download only first N chunks (or full file for CAS)
                 chunk_info = file_obj.chunk_info
                 if not chunk_info:
                     raise ValueError("Chunk info not found")
@@ -442,6 +558,24 @@ class PreviewOptimizer:
                 total_chunks = chunk_info.get("count", 0)
                 chunk_size = chunk_info.get("chunk_size", 32 * 1024 * 1024)  # Default 32MB
                 chunk_paths = chunk_info.get("paths", {})
+
+                # Content-addressed storage (from dedup): use CAS block reconstruction
+                if "blocks" in chunk_info and "stored_blocks" in chunk_info:
+                    fetch_end = file_obj.file_size - 1
+                    if _needs_head_tail(file_obj, is_partial):
+                        file_size_mb = file_obj.file_size / MB
+                        if file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
+                            logger.info(
+                                f"CAS file {file_size_mb:.1f}MB > {MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB}MB - "
+                                "queuing for async processing"
+                            )
+                            return None, False
+                    elif is_partial:
+                        fetch_end = min(max_size - 1, fetch_end)
+
+                    await _fetch_from_cas(chunk_info, file_obj, 0, fetch_end, temp_file_path)
+                    is_complete = (fetch_end >= file_obj.file_size - 1)
+                    return temp_file_path, is_complete
 
                 if _needs_head_tail(file_obj, is_partial):
                     # ==================================================================
@@ -551,7 +685,9 @@ class PreviewOptimizer:
                                 output_path=temp_file_path,
                                 upload_id=upload_id,
                                 chunk_size=chunk_size,
-                                was_compressed=was_compressed
+                                was_compressed=was_compressed,
+                                chunk_info=chunk_info,
+                                file_obj=file_obj,
                             )
                             return temp_file_path, True
 
@@ -591,7 +727,9 @@ class PreviewOptimizer:
                                 output_path=temp_file_path,
                                 upload_id=upload_id,
                                 chunk_size=chunk_size,
-                                was_compressed=was_compressed
+                                was_compressed=was_compressed,
+                                chunk_info=chunk_info,
+                                file_obj=file_obj,
                             )
 
                             os.unlink(probe_file_path)
@@ -628,7 +766,9 @@ class PreviewOptimizer:
                                     output_path=temp_file_path,
                                     upload_id=upload_id,
                                     chunk_size=chunk_size,
-                                    was_compressed=was_compressed
+                                    was_compressed=was_compressed,
+                                    chunk_info=chunk_info,
+                                    file_obj=file_obj,
                                 )
 
                                 os.unlink(probe_file_path)
@@ -654,7 +794,9 @@ class PreviewOptimizer:
                                     output_path=temp_file_path,
                                     upload_id=upload_id,
                                     chunk_size=chunk_size,
-                                    was_compressed=was_compressed
+                                    was_compressed=was_compressed,
+                                    chunk_info=chunk_info,
+                                    file_obj=file_obj,
                                 )
 
                                 os.unlink(probe_file_path)
@@ -730,9 +872,14 @@ class PreviewOptimizer:
                     pass
             raise
 
-    async def download_full_file_for_transcode(self, file_obj, encryption_service) -> str:
+    async def download_full_file_for_transcode(
+        self, file_obj, encryption_service, db=None
+    ) -> str:
         """
         Download and decrypt the entire file to a temp path for transcoding.
+
+        For deduplicated_reference storage, resolves the referenced file and uses
+        its chunk_info. Requires db session when storage_type is deduplicated_reference.
 
         Returns:
             Path to decrypted temp file.
@@ -741,15 +888,42 @@ class PreviewOptimizer:
         os.close(temp_fd)
 
         try:
-            file_key = encryption_service.decrypt_key(file_obj.encryption_key)
-            was_compressed = False
-            if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict):
-                was_compressed = file_obj.file_metadata.get("compressed", False)
-            elif file_obj.chunk_info and isinstance(file_obj.chunk_info, dict):
-                was_compressed = file_obj.chunk_info.get("compressed", False)
+            resolved_obj = file_obj
+            if file_obj.storage_type == "deduplicated_reference":
+                dedup_info = getattr(file_obj, "dedup_info", None) or {}
+                ref_id = dedup_info.get("reference_file_id")
+                if not ref_id:
+                    raise ValueError("deduplicated_reference missing reference_file_id")
+                if db is not None:
+                    from sqlalchemy import select
+                    from app.models.database import Object
+                    result = await db.execute(select(Object).where(Object.id == ref_id))
+                    ref_file = result.scalar_one_or_none()
+                    if not ref_file:
+                        raise ValueError(f"Reference file {ref_id} not found")
+                    resolved_obj = ref_file
+                else:
+                    from ..database import async_session
+                    async with async_session() as session:
+                        from sqlalchemy import select
+                        from app.models.database import Object
+                        result = await session.execute(
+                            select(Object).where(Object.id == ref_id)
+                        )
+                        ref_file = result.scalar_one_or_none()
+                        if not ref_file:
+                            raise ValueError(f"Reference file {ref_id} not found")
+                        resolved_obj = ref_file
 
-            if file_obj.storage_type == "inline":
-                encrypted_data = base64.b64decode(file_obj.storage_key)
+            file_key = encryption_service.decrypt_key(resolved_obj.encryption_key)
+            was_compressed = False
+            if resolved_obj.file_metadata and isinstance(resolved_obj.file_metadata, dict):
+                was_compressed = resolved_obj.file_metadata.get("compressed", False)
+            elif resolved_obj.chunk_info and isinstance(resolved_obj.chunk_info, dict):
+                was_compressed = resolved_obj.chunk_info.get("compressed", False)
+
+            if resolved_obj.storage_type == "inline":
+                encrypted_data = base64.b64decode(resolved_obj.storage_key)
                 decrypted = encryption_service.decrypt_file(encrypted_data, file_key)
                 if was_compressed:
                     from ..utils.compression import compressor
@@ -758,8 +932,8 @@ class PreviewOptimizer:
                     await f.write(decrypted)
                 return temp_file_path
 
-            if file_obj.storage_type == "single":
-                async with aiofiles.open(file_obj.object_path, 'rb') as src:
+            if resolved_obj.storage_type == "single":
+                async with aiofiles.open(resolved_obj.object_path, 'rb') as src:
                     encrypted_data = await src.read()
                 decrypted = encryption_service.decrypt_file(encrypted_data, file_key)
                 if was_compressed:
@@ -769,29 +943,31 @@ class PreviewOptimizer:
                     await dest.write(decrypted)
                 return temp_file_path
 
-            if file_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
-                chunk_info = file_obj.chunk_info
+            if resolved_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
+                chunk_info = resolved_obj.chunk_info
                 if not chunk_info:
                     raise ValueError("Chunk info not found for chunked file")
 
-                upload_id = chunk_info.get("upload_id", str(file_obj.id))
+                upload_id = chunk_info.get("upload_id", str(resolved_obj.id))
                 chunk_paths = chunk_info.get("paths", {})
                 chunk_size = chunk_info.get("chunk_size", 32 * 1024 * 1024)
 
                 await _fetch_contiguous_range(
                     start_byte=0,
-                    end_byte=file_obj.file_size - 1,
+                    end_byte=resolved_obj.file_size - 1,
                     chunk_paths=chunk_paths,
                     file_key=file_key,
                     encryption_service=encryption_service,
                     output_path=temp_file_path,
                     upload_id=upload_id,
                     chunk_size=chunk_size,
-                    was_compressed=was_compressed
+                    was_compressed=was_compressed,
+                    chunk_info=chunk_info,
+                    file_obj=resolved_obj,
                 )
                 return temp_file_path
 
-            raise ValueError(f"Unsupported storage type for transcoding: {file_obj.storage_type}")
+            raise ValueError(f"Unsupported storage type for transcoding: {resolved_obj.storage_type}")
 
         except Exception as exc:
             if os.path.exists(temp_file_path):

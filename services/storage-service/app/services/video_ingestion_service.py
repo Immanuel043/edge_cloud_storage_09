@@ -304,7 +304,7 @@ class VideoIngestionService:
 
                 # Check if faststart is needed
                 temp_path = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj, encryption_service
+                    file_obj, encryption_service, db=db_session
                 )
                 try:
                     moov_info = await video_optimizer.detect_moov_location(temp_path)
@@ -338,7 +338,7 @@ class VideoIngestionService:
                 await db_session.commit()
 
                 temp_path = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj, encryption_service
+                    file_obj, encryption_service, db=db_session
                 )
                 try:
                     await video_transcoder._remux_without_transcode(
@@ -361,7 +361,7 @@ class VideoIngestionService:
                 policy = TranscodePolicy.select(file_size_mb)
 
                 temp_path = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj, encryption_service
+                    file_obj, encryption_service, db=db_session
                 )
                 try:
                     await video_transcoder._run_ffmpeg(
@@ -428,7 +428,7 @@ class VideoIngestionService:
             logger.info(
                 f"Video optimization complete: {file_obj.file_name} "
                 f"[action={result['action']}, duration={duration:.1f}s, "
-                f"optimized_size={result.get('optimized_size', 0) / (1024*1024):.1f}MB]"
+                f"optimized_size={(result.get('optimized_size') or 0) / (1024*1024):.1f}MB]"
             )
 
             return result

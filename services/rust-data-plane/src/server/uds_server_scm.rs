@@ -558,11 +558,46 @@ impl UnixSocketServerWithScmRights {
             }
         };
 
-        let body = &buffer[body_start..bytes_read];
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
 
-        let body_owned = body.to_vec();
+        if content_length > MAX_CHUNK_SIZE {
+            let err_json = format!(
+                r#"{{"success":false,"error":"bad_request","message":"Content-Length {} exceeds maximum {}"}}"#,
+                content_length, MAX_CHUNK_SIZE
+            );
+            let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Assemble the full body (initial buffer may only contain a partial body)
+        let mut block_data = Vec::with_capacity(content_length);
+
+        let initial_body_len = bytes_read.saturating_sub(body_start);
+        if initial_body_len > 0 {
+            let copy_len = initial_body_len.min(content_length);
+            block_data.extend_from_slice(&buffer[body_start..body_start + copy_len]);
+        }
+
+        if block_data.len() < content_length {
+            let remaining = content_length - block_data.len();
+            let mut remaining_data = vec![0u8; remaining];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                stream.read_exact(&mut remaining_data),
+            )
+            .await
+            .map_err(|_| "Body read timeout (300s exceeded)")??;
+            block_data.extend_from_slice(&remaining_data);
+            debug!(read = remaining, total = block_data.len(), "Read remaining dedup-chunk body");
+        }
+
         let result = tokio::task::spawn_blocking(move || {
-            process_dedup_chunk(&dedup_req, &body_owned, compression_level)
+            process_dedup_chunk(&dedup_req, &block_data, compression_level)
         })
         .await?;
 
