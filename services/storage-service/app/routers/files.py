@@ -22,6 +22,7 @@ from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from ..utils.resolved_file_view import ResolvedFileView
 from pydantic import BaseModel
 import re
 import base64
@@ -364,42 +365,38 @@ async def stream_chunked_range(
 
             # Decrypt block
             if is_convergent:
-                # Convergent encryption - key is derived from plaintext content
-                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-                from cryptography.hazmat.backends import default_backend
-                import hashlib
-                import hmac
-
-                # Extract nonce (12 bytes), tag (16 bytes), and ciphertext
-                nonce = encrypted_data[:12]
-                tag = encrypted_data[12:28]
-                ciphertext = encrypted_data[28:]
-
-                # For convergent encryption, we need to derive the key from the plaintext
-                # But we don't have plaintext yet - we need to use the block hash
-                # The block hash is the SHA256 of the plaintext, which was used to derive the key
-
-                # Reconstruct block key using the same method as encryption
                 user_id = str(file_obj.user_id)
+                was_compressed = chunk_info.get('compression', False)
 
-                # The key derivation uses the plaintext hash (which is block_hash)
-                # Convert block_hash (hex string) to bytes for key derivation
-                content_hash_bytes = bytes.fromhex(block_hash)
+                # Try Rust data plane for fast PBKDF2 decryption
+                try:
+                    from ..services.rust_dataplane_client import get_rust_client
+                    rust_client = get_rust_client()
+                    decrypted_block = await rust_client.convergent_decrypt(
+                        encrypted_data, block_hash, user_id,
+                        was_compressed=was_compressed,
+                    )
+                except Exception:
+                    # Fallback: Python PBKDF2 + AES-GCM
+                    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                    from cryptography.hazmat.backends import default_backend
+                    import hashlib
 
-                # User-specific salt (same as encryption)
-                salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
+                    nonce = encrypted_data[:12]
+                    tag = encrypted_data[12:28]
+                    ciphertext = encrypted_data[28:]
 
-                # Derive the key using PBKDF2 (same as encryption)
-                block_key = hashlib.pbkdf2_hmac('sha256', content_hash_bytes, salt, 100000, dklen=32)
+                    content_hash_bytes = bytes.fromhex(block_hash)
+                    salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
+                    block_key = hashlib.pbkdf2_hmac('sha256', content_hash_bytes, salt, 100000, dklen=32)
 
-                # Decrypt using AES-GCM
-                cipher = Cipher(
-                    algorithms.AES(block_key),
-                    modes.GCM(nonce, tag),
-                    backend=default_backend()
-                )
-                decryptor = cipher.decryptor()
-                decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
+                    cipher = Cipher(
+                        algorithms.AES(block_key),
+                        modes.GCM(nonce, tag),
+                        backend=default_backend()
+                    )
+                    decryptor = cipher.decryptor()
+                    decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
             else:
                 # Standard file-key encryption
                 decrypted_block = encryption_service.decrypt_data(encrypted_data, file_key)
@@ -522,9 +519,13 @@ async def download_file(
 
     await db.commit()
 
+    # Build a read-only view that resolves deduplicated_reference files to
+    # the actual storage (CAS blocks) without mutating the ORM object.
+    resolved = await ResolvedFileView.resolve(file_obj, db)
+
     # Decrypt key (None for unencrypted files, for defensive compatibility)
-    file_key = encryption_service.decrypt_key(file_obj.encryption_key) if file_obj.encryption_key else None
-    
+    file_key = encryption_service.decrypt_key(resolved.encryption_key) if resolved.encryption_key else None
+
     # File metadata
     total_size = file_obj.file_size or 0
     mime_type = file_obj.mime_type or "application/octet-stream"
@@ -674,7 +675,7 @@ async def download_file(
         if not use_compat_stream:
             try:
                 compat_path = await video_transcoder.get_or_create_stream(
-                    file_obj=file_obj,
+                    file_obj=resolved,
                     encryption_service=encryption_service
                 )
                 logger.info(f"get_or_create_stream returned: {compat_path}")
@@ -730,13 +731,13 @@ async def download_file(
         )
 
     # INLINE STORAGE
-    if file_obj.storage_type == "inline":
+    if resolved.storage_type == "inline":
         # Decode and decrypt inline data
-        encrypted_data = base64.b64decode(file_obj.storage_key)
+        encrypted_data = base64.b64decode(resolved.storage_key)
         data = encryption_service.decrypt_file(encrypted_data, file_key)
-        
+
         # Handle compression
-        if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
+        if resolved.file_metadata and isinstance(resolved.file_metadata, dict) and resolved.file_metadata.get("compressed", False):
             from ..utils.compression import compressor
             data = compressor.decompress(data)
         
@@ -758,9 +759,9 @@ async def download_file(
             return Response(content=data, status_code=200, headers=headers)
     
     # SINGLE FILE STORAGE
-    elif file_obj.storage_type == "single":
+    elif resolved.storage_type == "single":
         # Ensure on-disk path exists
-        if not os.path.exists(file_obj.object_path):
+        if not os.path.exists(resolved.object_path):
             raise HTTPException(status_code=404, detail="File not found on disk")
 
         # If configured, offload plain (non-encrypted) files to nginx via X-Accel-Redirect.
@@ -768,7 +769,7 @@ async def download_file(
         if USE_X_ACCEL and getattr(file_obj, "on_disk_plain", False):
             # Compute relative path under the storage base that nginx alias maps to.
             # NGINX_STORAGE_BASE must match nginx 'alias' path (e.g. /app/storage)
-            internal_rel = os.path.relpath(file_obj.object_path, NGINX_STORAGE_BASE)
+            internal_rel = os.path.relpath(resolved.object_path, NGINX_STORAGE_BASE)
             accel_path = f"/internal_protected/{internal_rel}"
 
             headers = {
@@ -782,7 +783,7 @@ async def download_file(
         # ---------- OPTIMIZED: encrypted or non-offloadable file: decrypt & stream in Python ----------
         # Use optimized streaming that never loads full file in memory
         # Now with per-user bandwidth throttling and stream limiting
-        was_compressed = file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False)
+        was_compressed = resolved.file_metadata and isinstance(resolved.file_metadata, dict) and resolved.file_metadata.get("compressed", False)
         user_id_str = str(current_user.id)
 
         if parsed_range:
@@ -794,7 +795,7 @@ async def download_file(
                 "Content-Length": str(content_length),
             }
             base_generator = download_optimizer.stream_single_file_optimized(
-                file_path=file_obj.object_path,
+                file_path=resolved.object_path,
                 file_key=file_key,
                 encryption_service=encryption_service,
                 start_byte=start,
@@ -822,7 +823,7 @@ async def download_file(
                 "Content-Length": str(total_size),
             }
             base_generator = download_optimizer.stream_single_file_optimized(
-                file_path=file_obj.object_path,
+                file_path=resolved.object_path,
                 file_key=file_key,
                 encryption_service=encryption_service,
                 start_byte=0,
@@ -845,10 +846,10 @@ async def download_file(
                 media_type=mime_type
             )
 
-    # CHUNKED STORAGE (includes content_addressed and deduplicated_reference from deduplication)
-    elif file_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
+    # CHUNKED STORAGE (includes content_addressed; deduplicated_reference resolves here after ResolvedFileView)
+    elif resolved.storage_type in ("chunked", "content_addressed"):
         # Validate that chunk_info exists
-        if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
+        if not resolved.chunk_info or not isinstance(resolved.chunk_info, dict):
             raise HTTPException(
                 status_code=500,
                 detail="File deduplication is incomplete. Please re-upload the file."
@@ -856,8 +857,13 @@ async def download_file(
 
         user_id_str = str(current_user.id)
 
-        # OPTIMIZED: Use parallel chunk decryption (4x faster)
-        # Now with per-user bandwidth throttling and stream limiting
+        # Detect content-addressed storage (CAS) — uses blocks/stored_blocks
+        # instead of count/paths, so we must use stream_chunked_range.
+        is_cas = (
+            'blocks' in resolved.chunk_info
+            and 'stored_blocks' in resolved.chunk_info
+        )
+
         if parsed_range:
             start, end = parsed_range
             content_length = end - start + 1
@@ -866,13 +872,18 @@ async def download_file(
                 "Content-Range": f"bytes {start}-{end}/{total_size}",
                 "Content-Length": str(content_length),
             }
-            base_generator = download_optimizer.stream_chunked_file_parallel(
-                file_obj=file_obj,
-                file_key=file_key,
-                encryption_service=encryption_service,
-                start_byte=start,
-                end_byte=end
-            )
+            if is_cas:
+                base_generator = stream_chunked_range(
+                    resolved, start, end, file_key, encryption_service
+                )
+            else:
+                base_generator = download_optimizer.stream_chunked_file_parallel(
+                    file_obj=resolved,
+                    file_key=file_key,
+                    encryption_service=encryption_service,
+                    start_byte=start,
+                    end_byte=end
+                )
             # Wrap with bandwidth throttling and stream limiting (plan-aware)
             throttled_generator = throttled_download_generator(
                 user_id=user_id_str,
@@ -893,13 +904,18 @@ async def download_file(
                 **base_headers,
                 "Content-Length": str(total_size),
             }
-            base_generator = download_optimizer.stream_chunked_file_parallel(
-                file_obj=file_obj,
-                file_key=file_key,
-                encryption_service=encryption_service,
-                start_byte=0,
-                end_byte=total_size - 1
-            )
+            if is_cas:
+                base_generator = stream_chunked_range(
+                    resolved, 0, total_size - 1, file_key, encryption_service
+                )
+            else:
+                base_generator = download_optimizer.stream_chunked_file_parallel(
+                    file_obj=resolved,
+                    file_key=file_key,
+                    encryption_service=encryption_service,
+                    start_byte=0,
+                    end_byte=total_size - 1
+                )
             # Wrap with bandwidth throttling and stream limiting (plan-aware)
             throttled_generator = throttled_download_generator(
                 user_id=user_id_str,
@@ -1068,6 +1084,9 @@ async def get_file_preview(
             status_code=400,
             detail="Zero-Knowledge encrypted files are not available in Normal Storage. Please use the ZK Private Vault service."
         )
+
+    # Resolve dedup references so preview reads from the correct storage
+    resolved = await ResolvedFileView.resolve(file_obj, db)
 
     # ============ CHECK BACKGROUND PREVIEW STATUS FOR LARGE VIDEOS ============
     # For large videos (>50MB), check if preview is being generated in background
@@ -1260,7 +1279,7 @@ async def get_file_preview(
         if not use_transcoded:
             result = await preview_service.generate_on_demand(
                 file_id=file_id,
-                file_obj=file_obj,
+                file_obj=resolved,
                 requested_size=size,
                 redis_client=redis,
             )

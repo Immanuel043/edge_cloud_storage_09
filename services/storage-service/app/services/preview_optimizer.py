@@ -125,6 +125,44 @@ def _is_fragmented_mp4(data: bytes) -> bool:
 _ZSTD_MAGIC = bytes([0x28, 0xB5, 0x2F, 0xFD])
 
 
+def _decrypt_cas_block(encrypted_data: bytes, block_hash: str, user_id: str) -> bytes:
+    """Synchronous helper: PBKDF2 key derivation + AES-GCM decryption + optional zstd decompression.
+
+    Runs in HEAVY_TASK_EXECUTOR to avoid blocking the event loop.
+    """
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+
+    nonce = encrypted_data[:12]
+    tag = encrypted_data[12:28]
+    ciphertext = encrypted_data[28:]
+
+    content_hash_bytes = bytes.fromhex(block_hash)
+    salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
+    block_key = hashlib.pbkdf2_hmac(
+        'sha256', content_hash_bytes, salt, 100000, dklen=32
+    )
+
+    cipher = Cipher(
+        algorithms.AES(block_key),
+        modes.GCM(nonce, tag),
+        backend=default_backend()
+    )
+    decryptor = cipher.decryptor()
+    decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
+
+    if len(decrypted_block) >= 4 and decrypted_block[:4] == _ZSTD_MAGIC:
+        try:
+            import zstandard
+            dctx = zstandard.ZstdDecompressor()
+            decrypted_block = dctx.decompress(decrypted_block, max_output_size=64 * 1024 * 1024)
+        except Exception:
+            pass
+
+    return decrypted_block
+
+
 async def _fetch_from_cas(
     chunk_info: dict,
     file_obj,
@@ -135,15 +173,14 @@ async def _fetch_from_cas(
     """
     Reconstruct a byte range from content-addressed storage (CAS) blocks.
 
-    Reads blocks from CAS paths, performs convergent decryption, optional
-    decompression, and writes the requested range to output_path.
+    Reads blocks from CAS paths, performs convergent decryption (offloaded to
+    thread pool), optional decompression, and writes the requested range to
+    output_path.
 
     Returns:
         Total bytes written.
     """
-    import hashlib
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.backends import default_backend
+    from ..utils.executors import run_in_heavy_pool
 
     blocks = chunk_info['blocks']
     stored_blocks = chunk_info['stored_blocks']
@@ -179,32 +216,21 @@ async def _fetch_from_cas(
                 encrypted_data = await f.read()
 
             if is_convergent:
-                nonce = encrypted_data[:12]
-                tag = encrypted_data[12:28]
-                ciphertext = encrypted_data[28:]
-
-                content_hash_bytes = bytes.fromhex(block_hash)
-                salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
-                block_key = hashlib.pbkdf2_hmac(
-                    'sha256', content_hash_bytes, salt, 100000, dklen=32
-                )
-
-                cipher = Cipher(
-                    algorithms.AES(block_key),
-                    modes.GCM(nonce, tag),
-                    backend=default_backend()
-                )
-                decryptor = cipher.decryptor()
-                decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
+                # Try Rust data plane for fast PBKDF2 decryption
+                try:
+                    from ..services.rust_dataplane_client import get_rust_client
+                    rust_client = get_rust_client()
+                    decrypted_block = await rust_client.convergent_decrypt(
+                        encrypted_data, block_hash, user_id,
+                        was_compressed=False,
+                    )
+                except Exception:
+                    # Fallback: Python PBKDF2 (runs in heavy thread pool)
+                    decrypted_block = await run_in_heavy_pool(
+                        _decrypt_cas_block, encrypted_data, block_hash, user_id
+                    )
             else:
                 raise ValueError("Non-convergent CAS blocks require encryption_service")
-
-            if len(decrypted_block) >= 4 and decrypted_block[:4] == _ZSTD_MAGIC:
-                try:
-                    from ..utils.compression import decompressor as _zstd_decomp
-                    decrypted_block = _zstd_decomp.decompress(decrypted_block)
-                except Exception:
-                    pass
 
             slice_start = max(0, start_byte - current_pos)
             slice_end = min(block_size, end_byte - current_pos + 1)
@@ -372,13 +398,15 @@ class PreviewOptimizer:
 
         Returns: (temp_file_path, is_complete)
         """
+        from ..utils.executors import run_in_heavy_pool
+
         # If file is small enough, download completely
         if file_size <= head_size + tail_size:
             logger.info(f"File small enough ({file_size/1024/1024:.1f}MB), downloading completely")
             async with aiofiles.open(file_path, 'rb') as f:
                 encrypted_data = await f.read()
 
-            file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+            file_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_data, file_key)
 
             temp_fd, temp_file_path = tempfile.mkstemp()
             os.close(temp_fd)
@@ -405,9 +433,9 @@ class PreviewOptimizer:
             await f.seek(tail_offset)
             encrypted_tail = await f.read()
 
-        # Decrypt both portions
-        head_data = encryption_service.decrypt_file(encrypted_head, file_key)
-        tail_data = encryption_service.decrypt_file(encrypted_tail, file_key)
+        # Decrypt both portions (offloaded to thread pool)
+        head_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_head, file_key)
+        tail_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_tail, file_key)
 
         # Create temp file with head + tail
         temp_fd, temp_file_path = tempfile.mkstemp()
@@ -519,11 +547,13 @@ class PreviewOptimizer:
                 async with aiofiles.open(file_obj.object_path, 'rb') as f:
                     encrypted_data = await f.read()  # Always read complete encrypted file
 
-                file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+                from ..utils.executors import run_in_heavy_pool
+
+                file_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_data, file_key)
 
                 if was_compressed:
                     from ..utils.compression import compressor
-                    file_data = compressor.decompress(file_data)
+                    file_data = await run_in_heavy_pool(compressor.decompress, file_data)
 
                 # Write file data for preview
                 # For videos, always write full data since moov atom may be at the end
@@ -625,6 +655,15 @@ class PreviewOptimizer:
                     os.close(probe_fd)
 
                     try:
+                        from ..utils.executors import run_in_heavy_pool as _run_heavy
+
+                        def _probe_decrypt_decompress(enc, enc_svc, key, idx, compressed):
+                            dec = enc_svc.decrypt_chunk(enc, key, idx)
+                            if compressed:
+                                from ..utils.compression import compressor
+                                dec = compressor.decompress(dec)
+                            return dec
+
                         probe_bytes = 0
                         async with aiofiles.open(probe_file_path, 'wb') as probe_f:
                             for i in probe_chunks:
@@ -640,13 +679,10 @@ class PreviewOptimizer:
                                 async with aiofiles.open(chunk_path, 'rb') as f:
                                     encrypted_chunk = await f.read()
 
-                                decrypted_chunk = encryption_service.decrypt_chunk(
-                                    encrypted_chunk, file_key, i
+                                decrypted_chunk = await _run_heavy(
+                                    _probe_decrypt_decompress,
+                                    encrypted_chunk, encryption_service, file_key, i, was_compressed
                                 )
-
-                                if was_compressed:
-                                    from ..utils.compression import compressor
-                                    decrypted_chunk = compressor.decompress(decrypted_chunk)
 
                                 await probe_f.write(decrypted_chunk)
                                 probe_bytes += len(decrypted_chunk)
@@ -820,6 +856,15 @@ class PreviewOptimizer:
 
                 downloaded_bytes = 0
 
+                from ..utils.executors import run_in_heavy_pool as _run_heavy_std
+
+                def _std_decrypt_decompress(enc, enc_svc, key, idx, compressed):
+                    dec = enc_svc.decrypt_chunk(enc, key, idx)
+                    if compressed:
+                        from ..utils.compression import compressor
+                        dec = compressor.decompress(dec)
+                    return dec
+
                 async with aiofiles.open(temp_file_path, 'wb') as temp_f:
                     for i in range(chunks_to_download):
                         # Get chunk path
@@ -838,15 +883,11 @@ class PreviewOptimizer:
                         async with aiofiles.open(chunk_path, 'rb') as f:
                             encrypted_chunk = await f.read()
 
-                        # Decrypt chunk
-                        decrypted_chunk = encryption_service.decrypt_chunk(
-                            encrypted_chunk, file_key, i
+                        # Decrypt + decompress (offloaded to thread pool)
+                        decrypted_chunk = await _run_heavy_std(
+                            _std_decrypt_decompress,
+                            encrypted_chunk, encryption_service, file_key, i, was_compressed
                         )
-
-                        # Decompress if needed
-                        if was_compressed:
-                            from ..utils.compression import compressor
-                            decrypted_chunk = compressor.decompress(decrypted_chunk)
 
                         # Write chunk (but stop if we hit max_size)
                         bytes_to_write = len(decrypted_chunk)

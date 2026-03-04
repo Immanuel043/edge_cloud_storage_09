@@ -313,6 +313,46 @@ class RustDataPlaneClient:
             logger.error(f"Chunk download error: {e}")
             raise
 
+    async def convergent_decrypt(
+        self,
+        encrypted_data: bytes,
+        block_hash: str,
+        user_id: str,
+        was_compressed: bool = False,
+    ) -> bytes:
+        """Decrypt a CAS block via Rust data plane (PBKDF2 + AES-GCM)."""
+        headers = {
+            "x-block-hash": block_hash,
+            "x-user-id": user_id,
+            "x-was-compressed": "true" if was_compressed else "false",
+        }
+
+        try:
+            response = await self.client.post(
+                "/convergent-decrypt",
+                content=encrypted_data,
+                headers=headers,
+            )
+            response.raise_for_status()
+
+            logger.debug(
+                "Convergent decrypt via Rust: hash=%s plaintext_size=%s",
+                block_hash[:12],
+                response.headers.get("x-plaintext-size", "?"),
+            )
+            return response.content
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Convergent decrypt Rust call failed: %d - %s",
+                e.response.status_code,
+                e.response.text,
+            )
+            raise
+        except Exception as e:
+            logger.error("Convergent decrypt Rust call error: %s", e)
+            raise
+
     async def dedup_chunk(
         self,
         block_data: bytes,

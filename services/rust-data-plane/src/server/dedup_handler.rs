@@ -162,3 +162,78 @@ fn get_header(headers: &hyper::HeaderMap, name: &str) -> Result<String, ErrorRes
         .map(|s| s.to_string())
         .ok_or_else(|| ErrorResponse::bad_request(format!("Missing header: {}", name)))
 }
+
+// ---------------------------------------------------------------------------
+// POST /convergent-decrypt  -- convergent decryption for CAS streaming
+// ---------------------------------------------------------------------------
+
+/// Parsed headers for a convergent-decrypt request.
+#[derive(Debug)]
+pub struct DedupDecryptRequest {
+    pub block_hash: String,
+    pub user_id: String,
+    pub was_compressed: bool,
+}
+
+impl DedupDecryptRequest {
+    /// Parse from HTTP header map (hyper).
+    pub fn from_headers(headers: &hyper::HeaderMap) -> Result<Self, ErrorResponse> {
+        let block_hash = get_header(headers, "x-block-hash")?;
+        let user_id = get_header(headers, "x-user-id")?;
+        let was_compressed = headers
+            .get("x-was-compressed")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+
+        Ok(Self { block_hash, user_id, was_compressed })
+    }
+
+    /// Parse from raw header lines (SCM server).
+    pub fn from_raw_headers(headers: &[(String, String)]) -> Result<Self, ErrorResponse> {
+        let find = |name: &str| -> Result<String, ErrorResponse> {
+            headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| ErrorResponse::bad_request(format!("Missing header: {}", name)))
+        };
+
+        let block_hash = find("x-block-hash")?;
+        let user_id = find("x-user-id")?;
+        let was_compressed = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("x-was-compressed"))
+            .map(|(_, v)| v == "true" || v == "1")
+            .unwrap_or(false);
+
+        Ok(Self { block_hash, user_id, was_compressed })
+    }
+}
+
+/// Core decryption logic (shared between both server variants).
+#[instrument(skip(encrypted_data), fields(hash = %req.block_hash, size = encrypted_data.len()))]
+pub fn process_dedup_decrypt(
+    req: &DedupDecryptRequest,
+    encrypted_data: &[u8],
+) -> Result<Vec<u8>, ErrorResponse> {
+    // 1. Convergent decryption (PBKDF2 key derivation + AES-256-GCM)
+    let mut plaintext = convergent::convergent_decrypt(encrypted_data, &req.block_hash, &req.user_id)
+        .map_err(|e| ErrorResponse::internal_error(format!("Convergent decrypt: {}", e)))?;
+
+    // 2. Optional zstd decompression
+    if req.was_compressed {
+        let compressor = ZstdCompressor::new(3)
+            .map_err(|e| ErrorResponse::internal_error(format!("Decompressor init: {}", e)))?;
+        plaintext = compressor.decompress(&plaintext)
+            .map_err(|e| ErrorResponse::internal_error(format!("Zstd decompress: {}", e)))?;
+    }
+
+    info!(
+        plaintext_size = plaintext.len(),
+        was_compressed = req.was_compressed,
+        "Dedup block decrypted"
+    );
+
+    Ok(plaintext)
+}

@@ -267,6 +267,17 @@ impl UnixSocketServerWithScmRights {
                 .await
             }
 
+            ("POST", "/convergent-decrypt") => {
+                Self::handle_convergent_decrypt(
+                    &buffer,
+                    bytes_read,
+                    body_start,
+                    &headers,
+                    &mut stream,
+                )
+                .await
+            }
+
             _ => {
                 // 404 Not Found
                 let response = build_http_response(
@@ -605,6 +616,89 @@ impl UnixSocketServerWithScmRights {
             Ok(resp) => {
                 let json = serde_json::to_string(&resp)?;
                 let response = build_http_response(200, "OK", &json, &[]);
+                stream.write_all(&response).await?;
+            }
+            Err(err_resp) => {
+                let json = serde_json::to_string(&err_resp)?;
+                let response = build_http_response(err_resp.status_code, "Error", &json, &[]);
+                stream.write_all(&response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle convergent-decrypt request (PBKDF2 + AES-GCM decryption, no SCM_RIGHTS needed)
+    #[instrument(skip(buffer, headers, stream))]
+    async fn handle_convergent_decrypt(
+        buffer: &[u8],
+        bytes_read: usize,
+        body_start: usize,
+        headers: &[(String, String)],
+        stream: &mut UnixStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::server::dedup_handler::{DedupDecryptRequest, process_dedup_decrypt};
+
+        let decrypt_req = match DedupDecryptRequest::from_raw_headers(headers) {
+            Ok(r) => r,
+            Err(e) => {
+                let json = serde_json::to_string(&e)?;
+                let resp = build_http_response(400, "Bad Request", &json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        if content_length > MAX_CHUNK_SIZE {
+            let err_json = format!(
+                r#"{{"success":false,"error":"bad_request","message":"Content-Length {} exceeds maximum {}"}}"#,
+                content_length, MAX_CHUNK_SIZE
+            );
+            let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Assemble the full body
+        let mut encrypted_data = Vec::with_capacity(content_length);
+
+        let initial_body_len = bytes_read.saturating_sub(body_start);
+        if initial_body_len > 0 {
+            let copy_len = initial_body_len.min(content_length);
+            encrypted_data.extend_from_slice(&buffer[body_start..body_start + copy_len]);
+        }
+
+        if encrypted_data.len() < content_length {
+            let remaining = content_length - encrypted_data.len();
+            let mut remaining_data = vec![0u8; remaining];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                stream.read_exact(&mut remaining_data),
+            )
+            .await
+            .map_err(|_| "Body read timeout (300s exceeded)")??;
+            encrypted_data.extend_from_slice(&remaining_data);
+        }
+
+        let result = tokio::task::spawn_blocking(move || {
+            process_dedup_decrypt(&decrypt_req, &encrypted_data)
+        })
+        .await?;
+
+        match result {
+            Ok(plaintext) => {
+                // Return binary plaintext with size header
+                let mut response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nx-plaintext-size: {}\r\nConnection: close\r\n\r\n",
+                    plaintext.len(), plaintext.len()
+                ).into_bytes();
+                response.extend_from_slice(&plaintext);
                 stream.write_all(&response).await?;
             }
             Err(err_resp) => {

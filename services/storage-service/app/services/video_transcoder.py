@@ -652,9 +652,33 @@ class VideoTranscoder:
             logger.info(f"⚡ Using cached compatible stream for {file_obj.file_name} (skipped probe)")
             return target_path
 
-        # ============ PROBE FILE METADATA ============
-        # Only probe if we don't have a cached version
-        probe_data = await self._probe_file_metadata(file_obj, encryption_service)
+        # ============ PROBE FILE METADATA (with content_hash cache) ============
+        content_hash = getattr(file_obj, 'content_hash', None)
+        probe_cache_path = (
+            os.path.join(self.OUTPUT_DIR, f"probe_{content_hash}.json")
+            if content_hash else None
+        )
+
+        probe_data = None
+        if probe_cache_path and os.path.exists(probe_cache_path):
+            try:
+                async with aiofiles.open(probe_cache_path, 'r') as pf:
+                    probe_data = json.loads(await pf.read())
+                logger.info(f"⚡ Probe cache hit for {file_obj.file_name} (content_hash={content_hash[:12]})")
+            except Exception:
+                probe_data = None
+
+        if probe_data is None:
+            probe_data = await self._probe_file_metadata(file_obj, encryption_service)
+            # Cache probe results for future dedup refs with same content_hash
+            if probe_data and probe_cache_path:
+                try:
+                    async with aiofiles.open(probe_cache_path, 'w') as pf:
+                        await pf.write(json.dumps(probe_data))
+                    logger.info(f"Cached probe result for content_hash={content_hash[:12]}")
+                except Exception:
+                    pass
+
         logger.info(f"🎬 Probe data: {probe_data}")
 
         # Make transcode decision based on probe data

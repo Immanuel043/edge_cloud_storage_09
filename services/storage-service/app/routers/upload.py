@@ -1700,6 +1700,9 @@ async def _run_post_upload_tasks(
     """
     from ..database import async_session as _async_session
 
+    # Record upload completion time for chunk hold grace period
+    session_data["_upload_completed_at"] = time.time()
+
     is_video = bool(mime_type and mime_type.startswith('video/'))
 
     try:
@@ -1842,6 +1845,7 @@ async def _run_post_upload_tasks(
                         "preview-processing",
                         {
                             "file_id": str(file_id),
+                            "upload_id": upload_id,
                             "timestamp": datetime.utcnow().isoformat(),
                             "file_name": file_name,
                             "file_size": file_size,
@@ -1920,11 +1924,18 @@ async def _run_post_upload_tasks(
         # ===== NON-VIDEO PREVIEW PRE-GENERATION =====
         if not is_video and storage_strategy != "inline":
             from ..services.preview_service import preview_service
-            await preview_service.generate_on_demand_background(
-                file_id=str(file_id),
-                file_obj=file_obj,
-                redis_client=redis_client,
-            )
+            from ..utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
+            hold_id = None
+            try:
+                hold_id = await acquire_chunk_hold(redis_client, upload_id, "preview_sync")
+                await preview_service.generate_on_demand_background(
+                    file_id=str(file_id),
+                    file_obj=file_obj,
+                    redis_client=redis_client,
+                )
+            finally:
+                if hold_id:
+                    await release_chunk_hold(redis_client, upload_id, hold_id)
 
     except Exception as e:
         logger.error(

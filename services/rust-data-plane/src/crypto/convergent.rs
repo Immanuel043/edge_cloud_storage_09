@@ -118,6 +118,70 @@ pub fn convergent_encrypt(
     Ok(output)
 }
 
+/// Perform convergent decryption for a dedup block.
+///
+/// Input format: `nonce(12) || tag(16) || ciphertext` (as produced by `convergent_encrypt`).
+///
+/// `block_hash_hex` is the hex SHA-256 of the original plaintext, used for
+/// key + IV derivation (same as during encryption).
+#[instrument(skip(encrypted_data), fields(block_hash = %block_hash_hex, data_len = encrypted_data.len()))]
+pub fn convergent_decrypt(
+    encrypted_data: &[u8],
+    block_hash_hex: &str,
+    user_id: &str,
+) -> Result<Vec<u8>, CryptoError> {
+    // 1. Parse nonce(12), tag(16), ciphertext from input
+    if encrypted_data.len() < NONCE_LEN + TAG_LEN {
+        return Err(CryptoError::InvalidCiphertext);
+    }
+
+    let nonce_bytes: [u8; NONCE_LEN] = encrypted_data[..NONCE_LEN]
+        .try_into()
+        .map_err(|_| CryptoError::InvalidCiphertext)?;
+    let tag_bytes = &encrypted_data[NONCE_LEN..NONCE_LEN + TAG_LEN];
+    let ciphertext = &encrypted_data[NONCE_LEN + TAG_LEN..];
+
+    // 2. Convert block_hash_hex to raw bytes for key derivation
+    let content_hash_bytes: [u8; 32] = hex_to_bytes32(block_hash_hex)
+        .ok_or_else(|| CryptoError::RingError("Invalid block_hash_hex".into()))?;
+
+    // 3. Derive user salt
+    let salt = derive_user_salt(user_id);
+
+    // 4. Derive key via PBKDF2 (same as encryption)
+    let key = derive_key(&content_hash_bytes, &salt);
+
+    debug!("Convergent decrypt: PBKDF2 + AES-256-GCM");
+
+    // 5. AES-256-GCM decrypt
+    // ring's open_in_place expects: ciphertext || tag  (in a single buffer)
+    let unbound_key = UnboundKey::new(&AES_256_GCM, &key)?;
+    let opening_key = LessSafeKey::new(unbound_key);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+
+    let mut in_out = Vec::with_capacity(ciphertext.len() + TAG_LEN);
+    in_out.extend_from_slice(ciphertext);
+    in_out.extend_from_slice(tag_bytes);
+
+    let plaintext = opening_key
+        .open_in_place(nonce, Aad::empty(), &mut in_out)
+        .map_err(|_| CryptoError::DecryptionFailed)?;
+
+    Ok(plaintext.to_vec())
+}
+
+/// Parse a 64-char hex string into a 32-byte array.
+fn hex_to_bytes32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +225,54 @@ mod tests {
         let enc = convergent_encrypt(data, &hash_hex, "u").unwrap();
         // nonce(12) + tag(16) + ciphertext(len(data))
         assert_eq!(enc.len(), NONCE_LEN + TAG_LEN + data.len());
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let data = b"Hello, convergent decryption!";
+        let hash_hex = {
+            let d = digest(&SHA256, data);
+            d.as_ref().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        };
+
+        let encrypted = convergent_encrypt(data, &hash_hex, "user-1").unwrap();
+        let decrypted = convergent_decrypt(&encrypted, &hash_hex, "user-1").unwrap();
+
+        assert_eq!(decrypted, data, "decrypt must recover original plaintext");
+    }
+
+    #[test]
+    fn test_decrypt_wrong_user_fails() {
+        let data = b"secret data";
+        let hash_hex = {
+            let d = digest(&SHA256, data);
+            d.as_ref().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        };
+
+        let encrypted = convergent_encrypt(data, &hash_hex, "user-1").unwrap();
+        let result = convergent_decrypt(&encrypted, &hash_hex, "user-2");
+
+        assert!(result.is_err(), "decryption with wrong user must fail");
+    }
+
+    #[test]
+    fn test_decrypt_invalid_ciphertext() {
+        let result = convergent_decrypt(b"too short", "a".repeat(64).as_str(), "u");
+        assert!(result.is_err(), "too-short input must fail");
+    }
+
+    #[test]
+    fn test_decrypt_large_block() {
+        // Simulate a realistic block size (1MB)
+        let data: Vec<u8> = (0..1_048_576).map(|i| (i % 256) as u8).collect();
+        let hash_hex = {
+            let d = digest(&SHA256, &data);
+            d.as_ref().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        };
+
+        let encrypted = convergent_encrypt(&data, &hash_hex, "user-test").unwrap();
+        let decrypted = convergent_decrypt(&encrypted, &hash_hex, "user-test").unwrap();
+
+        assert_eq!(decrypted, data);
     }
 }

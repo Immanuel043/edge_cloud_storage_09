@@ -131,7 +131,7 @@ class EnhancedDeduplicationService:
         # Slow path: Python hashlib with executor batching
         loop = asyncio.get_event_loop()
         all_hashes: List[str] = []
-        batch_size = 5000
+        batch_size = 500  # Smaller batches for finer event loop yielding
 
         for batch_start in range(0, len(chunks), batch_size):
             batch_end = min(batch_start + batch_size, len(chunks))

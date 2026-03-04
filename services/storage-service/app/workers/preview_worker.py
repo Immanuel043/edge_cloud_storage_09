@@ -178,6 +178,7 @@ class PreviewWorker:
             logger.warning("⚠️ Missing file_id in message")
             return
 
+        upload_id = data.get('upload_id', '')
         logger.info(f"🎬 Processing preview for file {file_id}...")
 
         # Distributed lock: prevent duplicate processing of the same file
@@ -195,6 +196,15 @@ class PreviewWorker:
                     pass
             logger.info(f"Another worker is processing {file_id}, skipping")
             return
+
+        # Acquire chunk hold to prevent dedup from deleting chunks during preview
+        from app.utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
+        chunk_hold_id = None
+        if upload_id:
+            try:
+                chunk_hold_id = await acquire_chunk_hold(self.redis, upload_id, "preview_worker")
+            except Exception as e:
+                logger.warning(f"Failed to acquire chunk hold for {upload_id}: {e}")
 
         # Acquire semaphore to limit concurrent FFmpeg processes
         file_obj = None
@@ -260,6 +270,12 @@ class PreviewWorker:
                 except Exception:
                     pass
             finally:
+                # Release chunk hold so dedup cleanup can proceed
+                if chunk_hold_id and upload_id:
+                    try:
+                        await release_chunk_hold(self.redis, upload_id, chunk_hold_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to release chunk hold: {e}")
                 try:
                     await self.redis.delete(lock_key)
                 except Exception:

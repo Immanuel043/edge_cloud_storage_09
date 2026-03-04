@@ -7,6 +7,7 @@ Uses SmartDeduplicationQueue for priority-based processing with backpressure.
 """
 
 import asyncio
+import time
 from typing import Dict, Optional
 from datetime import datetime
 import json
@@ -20,6 +21,7 @@ from ..services.encryption import encryption_service
 from ..services.deduplication_enhanced import enhanced_dedup_service
 from ..services.dedup_queue import smart_dedup_queue
 from ..database import get_db, get_redis
+from ..utils.chunk_lifecycle import wait_for_cleanup_ready
 import mimetypes
 import logging
 
@@ -314,33 +316,45 @@ class BackgroundDeduplicationService:
             return None
     
     async def _cleanup_original_storage(self, file_obj: Object, session: Dict):
-        """Remove original encrypted files after deduplication"""
+        """Remove original encrypted files after deduplication.
+
+        Waits for any active chunk holds (from preview workers) to be released
+        before deleting, preventing race-condition data loss.
+        """
         try:
             storage_strategy = session.get("strategy", "single")
-            
+            upload_id = session.get("id", "")
+            upload_completed_at = session.get("_upload_completed_at", 0)
+
+            # Wait for preview workers to finish reading these chunks
+            if upload_id and upload_completed_at:
+                redis_client = await get_redis()
+                await wait_for_cleanup_ready(
+                    redis_client, upload_id, upload_completed_at
+                )
+
             if storage_strategy == "single" and file_obj.object_path:
                 if os.path.exists(file_obj.object_path):
                     os.remove(file_obj.object_path)
                     print(f"Removed original file: {file_obj.object_path}")
-            
+
             elif storage_strategy == "chunked":
-                upload_id = session["id"]
                 removed = 0
-                
+
                 for i in range(session.get("chunks", 0)):
                     chunk_path = session.get("chunk_paths", {}).get(str(i))
-                    
+
                     if not chunk_path:
                         shard = upload_id[:2]
                         chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-                    
+
                     if os.path.exists(chunk_path):
                         os.remove(chunk_path)
                         removed += 1
-                
+
                 if removed > 0:
                     print(f"Removed {removed} chunks")
-        
+
         except Exception as e:
             print(f"Cleanup error: {e}")
     

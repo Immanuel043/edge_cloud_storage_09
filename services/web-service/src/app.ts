@@ -191,7 +191,25 @@ async function initializeServices(): Promise<void> {
   // Kafka
   await retryConnection(async () => {
     kafkaProducer = kafka.producer();
-    kafkaConsumer = kafka.consumer({ groupId: 'web-service-group' });
+    kafkaConsumer = kafka.consumer({
+      groupId: 'web-service-group',
+      sessionTimeout: 45000,
+      heartbeatInterval: 10000,
+      rebalanceTimeout: 60000,
+      maxBytesPerPartition: 1048576,  // 1MB
+      maxWaitTimeInMs: 5000,
+      retry: {
+        initialRetryTime: 300,
+        retries: 15,
+        maxRetryTime: 30000,
+        factor: 0.2,
+        multiplier: 2,
+        restartOnFailure: async (error) => {
+          console.error('[Kafka] Consumer retry failure, restarting:', error.message);
+          return true;
+        },
+      },
+    });
 
     await kafkaProducer.connect();
     await kafkaConsumer.connect();

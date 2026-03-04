@@ -182,6 +182,9 @@ impl UnixSocketServer {
             ("POST", "/dedup-chunk") => {
                 Self::handle_dedup_endpoint(req, compression_level).await
             }
+            ("POST", "/convergent-decrypt") => {
+                Self::handle_convergent_decrypt_endpoint(req).await
+            }
             ("GET", "/health") => {
                 Self::handle_health_check().await
             }
@@ -508,6 +511,79 @@ impl UnixSocketServer {
                     .status(StatusCode::OK)
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+            Ok(Err(e)) => {
+                let json = serde_json::to_string(&e).unwrap_or_default();
+                let status = StatusCode::from_u16(e.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"internal_error","message":"Task panicked: {}"}}"#,
+                    e
+                );
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+        }
+    }
+
+    /// Handle convergent-decrypt endpoint (PBKDF2 + AES-GCM decryption)
+    #[instrument(skip(req))]
+    async fn handle_convergent_decrypt_endpoint(
+        req: Request<Incoming>,
+    ) -> Response<Full<Bytes>> {
+        use crate::server::dedup_handler::{DedupDecryptRequest, process_dedup_decrypt};
+
+        let headers = req.headers().clone();
+        let decrypt_req = match DedupDecryptRequest::from_headers(&headers) {
+            Ok(r) => r,
+            Err(e) => {
+                let json = serde_json::to_string(&e).unwrap_or_default();
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        let body_bytes = match req.collect().await.map(|b| b.to_bytes()) {
+            Ok(b) => b,
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"body_read_failed","message":"{}"}}"#,
+                    e
+                );
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        // CPU-heavy work: PBKDF2 + decrypt + optional decompress -- offload
+        let result = tokio::task::spawn_blocking(move || {
+            process_dedup_decrypt(&decrypt_req, &body_bytes)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(plaintext)) => {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/octet-stream")
+                    .header("x-plaintext-size", plaintext.len().to_string())
+                    .body(Full::new(Bytes::from(plaintext)))
                     .expect("invalid body type")
             }
             Ok(Err(e)) => {

@@ -49,6 +49,21 @@ process.on('uncaughtException', (error: Error) => {
 });
 
 process.on('unhandledRejection', (reason: unknown) => {
-  logger.error(`Unhandled Rejection: ${reason}`);
+  const reasonStr = String(reason);
+  logger.error(`Unhandled Rejection: ${reasonStr}`);
+
+  // Don't kill the process for Kafka-related errors — let the consumer
+  // crash handler deal with reconnection automatically
+  const isKafkaError =
+    reasonStr.includes('KafkaJS') ||
+    reasonStr.includes('Kafka') ||
+    reasonStr.includes('broker') ||
+    reasonStr.includes('consumer');
+
+  if (isKafkaError) {
+    logger.warn('Kafka-related rejection — not exiting process, consumer will auto-recover');
+    return;
+  }
+
   process.exit(1);
 });

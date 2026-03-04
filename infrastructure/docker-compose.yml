@@ -219,6 +219,11 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG4J_LOGGERS: "kafka.controller=INFO,kafka.producer.async.DefaultEventHandler=INFO,state.change.logger=INFO"
       KAFKAJS_NO_PARTITIONER_WARNING: 1
+      KAFKA_HEAP_OPTS: "-Xmx768m -Xms512m"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 10737418240
+      KAFKA_LOG_SEGMENT_BYTES: 104857600
     # ports removed: Kafka only accessible within Docker network
     volumes:
       - kafka_data:/var/lib/kafka/data
@@ -232,9 +237,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
         reservations:
-          memory: 512M
+          memory: 1G
 
   # Rust Data Plane Service
   rust-dataplane:
