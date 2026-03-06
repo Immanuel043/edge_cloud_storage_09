@@ -247,6 +247,7 @@ class VideoTranscoder:
     def _snapshot(self, file_obj):
         return SimpleNamespace(
             id=str(file_obj.id),
+            user_id=file_obj.user_id,
             file_name=file_obj.file_name,
             file_size=file_obj.file_size,
             mime_type=file_obj.mime_type,

@@ -216,13 +216,14 @@ async def _fetch_from_cas(
                 encrypted_data = await f.read()
 
             if is_convergent:
+                was_compressed = stored_block.get('was_compressed', False)
                 # Try Rust data plane for fast PBKDF2 decryption
                 try:
                     from ..services.rust_dataplane_client import get_rust_client
                     rust_client = get_rust_client()
                     decrypted_block = await rust_client.convergent_decrypt(
                         encrypted_data, block_hash, user_id,
-                        was_compressed=False,
+                        was_compressed=was_compressed,
                     )
                 except Exception:
                     # Fallback: Python PBKDF2 (runs in heavy thread pool)

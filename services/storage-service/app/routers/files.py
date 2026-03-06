@@ -431,7 +431,7 @@ async def stream_chunked_range(
             # Decrypt block
             if is_convergent:
                 user_id = str(file_obj.user_id)
-                was_compressed = chunk_info.get('compression', False)
+                was_compressed = stored_block.get('was_compressed', False)
 
                 # Try Rust data plane for fast PBKDF2 decryption
                 try:

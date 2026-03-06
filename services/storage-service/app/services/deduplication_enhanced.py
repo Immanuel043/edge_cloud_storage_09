@@ -389,12 +389,12 @@ class EnhancedDeduplicationService:
         block_hash: str,
         user_id: str,
         cas_path: str,
-    ) -> bool:
+    ) -> Dict:
         """Convergent-encrypt and store a single dedup block.
 
         Tries the Rust data plane first (PBKDF2 + AES-GCM + atomic write in
         native code). Falls back to the Python implementation on failure.
-        Returns True on success.
+        Returns dict with 'success' and 'was_compressed' keys.
         """
         # --- Rust fast path ---
         if getattr(settings, 'RUST_DATAPLANE_ENABLED', False):
@@ -410,17 +410,22 @@ class EnhancedDeduplicationService:
                 )
                 if result.get("success"):
                     logger.debug(
-                        "Block %s stored via Rust (%d bytes)",
+                        "Block %s stored via Rust (%d bytes, compressed=%s)",
                         block_hash[:12], result.get("encrypted_size", 0),
+                        result.get("was_compressed", False),
                     )
-                    return True
+                    return {
+                        'success': True,
+                        'was_compressed': result.get('was_compressed', False),
+                        'encrypted_size': result.get('encrypted_size', 0),
+                    }
             except Exception as exc:
                 logger.warning(
                     "Rust dedup_chunk failed for %s, falling back to Python: %s",
                     block_hash[:12], exc,
                 )
 
-        # --- Python fallback ---
+        # --- Python fallback (no compression) ---
         import hmac as _hmac
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.backends import default_backend
@@ -446,7 +451,7 @@ class EnhancedDeduplicationService:
             await f.write(block_to_store)
 
         logger.debug("Block %s stored via Python (%d bytes)", block_hash[:12], len(block_to_store))
-        return True
+        return {'success': True, 'was_compressed': False}
 
     async def store_deduplicated_file(
         self,
@@ -554,14 +559,16 @@ class EnhancedDeduplicationService:
             for new_block in dedup_result['new_blocks']:
                 block_data = new_block['data']
                 content_path = self.get_content_address(new_block['hash'])
+                was_compressed = False
 
                 if not os.path.exists(content_path):
                     if encrypt:
-                        stored = await self._store_encrypted_block(
+                        store_result = await self._store_encrypted_block(
                             block_data, new_block['hash'], user_id, content_path,
                         )
-                        if not stored:
+                        if not store_result.get('success'):
                             logger.error("Failed to store block %s", new_block['hash'][:12])
+                        was_compressed = store_result.get('was_compressed', False)
                     else:
                         await asyncio.to_thread(
                             os.makedirs, os.path.dirname(content_path), exist_ok=True,
@@ -576,6 +583,7 @@ class EnhancedDeduplicationService:
                     'path': content_path,
                     'size': new_block['size'],
                     'offset': new_block['offset'],
+                    'was_compressed': was_compressed,
                 })
             
             # Update existing object if provided, otherwise create new

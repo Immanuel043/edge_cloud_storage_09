@@ -66,19 +66,22 @@ fn derive_synthetic_iv(key: &[u8; KEY_LEN], block_hash_hex: &str) -> [u8; NONCE_
 /// Returns the encrypted blob: `nonce(12) || tag(16) || ciphertext`.
 ///
 /// The caller supplies the block data and its hex-encoded SHA-256 hash
-/// (already verified to match) plus the user_id for salt derivation.
+/// plus the user_id for salt derivation.
+///
+/// **Important**: `block_hash_hex` MUST be the hex SHA-256 of the *original*
+/// plaintext (before any compression).  The key is derived from this hash so
+/// that `convergent_decrypt` — which also uses `block_hash_hex` — produces
+/// the same key regardless of whether the input was compressed.
 #[instrument(skip(block_data), fields(block_hash = %block_hash_hex, data_len = block_data.len()))]
 pub fn convergent_encrypt(
     block_data: &[u8],
     block_hash_hex: &str,
     user_id: &str,
 ) -> Result<Vec<u8>, CryptoError> {
-    // 1. Content hash as raw bytes (SHA-256 of block data)
-    let content_hash = digest(&SHA256, block_data);
-    let content_hash_bytes: [u8; 32] = content_hash
-        .as_ref()
-        .try_into()
-        .map_err(|_| CryptoError::RingError("SHA-256 digest size mismatch".into()))?;
+    // 1. Content hash as raw bytes — derived from block_hash_hex (original
+    //    plaintext hash), NOT from block_data which may be compressed.
+    let content_hash_bytes: [u8; 32] = hex_to_bytes32(block_hash_hex)
+        .ok_or_else(|| CryptoError::RingError("Invalid block_hash_hex".into()))?;
 
     // 2. Derive user salt
     let salt = derive_user_salt(user_id);
