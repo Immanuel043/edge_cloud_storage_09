@@ -1095,6 +1095,24 @@ async def get_bundle_file_thumbnail(
     if size not in ['small', 'medium', 'large']:
         size = 'medium'
 
+    # Check Redis preview cache first (shared with main files endpoint)
+    try:
+        from ..database import get_redis
+        redis = await get_redis()
+        cache_key = f"preview:{file_id}:{size}"
+        cached_preview = await redis.get(cache_key)
+        if cached_preview:
+            return Response(
+                content=cached_preview,
+                media_type='image/jpeg',
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "X-Preview-Status": "cached"
+                }
+            )
+    except Exception:
+        pass  # Redis unavailable, fall through to generation
+
     temp_file_path = None
     try:
         # Download file content for preview generation

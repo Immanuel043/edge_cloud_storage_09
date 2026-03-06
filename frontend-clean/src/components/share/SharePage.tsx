@@ -260,7 +260,7 @@ const SharePage: React.FC = () => {
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = 'download';
       if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
         if (filenameMatch && filenameMatch[1]) {
           filename = filenameMatch[1];
         }

@@ -183,38 +183,17 @@ const ShareViewer: React.FC = () => {
         : `${API_URL}/api/v1/share/${token}`;
 
       const url = new URL(downloadUrl);
-      const dlHeaders: Record<string, string> = {};
       if (password) {
-        dlHeaders['X-Share-Password'] = password;
+        url.searchParams.set('password', password);
       }
 
-      const response = await fetch(url.toString(), {
-        credentials: 'include',
-        headers: dlHeaders,
-      });
-
-      if (!response.ok) {
-        throw new Error('Download failed');
-      }
-
-      const contentDisposition = response.headers.get('Content-Disposition');
-      let filename = shareInfo?.item_name || 'download';
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename="?(.+)"?/i);
-        if (match && match[1]) {
-          filename = match[1];
-        }
-      }
-
-      const blob = await response.blob();
-      const downloadUrl2 = window.URL.createObjectURL(blob);
+      // Use direct link for browser-native download (avoids buffering large files in memory)
       const a = document.createElement('a');
-      a.href = downloadUrl2;
-      a.download = filename;
+      a.href = url.toString();
+      a.download = shareInfo?.item_name || 'download';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      window.URL.revokeObjectURL(downloadUrl2);
     } catch (err: unknown) {
       setError(getErrorMessage(err) || 'Download failed');
     }

@@ -407,7 +407,7 @@ async def download_shared(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Check if this is a ZK-encrypted file - redirect to ZK-safe endpoint
-    if file_obj.encrypted_file_key:
+    if file_obj.encryption_mode == 'client_zk':
         raise HTTPException(
             status_code=400,
             detail="This file uses zero-knowledge encryption. Use /share/{token}/zk-info for client-side decryption."
@@ -421,6 +421,21 @@ async def download_shared(
     # LEGACY: Server-side decryption for non-ZK files only
     from ..services.encryption import encryption_service
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+
+    # Content-addressed storage (CAS) — use stream_chunked_range
+    chunk_info = file_obj.chunk_info or {}
+    if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+        from .files import stream_chunked_range
+        total_size = file_obj.file_size
+        generator = stream_chunked_range(file_obj, 0, total_size - 1, file_key, encryption_service)
+        return StreamingResponse(
+            generator,
+            media_type=file_obj.mime_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{file_obj.file_name}"',
+                "Content-Length": str(total_size),
+            },
+        )
 
     async def stream_chunks():
         if file_obj.storage_type == "inline":
