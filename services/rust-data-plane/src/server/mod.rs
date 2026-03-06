@@ -4,6 +4,7 @@ pub mod response;
 pub mod handlers;
 pub mod dedup_handler;
 pub mod fd_guard;
+pub mod stream_download_handler;
 pub mod uds_server;
 pub mod uds_server_scm;
 pub mod scm_rights;

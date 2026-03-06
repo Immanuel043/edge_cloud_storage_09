@@ -14,6 +14,15 @@ use tokio::net::UnixListener;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, instrument, warn};
 
+/// Type-erased body that supports both buffered (Full) and streaming responses.
+pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Wrap a `Bytes` value into a `BoxBody` (for existing buffered responses).
+pub fn full_body(bytes: Bytes) -> BoxBody {
+    use http_body_util::BodyExt as _;
+    Full::new(bytes).map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) }).boxed()
+}
+
 /// Server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -149,7 +158,7 @@ impl UnixSocketServer {
         circuit_breaker: Arc<CircuitBreaker>,
         rate_limiter: Arc<RateLimiter>,
         compression_level: i32,
-    ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Response<BoxBody>, Box<dyn std::error::Error + Send + Sync>> {
         let method = req.method().clone();
         let uri = req.uri().clone();
 
@@ -161,13 +170,13 @@ impl UnixSocketServer {
             if let Err(_) = rate_limiter.allow_request() {
                 return Ok(Response::builder()
                     .status(StatusCode::TOO_MANY_REQUESTS)
-                    .body(Full::new(Bytes::from(r#"{"success":false,"error":"rate_limit_exceeded","message":"Too many requests"}"#)))
+                    .body(full_body(Bytes::from(r#"{"success":false,"error":"rate_limit_exceeded","message":"Too many requests"}"#)))
                     .expect("static body"));
             }
             if let Err(_) = circuit_breaker.allow_request() {
                 return Ok(Response::builder()
                     .status(StatusCode::SERVICE_UNAVAILABLE)
-                    .body(Full::new(Bytes::from(r#"{"success":false,"error":"circuit_breaker_open","message":"Service temporarily unavailable"}"#)))
+                    .body(full_body(Bytes::from(r#"{"success":false,"error":"circuit_breaker_open","message":"Service temporarily unavailable"}"#)))
                     .expect("static body"));
             }
         }
@@ -185,6 +194,9 @@ impl UnixSocketServer {
             ("POST", "/convergent-decrypt") => {
                 Self::handle_convergent_decrypt_endpoint(req).await
             }
+            ("POST", "/stream-download") => {
+                Self::handle_stream_download_endpoint(req).await
+            }
             ("GET", "/health") => {
                 Self::handle_health_check().await
             }
@@ -192,7 +204,7 @@ impl UnixSocketServer {
                 warn!(method = %method, uri = %uri, "Not found");
                 Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .body(Full::new(Bytes::from("{\"error\":\"not_found\"}")))
+                    .body(full_body(Bytes::from("{\"error\":\"not_found\"}")))
                     .expect("invalid body type")
             }
         };
@@ -206,7 +218,7 @@ impl UnixSocketServer {
         req: Request<Incoming>,
         handler: Arc<UploadHandler>,
         circuit_breaker: Arc<CircuitBreaker>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<BoxBody> {
         // Extract request metadata from headers
         let headers = req.headers();
 
@@ -225,7 +237,7 @@ impl UnixSocketServer {
         if let Err(e) = crate::server::request::validate_file_id(&file_id) {
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
+                .body(full_body(Bytes::from(
                     serde_json::json!({
                         "success": false,
                         "error": "invalid_file_id",
@@ -269,7 +281,7 @@ impl UnixSocketServer {
             if !tp.starts_with('/') || tp.contains("..") {
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
-                    .body(Full::new(Bytes::from(
+                    .body(full_body(Bytes::from(
                         serde_json::json!({
                             "success": false,
                             "error": "invalid_target_path",
@@ -302,7 +314,7 @@ impl UnixSocketServer {
                 });
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
-                    .body(Full::new(Bytes::from(
+                    .body(full_body(Bytes::from(
                         serde_json::to_string(&msg)
                             .unwrap_or_else(|_| r#"{"success":false,"error":"body_read_failed"}"#.to_string())
                     )))
@@ -336,7 +348,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
             Err(err) => {
@@ -354,7 +366,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(status_code)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
         }
@@ -366,7 +378,7 @@ impl UnixSocketServer {
         req: Request<Incoming>,
         handler: Arc<DownloadHandler>,
         circuit_breaker: Arc<CircuitBreaker>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<BoxBody> {
         // Extract request metadata from headers
         let headers = req.headers();
 
@@ -385,7 +397,7 @@ impl UnixSocketServer {
         if let Err(e) = crate::server::request::validate_file_id(&file_id) {
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
+                .body(full_body(Bytes::from(
                     serde_json::json!({
                         "success": false,
                         "error": "invalid_file_id",
@@ -438,7 +450,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "application/octet-stream")
-                    .body(Full::new(bytes_data))
+                    .body(full_body(bytes_data))
                     .expect("invalid body type")
             }
             Err(err) => {
@@ -456,7 +468,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(status_code)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
         }
@@ -467,7 +479,7 @@ impl UnixSocketServer {
     async fn handle_dedup_endpoint(
         req: Request<Incoming>,
         compression_level: i32,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<BoxBody> {
         use crate::server::dedup_handler::{DedupChunkRequest, process_dedup_chunk};
 
         let headers = req.headers().clone();
@@ -478,7 +490,7 @@ impl UnixSocketServer {
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type");
             }
         };
@@ -493,7 +505,7 @@ impl UnixSocketServer {
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type");
             }
         };
@@ -510,7 +522,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
             Ok(Err(e)) => {
@@ -519,7 +531,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
             Err(e) => {
@@ -530,7 +542,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
         }
@@ -540,7 +552,7 @@ impl UnixSocketServer {
     #[instrument(skip(req))]
     async fn handle_convergent_decrypt_endpoint(
         req: Request<Incoming>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<BoxBody> {
         use crate::server::dedup_handler::{DedupDecryptRequest, process_dedup_decrypt};
 
         let headers = req.headers().clone();
@@ -551,7 +563,7 @@ impl UnixSocketServer {
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type");
             }
         };
@@ -566,7 +578,7 @@ impl UnixSocketServer {
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type");
             }
         };
@@ -583,7 +595,7 @@ impl UnixSocketServer {
                     .status(StatusCode::OK)
                     .header("content-type", "application/octet-stream")
                     .header("x-plaintext-size", plaintext.len().to_string())
-                    .body(Full::new(Bytes::from(plaintext)))
+                    .body(full_body(Bytes::from(plaintext)))
                     .expect("invalid body type")
             }
             Ok(Err(e)) => {
@@ -592,7 +604,7 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
             Err(e) => {
@@ -603,17 +615,26 @@ impl UnixSocketServer {
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Bytes::from(json)))
                     .expect("invalid body type")
             }
         }
     }
 
+    /// Handle streaming download endpoint
+    #[instrument(skip(req))]
+    async fn handle_stream_download_endpoint(
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        use crate::server::stream_download_handler;
+        stream_download_handler::handle_stream_download(req).await
+    }
+
     /// Handle health check endpoint
-    async fn handle_health_check() -> Response<Full<Bytes>> {
+    async fn handle_health_check() -> Response<BoxBody> {
         Response::builder()
             .status(StatusCode::OK)
-            .body(Full::new(Bytes::from("{\"status\":\"healthy\"}")))
+            .body(full_body(Bytes::from("{\"status\":\"healthy\"}")))
             .expect("invalid body type")
     }
 }

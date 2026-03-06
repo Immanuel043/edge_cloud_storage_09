@@ -105,6 +105,71 @@ async def throttled_download_generator(
             logger.debug(f"Stream slot released for user {user_id}")
 
 
+async def _stream_via_rust(
+    resolved, file_key: bytes, start_byte: int, end_byte: int
+) -> AsyncGenerator[bytes, None]:
+    """Build chunk manifest and stream decrypted data from the Rust data plane."""
+    from ..services.rust_dataplane_client import get_rust_client
+
+    chunk_info = resolved.chunk_info
+    chunk_size = chunk_info.get("chunk_size", 32 * 1024 * 1024)
+    chunk_paths = chunk_info.get("paths", {})
+    upload_id = chunk_info.get("upload_id", str(resolved.id))
+    total_chunks = chunk_info.get("count", 0)
+    was_compressed = chunk_info.get("compressed", False)
+
+    # Build manifest of chunk descriptors
+    first_chunk = start_byte // chunk_size
+    last_chunk = min(end_byte // chunk_size, total_chunks - 1)
+    chunks = []
+    for idx in range(first_chunk, last_chunk + 1):
+        path = chunk_paths.get(str(idx))
+        if not path:
+            shard = upload_id[:2]
+            path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{idx}.enc"
+        chunks.append({"index": idx, "path": path})
+
+    rust_client = get_rust_client()
+    async for data in rust_client.stream_download_chunks(
+        chunks=chunks,
+        file_key=file_key,
+        was_compressed=was_compressed,
+        start_byte=start_byte,
+        end_byte=end_byte,
+        chunk_size=chunk_size,
+    ):
+        yield data
+
+
+async def _try_rust_or_python(
+    resolved, file_key: bytes, start_byte: int, end_byte: int
+) -> AsyncGenerator[bytes, None]:
+    """Try Rust data plane for chunked download, fall back to Python."""
+    use_rust = False
+    try:
+        from ..services.rust_dataplane_client import get_rust_client
+        rust_client = get_rust_client()
+        if await rust_client.is_available():
+            use_rust = True
+    except Exception:
+        pass
+
+    if use_rust:
+        logger.debug("Using Rust data plane for chunked download")
+        async for data in _stream_via_rust(resolved, file_key, start_byte, end_byte):
+            yield data
+    else:
+        logger.debug("Falling back to Python for chunked download")
+        async for data in download_optimizer.stream_chunked_file_parallel(
+            file_obj=resolved,
+            file_key=file_key,
+            encryption_service=encryption_service,
+            start_byte=start_byte,
+            end_byte=end_byte,
+        ):
+            yield data
+
+
 class BulkDeleteRequest(BaseModel):
     file_ids: List[str]
 
@@ -877,13 +942,7 @@ async def download_file(
                     resolved, start, end, file_key, encryption_service
                 )
             else:
-                base_generator = download_optimizer.stream_chunked_file_parallel(
-                    file_obj=resolved,
-                    file_key=file_key,
-                    encryption_service=encryption_service,
-                    start_byte=start,
-                    end_byte=end
-                )
+                base_generator = _try_rust_or_python(resolved, file_key, start, end)
             # Wrap with bandwidth throttling and stream limiting (plan-aware)
             throttled_generator = throttled_download_generator(
                 user_id=user_id_str,
@@ -909,13 +968,7 @@ async def download_file(
                     resolved, 0, total_size - 1, file_key, encryption_service
                 )
             else:
-                base_generator = download_optimizer.stream_chunked_file_parallel(
-                    file_obj=resolved,
-                    file_key=file_key,
-                    encryption_service=encryption_service,
-                    start_byte=0,
-                    end_byte=total_size - 1
-                )
+                base_generator = _try_rust_or_python(resolved, file_key, 0, total_size - 1)
             # Wrap with bandwidth throttling and stream limiting (plan-aware)
             throttled_generator = throttled_download_generator(
                 user_id=user_id_str,

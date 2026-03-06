@@ -6,9 +6,11 @@ for high-performance chunk processing (encryption, compression, storage).
 """
 
 import os
+import time
 import socket
 import asyncio
-from typing import Optional, Dict, Any
+import base64
+from typing import Optional, Dict, Any, AsyncGenerator
 from urllib.parse import quote
 import httpx
 from httpx import AsyncClient, Timeout
@@ -53,6 +55,11 @@ class RustDataPlaneClient:
             timeout=self.timeout,
             base_url="http://localhost",  # Required but not used for UDS
         )
+
+        # Cached health-check result (avoids per-request latency)
+        self._health_ok: bool = False
+        self._health_checked_at: float = 0.0
+        self._health_cache_ttl: float = 5.0  # seconds
 
         logger.info(f"Initialized Rust data plane client: socket={socket_path}")
 
@@ -312,6 +319,52 @@ class RustDataPlaneClient:
         except Exception as e:
             logger.error(f"Chunk download error: {e}")
             raise
+
+    async def is_available(self) -> bool:
+        """Check if the Rust data plane is reachable (cached for 5s)."""
+        now = time.monotonic()
+        if now - self._health_checked_at < self._health_cache_ttl:
+            return self._health_ok
+        try:
+            await self.health_check()
+            self._health_ok = True
+        except Exception:
+            self._health_ok = False
+        self._health_checked_at = now
+        return self._health_ok
+
+    async def stream_download_chunks(
+        self,
+        chunks: list,
+        file_key: bytes,
+        was_compressed: bool,
+        start_byte: int,
+        end_byte: int,
+        chunk_size: int,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream decrypted plaintext from the Rust /stream-download endpoint."""
+        headers = {
+            "x-file-key": base64.b64encode(file_key).decode("ascii"),
+            "x-was-compressed": "true" if was_compressed else "false",
+            "content-type": "application/json",
+        }
+        body = {
+            "chunks": chunks,
+            "start_byte": start_byte,
+            "end_byte": end_byte,
+            "chunk_size": chunk_size,
+        }
+
+        async with self.client.stream(
+            "POST",
+            "/stream-download",
+            json=body,
+            headers=headers,
+            timeout=Timeout(120.0),
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                yield chunk
 
     async def convergent_decrypt(
         self,
