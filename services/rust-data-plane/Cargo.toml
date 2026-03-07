@@ -53,6 +53,12 @@ bytes = "1.7"
 memmap2 = "0.9"
 parking_lot = "0.12"
 
+# Caching
+lru = "0.12"
+
+# Parallelism
+rayon = "1.10"
+
 # Configuration
 toml = "0.8"
 

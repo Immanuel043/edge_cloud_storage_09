@@ -14,7 +14,10 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use futures_util::stream::{FuturesOrdered, StreamExt};
+use memmap2::Mmap;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, error, info, instrument, warn};
 
 /// Allowed path prefix for chunk files.
@@ -165,8 +168,8 @@ pub async fn handle_stream_download(req: Request<Incoming>) -> Response<BoxBody>
         );
     }
 
-    // -- Set up streaming channel (backpressure: 2 chunks buffered) -----
-    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>(2);
+    // -- Set up streaming channel (backpressure: 6 chunks buffered) -----
+    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>(6);
 
     // Clone data needed by spawned task
     let chunks_for_task: Vec<(u64, String)> = relevant_chunks
@@ -174,52 +177,63 @@ pub async fn handle_stream_download(req: Request<Incoming>) -> Response<BoxBody>
         .map(|c| (c.index, c.path.clone()))
         .collect();
 
-    // -- Spawn decryption pipeline --------------------------------------
+    // Create shared processor and key once (not per-chunk)
+    let processor = Arc::new(ChunkProcessor::default());
+    let secret_key = Arc::new(match SecretKey::from_slice(&key_bytes) {
+        Ok(k) => k,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("failed to create secret key: {:?}", e),
+            );
+        }
+    });
+
+    // -- Spawn parallel decryption pipeline -------------------------------
     tokio::spawn(async move {
+        let semaphore = Arc::new(Semaphore::new(4));
+        let mut futures = FuturesOrdered::new();
+
         for (chunk_index, chunk_path) in &chunks_for_task {
-            let chunk_index = *chunk_index;
-            let chunk_path = chunk_path.clone();
-            let key_clone = key_bytes.clone();
+            let sem = Arc::clone(&semaphore);
+            let proc = Arc::clone(&processor);
+            let sk = Arc::clone(&secret_key);
+            let path = chunk_path.clone();
+            let idx = *chunk_index;
 
-            // Read + decrypt in spawn_blocking (CPU-heavy)
-            let decrypt_result = {
-                let path = chunk_path.clone();
-                tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
-                    // Read encrypted bytes from disk
-                    let encrypted = std::fs::read(&path).map_err(|e| {
-                        format!("failed to read chunk at {}: {}", path, e)
+            futures.push_back(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let result = tokio::task::spawn_blocking(move || -> Result<(u64, Vec<u8>), String> {
+                    // Memory-mapped I/O for zero-copy read
+                    let file = std::fs::File::open(&path).map_err(|e| {
+                        format!("failed to open chunk at {}: {}", path, e)
                     })?;
-
-                    // Decrypt (+ optional decompress)
-                    let processor = ChunkProcessor::default();
-                    let key = SecretKey::from_slice(&key_clone).map_err(|e| {
-                        format!("key error: {:?}", e)
+                    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+                        format!("failed to mmap chunk at {}: {}", path, e)
                     })?;
-                    processor
-                        .decrypt_chunk(&encrypted, &key, chunk_index, was_compressed)
-                        .map_err(|e| format!("decrypt failed for chunk {}: {}", chunk_index, e))
+                    let decrypted = proc
+                        .decrypt_chunk(&mmap, &sk, idx, was_compressed)
+                        .map_err(|e| format!("decrypt failed for chunk {}: {}", idx, e))?;
+                    Ok((idx, decrypted))
                 })
-                .await
-            };
+                .await;
+                match result {
+                    Ok(inner) => inner,
+                    Err(e) => Err(format!("task panicked: {}", e)),
+                }
+            });
+        }
 
-            let plaintext = match decrypt_result {
-                Ok(Ok(data)) => data,
-                Ok(Err(e)) => {
-                    error!(error = %e, chunk_index, "chunk decryption failed");
+        // Drain in order — chunks arrive in sequence for correct byte-range streaming
+        while let Some(result) = futures.next().await {
+            let (chunk_index, plaintext) = match result {
+                Ok(data) => data,
+                Err(e) => {
+                    error!(error = %e, "chunk processing failed");
                     let _ = tx
                         .send(Err(Box::new(std::io::Error::new(
                             std::io::ErrorKind::Other,
                             e,
-                        )) as Box<dyn std::error::Error + Send + Sync>))
-                        .await;
-                    return;
-                }
-                Err(e) => {
-                    error!(error = %e, chunk_index, "spawn_blocking panicked");
-                    let _ = tx
-                        .send(Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("task panicked: {}", e),
                         )) as Box<dyn std::error::Error + Send + Sync>))
                         .await;
                     return;

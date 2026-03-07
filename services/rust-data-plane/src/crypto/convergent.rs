@@ -12,7 +12,8 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::digest::{digest, SHA256};
 use ring::hmac;
 use ring::pbkdf2;
-use std::num::NonZeroU32;
+use parking_lot::Mutex;
+use std::num::{NonZeroU32, NonZeroUsize};
 use tracing::{debug, instrument};
 
 use crate::error::CryptoError;
@@ -32,11 +33,28 @@ fn derive_user_salt(user_id: &str) -> [u8; 32] {
     salt
 }
 
+// LRU cache for PBKDF2-derived keys: avoids re-running 100k iterations for
+// the same (content_hash, salt) pair (the whole point of convergent/dedup).
+lazy_static::lazy_static! {
+    static ref PBKDF2_KEY_CACHE: Mutex<lru::LruCache<[u8; 64], [u8; KEY_LEN]>> =
+        Mutex::new(lru::LruCache::new(NonZeroUsize::new(1024).unwrap()));
+}
+
 /// Derive convergent encryption key from content hash bytes + user salt.
 /// Mirrors Python: `hashlib.pbkdf2_hmac('sha256', content_hash, salt, 100000, dklen=32)`
 ///
 /// `content_hash_bytes` is the raw 32-byte SHA-256 digest of the block data.
+/// Results are cached in an LRU cache keyed on `(content_hash, salt)`.
 fn derive_key(content_hash_bytes: &[u8; 32], salt: &[u8; 32]) -> [u8; KEY_LEN] {
+    let mut cache_key = [0u8; 64];
+    cache_key[..32].copy_from_slice(content_hash_bytes);
+    cache_key[32..].copy_from_slice(salt);
+
+    let mut cache = PBKDF2_KEY_CACHE.lock();
+    if let Some(cached) = cache.get(&cache_key) {
+        return *cached;
+    }
+
     let mut key = [0u8; KEY_LEN];
     pbkdf2::derive(
         pbkdf2::PBKDF2_HMAC_SHA256,
@@ -45,6 +63,7 @@ fn derive_key(content_hash_bytes: &[u8; 32], salt: &[u8; 32]) -> [u8; KEY_LEN] {
         content_hash_bytes,
         &mut key,
     );
+    cache.put(cache_key, key);
     key
 }
 
@@ -166,23 +185,38 @@ pub fn convergent_decrypt(
     in_out.extend_from_slice(ciphertext);
     in_out.extend_from_slice(tag_bytes);
 
-    let plaintext = opening_key
+    let plaintext_len = opening_key
         .open_in_place(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| CryptoError::DecryptionFailed)?;
+        .map_err(|_| CryptoError::DecryptionFailed)?
+        .len();
 
-    Ok(plaintext.to_vec())
+    in_out.truncate(plaintext_len);
+    Ok(in_out)
 }
 
-/// Parse a 64-char hex string into a 32-byte array.
+/// Parse a 64-char hex string into a 32-byte array (fast lookup-table decoding).
 fn hex_to_bytes32(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {
         return None;
     }
     let mut out = [0u8; 32];
+    let hex_bytes = hex.as_bytes();
     for i in 0..32 {
-        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+        let hi = hex_nibble(hex_bytes[i * 2])?;
+        let lo = hex_nibble(hex_bytes[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
     }
     Some(out)
+}
+
+#[inline]
+fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

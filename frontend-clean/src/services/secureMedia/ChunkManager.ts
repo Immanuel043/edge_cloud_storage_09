@@ -332,26 +332,35 @@ export class ChunkManager {
     // Ensure file key is valid before starting multi-chunk fetch
     this._ensureFileKey();
 
-    const chunks: Uint8Array[] = [];
     const endChunk = Math.min(startChunk + count, this.totalChunks);
+    const CONCURRENCY = 3;
+    const chunks: (Uint8Array | null)[] = new Array(endChunk - startChunk).fill(null);
 
-    for (let i = startChunk; i < endChunk; i++) {
-      // Check before each chunk fetch (React cleanup race condition)
+    // Fetch chunks in parallel with bounded concurrency
+    for (let batch = startChunk; batch < endChunk; batch += CONCURRENCY) {
       if (this.isDestroyed) {
         throw new Error('ChunkManager was destroyed during multi-chunk fetch');
       }
-      const chunk = await this.getChunk(i);
-      chunks.push(chunk);
+      const batchEnd = Math.min(batch + CONCURRENCY, endChunk);
+      const promises: Promise<void>[] = [];
+      for (let i = batch; i < batchEnd; i++) {
+        promises.push(
+          this.getChunk(i).then(c => { chunks[i - startChunk] = c; })
+        );
+      }
+      await Promise.all(promises);
     }
 
     // Concatenate chunks
-    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const totalLength = chunks.reduce((sum, c) => sum + (c?.length || 0), 0);
     const result = new Uint8Array(totalLength);
     let offset = 0;
 
     for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
+      if (chunk) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
     }
 
     return result;

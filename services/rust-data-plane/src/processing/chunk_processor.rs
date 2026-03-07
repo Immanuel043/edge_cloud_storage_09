@@ -69,26 +69,24 @@ impl ChunkProcessor {
         chunk_index: u64,
         should_compress: bool,
     ) -> Result<ProcessedChunk, DataPlaneError> {
-        // Step 1: Hash original data (before any processing)
-        let original_hash = AesGcmCipher::hash_data(chunk_data);
         let original_size = chunk_data.len();
 
-        debug!(
-            original_hash = %original_hash,
-            original_size = original_size,
-            "Hashed original chunk"
-        );
-
-        // Step 2: Optional compression, Step 3: Encryption
-        let (encrypted_data, compressed_size, was_compressed) = if should_compress {
-            let compressed = self.compressor.compress(chunk_data)?;
+        // Use rayon::join to parallelize independent operations on the same input
+        let (encrypted_data, original_hash, compressed_size, was_compressed) = if should_compress {
+            // Hash and compress in parallel (both read from chunk_data)
+            let (hash, compress_result) = rayon::join(
+                || AesGcmCipher::hash_data(chunk_data),
+                || self.compressor.compress(chunk_data),
+            );
+            let compressed = compress_result?;
             let compressed_size = compressed.len();
-            let ratio = (compressed_size as f64 / original_size as f64) * 100.0;
 
             debug!(
-                compressed_size = compressed_size,
-                ratio = format!("{:.2}%", ratio),
-                "Compression completed"
+                original_hash = %hash,
+                original_size,
+                compressed_size,
+                ratio = format!("{:.2}%", (compressed_size as f64 / original_size as f64) * 100.0),
+                "Hashed and compressed chunk"
             );
 
             let encrypted = self.cipher.encrypt_chunk(
@@ -96,16 +94,22 @@ impl ChunkProcessor {
                 file_key.as_bytes(),
                 chunk_index,
             )?;
-            (encrypted, compressed_size, true)
+            (encrypted, hash, compressed_size, true)
         } else {
-            debug!("Skipping compression");
-            // Avoid redundant to_vec - encrypt directly from chunk_data
-            let encrypted = self.cipher.encrypt_chunk(
-                chunk_data,
-                file_key.as_bytes(),
-                chunk_index,
-            )?;
-            (encrypted, 0, false)
+            // Hash and encrypt in parallel (both read from chunk_data)
+            let (hash, encrypt_result) = rayon::join(
+                || AesGcmCipher::hash_data(chunk_data),
+                || self.cipher.encrypt_chunk(chunk_data, file_key.as_bytes(), chunk_index),
+            );
+
+            debug!(
+                original_hash = %hash,
+                original_size,
+                "Hashed original chunk (no compression)"
+            );
+
+            let encrypted = encrypt_result?;
+            (encrypted, hash, 0, false)
         };
 
         let encrypted_size = encrypted_data.len();

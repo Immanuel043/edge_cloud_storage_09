@@ -118,15 +118,17 @@ impl AesGcmCipher {
                 .map_err(|_| CryptoError::InvalidCiphertext)?,
         );
 
-        // Decrypt in-place
+        // Decrypt in-place — return buffer directly to avoid redundant copy
         let mut in_out = encrypted_data.to_vec();
-        let plaintext = key
+        let plaintext_len = key
             .open_in_place(nonce, Aad::from(&aad_bytes), &mut in_out)
-            .map_err(|_| CryptoError::DecryptionFailed)?;
+            .map_err(|_| CryptoError::DecryptionFailed)?
+            .len();
 
-        debug!(plaintext_len = plaintext.len(), "Decryption completed");
+        debug!(plaintext_len = plaintext_len, "Decryption completed");
 
-        Ok(plaintext.to_vec())
+        in_out.truncate(plaintext_len);
+        Ok(in_out)
     }
 
     /// Hash data with SHA-256
@@ -145,10 +147,17 @@ impl Default for AesGcmCipher {
     }
 }
 
-// Hex encoding helper
+// Fast hex encoding via lookup table (single allocation)
 mod hex {
+    const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
+
     pub fn encode(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            s.push(HEX_TABLE[(b >> 4) as usize] as char);
+            s.push(HEX_TABLE[(b & 0x0f) as usize] as char);
+        }
+        s
     }
 }
 

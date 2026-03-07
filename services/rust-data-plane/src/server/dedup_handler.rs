@@ -9,7 +9,7 @@ use crate::crypto::convergent;
 use crate::server::response::ErrorResponse;
 use crate::storage::atomic_writer::{AtomicWriter, WriteOptions};
 use ring::digest::{digest, SHA256};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::{debug, error, info, instrument};
 
@@ -88,7 +88,7 @@ pub fn process_dedup_chunk(
 ) -> Result<DedupChunkResponse, ErrorResponse> {
     // 1. Verify hash
     let computed = digest(&SHA256, block_data);
-    let computed_hex: String = computed.as_ref().iter().map(|b| format!("{:02x}", b)).collect();
+    let computed_hex = fast_hex_encode(computed.as_ref());
 
     if computed_hex != req.block_hash {
         error!(
@@ -236,4 +236,139 @@ pub fn process_dedup_decrypt(
     );
 
     Ok(plaintext)
+}
+
+// ---------------------------------------------------------------------------
+// Fast hex encoding helper
+// ---------------------------------------------------------------------------
+
+const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
+
+fn fast_hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX_TABLE[(b >> 4) as usize] as char);
+        s.push(HEX_TABLE[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------
+// POST /dedup-chunk-batch  -- batch convergent encryption for multiple blocks
+// ---------------------------------------------------------------------------
+
+/// A single block descriptor within a batch request.
+#[derive(Debug, Deserialize)]
+pub struct BatchBlockDescriptor {
+    pub block_hash: String,
+    pub cas_path: String,
+    pub offset: usize,
+    pub length: usize,
+}
+
+/// JSON body for `POST /dedup-chunk-batch`.
+#[derive(Debug, Deserialize)]
+pub struct BatchDedupRequest {
+    pub user_id: String,
+    pub should_compress: bool,
+    pub blocks: Vec<BatchBlockDescriptor>,
+}
+
+/// Per-block result within a batch response.
+#[derive(Debug, Serialize)]
+pub struct BatchBlockResult {
+    pub block_hash: String,
+    pub success: bool,
+    pub encrypted_size: usize,
+    pub was_compressed: bool,
+    pub compression_ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response for `POST /dedup-chunk-batch`.
+#[derive(Debug, Serialize)]
+pub struct BatchDedupResponse {
+    pub success: bool,
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub results: Vec<BatchBlockResult>,
+}
+
+/// Process multiple dedup blocks from a single request body.
+///
+/// The request body contains all block data concatenated; each
+/// `BatchBlockDescriptor` specifies `offset` and `length` to slice
+/// the body into individual blocks.
+#[instrument(skip(body_data), fields(blocks = batch.blocks.len(), body_len = body_data.len()))]
+pub fn process_dedup_chunk_batch(
+    batch: &BatchDedupRequest,
+    body_data: &[u8],
+    compression_level: i32,
+) -> BatchDedupResponse {
+    let total = batch.blocks.len();
+    let mut results = Vec::with_capacity(total);
+    let mut succeeded = 0usize;
+
+    for block in &batch.blocks {
+        // Bounds check
+        if block.offset + block.length > body_data.len() {
+            results.push(BatchBlockResult {
+                block_hash: block.block_hash.clone(),
+                success: false,
+                encrypted_size: 0,
+                was_compressed: false,
+                compression_ratio: None,
+                error: Some(format!(
+                    "block offset+length ({} + {}) exceeds body size ({})",
+                    block.offset, block.length, body_data.len()
+                )),
+            });
+            continue;
+        }
+
+        let block_data = &body_data[block.offset..block.offset + block.length];
+
+        let req = DedupChunkRequest {
+            block_hash: block.block_hash.clone(),
+            user_id: batch.user_id.clone(),
+            cas_path: block.cas_path.clone(),
+            should_compress: batch.should_compress,
+        };
+
+        match process_dedup_chunk(&req, block_data, compression_level) {
+            Ok(resp) => {
+                succeeded += 1;
+                results.push(BatchBlockResult {
+                    block_hash: block.block_hash.clone(),
+                    success: true,
+                    encrypted_size: resp.encrypted_size,
+                    was_compressed: resp.was_compressed,
+                    compression_ratio: resp.compression_ratio,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                results.push(BatchBlockResult {
+                    block_hash: block.block_hash.clone(),
+                    success: false,
+                    encrypted_size: 0,
+                    was_compressed: false,
+                    compression_ratio: None,
+                    error: Some(e.message),
+                });
+            }
+        }
+    }
+
+    info!(total, succeeded, failed = total - succeeded, "Batch dedup completed");
+
+    BatchDedupResponse {
+        success: succeeded == total,
+        total,
+        succeeded,
+        failed: total - succeeded,
+        results,
+    }
 }

@@ -191,6 +191,9 @@ impl UnixSocketServer {
             ("POST", "/dedup-chunk") => {
                 Self::handle_dedup_endpoint(req, compression_level).await
             }
+            ("POST", "/dedup-chunk-batch") => {
+                Self::handle_dedup_batch_endpoint(req, compression_level).await
+            }
             ("POST", "/convergent-decrypt") => {
                 Self::handle_convergent_decrypt_endpoint(req).await
             }
@@ -528,6 +531,94 @@ impl UnixSocketServer {
             Ok(Err(e)) => {
                 let json = serde_json::to_string(&e).unwrap_or_default();
                 let status = StatusCode::from_u16(e.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(full_body(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"internal_error","message":"Task panicked: {}"}}"#,
+                    e
+                );
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header("content-type", "application/json")
+                    .body(full_body(Bytes::from(json)))
+                    .expect("invalid body type")
+            }
+        }
+    }
+
+    /// Handle batch dedup-chunk endpoint (multiple blocks in one request)
+    #[instrument(skip(req))]
+    async fn handle_dedup_batch_endpoint(
+        req: Request<Incoming>,
+        compression_level: i32,
+    ) -> Response<BoxBody> {
+        use crate::server::dedup_handler::{BatchDedupRequest, process_dedup_chunk_batch};
+
+        let body_bytes = match req.collect().await.map(|b| b.to_bytes()) {
+            Ok(b) => b,
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"body_read_failed","message":"{}"}}"#,
+                    e
+                );
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(full_body(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        // The body is: JSON manifest (until first newline) + concatenated block data
+        // Format: <json_manifest>\n<block_data_bytes>
+        let split_pos = body_bytes.iter().position(|&b| b == b'\n');
+        let (manifest_bytes, block_data) = match split_pos {
+            Some(pos) => (&body_bytes[..pos], &body_bytes[pos + 1..]),
+            None => {
+                let json = r#"{"success":false,"error":"invalid_format","message":"Expected JSON manifest followed by newline and block data"}"#;
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(full_body(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        let batch_req: BatchDedupRequest = match serde_json::from_slice(manifest_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                let json = format!(
+                    r#"{{"success":false,"error":"invalid_json","message":"{}"}}"#,
+                    e
+                );
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(full_body(Bytes::from(json)))
+                    .expect("invalid body type");
+            }
+        };
+
+        // CPU-heavy: offload batch processing
+        let block_data_vec = block_data.to_vec();
+        let result = tokio::task::spawn_blocking(move || {
+            process_dedup_chunk_batch(&batch_req, &block_data_vec, compression_level)
+        })
+        .await;
+
+        match result {
+            Ok(resp) => {
+                let status = if resp.success {
+                    StatusCode::OK
+                } else {
+                    StatusCode::MULTI_STATUS
+                };
+                let json = serde_json::to_string(&resp).unwrap_or_default();
                 Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
