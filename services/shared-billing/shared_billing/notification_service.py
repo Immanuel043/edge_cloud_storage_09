@@ -10,6 +10,7 @@ import logging
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from .models import UserSubscription, SubscriptionPlan, BillingNotification
 from .exceptions import SubscriptionNotFoundError
@@ -52,6 +53,7 @@ class BillingNotificationService:
         result = await self.db.execute(
             select(UserSubscription)
             .join(SubscriptionPlan)
+            .options(selectinload(UserSubscription.plan))
             .filter(
                 and_(
                     UserSubscription.service_type == self.service_type,
@@ -215,6 +217,7 @@ class BillingNotificationService:
                 subscription_result = await self.db.execute(
                     select(UserSubscription)
                     .join(SubscriptionPlan)
+                    .options(selectinload(UserSubscription.plan))
                     .filter(UserSubscription.id == notification.subscription_id)
                 )
                 subscription = subscription_result.scalar_one_or_none()

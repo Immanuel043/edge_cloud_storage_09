@@ -235,10 +235,11 @@ class PreviewWorker:
                         encryption_service=encryption_service
                     )
 
-                    if not temp_file_path:
-                        logger.error(f"❌ Failed to download file for preview: {file_id}")
-                        await self._set_status(file_id, 'failed', 'Download failed')
-                        await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'Download failed')
+                    if temp_file_path is None:
+                        # None means file is too large for sync processing — not a failure
+                        logger.info(f"⏳ File too large for sync preview, queued for async processing: {file_id} ({file_obj.file_name})")
+                        await self._set_status(file_id, 'queued', 'Queued for async processing')
+                        await self._publish_notification(file_id, str(file_obj.user_id), 'queued', 'Queued for async processing')
                         return
 
                     try:
