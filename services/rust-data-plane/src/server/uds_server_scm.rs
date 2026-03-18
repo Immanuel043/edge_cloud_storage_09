@@ -6,6 +6,8 @@
 //! Unlike the Hyper-based server, this uses custom HTTP parsing to access the raw socket
 //! for recvmsg() with ancillary data.
 
+use crate::crypto::SecretKey;
+use crate::processing::ChunkProcessor;
 use crate::resilience::{CircuitBreaker, CircuitBreakerConfig, RateLimiter, RateLimiterConfig};
 use crate::server::fd_guard;
 use crate::server::handlers::{DownloadHandler, UploadHandler};
@@ -15,8 +17,11 @@ use crate::server::scm_rights::{
 };
 use crate::server::ServerConfig;
 use crate::storage::ChunkStorage;
+use base64::Engine as _;
 use bytes::Bytes;
+use memmap2::Mmap;
 use scopeguard;
+use serde::Deserialize;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
@@ -285,6 +290,17 @@ impl UnixSocketServerWithScmRights {
                     body_start,
                     &headers,
                     compression_level,
+                    &mut stream,
+                )
+                .await
+            }
+
+            ("POST", "/bulk-decrypt") => {
+                Self::handle_bulk_decrypt(
+                    &buffer,
+                    bytes_read,
+                    body_start,
+                    &headers,
                     &mut stream,
                 )
                 .await
@@ -812,4 +828,203 @@ impl UnixSocketServerWithScmRights {
 
         Ok(())
     }
+
+    /// Handle bulk-decrypt request: read encrypted chunks from disk, decrypt, return plaintext
+    #[instrument(skip(buffer, headers, stream))]
+    async fn handle_bulk_decrypt(
+        buffer: &[u8],
+        bytes_read: usize,
+        body_start: usize,
+        headers: &[(String, String)],
+        stream: &mut UnixStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Max JSON body for the manifest (1MB should be plenty)
+        const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
+
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        if content_length > MAX_MANIFEST_SIZE {
+            let err_json = format!(
+                r#"{{"success":false,"error":"bad_request","message":"Content-Length {} exceeds manifest maximum {}"}}"#,
+                content_length, MAX_MANIFEST_SIZE
+            );
+            let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Assemble the full JSON body
+        let mut body_data = Vec::with_capacity(content_length);
+        let initial_body_len = bytes_read.saturating_sub(body_start);
+        if initial_body_len > 0 {
+            let copy_len = initial_body_len.min(content_length);
+            body_data.extend_from_slice(&buffer[body_start..body_start + copy_len]);
+        }
+
+        if body_data.len() < content_length {
+            let remaining = content_length - body_data.len();
+            let mut remaining_data = vec![0u8; remaining];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                stream.read_exact(&mut remaining_data),
+            )
+            .await
+            .map_err(|_| "Body read timeout (300s exceeded)")??;
+            body_data.extend_from_slice(&remaining_data);
+        }
+
+        // Parse JSON manifest
+        let manifest: BulkDecryptRequest = match serde_json::from_slice(&body_data) {
+            Ok(m) => m,
+            Err(e) => {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"invalid_json","message":"{}"}}"#,
+                    e
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        // Validate file key
+        let key_bytes = match base64::engine::general_purpose::STANDARD
+            .decode(&manifest.file_key_b64)
+        {
+            Ok(b) => b,
+            Err(e) => {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"bad_request","message":"invalid base64 in file_key_b64: {}"}}"#,
+                    e
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        if key_bytes.len() != 32 {
+            let err_json =
+                r#"{"success":false,"error":"bad_request","message":"file_key_b64 must decode to exactly 32 bytes"}"#;
+            let resp = build_http_response(400, "Bad Request", err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Validate chunk paths
+        const ALLOWED_PATH_PREFIX: &str = "/app/storage/";
+        for chunk in &manifest.chunks {
+            if !chunk.path.starts_with('/') || chunk.path.contains("..") {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"bad_request","message":"invalid chunk path: {}"}}"#,
+                    chunk.path
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+            if !chunk.path.starts_with(ALLOWED_PATH_PREFIX) {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"bad_request","message":"path must be under '{}': {}"}}"#,
+                    ALLOWED_PATH_PREFIX, chunk.path
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        }
+
+        if manifest.chunk_size == 0 {
+            let err_json =
+                r#"{"success":false,"error":"bad_request","message":"chunk_size must be > 0"}"#;
+            let resp = build_http_response(400, "Bad Request", err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        let was_compressed = manifest.was_compressed;
+        let chunks = manifest.chunks;
+
+        info!(
+            num_chunks = chunks.len(),
+            was_compressed,
+            chunk_size = manifest.chunk_size,
+            "bulk-decrypt request accepted"
+        );
+
+        // Decrypt all chunks in a blocking task
+        let result = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+            let processor = ChunkProcessor::default();
+            let secret_key = SecretKey::from_slice(&key_bytes)
+                .map_err(|e| format!("failed to create secret key: {:?}", e))?;
+
+            let mut plaintext = Vec::new();
+            for chunk_desc in &chunks {
+                let file = std::fs::File::open(&chunk_desc.path).map_err(|e| {
+                    format!("failed to open chunk at {}: {}", chunk_desc.path, e)
+                })?;
+                let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+                    format!("failed to mmap chunk at {}: {}", chunk_desc.path, e)
+                })?;
+                let decrypted = processor
+                    .decrypt_chunk(&mmap, &secret_key, chunk_desc.index, was_compressed)
+                    .map_err(|e| {
+                        format!("decrypt failed for chunk {}: {}", chunk_desc.index, e)
+                    })?;
+                plaintext.extend_from_slice(&decrypted);
+            }
+            Ok(plaintext)
+        })
+        .await
+        .map_err(|e| format!("task panicked: {}", e))?;
+
+        match result {
+            Ok(plaintext) => {
+                info!(
+                    plaintext_size = plaintext.len(),
+                    "bulk-decrypt complete"
+                );
+                let mut response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nx-plaintext-size: {}\r\nConnection: close\r\n\r\n",
+                    plaintext.len(), plaintext.len()
+                )
+                .into_bytes();
+                response.extend_from_slice(&plaintext);
+                stream.write_all(&response).await?;
+            }
+            Err(e) => {
+                error!(error = %e, "bulk-decrypt failed");
+                let err_json = format!(
+                    r#"{{"success":false,"error":"bulk_decrypt_error","message":"{}"}}"#,
+                    e
+                );
+                let resp = build_http_response(500, "Internal Server Error", &err_json, &[]);
+                stream.write_all(&resp).await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Request types for bulk-decrypt
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct BulkDecryptRequest {
+    chunks: Vec<BulkDecryptChunk>,
+    file_key_b64: String,
+    was_compressed: bool,
+    chunk_size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkDecryptChunk {
+    index: u64,
+    path: String,
 }

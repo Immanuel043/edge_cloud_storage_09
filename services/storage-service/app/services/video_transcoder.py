@@ -371,6 +371,83 @@ class VideoTranscoder:
             tail_bytes.extend(decrypted)
         return tail_bytes
 
+    async def _build_probe_file_with_rust(
+        self, chunk_paths, file_key, chunk_indices, was_compressed, output_path, encryption_service,
+    ) -> int:
+        """Try Rust bulk-decrypt for head probe, fall back to Python."""
+        from ..utils.executors import run_in_heavy_pool
+
+        rust_data = await self._rust_bulk_decrypt(
+            chunk_paths, file_key, chunk_indices, was_compressed,
+        )
+        if rust_data is not None:
+            def _write(path, data):
+                with open(path, 'wb') as f:
+                    f.write(data)
+                return len(data)
+            return await asyncio.to_thread(_write, output_path, rust_data)
+
+        return await run_in_heavy_pool(
+            self._build_probe_file,
+            chunk_paths, encryption_service, file_key,
+            chunk_indices, was_compressed, output_path,
+        )
+
+    async def _read_tail_bytes_with_rust(
+        self, chunk_paths, file_key, tail_start, total_chunks, was_compressed, encryption_service,
+    ) -> bytearray:
+        """Try Rust bulk-decrypt for tail probe, fall back to Python."""
+        from ..utils.executors import run_in_heavy_pool
+
+        indices = list(range(tail_start, total_chunks))
+        rust_data = await self._rust_bulk_decrypt(
+            chunk_paths, file_key, indices, was_compressed,
+        )
+        if rust_data is not None:
+            return bytearray(rust_data)
+
+        return await run_in_heavy_pool(
+            self._read_tail_bytes,
+            chunk_paths, encryption_service, file_key,
+            tail_start, total_chunks, was_compressed,
+        )
+
+    @staticmethod
+    async def _rust_bulk_decrypt(chunk_paths, file_key, chunk_indices, was_compressed):
+        """Call Rust /bulk-decrypt for a set of chunk indices. Returns bytes or None."""
+        from ..config import Settings
+        settings = Settings()
+        if not getattr(settings, "RUST_DATAPLANE_ENABLED", False):
+            return None
+        try:
+            from ..services.rust_dataplane_client import get_rust_client
+            rust_client = get_rust_client()
+            if not await rust_client.is_available():
+                return None
+
+            chunk_size = int(os.getenv("CHUNK_SIZE", str(32 * 1024 * 1024)))
+            chunks = []
+            for i in chunk_indices:
+                path = chunk_paths.get(str(i))
+                if not path:
+                    return None  # can't build manifest, fall back
+                chunks.append({"index": i, "path": path})
+
+            result = await rust_client.bulk_decrypt_chunks(
+                chunks=chunks,
+                file_key=file_key,
+                was_compressed=was_compressed,
+                chunk_size=chunk_size,
+            )
+            logger.info(
+                "Video probe decrypt via Rust: %d chunks, %d bytes",
+                len(chunks), len(result),
+            )
+            return result
+        except Exception as e:
+            logger.warning("Rust bulk-decrypt failed for video probe, falling back: %s", e)
+            return None
+
     async def _probe_file_metadata(self, file_obj, encryption_service) -> Optional[Dict]:
         """
         Fast ffprobe inspection to extract codec, duration, resolution.
@@ -501,10 +578,9 @@ class VideoTranscoder:
                 temp_probe_file = f"/tmp/probe_{file_obj.id}.partial"
                 head_count = min(_HEAD_PROBE_CHUNKS, total_chunks)
 
-                total_bytes = await run_in_heavy_pool(
-                    self._build_probe_file,
-                    chunk_paths, encryption_service, file_key,
-                    list(range(head_count)), was_compressed, temp_probe_file,
+                total_bytes = await self._build_probe_file_with_rust(
+                    chunk_paths, file_key, list(range(head_count)),
+                    was_compressed, temp_probe_file, encryption_service,
                 )
 
                 probe_path = temp_probe_file
@@ -549,10 +625,9 @@ class VideoTranscoder:
                 tail_count = min(_TAIL_PROBE_CHUNKS, total_chunks - head_count)
                 tail_start = total_chunks - tail_count
 
-                tail_bytes = await run_in_heavy_pool(
-                    self._read_tail_bytes,
-                    chunk_paths, encryption_service, file_key,
-                    tail_start, total_chunks, was_compressed,
+                tail_bytes = await self._read_tail_bytes_with_rust(
+                    chunk_paths, file_key, tail_start, total_chunks,
+                    was_compressed, encryption_service,
                 )
 
                 logger.info(

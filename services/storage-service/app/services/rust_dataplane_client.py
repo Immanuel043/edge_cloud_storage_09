@@ -407,6 +407,59 @@ class RustDataPlaneClient:
             logger.error("Convergent decrypt Rust call error: %s", e)
             raise
 
+    async def bulk_decrypt_chunks(
+        self,
+        chunks: list,
+        file_key: bytes,
+        was_compressed: bool,
+        chunk_size: int,
+    ) -> bytes:
+        """
+        Decrypt multiple chunks via Rust /bulk-decrypt endpoint.
+
+        Args:
+            chunks: List of dicts with 'index' (int) and 'path' (str).
+            file_key: Raw 32-byte AES key.
+            was_compressed: Whether chunks were compressed during upload.
+            chunk_size: Chunk size in bytes.
+
+        Returns:
+            Concatenated decrypted plaintext bytes.
+        """
+        body = {
+            "chunks": chunks,
+            "file_key_b64": base64.b64encode(file_key).decode("ascii"),
+            "was_compressed": was_compressed,
+            "chunk_size": chunk_size,
+        }
+
+        try:
+            response = await self.client.post(
+                "/bulk-decrypt",
+                json=body,
+                headers={"content-type": "application/json"},
+                timeout=Timeout(120.0),
+            )
+            response.raise_for_status()
+
+            logger.debug(
+                "Bulk decrypt via Rust: %d chunks, plaintext_size=%s",
+                len(chunks),
+                response.headers.get("x-plaintext-size", "?"),
+            )
+            return response.content
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Bulk decrypt Rust call failed: %d - %s",
+                e.response.status_code,
+                e.response.text,
+            )
+            raise
+        except Exception as e:
+            logger.error("Bulk decrypt Rust call error: %s", e)
+            raise
+
     async def dedup_chunk(
         self,
         block_data: bytes,

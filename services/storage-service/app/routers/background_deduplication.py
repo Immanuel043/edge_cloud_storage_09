@@ -263,8 +263,9 @@ class BackgroundDeduplicationService:
     async def _get_file_data(self, file_obj: Object, session: Dict) -> Optional[bytes]:
         """Read and decrypt file data.
 
-        Decryption and decompression are offloaded to the heavy thread pool
-        so the event loop is never blocked by CPU-bound crypto work.
+        Prefers the Rust data plane for decryption when available (avoids
+        blocking the event loop with Python AES-GCM).  Falls back to the
+        thread-pool-offloaded Python path on any Rust error.
         """
         try:
             file_key = await run_in_heavy_pool(
@@ -273,6 +274,14 @@ class BackgroundDeduplicationService:
             storage_strategy = session.get("strategy", "single")
             compress = session.get("compress", False)
 
+            # --- Try Rust bulk-decrypt first ---
+            rust_result = await self._get_file_data_rust(
+                file_obj, session, file_key, storage_strategy, compress,
+            )
+            if rust_result is not None:
+                return rust_result
+
+            # --- Python fallback ---
             if storage_strategy == "single":
                 storage_path = file_obj.object_path
                 if not storage_path:
@@ -344,6 +353,68 @@ class BackgroundDeduplicationService:
 
         except Exception as e:
             print(f"Error reading file data: {e}")
+            return None
+
+    async def _get_file_data_rust(
+        self,
+        file_obj: Object,
+        session: Dict,
+        file_key: bytes,
+        storage_strategy: str,
+        compress: bool,
+    ) -> Optional[bytes]:
+        """Attempt decryption via Rust /bulk-decrypt. Returns None to signal fallback."""
+        from ..config import Settings
+        settings = Settings()
+        if not getattr(settings, "RUST_DATAPLANE_ENABLED", False):
+            return None
+
+        try:
+            from ..services.rust_dataplane_client import get_rust_client
+            rust_client = get_rust_client()
+            if not await rust_client.is_available():
+                return None
+
+            chunk_size = int(os.getenv("CHUNK_SIZE", str(32 * 1024 * 1024)))
+
+            if storage_strategy == "single":
+                storage_path = file_obj.object_path
+                if not storage_path:
+                    return None
+                exists = await asyncio.to_thread(os.path.exists, storage_path)
+                if not exists:
+                    return None
+                chunks = [{"index": 0, "path": storage_path}]
+            elif storage_strategy == "chunked":
+                upload_id = session["id"]
+                num_chunks = session["chunks"]
+                chunks = []
+                for i in range(num_chunks):
+                    chunk_path = session.get("chunk_paths", {}).get(str(i))
+                    if not chunk_path:
+                        shard = upload_id[:2]
+                        chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                    chunks.append({"index": i, "path": chunk_path})
+            else:
+                return None
+
+            plaintext = await rust_client.bulk_decrypt_chunks(
+                chunks=chunks,
+                file_key=file_key,
+                was_compressed=compress,
+                chunk_size=chunk_size,
+            )
+            logger.info(
+                "Dedup decrypt via Rust bulk-decrypt: file=%s size=%d chunks=%d",
+                file_obj.id, len(plaintext), len(chunks),
+            )
+            return plaintext
+
+        except Exception as e:
+            logger.warning(
+                "Rust bulk-decrypt failed for %s, falling back to Python: %s",
+                file_obj.id, e,
+            )
             return None
     
     async def _cleanup_original_storage(self, file_obj: Object, session: Dict):
