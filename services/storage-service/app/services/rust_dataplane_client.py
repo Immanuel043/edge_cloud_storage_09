@@ -16,8 +16,38 @@ from urllib.parse import quote
 import httpx
 from httpx import AsyncClient, Timeout
 import logging
+from ..utils.executors import run_in_heavy_pool
 
 logger = logging.getLogger(__name__)
+
+
+def _build_batch_body(blocks: list, user_id: str, should_compress: bool) -> bytes:
+    """Build the wire-format body for /dedup-chunk-batch.
+
+    Runs in the heavy thread pool so the ~144MB ``b"".join`` never blocks
+    the event loop.
+    """
+    manifest_blocks = []
+    data_parts = []
+    offset = 0
+    for blk in blocks:
+        length = len(blk["block_data"])
+        manifest_blocks.append({
+            "block_hash": blk["block_hash"],
+            "cas_path": blk["cas_path"],
+            "offset": offset,
+            "length": length,
+        })
+        data_parts.append(blk["block_data"])
+        offset += length
+
+    manifest = json.dumps({
+        "user_id": user_id,
+        "should_compress": should_compress,
+        "blocks": manifest_blocks,
+    }, separators=(",", ":"))
+
+    return manifest.encode("utf-8") + b"\n" + b"".join(data_parts)
 
 
 class RustDataPlaneClient:
@@ -542,28 +572,9 @@ class RustDataPlaneClient:
             Dict with ``success``, ``total``, ``succeeded``, ``failed``,
             and ``results`` (list of per-block outcomes).
         """
-        # Build manifest and concatenate block data
-        manifest_blocks = []
-        data_parts = []
-        offset = 0
-        for blk in blocks:
-            length = len(blk["block_data"])
-            manifest_blocks.append({
-                "block_hash": blk["block_hash"],
-                "cas_path": blk["cas_path"],
-                "offset": offset,
-                "length": length,
-            })
-            data_parts.append(blk["block_data"])
-            offset += length
-
-        manifest = json.dumps({
-            "user_id": user_id,
-            "should_compress": should_compress,
-            "blocks": manifest_blocks,
-        }, separators=(",", ":"))
-
-        body = manifest.encode("utf-8") + b"\n" + b"".join(data_parts)
+        body = await run_in_heavy_pool(
+            _build_batch_body, blocks, user_id, should_compress,
+        )
 
         try:
             response = await self.client.post(

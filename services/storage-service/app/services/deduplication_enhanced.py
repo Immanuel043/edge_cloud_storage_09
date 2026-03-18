@@ -20,6 +20,103 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
+
+def _slice_chunks(file_data: bytes, boundaries: list) -> list:
+    """Slice file_data at each boundary. Used only on Python hash fallback path."""
+    chunks = []
+    start = 0
+    for boundary in boundaries:
+        chunks.append(file_data[start:boundary])
+        start = boundary
+    return chunks
+
+
+def _classify_blocks(
+    block_hashes: list,
+    chunk_sizes: list,
+    chunk_offsets: list,
+    existing_block_map: dict,
+) -> tuple:
+    """Classify blocks as new or duplicate. Plain data in, plain data out.
+
+    Returns:
+        (blocks, new_block_ranges, duplicate_blocks, duplicate_block_ids,
+         new_hashes_for_bloom, deduplicated_size, saved_size)
+
+    ``new_block_ranges`` entries carry ``hash``, ``size``, ``offset``, ``index``
+    but **no** ``data`` key — bytes are materialized later by ``_extract_unique_blocks``.
+    """
+    blocks = []
+    new_block_ranges = []
+    duplicate_blocks = []
+    duplicate_block_ids = []
+    new_hashes_for_bloom = []
+    deduplicated_size = 0
+    saved_size = 0
+
+    for i, block_hash in enumerate(block_hashes):
+        size = chunk_sizes[i]
+        offset = chunk_offsets[i]
+        existing_id = existing_block_map.get(block_hash)
+
+        if existing_id is not None:
+            duplicate_blocks.append({
+                'hash': block_hash,
+                'size': size,
+                'offset': offset,
+                'existing_block_id': str(existing_id),
+            })
+            saved_size += size
+            duplicate_block_ids.append(existing_id)
+        else:
+            new_block_ranges.append({
+                'hash': block_hash,
+                'size': size,
+                'offset': offset,
+                'index': i,
+            })
+            deduplicated_size += size
+            new_hashes_for_bloom.append(block_hash)
+
+        blocks.append({
+            'hash': block_hash,
+            'size': size,
+            'offset': offset,
+            'is_duplicate': existing_id is not None,
+        })
+
+    return (
+        blocks, new_block_ranges, duplicate_blocks, duplicate_block_ids,
+        new_hashes_for_bloom, deduplicated_size, saved_size,
+    )
+
+
+def _extract_unique_blocks(
+    file_data: bytes,
+    boundaries: list,
+    new_block_ranges: list,
+) -> list:
+    """Slice only the unique chunks from file_data.
+
+    Returns list of dicts with ``hash``, ``size``, ``offset``, ``data`` —
+    matching the downstream contract expected by ``store_deduplicated_file``.
+    """
+    # Build a start-offset list from boundaries: [0, b0, b1, ...]
+    starts = [0] + boundaries[:-1]
+    result = []
+    for entry in new_block_ranges:
+        idx = entry['index']
+        chunk_start = starts[idx]
+        chunk_end = boundaries[idx]
+        result.append({
+            'hash': entry['hash'],
+            'size': entry['size'],
+            'offset': entry['offset'],
+            'data': file_data[chunk_start:chunk_end],
+        })
+    return result
+
+
 class EnhancedDeduplicationService:
     """
     Enhanced Content-Addressed Storage with improved deduplication.
@@ -229,113 +326,64 @@ class EnhancedDeduplicationService:
             )
             return None  # Signal to caller to use regular storage
 
-        blocks = []
         boundaries = await run_in_heavy_pool(self.find_chunk_boundaries, file_data)
 
-        # Extract all chunks first
-        chunks = []
-        start = 0
-        for boundary in boundaries:
-            chunk = file_data[start:boundary]
-            chunks.append(chunk)
-            start = boundary
+        # Compute chunk offsets and sizes from boundaries (integer arithmetic, microseconds)
+        chunk_offsets = [0] + boundaries[:-1]
+        chunk_sizes = [boundaries[0]] + [boundaries[i] - boundaries[i - 1] for i in range(1, len(boundaries))]
 
-        # Calculate hashes -- single Rust call when available, else Python batches
-        logger.info(f"Calculating hashes for {len(chunks)} chunks...")
-        block_hashes = await self.calculate_hashes_parallel(
-            chunks, boundaries=boundaries, file_data=file_data,
-        )
+        # Hash: Rust batch path avoids slicing entirely; Python fallback slices in thread
+        if self._native_batch_sha256 is not None:
+            logger.info("Calculating hashes for %d chunks (Rust batch)...", len(boundaries))
+            block_hashes = await self.calculate_hashes_parallel(
+                [], boundaries=boundaries, file_data=file_data,
+            )
+        else:
+            logger.info("Calculating hashes for %d chunks (Python fallback)...", len(boundaries))
+            chunks = await run_in_heavy_pool(_slice_chunks, file_data, boundaries)
+            block_hashes = await self.calculate_hashes_parallel(chunks)
 
-        deduplicated_size = 0
-        saved_size = 0
-        new_blocks = []
-        duplicate_blocks = []
-
-        # Collect all block hashes for batch lookup
-        block_hash_to_chunk = {}
-        for i, block_hash in enumerate(block_hashes):
-            block_hash_to_chunk[block_hash] = {
-                'index': i,
-                'data': chunks[i],
-                'boundary': boundaries[i]
-            }
-
-        # Batch lookup existing blocks (PostgreSQL limit is 32767 parameters)
-        # Process in batches of 10000 to stay well under the limit
+        # DB batch lookup — load only (block_hash, id), no full ORM instances
         BATCH_SIZE = 10000
-        existing_block_map = {}
+        existing_block_map = {}  # {hash_str: uuid.UUID}
 
         for batch_start in range(0, len(block_hashes), BATCH_SIZE):
-            batch_hashes = block_hashes[batch_start:batch_start + BATCH_SIZE]
-            query = select(ContentBlock).where(ContentBlock.block_hash.in_(batch_hashes))
+            hash_batch = block_hashes[batch_start:batch_start + BATCH_SIZE]
+            query = select(ContentBlock.block_hash, ContentBlock.id).where(
+                ContentBlock.block_hash.in_(hash_batch)
+            )
             if not self.enable_cross_user_dedup:
-                # Limit to user's own blocks
                 query = query.join(Object).where(Object.user_id == user_id)
 
             result = await db.execute(query)
             await asyncio.sleep(0)  # Yield after database query
 
-            existing_blocks = result.scalars().all()
-
-            # Add to hash map of existing blocks
-            for existing_block in existing_blocks:
-                # Keep first (oldest) block for each hash
-                if existing_block.block_hash not in existing_block_map:
-                    existing_block_map[existing_block.block_hash] = existing_block
+            for row in result:
+                if row.block_hash not in existing_block_map:
+                    existing_block_map[row.block_hash] = row.id
 
             await asyncio.sleep(0)  # Yield after processing batch
 
-        # Process each chunk with its pre-calculated hash
-        start = 0
-        duplicate_block_ids = []  # Collect IDs for batch reference count update
+        # Classification — offloaded to thread pool (plain data in, plain data out)
+        (
+            blocks, new_block_ranges, duplicate_blocks, duplicate_block_ids,
+            new_hashes_for_bloom, deduplicated_size, saved_size,
+        ) = await run_in_heavy_pool(
+            _classify_blocks, block_hashes, chunk_sizes, chunk_offsets, existing_block_map,
+        )
 
-        for i, (boundary, block_hash) in enumerate(zip(boundaries, block_hashes)):
-            block = chunks[i]
+        # Bloom filter updates — must stay on event loop (NOT thread-safe)
+        if self.bloom_enabled:
+            for h in new_hashes_for_bloom:
+                self.bloom_filter.add(h)
 
-            # Quick check with bloom filter
-            is_potential_duplicate = False
-            if self.bloom_enabled and block_hash in self.bloom_filter:
-                is_potential_duplicate = True
-
-            existing_block = existing_block_map.get(block_hash)
-
-            if existing_block:
-                # Duplicate found
-                duplicate_blocks.append({
-                    'hash': block_hash,
-                    'size': len(block),
-                    'offset': start,
-                    'existing_block_id': str(existing_block.id)
-                })
-                saved_size += len(block)
-                duplicate_block_ids.append(existing_block.id)
-            else:
-                # New unique block
-                new_blocks.append({
-                    'hash': block_hash,
-                    'size': len(block),
-                    'offset': start,
-                    'data': block  # Keep for storage
-                })
-                deduplicated_size += len(block)
-
-                # Add to bloom filter
-                if self.bloom_enabled:
-                    self.bloom_filter.add(block_hash)
-
-            blocks.append({
-                'hash': block_hash,
-                'size': len(block),
-                'offset': start,
-                'is_duplicate': existing_block is not None
-            })
-
-            start = boundary
-
-            # Yield control every 1000 chunks to prevent blocking
-            if i % 1000 == 0 and i > 0:
-                await asyncio.sleep(0)
-                logger.debug(f"Processed {i}/{len(block_hashes)} chunks, yielding to event loop")
+        # Materialize unique block bytes — only slices the chunks that are new
+        if new_block_ranges:
+            new_blocks = await run_in_heavy_pool(
+                _extract_unique_blocks, file_data, boundaries, new_block_ranges,
+            )
+        else:
+            new_blocks = []
 
         # Batch increment reference counts for all duplicate blocks
         if duplicate_block_ids:
