@@ -453,6 +453,55 @@ class EnhancedDeduplicationService:
         logger.debug("Block %s stored via Python (%d bytes)", block_hash[:12], len(block_to_store))
         return {'success': True, 'was_compressed': False}
 
+    async def _store_encrypted_blocks_batch(
+        self,
+        blocks: List[Dict],
+        user_id: str,
+    ) -> Dict[str, Dict]:
+        """Convergent-encrypt and store multiple blocks via the Rust batch endpoint.
+
+        Splits *blocks* into batches of MAX_BATCH_SIZE and runs up to 3 batches
+        concurrently. Returns ``{block_hash: result_dict}`` for every block that
+        succeeded. On any error the method returns whatever partial results it
+        collected (callers retry missing blocks individually).
+        """
+        MAX_BATCH_SIZE = 10
+        sem = asyncio.Semaphore(3)
+        results: Dict[str, Dict] = {}
+
+        from .rust_dataplane_client import get_rust_client
+        client = get_rust_client()
+
+        async def _send_batch(batch: List[Dict]) -> None:
+            async with sem:
+                try:
+                    resp = await client.dedup_chunk_batch(
+                        blocks=[{
+                            "block_data": b["block_data"],
+                            "block_hash": b["block_hash"],
+                            "cas_path": b["cas_path"],
+                        } for b in batch],
+                        user_id=user_id,
+                        should_compress=True,
+                    )
+                    for r in resp.get("results", []):
+                        if r.get("success"):
+                            results[r["block_hash"]] = {
+                                "success": True,
+                                "was_compressed": r.get("was_compressed", False),
+                                "encrypted_size": r.get("encrypted_size", 0),
+                            }
+                except Exception as exc:
+                    logger.warning("Batch dedup call failed, will retry individually: %s", exc)
+
+        # Partition into batches and run concurrently
+        batches = [
+            blocks[i:i + MAX_BATCH_SIZE]
+            for i in range(0, len(blocks), MAX_BATCH_SIZE)
+        ]
+        await asyncio.gather(*[_send_batch(b) for b in batches])
+        return results
+
     async def store_deduplicated_file(
         self,
         file_data: bytes,
@@ -556,34 +605,71 @@ class EnhancedDeduplicationService:
                 master_key = None
                 encrypted_master_key = None
             
-            for new_block in dedup_result['new_blocks']:
-                block_data = new_block['data']
-                content_path = self.get_content_address(new_block['hash'])
-                was_compressed = False
+            # --- Phase 1: Pre-filter – batch check which CAS paths already exist ---
+            new_blocks = dedup_result['new_blocks']
+            cas_paths = [self.get_content_address(b['hash']) for b in new_blocks]
 
-                if not os.path.exists(content_path):
-                    if encrypt:
-                        store_result = await self._store_encrypted_block(
-                            block_data, new_block['hash'], user_id, content_path,
-                        )
-                        if not store_result.get('success'):
-                            logger.error("Failed to store block %s", new_block['hash'][:12])
-                        was_compressed = store_result.get('was_compressed', False)
+            def _check_existing(paths):
+                return {p: os.path.exists(p) for p in paths}
+
+            existing_map = await asyncio.to_thread(_check_existing, cas_paths)
+
+            blocks_to_store = []
+            already_exists_hashes = set()
+            for blk, cp in zip(new_blocks, cas_paths):
+                if existing_map.get(cp, False):
+                    already_exists_hashes.add(blk['hash'])
+                    logger.debug("Block %s already exists, reusing", blk['hash'][:8])
+                elif encrypt:
+                    blocks_to_store.append({
+                        "block_data": blk['data'],
+                        "block_hash": blk['hash'],
+                        "cas_path": cp,
+                    })
+
+            # --- Phase 2: Batch store via Rust batch endpoint ---
+            batch_results: Dict[str, Dict] = {}
+            if blocks_to_store and getattr(settings, 'RUST_DATAPLANE_ENABLED', False):
+                batch_results = await self._store_encrypted_blocks_batch(
+                    blocks_to_store, user_id,
+                )
+                logger.info(
+                    "Batch store: %d/%d blocks stored via Rust batch endpoint",
+                    len(batch_results), len(blocks_to_store),
+                )
+
+            # --- Phase 3: Fallback – retry any blocks not in batch results ---
+            for blk_info in blocks_to_store:
+                bh = blk_info["block_hash"]
+                if bh not in batch_results:
+                    store_result = await self._store_encrypted_block(
+                        blk_info["block_data"], bh, user_id, blk_info["cas_path"],
+                    )
+                    if store_result.get('success'):
+                        batch_results[bh] = store_result
                     else:
-                        await asyncio.to_thread(
-                            os.makedirs, os.path.dirname(content_path), exist_ok=True,
-                        )
-                        async with aiofiles.open(content_path, 'wb') as f:
-                            await f.write(block_data)
-                else:
-                    logger.debug("Block %s already exists, reusing", new_block['hash'][:8])
+                        logger.error("Failed to store block %s", bh[:12])
 
+            # Handle unencrypted blocks (no Rust path needed)
+            for blk, cp in zip(new_blocks, cas_paths):
+                if blk['hash'] in already_exists_hashes or blk['hash'] in batch_results:
+                    continue
+                if not encrypt and not existing_map.get(cp, False):
+                    await asyncio.to_thread(
+                        os.makedirs, os.path.dirname(cp), exist_ok=True,
+                    )
+                    async with aiofiles.open(cp, 'wb') as f:
+                        await f.write(blk['data'])
+
+            # --- Phase 4: Assemble stored_blocks in original order ---
+            for blk, cp in zip(new_blocks, cas_paths):
+                res = batch_results.get(blk['hash'], {})
                 stored_blocks.append({
-                    'hash': new_block['hash'],
-                    'path': content_path,
-                    'size': new_block['size'],
-                    'offset': new_block['offset'],
-                    'was_compressed': was_compressed,
+                    'hash': blk['hash'],
+                    'path': cp,
+                    'size': blk['size'],
+                    'offset': blk['offset'],
+                    'was_compressed': res.get('was_compressed', False),
                 })
             
             # Update existing object if provided, otherwise create new

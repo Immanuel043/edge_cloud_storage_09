@@ -50,12 +50,13 @@ async def release_chunk_hold(redis, upload_id: str, hold_id: str) -> None:
         logger.debug(f"Chunk hold already expired: {key}")
 
 
-async def can_cleanup_chunks(redis, upload_id: str, upload_completed_at: float) -> bool:
+async def can_cleanup_chunks(redis, upload_id: str, upload_completed_at: float) -> str:
     """Check if it's safe to clean up chunks for the given upload.
 
-    Returns True only when:
-    1. No active holds exist for this upload_id
-    2. The grace period since upload completion has elapsed
+    Returns a status string:
+    - ``"ready"``        — grace period elapsed and no active holds
+    - ``"grace_period"`` — still within the post-upload grace period
+    - ``"holds_active"`` — grace period elapsed but holds still exist
     """
     # Check grace period
     elapsed = time.time() - upload_completed_at
@@ -64,7 +65,7 @@ async def can_cleanup_chunks(redis, upload_id: str, upload_completed_at: float) 
             f"Grace period not elapsed for {upload_id}: "
             f"{elapsed:.0f}s / {GRACE_PERIOD_SECONDS}s"
         )
-        return False
+        return "grace_period"
 
     # Check for active holds
     pattern = f"chunk_hold:{upload_id}:*"
@@ -73,11 +74,11 @@ async def can_cleanup_chunks(redis, upload_id: str, upload_completed_at: float) 
         cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
         if keys:
             logger.debug(f"Active holds found for {upload_id}: {len(keys)} keys")
-            return False
+            return "holds_active"
         if cursor == b"0" or cursor == 0:
             break
 
-    return True
+    return "ready"
 
 
 async def wait_for_cleanup_ready(
@@ -91,15 +92,34 @@ async def wait_for_cleanup_ready(
     (forced cleanup to avoid permanent hold leaks).
     """
     start = time.time()
+    last_status = None
 
     while (time.time() - start) < MAX_WAIT_SECONDS:
-        if await can_cleanup_chunks(redis, upload_id, upload_completed_at):
+        status = await can_cleanup_chunks(redis, upload_id, upload_completed_at)
+        if status == "ready":
             logger.info(f"Chunks ready for cleanup: {upload_id}")
             return True
-        logger.info(
-            f"Waiting for chunk holds to clear: {upload_id} "
-            f"(elapsed={time.time() - start:.0f}s)"
-        )
+
+        # Log state transitions at INFO, repeated polls at DEBUG
+        if status != last_status:
+            remaining = GRACE_PERIOD_SECONDS - (time.time() - upload_completed_at)
+            if status == "grace_period":
+                logger.info(
+                    f"Waiting for grace period: {upload_id} "
+                    f"(~{max(remaining, 0):.0f}s remaining)"
+                )
+            else:
+                logger.info(
+                    f"Waiting for active chunk holds to clear: {upload_id} "
+                    f"(elapsed={time.time() - start:.0f}s)"
+                )
+            last_status = status
+        else:
+            logger.debug(
+                f"Still waiting ({status}): {upload_id} "
+                f"(elapsed={time.time() - start:.0f}s)"
+            )
+
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     logger.warning(

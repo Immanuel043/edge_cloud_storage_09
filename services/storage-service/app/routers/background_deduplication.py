@@ -22,6 +22,7 @@ from ..services.deduplication_enhanced import enhanced_dedup_service
 from ..services.dedup_queue import smart_dedup_queue
 from ..database import get_db, get_redis
 from ..utils.chunk_lifecycle import wait_for_cleanup_ready
+from ..utils.executors import run_in_heavy_pool
 import mimetypes
 import logging
 
@@ -260,57 +261,87 @@ class BackgroundDeduplicationService:
             )
     
     async def _get_file_data(self, file_obj: Object, session: Dict) -> Optional[bytes]:
-        """Read and decrypt file data"""
+        """Read and decrypt file data.
+
+        Decryption and decompression are offloaded to the heavy thread pool
+        so the event loop is never blocked by CPU-bound crypto work.
+        """
         try:
-            file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+            file_key = await run_in_heavy_pool(
+                encryption_service.decrypt_key, file_obj.encryption_key,
+            )
             storage_strategy = session.get("strategy", "single")
-            
+            compress = session.get("compress", False)
+
             if storage_strategy == "single":
                 storage_path = file_obj.object_path
-                if not storage_path or not os.path.exists(storage_path):
+                if not storage_path:
                     return None
-                
+                exists = await asyncio.to_thread(os.path.exists, storage_path)
+                if not exists:
+                    return None
+
                 async with aiofiles.open(storage_path, 'rb') as f:
                     encrypted_data = await f.read()
-                
-                file_data = encryption_service.decrypt_file(encrypted_data, file_key)
-                
-                if session.get("compress", False):
-                    from ..utils.compression import compressor
-                    file_data = compressor.decompress(file_data)
-                
-                return file_data
-            
+
+                def _decrypt_single(enc, key, do_decompress):
+                    data = encryption_service.decrypt_file(enc, key)
+                    if do_decompress:
+                        from ..utils.compression import compressor
+                        data = compressor.decompress(data)
+                    return data
+
+                return await run_in_heavy_pool(
+                    _decrypt_single, encrypted_data, file_key, compress,
+                )
+
             elif storage_strategy == "chunked":
-                chunks_data = []
                 upload_id = session["id"]
-                
-                for i in range(session["chunks"]):
+                num_chunks = session["chunks"]
+
+                # Resolve and validate all chunk paths first
+                chunk_paths = []
+                for i in range(num_chunks):
                     chunk_path = session.get("chunk_paths", {}).get(str(i))
-                    
                     if not chunk_path:
                         shard = upload_id[:2]
                         chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-                    
-                    if not os.path.exists(chunk_path):
-                        print(f"Chunk {i} not found: {chunk_path}")
-                        return None
-                    
+                    chunk_paths.append(chunk_path)
+
+                def _check_paths(paths):
+                    for p in paths:
+                        if not os.path.exists(p):
+                            return p
+                    return None
+
+                missing = await asyncio.to_thread(_check_paths, chunk_paths)
+                if missing is not None:
+                    print(f"Chunk not found: {missing}")
+                    return None
+
+                # Read all encrypted chunks via async I/O
+                encrypted_chunks = []
+                for chunk_path in chunk_paths:
                     async with aiofiles.open(chunk_path, 'rb') as f:
-                        encrypted_chunk = await f.read()
-                    
-                    decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, i)
-                    
-                    if session.get("compress", False):
-                        from ..utils.compression import compressor
-                        decrypted_chunk = compressor.decompress(decrypted_chunk)
-                    
-                    chunks_data.append(decrypted_chunk)
-                
-                return b''.join(chunks_data)
-            
+                        encrypted_chunks.append(await f.read())
+
+                # Decrypt + decompress all chunks in one heavy pool call
+                def _decrypt_all(enc_chunks, key, do_decompress):
+                    from ..utils.compression import compressor as _comp
+                    parts = []
+                    for idx, enc in enumerate(enc_chunks):
+                        dec = encryption_service.decrypt_chunk(enc, key, idx)
+                        if do_decompress:
+                            dec = _comp.decompress(dec)
+                        parts.append(dec)
+                    return b''.join(parts)
+
+                return await run_in_heavy_pool(
+                    _decrypt_all, encrypted_chunks, file_key, compress,
+                )
+
             return None
-            
+
         except Exception as e:
             print(f"Error reading file data: {e}")
             return None
@@ -334,24 +365,33 @@ class BackgroundDeduplicationService:
                 )
 
             if storage_strategy == "single" and file_obj.object_path:
-                if os.path.exists(file_obj.object_path):
-                    os.remove(file_obj.object_path)
+                def _remove_single(path):
+                    if os.path.exists(path):
+                        os.remove(path)
+                        return True
+                    return False
+
+                if await asyncio.to_thread(_remove_single, file_obj.object_path):
                     print(f"Removed original file: {file_obj.object_path}")
 
             elif storage_strategy == "chunked":
-                removed = 0
-
+                paths_to_remove = []
                 for i in range(session.get("chunks", 0)):
                     chunk_path = session.get("chunk_paths", {}).get(str(i))
-
                     if not chunk_path:
                         shard = upload_id[:2]
                         chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                    paths_to_remove.append(chunk_path)
 
-                    if os.path.exists(chunk_path):
-                        os.remove(chunk_path)
-                        removed += 1
+                def _remove_chunks(paths):
+                    count = 0
+                    for p in paths:
+                        if os.path.exists(p):
+                            os.remove(p)
+                            count += 1
+                    return count
 
+                removed = await asyncio.to_thread(_remove_chunks, paths_to_remove)
                 if removed > 0:
                     print(f"Removed {removed} chunks")
 

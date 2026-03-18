@@ -278,6 +278,18 @@ impl UnixSocketServerWithScmRights {
                 .await
             }
 
+            ("POST", "/dedup-chunk-batch") => {
+                Self::handle_dedup_chunk_batch(
+                    &buffer,
+                    bytes_read,
+                    body_start,
+                    &headers,
+                    compression_level,
+                    &mut stream,
+                )
+                .await
+            }
+
             _ => {
                 // 404 Not Found
                 let response = build_http_response(
@@ -707,6 +719,96 @@ impl UnixSocketServerWithScmRights {
                 stream.write_all(&response).await?;
             }
         }
+
+        Ok(())
+    }
+
+    /// Handle dedup-chunk-batch request (multiple blocks in one request)
+    #[instrument(skip(buffer, headers, stream))]
+    async fn handle_dedup_chunk_batch(
+        buffer: &[u8],
+        bytes_read: usize,
+        body_start: usize,
+        headers: &[(String, String)],
+        compression_level: i32,
+        stream: &mut UnixStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::server::dedup_handler::{BatchDedupRequest, process_dedup_chunk_batch};
+
+        // Batch bodies can be large (10 blocks x 8MB = 80MB)
+        const MAX_BATCH_BODY: usize = 128 * 1024 * 1024;
+
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        if content_length > MAX_BATCH_BODY {
+            let err_json = format!(
+                r#"{{"success":false,"error":"bad_request","message":"Content-Length {} exceeds batch maximum {}"}}"#,
+                content_length, MAX_BATCH_BODY
+            );
+            let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Assemble the full body
+        let mut body_data = Vec::with_capacity(content_length);
+        let initial_body_len = bytes_read.saturating_sub(body_start);
+        if initial_body_len > 0 {
+            let copy_len = initial_body_len.min(content_length);
+            body_data.extend_from_slice(&buffer[body_start..body_start + copy_len]);
+        }
+
+        if body_data.len() < content_length {
+            let remaining = content_length - body_data.len();
+            let mut remaining_data = vec![0u8; remaining];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                stream.read_exact(&mut remaining_data),
+            )
+            .await
+            .map_err(|_| "Body read timeout (300s exceeded)")??;
+            body_data.extend_from_slice(&remaining_data);
+            debug!(read = remaining, total = body_data.len(), "Read remaining batch body");
+        }
+
+        // Split body: <json_manifest>\n<block_data>
+        let split_pos = body_data.iter().position(|&b| b == b'\n');
+        let (manifest_bytes, block_data) = match split_pos {
+            Some(pos) => (&body_data[..pos], &body_data[pos + 1..]),
+            None => {
+                let err_json = r#"{"success":false,"error":"invalid_format","message":"Expected JSON manifest followed by newline and block data"}"#;
+                let resp = build_http_response(400, "Bad Request", err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        let batch_req: BatchDedupRequest = match serde_json::from_slice(manifest_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"invalid_json","message":"{}"}}"#,
+                    e
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        let block_data_owned = block_data.to_vec();
+        let result = tokio::task::spawn_blocking(move || {
+            process_dedup_chunk_batch(&batch_req, &block_data_owned, compression_level)
+        })
+        .await?;
+
+        let json = serde_json::to_string(&result)?;
+        let response = build_http_response(200, "OK", &json, &[]);
+        stream.write_all(&response).await?;
 
         Ok(())
     }

@@ -7,6 +7,7 @@ for high-performance chunk processing (encryption, compression, storage).
 
 import os
 import time
+import json
 import socket
 import asyncio
 import base64
@@ -465,6 +466,79 @@ class RustDataPlaneClient:
             raise
         except Exception as e:
             logger.error("Dedup chunk Rust call error: %s", e)
+            raise
+
+    async def dedup_chunk_batch(
+        self,
+        blocks: list,
+        user_id: str,
+        should_compress: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Process multiple dedup blocks in a single request via Rust batch endpoint.
+
+        Wire format: ``<json_manifest>\\n<concatenated_block_data>``
+
+        Args:
+            blocks: List of dicts, each with ``block_data`` (bytes),
+                    ``block_hash`` (str), and ``cas_path`` (str).
+            user_id: User ID for salt derivation.
+            should_compress: Whether to attempt Zstd compression.
+
+        Returns:
+            Dict with ``success``, ``total``, ``succeeded``, ``failed``,
+            and ``results`` (list of per-block outcomes).
+        """
+        # Build manifest and concatenate block data
+        manifest_blocks = []
+        data_parts = []
+        offset = 0
+        for blk in blocks:
+            length = len(blk["block_data"])
+            manifest_blocks.append({
+                "block_hash": blk["block_hash"],
+                "cas_path": blk["cas_path"],
+                "offset": offset,
+                "length": length,
+            })
+            data_parts.append(blk["block_data"])
+            offset += length
+
+        manifest = json.dumps({
+            "user_id": user_id,
+            "should_compress": should_compress,
+            "blocks": manifest_blocks,
+        }, separators=(",", ":"))
+
+        body = manifest.encode("utf-8") + b"\n" + b"".join(data_parts)
+
+        try:
+            response = await self.client.post(
+                "/dedup-chunk-batch",
+                content=body,
+                headers={"content-type": "application/octet-stream"},
+                timeout=Timeout(120.0),
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            logger.debug(
+                "Batch dedup via Rust: total=%d succeeded=%d failed=%d",
+                result.get("total", 0),
+                result.get("succeeded", 0),
+                result.get("failed", 0),
+            )
+            return result
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Batch dedup Rust call failed: %d - %s",
+                e.response.status_code,
+                e.response.text,
+            )
+            raise
+        except Exception as e:
+            logger.error("Batch dedup Rust call error: %s", e)
             raise
 
 
