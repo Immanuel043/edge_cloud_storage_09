@@ -1399,7 +1399,7 @@ async def run_security_scans(
             elif storage_strategy == "chunked":
                 # For chunked files, reassemble chunks
                 # Skip scanning very large chunked files to avoid memory issues
-                if file_size > 100 * 1024 * 1024:  # Skip files > 100MB for now
+                if file_size > 500 * 1024 * 1024:  # Skip files > 500MB
                     logger.info(f"Skipping security scan for large chunked file: {file_name}")
                     return
 

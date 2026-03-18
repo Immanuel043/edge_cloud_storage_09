@@ -34,6 +34,7 @@ from app.services.ocr_service import ocr_service
 from app.services.metadata_service import metadata_service
 from app.services.similarity_service import similarity_service
 from app.services.storage import storage_service
+from app.services.encryption import encryption_service
 from app.services.search_service import search_service
 from app.database import async_session, get_redis, init_redis
 from app.models.database import Object, FileOCR, FileMetadata, FileTag, FileHash
@@ -52,6 +53,7 @@ KAFKA_TOPIC = 'file-analysis'
 KAFKA_GROUP_ID = 'file-analysis-processors'
 MAX_BATCH_SIZE = int(os.getenv('ANALYSIS_BATCH_SIZE', '5'))
 PROCESSING_INTERVAL = float(os.getenv('ANALYSIS_PROCESSING_INTERVAL', '2.0'))
+MAX_RETRIES = 3
 
 
 class FileAnalysisWorker:
@@ -90,7 +92,7 @@ class FileAnalysisWorker:
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
                 auto_offset_reset='earliest',
-                enable_auto_commit=True,
+                enable_auto_commit=False,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 max_poll_records=MAX_BATCH_SIZE,
                 fetch_max_wait_ms=2000
@@ -164,6 +166,9 @@ class FileAnalysisWorker:
                 for msg in all_msgs:
                     await self._process_file(msg.value)
 
+                # Commit offsets after successful batch processing
+                await self.consumer.commit()
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -181,6 +186,26 @@ class FileAnalysisWorker:
             logger.warning("Missing file_id in message")
             return
 
+        # Check retry count — skip if exceeded max retries
+        retry_key = f"analysis:retry:{file_id}"
+        try:
+            existing = await self.redis.get(retry_key)
+            retry_count = int(existing) if existing else 0
+        except Exception:
+            retry_count = 0
+
+        if retry_count >= MAX_RETRIES:
+            logger.error(f"File {file_id} exceeded max retries ({MAX_RETRIES}), moving to DLQ")
+            try:
+                await self.redis.setex(
+                    f"analysis:dlq:{file_id}",
+                    86400 * 7,  # 7-day TTL
+                    json.dumps({**data, "retry_count": retry_count, "failed_at": datetime.utcnow().isoformat()})
+                )
+            except Exception:
+                pass
+            return
+
         logger.info(f"Analyzing file: {file_name} ({file_id})")
 
         try:
@@ -195,9 +220,15 @@ class FileAnalysisWorker:
                     logger.warning(f"File not found: {file_id}")
                     return
 
-                # Get file data from storage
+                # Skip chunked files (too large to load into memory)
+                if file_obj.storage_type == "chunked":
+                    logger.info(f"Skipping analysis for chunked file {file_id} ({file_name})")
+                    return
+
+                # Decrypt file key and retrieve file data
                 try:
-                    file_data = await storage_service.read_file(file_obj)
+                    file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+                    file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
                     if not file_data:
                         logger.warning(f"Could not read file data for {file_id}")
                         return
@@ -325,21 +356,29 @@ class FileAnalysisWorker:
 
                 logger.info(f"Analysis complete for {file_name}")
 
+                # Clear retry counter on success
+                try:
+                    await self.redis.delete(retry_key)
+                except Exception:
+                    pass
+
         except Exception as e:
             logger.error(f"File analysis failed for {file_id}: {e}", exc_info=True)
 
-            # Update failure status
+            # Increment retry counter
             try:
+                await self.redis.setex(retry_key, 3600, str(retry_count + 1))
                 await self.redis.setex(
                     f"analysis:status:{file_id}",
                     3600,
                     json.dumps({
                         "status": "failed",
                         "error": str(e),
+                        "retry_count": retry_count + 1,
                         "failed_at": datetime.utcnow().isoformat()
                     })
                 )
-            except:
+            except Exception:
                 pass
 
 
