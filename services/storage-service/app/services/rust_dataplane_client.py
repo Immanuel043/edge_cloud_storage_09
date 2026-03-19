@@ -394,8 +394,13 @@ class RustDataPlaneClient:
             timeout=Timeout(120.0),
         ) as response:
             response.raise_for_status()
+            bytes_since_yield = 0
             async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                 yield chunk
+                bytes_since_yield += len(chunk)
+                if bytes_since_yield >= 4_000_000:
+                    await asyncio.sleep(0)
+                    bytes_since_yield = 0
 
     async def convergent_decrypt(
         self,
@@ -443,7 +448,7 @@ class RustDataPlaneClient:
         file_key: bytes,
         was_compressed: bool,
         chunk_size: int,
-    ) -> bytes:
+    ) -> bytearray:
         """
         Decrypt multiple chunks via Rust /bulk-decrypt endpoint.
 
@@ -454,7 +459,7 @@ class RustDataPlaneClient:
             chunk_size: Chunk size in bytes.
 
         Returns:
-            Concatenated decrypted plaintext bytes.
+            Concatenated decrypted plaintext as bytearray.
         """
         body = {
             "chunks": chunks,
@@ -464,20 +469,63 @@ class RustDataPlaneClient:
         }
 
         try:
-            response = await self.client.post(
-                "/bulk-decrypt",
-                json=body,
+            async with self.client.stream(
+                "POST", "/bulk-decrypt", json=body,
                 headers={"content-type": "application/json"},
                 timeout=Timeout(120.0),
-            )
-            response.raise_for_status()
+            ) as response:
+                if response.status_code >= 400:
+                    # Read error body before leaving the stream context
+                    await response.aread()
+                    response.raise_for_status()
+
+                plaintext_size_str = response.headers.get("x-plaintext-size")
+                bytes_since_yield = 0
+
+                if plaintext_size_str and plaintext_size_str.isdigit():
+                    # Fast path: pre-allocated bytearray, no join needed
+                    plaintext_size = int(plaintext_size_str)
+                    buf = bytearray(plaintext_size)
+                    view = memoryview(buf)
+                    offset = 0
+                    async for chunk in response.aiter_bytes(chunk_size=1_048_576):
+                        n = len(chunk)
+                        if offset + n > plaintext_size:
+                            raise ValueError(
+                                f"Rust response overruns x-plaintext-size: "
+                                f"{offset + n} > {plaintext_size}"
+                            )
+                        view[offset:offset + n] = chunk
+                        offset += n
+                        bytes_since_yield += n
+                        if bytes_since_yield >= 4_000_000:
+                            await asyncio.sleep(0)
+                            bytes_since_yield = 0
+                    view.release()
+                    # Trim if server sent less than declared
+                    if offset < plaintext_size:
+                        del buf[offset:]
+                    result = buf
+                else:
+                    # Fallback: collect + join (header missing = protocol regression)
+                    logger.warning(
+                        "bulk_decrypt response missing x-plaintext-size header, "
+                        "falling back to collect+join (performance degraded)"
+                    )
+                    collected: list = []
+                    async for chunk in response.aiter_bytes(chunk_size=1_048_576):
+                        collected.append(chunk)
+                        bytes_since_yield += len(chunk)
+                        if bytes_since_yield >= 4_000_000:
+                            await asyncio.sleep(0)
+                            bytes_since_yield = 0
+                    result = bytearray(await run_in_heavy_pool(b"".join, collected))
 
             logger.debug(
                 "Bulk decrypt via Rust: %d chunks, plaintext_size=%s",
-                len(chunks),
-                response.headers.get("x-plaintext-size", "?"),
+                len(chunks), plaintext_size_str or "?",
             )
-            return response.content
+            return result
 
         except httpx.HTTPStatusError as e:
             logger.error(
@@ -572,9 +620,11 @@ class RustDataPlaneClient:
             Dict with ``success``, ``total``, ``succeeded``, ``failed``,
             and ``results`` (list of per-block outcomes).
         """
+        t0 = time.monotonic()
         body = await run_in_heavy_pool(
             _build_batch_body, blocks, user_id, should_compress,
         )
+        t_body = time.monotonic()
 
         try:
             response = await self.client.post(
@@ -583,14 +633,14 @@ class RustDataPlaneClient:
                 headers={"content-type": "application/octet-stream"},
                 timeout=Timeout(120.0),
             )
+            t_post = time.monotonic()
             response.raise_for_status()
             result = response.json()
 
-            logger.debug(
-                "Batch dedup via Rust: total=%d succeeded=%d failed=%d",
-                result.get("total", 0),
-                result.get("succeeded", 0),
-                result.get("failed", 0),
+            logger.info(
+                "dedup_chunk_batch: body_build=%.1fs http_post=%.1fs body_size=%.1fMB blocks=%d",
+                t_body - t0, t_post - t_body,
+                len(body) / (1024 * 1024), len(blocks),
             )
             return result
 

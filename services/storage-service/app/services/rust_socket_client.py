@@ -155,14 +155,11 @@ class RustSocketClient:
             MemfdHelper.send_fd_over_socket(sock, key_fd, http_request.encode('utf-8'))
 
             # 5. Send chunk data (regular socket send, not via SCM_RIGHTS)
+            # Use sendall: loops in C with GIL released for syscalls,
+            # avoids Python bytes slicing that causes GIL contention.
             logger.debug(f"Sending chunk data: {len(chunk_data)} bytes")
-            total_sent = 0
-            while total_sent < len(chunk_data):
-                sent = sock.send(chunk_data[total_sent:])
-                if sent == 0:
-                    raise ConnectionError("Socket connection broken during chunk data send")
-                total_sent += sent
-            logger.debug(f"Sent {total_sent} bytes of chunk data")
+            sock.sendall(chunk_data)
+            logger.debug(f"Sent {len(chunk_data)} bytes of chunk data")
 
             # 6. Receive HTTP response
             logger.debug("Receiving HTTP response")

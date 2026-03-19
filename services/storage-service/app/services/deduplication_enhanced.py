@@ -13,6 +13,7 @@ from ..services.encryption import encryption_service
 from ..services.dedup_db_batch import batch_writer
 import json
 import xxhash  # For faster non-cryptographic hashing
+import time
 from ..utils.executors import run_in_heavy_pool
 from collections import defaultdict
 import logging
@@ -214,16 +215,26 @@ class EnhancedDeduplicationService:
         (zero Python-per-chunk overhead).  Otherwise falls back to the Python
         hashlib loop with executor batching.
         """
-        # Fast path: Rust batch SHA-256
+        # Fast path: Rust batch SHA-256 (sub-batched to limit GIL hold per call)
         if (
             self._native_batch_sha256 is not None
             and boundaries is not None
             and file_data is not None
         ):
             logger.info("Batch-hashing %d chunks via Rust byte processor", len(boundaries))
-            return await run_in_heavy_pool(
-                self._native_batch_sha256, file_data, boundaries
-            )
+            SUB_BATCH = 8  # ~45MB per sub-call at 5.6MB avg chunks
+            all_hashes: List[str] = []
+            for i in range(0, len(boundaries), SUB_BATCH):
+                j = min(i + SUB_BATCH, len(boundaries))
+                start_off = 0 if i == 0 else boundaries[i - 1]
+                sub_bounds = [b - start_off for b in boundaries[i:j]]
+                batch_hashes = await run_in_heavy_pool(
+                    self._native_batch_sha256, file_data, sub_bounds, start_off,
+                )
+                all_hashes.extend(batch_hashes)
+                if j < len(boundaries):
+                    await asyncio.sleep(0)
+            return all_hashes
 
         # Slow path: Python hashlib with executor batching
         loop = asyncio.get_event_loop()
@@ -335,13 +346,23 @@ class EnhancedDeduplicationService:
         # Hash: Rust batch path avoids slicing entirely; Python fallback slices in thread
         if self._native_batch_sha256 is not None:
             logger.info("Calculating hashes for %d chunks (Rust batch)...", len(boundaries))
+            t0_hash = time.monotonic()
             block_hashes = await self.calculate_hashes_parallel(
                 [], boundaries=boundaries, file_data=file_data,
             )
+            logger.info(
+                "Batch hashing complete: chunks=%d elapsed=%.1fs",
+                len(boundaries), time.monotonic() - t0_hash,
+            )
         else:
             logger.info("Calculating hashes for %d chunks (Python fallback)...", len(boundaries))
+            t0_hash = time.monotonic()
             chunks = await run_in_heavy_pool(_slice_chunks, file_data, boundaries)
             block_hashes = await self.calculate_hashes_parallel(chunks)
+            logger.info(
+                "Batch hashing complete: chunks=%d elapsed=%.1fs",
+                len(boundaries), time.monotonic() - t0_hash,
+            )
 
         # DB batch lookup — load only (block_hash, id), no full ORM instances
         BATCH_SIZE = 10000
@@ -377,11 +398,18 @@ class EnhancedDeduplicationService:
             for h in new_hashes_for_bloom:
                 self.bloom_filter.add(h)
 
-        # Materialize unique block bytes — only slices the chunks that are new
+        # Materialize unique block bytes — sub-batched to limit GIL hold per call
         if new_block_ranges:
-            new_blocks = await run_in_heavy_pool(
-                _extract_unique_blocks, file_data, boundaries, new_block_ranges,
-            )
+            EXTRACT_BATCH = 8
+            new_blocks = []
+            for i in range(0, len(new_block_ranges), EXTRACT_BATCH):
+                batch = await run_in_heavy_pool(
+                    _extract_unique_blocks, file_data, boundaries,
+                    new_block_ranges[i:i + EXTRACT_BATCH],
+                )
+                new_blocks.extend(batch)
+                if i + EXTRACT_BATCH < len(new_block_ranges):
+                    await asyncio.sleep(0)
         else:
             new_blocks = []
 
@@ -523,6 +551,7 @@ class EnhancedDeduplicationService:
         async def _send_batch(batch: List[Dict]) -> None:
             async with sem:
                 try:
+                    t0 = time.monotonic()
                     resp = await client.dedup_chunk_batch(
                         blocks=[{
                             "block_data": b["block_data"],
@@ -531,6 +560,12 @@ class EnhancedDeduplicationService:
                         } for b in batch],
                         user_id=user_id,
                         should_compress=True,
+                    )
+                    elapsed = time.monotonic() - t0
+                    batch_data_size = sum(len(b["block_data"]) for b in batch)
+                    logger.info(
+                        "Dedup batch store: blocks=%d data=%.1fMB elapsed=%.1fs",
+                        len(batch), batch_data_size / (1024 * 1024), elapsed,
                     )
                     for r in resp.get("results", []):
                         if r.get("success"):
@@ -578,7 +613,8 @@ class EnhancedDeduplicationService:
             
             # Calculate file-level hash (offloaded to heavy pool)
             file_hash = await run_in_heavy_pool(self.calculate_block_hash, file_data)
-            
+            await asyncio.sleep(0)  # yield after heavy hash computation
+
             # Check for full-file duplicate
             query = select(Object).where(
                 Object.content_hash == file_hash,
@@ -661,6 +697,7 @@ class EnhancedDeduplicationService:
                 return {p: os.path.exists(p) for p in paths}
 
             existing_map = await asyncio.to_thread(_check_existing, cas_paths)
+            await asyncio.sleep(0)  # yield after disk-intensive path checks
 
             blocks_to_store = []
             already_exists_hashes = set()

@@ -15,10 +15,12 @@ use crate::server::request::{DownloadRequest, UploadRequest};
 use crate::server::scm_rights::{
     build_http_response, parse_http_request, recv_with_scm_rights,
 };
+use crate::server::stream_download_handler::{StreamDownloadRequest, ChunkDescriptor};
 use crate::server::ServerConfig;
 use crate::storage::ChunkStorage;
 use base64::Engine as _;
 use bytes::Bytes;
+use futures_util::stream::{FuturesOrdered, StreamExt};
 use memmap2::Mmap;
 use scopeguard;
 use serde::Deserialize;
@@ -27,7 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
 use tracing::{debug, error, info, instrument};
 
 /// Maximum allowed chunk size (64MB) - prevents OOM from adversarial Content-Length
@@ -297,6 +299,17 @@ impl UnixSocketServerWithScmRights {
 
             ("POST", "/bulk-decrypt") => {
                 Self::handle_bulk_decrypt(
+                    &buffer,
+                    bytes_read,
+                    body_start,
+                    &headers,
+                    &mut stream,
+                )
+                .await
+            }
+
+            ("POST", "/stream-download") => {
+                Self::handle_stream_download(
                     &buffer,
                     bytes_read,
                     body_start,
@@ -1006,6 +1019,302 @@ impl UnixSocketServerWithScmRights {
                 stream.write_all(&resp).await?;
             }
         }
+
+        Ok(())
+    }
+
+    /// Handle streaming download via chunked transfer encoding.
+    ///
+    /// Mirrors the Hyper-based `stream_download_handler::handle_stream_download`
+    /// but writes directly to the raw UDS with HTTP chunked encoding.
+    #[instrument(skip(buffer, headers, stream))]
+    async fn handle_stream_download(
+        buffer: &[u8],
+        bytes_read: usize,
+        body_start: usize,
+        headers: &[(String, String)],
+        stream: &mut UnixStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
+        const ALLOWED_PATH_PREFIX: &str = "/app/storage/";
+
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        if content_length > MAX_MANIFEST_SIZE {
+            let err_json = format!(
+                r#"{{"success":false,"error":"bad_request","message":"Content-Length {} exceeds maximum {}"}}"#,
+                content_length, MAX_MANIFEST_SIZE
+            );
+            let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Extract headers
+        let file_key_b64 = match headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("x-file-key"))
+            .map(|(_, v)| v.as_str())
+        {
+            Some(v) => v.to_string(),
+            None => {
+                let resp = build_http_response(
+                    400,
+                    "Bad Request",
+                    r#"{"success":false,"error":"bad_request","message":"missing x-file-key header"}"#,
+                    &[],
+                );
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        let was_compressed = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("x-was-compressed"))
+            .map(|(_, v)| v.as_str() == "true")
+            .unwrap_or(false);
+
+        // Decode key
+        let key_bytes =
+            match base64::engine::general_purpose::STANDARD.decode(&file_key_b64) {
+                Ok(b) => b,
+                Err(e) => {
+                    let err_json = format!(
+                        r#"{{"success":false,"error":"bad_request","message":"invalid base64 in x-file-key: {}"}}"#,
+                        e
+                    );
+                    let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                    stream.write_all(&resp).await?;
+                    return Ok(());
+                }
+            };
+
+        if key_bytes.len() != 32 {
+            let resp = build_http_response(
+                400,
+                "Bad Request",
+                r#"{"success":false,"error":"bad_request","message":"x-file-key must decode to exactly 32 bytes"}"#,
+                &[],
+            );
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        // Assemble body
+        let mut body_data = Vec::with_capacity(content_length);
+        let initial_body_len = bytes_read.saturating_sub(body_start);
+        if initial_body_len > 0 {
+            let copy_len = initial_body_len.min(content_length);
+            body_data.extend_from_slice(&buffer[body_start..body_start + copy_len]);
+        }
+
+        if body_data.len() < content_length {
+            let remaining = content_length - body_data.len();
+            let mut remaining_data = vec![0u8; remaining];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                stream.read_exact(&mut remaining_data),
+            )
+            .await
+            .map_err(|_| "Body read timeout (300s exceeded)")??;
+            body_data.extend_from_slice(&remaining_data);
+        }
+
+        // Parse JSON manifest
+        let manifest: StreamDownloadRequest = match serde_json::from_slice(&body_data) {
+            Ok(m) => m,
+            Err(e) => {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"invalid_json","message":"{}"}}"#,
+                    e
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        };
+
+        // Validate paths
+        for chunk in &manifest.chunks {
+            if !chunk.path.starts_with('/') || chunk.path.contains("..") {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"bad_request","message":"invalid chunk path: {}"}}"#,
+                    chunk.path
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+            if !chunk.path.starts_with(ALLOWED_PATH_PREFIX) {
+                let err_json = format!(
+                    r#"{{"success":false,"error":"bad_request","message":"path must be under '{}': {}"}}"#,
+                    ALLOWED_PATH_PREFIX, chunk.path
+                );
+                let resp = build_http_response(400, "Bad Request", &err_json, &[]);
+                stream.write_all(&resp).await?;
+                return Ok(());
+            }
+        }
+
+        if manifest.chunk_size == 0 {
+            let resp = build_http_response(
+                400,
+                "Bad Request",
+                r#"{"success":false,"error":"bad_request","message":"chunk_size must be > 0"}"#,
+                &[],
+            );
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        let chunk_size = manifest.chunk_size;
+        let start_byte = manifest.start_byte;
+        let end_byte = manifest.end_byte;
+        let total_plaintext = end_byte - start_byte + 1;
+
+        let first_chunk_idx = start_byte / chunk_size;
+        let last_chunk_idx = end_byte / chunk_size;
+
+        // Filter and sort relevant chunks
+        let mut relevant_chunks: Vec<&ChunkDescriptor> = manifest
+            .chunks
+            .iter()
+            .filter(|c| c.index >= first_chunk_idx && c.index <= last_chunk_idx)
+            .collect();
+        relevant_chunks.sort_by_key(|c| c.index);
+
+        if relevant_chunks.is_empty() {
+            let resp = build_http_response(
+                400,
+                "Bad Request",
+                r#"{"success":false,"error":"bad_request","message":"no chunks overlap the requested byte range"}"#,
+                &[],
+            );
+            stream.write_all(&resp).await?;
+            return Ok(());
+        }
+
+        info!(
+            chunks = relevant_chunks.len(),
+            start_byte,
+            end_byte,
+            chunk_size,
+            was_compressed,
+            "stream-download request accepted (SCM)"
+        );
+
+        // Send HTTP response header with chunked transfer encoding
+        let response_header = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: application/octet-stream\r\n\
+             Transfer-Encoding: chunked\r\n\
+             x-total-plaintext-size: {}\r\n\
+             x-decryption-backend: rust\r\n\
+             Connection: close\r\n\
+             \r\n",
+            total_plaintext
+        );
+        stream.write_all(response_header.as_bytes()).await?;
+
+        // Create shared processor and key
+        let processor = Arc::new(ChunkProcessor::default());
+        let secret_key = Arc::new(match SecretKey::from_slice(&key_bytes) {
+            Ok(k) => k,
+            Err(e) => {
+                error!(error = ?e, "stream-download key error");
+                stream.write_all(b"0\r\n\r\n").await?;
+                return Ok(());
+            }
+        });
+
+        let chunks_for_task: Vec<(u64, String)> = relevant_chunks
+            .iter()
+            .map(|c| (c.index, c.path.clone()))
+            .collect();
+
+        // Parallel decrypt with semaphore, ordered output
+        let semaphore = Arc::new(Semaphore::new(4));
+        let mut futures = FuturesOrdered::new();
+
+        for (chunk_index, chunk_path) in &chunks_for_task {
+            let sem = Arc::clone(&semaphore);
+            let proc = Arc::clone(&processor);
+            let sk = Arc::clone(&secret_key);
+            let path = chunk_path.clone();
+            let idx = *chunk_index;
+
+            futures.push_back(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let result =
+                    tokio::task::spawn_blocking(move || -> Result<(u64, Vec<u8>), String> {
+                        let file = std::fs::File::open(&path).map_err(|e| {
+                            format!("failed to open chunk at {}: {}", path, e)
+                        })?;
+                        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+                            format!("failed to mmap chunk at {}: {}", path, e)
+                        })?;
+                        let decrypted = proc
+                            .decrypt_chunk(&mmap, &sk, idx, was_compressed)
+                            .map_err(|e| {
+                                format!("decrypt failed for chunk {}: {}", idx, e)
+                            })?;
+                        Ok((idx, decrypted))
+                    })
+                    .await;
+                match result {
+                    Ok(inner) => inner,
+                    Err(e) => Err(format!("task panicked: {}", e)),
+                }
+            });
+        }
+
+        // Drain in order, write each chunk using HTTP chunked transfer encoding
+        while let Some(result) = futures.next().await {
+            let (chunk_index, plaintext) = match result {
+                Ok(data) => data,
+                Err(e) => {
+                    error!(error = %e, "chunk processing failed during stream-download");
+                    stream.write_all(b"0\r\n\r\n").await?;
+                    return Ok(());
+                }
+            };
+
+            // Byte-range slicing for first/last chunk
+            let chunk_start_global = chunk_index * chunk_size;
+            let slice_start = if chunk_index == first_chunk_idx {
+                (start_byte - chunk_start_global) as usize
+            } else {
+                0
+            };
+            let slice_end = if chunk_index == last_chunk_idx {
+                let chunk_end_global =
+                    chunk_start_global + plaintext.len() as u64 - 1;
+                let clamped_end = std::cmp::min(end_byte, chunk_end_global);
+                (clamped_end - chunk_start_global + 1) as usize
+            } else {
+                plaintext.len()
+            };
+
+            let slice_end = std::cmp::min(slice_end, plaintext.len());
+            let slice_start = std::cmp::min(slice_start, slice_end);
+            let data = &plaintext[slice_start..slice_end];
+
+            // Write HTTP chunked encoding: <hex-size>\r\n<data>\r\n
+            let chunk_header = format!("{:x}\r\n", data.len());
+            stream.write_all(chunk_header.as_bytes()).await?;
+            stream.write_all(data).await?;
+            stream.write_all(b"\r\n").await?;
+        }
+
+        // Terminate chunked encoding
+        stream.write_all(b"0\r\n\r\n").await?;
+
+        info!(total_plaintext, "stream-download complete (SCM)");
 
         Ok(())
     }

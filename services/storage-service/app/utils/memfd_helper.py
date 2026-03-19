@@ -5,7 +5,9 @@ Provides secure file descriptor passing for encryption keys over Unix sockets.
 Supports both Linux (memfd_create) and macOS (shm_open).
 """
 
+import itertools
 import os
+import secrets
 import sys
 import ctypes
 import socket
@@ -14,6 +16,10 @@ import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Lightweight unique shm name generator (avoids uuid4 per call)
+_shm_id_gen = itertools.count()  # thread-safe in CPython (GIL protects next())
+_shm_nonce = secrets.token_hex(4)  # 8-char random string, set once at import
 
 
 class MemfdHelper:
@@ -26,6 +32,25 @@ class MemfdHelper:
     # Constants for memfd_create (Linux)
     MFD_CLOEXEC = 0x0001
     MFD_ALLOW_SEALING = 0x0002
+
+    # Cached libc handles (loaded once per process)
+    _libc_linux: Optional[ctypes.CDLL] = None
+    _libc_macos: Optional[ctypes.CDLL] = None
+
+    # Cached memfd_create support: None = not tested, True/False = result
+    _memfd_supported: Optional[bool] = None
+
+    @classmethod
+    def _get_libc_linux(cls) -> ctypes.CDLL:
+        if cls._libc_linux is None:
+            cls._libc_linux = ctypes.CDLL("libc.so.6", use_errno=True)
+        return cls._libc_linux
+
+    @classmethod
+    def _get_libc_macos(cls) -> ctypes.CDLL:
+        if cls._libc_macos is None:
+            cls._libc_macos = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
+        return cls._libc_macos
 
     @classmethod
     def create_memfd_with_key(cls, key: bytes, name: str = "file_key") -> int:
@@ -59,29 +84,37 @@ class MemfdHelper:
     @classmethod
     def _create_memfd_linux(cls, key: bytes, name: str) -> int:
         """Create memfd on Linux using memfd_create syscall, fallback to shm_open"""
+        libc = cls._get_libc_linux()
+
+        # Fast path: memfd_create known unsupported
+        if cls._memfd_supported is False:
+            return cls._create_shm_linux(key, name)
+
+        # memfd_create syscall number (319 on x86_64)
+        SYS_memfd_create = 319
+
+        name_bytes = name.encode('utf-8')
+        fd = libc.syscall(
+            SYS_memfd_create,
+            name_bytes,
+            cls.MFD_CLOEXEC | cls.MFD_ALLOW_SEALING
+        )
+
+        if fd < 0:
+            errno = ctypes.get_errno()
+            if errno in (38, 1):  # ENOSYS or EPERM — permanent, cache it
+                cls._memfd_supported = False
+                logger.info("memfd_create not supported (errno %d), using shm_open permanently", errno)
+                return cls._create_shm_linux(key, name)
+            # Transient errors (EMFILE, ENOMEM, etc.) — do NOT cache
+            raise OSError(errno, f"memfd_create failed: {os.strerror(errno)}")
+
+        cls._memfd_supported = True
+
         try:
-            # Load libc
-            libc = ctypes.CDLL("libc.so.6", use_errno=True)
-
-            # memfd_create syscall number (319 on x86_64)
-            SYS_memfd_create = 319
-
-            # Call memfd_create via syscall
-            name_bytes = name.encode('utf-8')
-            fd = libc.syscall(
-                SYS_memfd_create,
-                name_bytes,
-                cls.MFD_CLOEXEC | cls.MFD_ALLOW_SEALING
-            )
-
-            if fd < 0:
-                errno = ctypes.get_errno()
-                raise OSError(errno, f"memfd_create failed: {os.strerror(errno)}")
-
             # Write key to memfd
             written = os.write(fd, key)
             if written != len(key):
-                os.close(fd)
                 raise OSError(f"Failed to write full key: wrote {written}/{len(key)} bytes")
 
             # Seek back to beginning for reading
@@ -89,60 +122,44 @@ class MemfdHelper:
 
             logger.debug(f"Created Linux memfd: fd={fd}, key_size={len(key)}")
             return fd
-
-        except OSError as e:
-            # Fallback to shm_open if memfd_create is not supported (e.g., old Docker kernels)
-            if e.errno in (38, 1):  # ENOSYS (not implemented) or EPERM
-                logger.warning(f"memfd_create not supported (errno {e.errno}), falling back to shm_open")
-                return cls._create_shm_linux(key, name)
-            logger.error(f"Failed to create Linux memfd: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Failed to create Linux memfd: {e}")
+        except Exception:
+            os.close(fd)
             raise
 
     @classmethod
     def _create_shm_linux(cls, key: bytes, name: str) -> int:
         """Fallback: Create shared memory on Linux using shm_open (POSIX)"""
+        libc = cls._get_libc_linux()
+
+        # shm_open flags
+        O_RDWR = 0x0002
+        O_CREAT = 0x0040
+        O_EXCL = 0x0080
+        O_CLOEXEC = 0o2000000  # Linux specific
+
+        # Lightweight unique name: PID + startup nonce + monotonic counter
+        shm_name = f"/{name}_{os.getpid()}_{_shm_nonce}_{next(_shm_id_gen)}"
+
+        fd = libc.shm_open(
+            shm_name.encode('utf-8'),
+            O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
+            0o600  # Owner read/write only
+        )
+
+        if fd < 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, f"shm_open failed: {os.strerror(errno)}")
+
         try:
-            # Load libc
-            libc = ctypes.CDLL("libc.so.6", use_errno=True)
-
-            # shm_open flags
-            O_RDWR = 0x0002
-            O_CREAT = 0x0040
-            O_EXCL = 0x0080
-            O_CLOEXEC = 0o2000000  # Linux specific
-
-            # Generate unique name
-            import uuid
-            shm_name = f"/{name}_{uuid.uuid4().hex}"
-
-            # Call shm_open
-            fd = libc.shm_open(
-                shm_name.encode('utf-8'),
-                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
-                0o600  # Owner read/write only
-            )
-
-            if fd < 0:
-                errno = ctypes.get_errno()
-                raise OSError(errno, f"shm_open failed: {os.strerror(errno)}")
-
             # Immediately unlink so it's cleaned up when closed
             libc.shm_unlink(shm_name.encode('utf-8'))
 
-            # Set size (ftruncate returns None on success in Python)
-            try:
-                os.ftruncate(fd, len(key))
-            except OSError as e:
-                os.close(fd)
-                raise OSError(f"Failed to set shm size: {e}")
+            # Set size
+            os.ftruncate(fd, len(key))
 
             # Write key
             written = os.write(fd, key)
             if written != len(key):
-                os.close(fd)
                 raise OSError(f"Failed to write full key: wrote {written}/{len(key)} bytes")
 
             # Seek back to beginning
@@ -150,64 +167,55 @@ class MemfdHelper:
 
             logger.debug(f"Created Linux shm: fd={fd}, key_size={len(key)}")
             return fd
-
-        except Exception as e:
-            logger.error(f"Failed to create Linux shm: {e}")
+        except Exception:
+            os.close(fd)
             raise
 
     @classmethod
     def _create_memfd_macos(cls, key: bytes, name: str) -> int:
         """Create memfd on macOS using shm_open"""
+        libc = cls._get_libc_macos()
+
+        # shm_open flags
+        O_RDWR = 0x0002
+        O_CREAT = 0x0200
+        O_EXCL = 0x0800
+        O_CLOEXEC = 0x1000000  # macOS specific
+
+        # Lightweight unique name
+        shm_name = f"/{name}_{os.getpid()}_{_shm_nonce}_{next(_shm_id_gen)}"
+
+        fd = libc.shm_open(
+            shm_name.encode('utf-8'),
+            O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
+            0o600  # Owner read/write only
+        )
+
+        if fd < 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, f"shm_open failed: {os.strerror(errno)}")
+
         try:
-            # Load libc
-            libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
+            # Unlink immediately (file descriptor keeps it alive)
+            libc.shm_unlink(shm_name.encode('utf-8'))
 
-            # shm_open flags
-            O_RDWR = 0x0002
-            O_CREAT = 0x0200
-            O_EXCL = 0x0800
-            O_CLOEXEC = 0x1000000  # macOS specific
+            # Set size
+            if libc.ftruncate(fd, len(key)) != 0:
+                raise OSError("ftruncate failed")
 
-            # Generate unique name
-            import uuid
-            shm_name = f"/{name}_{uuid.uuid4().hex}"
+            # Write key
+            written = os.write(fd, key)
+            if written != len(key):
+                raise OSError(f"Failed to write full key: wrote {written}/{len(key)} bytes")
 
-            # Call shm_open
-            fd = libc.shm_open(
-                shm_name.encode('utf-8'),
-                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
-                0o600  # Owner read/write only
-            )
+            # Seek back to beginning
+            os.lseek(fd, 0, os.SEEK_SET)
 
-            if fd < 0:
-                errno = ctypes.get_errno()
-                raise OSError(errno, f"shm_open failed: {os.strerror(errno)}")
+            logger.debug(f"Created macOS shm: fd={fd}, key_size={len(key)}")
+            return fd
 
-            try:
-                # Unlink immediately (file descriptor keeps it alive)
-                libc.shm_unlink(shm_name.encode('utf-8'))
-
-                # Set size
-                if libc.ftruncate(fd, len(key)) != 0:
-                    raise OSError("ftruncate failed")
-
-                # Write key
-                written = os.write(fd, key)
-                if written != len(key):
-                    raise OSError(f"Failed to write full key: wrote {written}/{len(key)} bytes")
-
-                # Seek back to beginning
-                os.lseek(fd, 0, os.SEEK_SET)
-
-                logger.debug(f"Created macOS shm: fd={fd}, key_size={len(key)}")
-                return fd
-
-            except Exception:
-                os.close(fd)
-                raise
-
-        except Exception as e:
-            logger.error(f"Failed to create macOS shm: {e}")
+        except Exception:
+            os.close(fd)
             raise
 
     @staticmethod

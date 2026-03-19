@@ -342,10 +342,20 @@ class SmartDeduplicationQueue:
                 logger.error(f"Worker error: {e}")
                 await asyncio.sleep(1)
 
+    async def _deferred_enqueue(self, job: Dict, priority: int, delay: float):
+        """Re-enqueue a deferred job after a delay."""
+        await asyncio.sleep(delay)
+        await self.queues[priority].put(job)
+        logger.info(
+            "📋 Re-enqueued deferred job %s (priority=%d, defer_count=%d)",
+            job.get("file_id"), priority, job.get("_defer_count", 0),
+        )
+
     async def _process_job(self, job: Dict):
         """Process a single deduplication job"""
         file_id = job.get("file_id")
         user_id = job.get("user_id")
+        deferred = False
 
         logger.info(
             f"▶️ Processing job: {file_id} "
@@ -359,19 +369,26 @@ class SmartDeduplicationQueue:
             from ..routers.background_deduplication import background_dedup_service
 
             # Delegate to existing background dedup processor
-            await background_dedup_service._process_dedup_job(job)
+            result = await background_dedup_service._process_dedup_job(job)
 
-            self.stats["total_processed"] += 1
+            if result == "deferred":
+                deferred = True
+                asyncio.create_task(
+                    self._deferred_enqueue(job, job.get("priority", 2), delay=10)
+                )
+            else:
+                self.stats["total_processed"] += 1
 
         except Exception as e:
             logger.error(f"Job processing failed: {e}")
             self.stats["total_failed"] += 1
 
         finally:
-            # Update tracking
-            self.total_jobs = max(0, self.total_jobs - 1)
-            if user_id:
-                self.user_job_counts[user_id] = max(0, self.user_job_counts[user_id] - 1)
+            if not deferred:
+                # Update tracking
+                self.total_jobs = max(0, self.total_jobs - 1)
+                if user_id:
+                    self.user_job_counts[user_id] = max(0, self.user_job_counts[user_id] - 1)
 
             self.active_jobs.pop(file_id, None)
 

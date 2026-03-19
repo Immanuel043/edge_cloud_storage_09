@@ -106,7 +106,13 @@ def _cdc_impl(
     OutArray = ctypes.c_int64 * max_boundaries
     out = OutArray()
 
-    buf = (ctypes.c_uint8 * length).from_buffer_copy(data)
+    # Zero-copy for mutable buffers (bytearray from Rust streaming),
+    # bounded copy for immutable bytes
+    BufType = ctypes.c_uint8 * length
+    try:
+        buf = BufType.from_buffer(data)
+    except TypeError:
+        buf = BufType.from_buffer_copy(data)
 
     avg_block_size = (min_block_size + max_block_size) // 2
 
@@ -122,20 +128,38 @@ def _cdc_impl(
     return [out[i] for i in range(count)]
 
 
-def _batch_sha256_impl(data: bytes, boundaries: List[int]) -> List[str]:
+def _batch_sha256_impl(data: bytes, boundaries: List[int], data_offset: int = 0) -> List[str]:
     """
     Compute SHA-256 for every chunk in one Rust call.
 
     ``boundaries`` are the end-offsets returned by CDC
     (e.g. [4194304, 8388608, 10000000]).
+    ``data_offset`` lets callers pass the full buffer and indicate where the
+    sub-range starts, avoiding a Python-level bytes slice.
     Returns a list of hex-encoded SHA-256 strings.
     """
     count = len(boundaries)
     if count == 0:
         return []
 
-    length = boundaries[-1]
-    buf = (ctypes.c_uint8 * length).from_buffer_copy(data[:length])
+    length = boundaries[-1]  # bytes needed from data[data_offset:]
+
+    # Bounds validation — fail in Python rather than risking an out-of-bounds read
+    if data_offset < 0 or data_offset > len(data):
+        raise ValueError(f"data_offset {data_offset} out of range [0, {len(data)}]")
+    if data_offset + length > len(data):
+        raise ValueError(
+            f"data_offset({data_offset}) + boundaries[-1]({length}) = "
+            f"{data_offset + length} exceeds buffer length {len(data)}"
+        )
+
+    # Zero-copy for mutable buffers (bytearray from Rust streaming),
+    # bounded copy for immutable bytes
+    BufType = ctypes.c_uint8 * length
+    try:
+        buf = BufType.from_buffer(data, data_offset)
+    except TypeError:
+        buf = BufType.from_buffer_copy(data, data_offset)
 
     OffsetsArray = ctypes.c_int64 * count
     offsets = OffsetsArray(*boundaries)
@@ -162,7 +186,7 @@ native_find_chunk_boundaries: Optional[Callable[..., List[int]]] = (
     _cdc_impl if _LIB is not None else None
 )
 
-native_batch_sha256: Optional[Callable[[bytes, List[int]], List[str]]] = (
+native_batch_sha256: Optional[Callable[..., List[str]]] = (
     _batch_sha256_impl if _LIB is not None else None
 )
 

@@ -12,6 +12,7 @@ Preview generation: 176s → 3-5s (98% faster)
 """
 
 import os
+import asyncio
 import tempfile
 import aiofiles
 import base64
@@ -209,11 +210,11 @@ async def _fetch_from_cas(
                 raise ValueError(f"Block {block_hash[:8]} not found in stored_blocks")
 
             block_path = stored_block['path']
-            if not os.path.exists(block_path):
+            try:
+                async with aiofiles.open(block_path, 'rb') as f:
+                    encrypted_data = await f.read()
+            except FileNotFoundError:
                 raise FileNotFoundError(f"Block file missing at {block_path}")
-
-            async with aiofiles.open(block_path, 'rb') as f:
-                encrypted_data = await f.read()
 
             if is_convergent:
                 was_compressed = stored_block.get('was_compressed', False)
@@ -287,6 +288,56 @@ async def _fetch_contiguous_range(
     if chunk_info and 'blocks' in chunk_info and 'stored_blocks' in chunk_info and file_obj:
         return await _fetch_from_cas(chunk_info, file_obj, start_byte, end_byte, output_path)
 
+    # --- Try Rust streaming for traditional chunked storage ---
+    use_rust = False
+    try:
+        from ..services.rust_dataplane_client import get_rust_client
+        rust_client = get_rust_client()
+        if await rust_client.is_available():
+            use_rust = True
+    except Exception:
+        pass
+
+    if use_rust:
+        total_chunks = chunk_info.get("count", 0) if chunk_info else 0
+        if total_chunks == 0:
+            total_chunks = end_byte // chunk_size + 1
+
+        first_chunk = start_byte // chunk_size
+        last_chunk = min(end_byte // chunk_size, total_chunks - 1)
+        chunks = []
+        for idx in range(first_chunk, last_chunk + 1):
+            path = chunk_paths.get(str(idx))
+            if not path:
+                shard = upload_id[:2]
+                path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{idx}.enc"
+            chunks.append({"index": idx, "path": path})
+
+        try:
+            total_written = 0
+            async with aiofiles.open(output_path, 'wb') as output_f:
+                async for data in rust_client.stream_download_chunks(
+                    chunks=chunks,
+                    file_key=file_key,
+                    was_compressed=was_compressed,
+                    start_byte=start_byte,
+                    end_byte=end_byte,
+                    chunk_size=chunk_size,
+                ):
+                    await output_f.write(data)
+                    total_written += len(data)
+
+            logger.info(
+                "✓ Contiguous fetch via Rust: %.1fMB written",
+                total_written / 1024 / 1024,
+            )
+            return total_written
+        except Exception as exc:
+            logger.warning(
+                "Rust stream_download_chunks failed, falling back to Python: %s", exc
+            )
+            # Fall through to Python path below
+
     # Traditional chunked storage
     # Calculate which chunks span [start_byte, end_byte]
     start_chunk = start_byte // chunk_size
@@ -308,13 +359,13 @@ async def _fetch_contiguous_range(
                 shard = upload_id[:2]
                 chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{chunk_idx}.enc"
 
-            if not os.path.exists(chunk_path):
+            # Load and decrypt chunk (offload CPU-heavy decrypt/decompress)
+            try:
+                async with aiofiles.open(chunk_path, 'rb') as f:
+                    encrypted_chunk = await f.read()
+            except FileNotFoundError:
                 logger.warning(f"Chunk {chunk_idx} not found at {chunk_path}")
                 continue
-
-            # Load and decrypt chunk (offload CPU-heavy decrypt/decompress)
-            async with aiofiles.open(chunk_path, 'rb') as f:
-                encrypted_chunk = await f.read()
 
             from ..utils.executors import run_in_heavy_pool
 
@@ -348,6 +399,7 @@ async def _fetch_contiguous_range(
             # Stream write to disk (no RAM buffering)
             await output_f.write(decrypted_chunk)
             total_written += len(decrypted_chunk)
+            await asyncio.sleep(0)  # Yield between chunks
 
     logger.info(f"✓ Contiguous fetch complete: {total_written/1024/1024:.1f}MB written")
     return total_written
@@ -515,7 +567,7 @@ class PreviewOptimizer:
 
             elif file_obj.storage_type == "single":
                 # Single file storage
-                if not os.path.exists(file_obj.object_path):
+                if not await asyncio.to_thread(os.path.exists, file_obj.object_path):
                     raise FileNotFoundError(f"File not found: {file_obj.object_path}")
 
                 # =================================================================
@@ -673,12 +725,12 @@ class PreviewOptimizer:
                                     shard = upload_id[:2]
                                     chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
 
-                                if not os.path.exists(chunk_path):
+                                try:
+                                    async with aiofiles.open(chunk_path, 'rb') as f:
+                                        encrypted_chunk = await f.read()
+                                except FileNotFoundError:
                                     logger.warning(f"Chunk {i} not found at {chunk_path}")
                                     continue
-
-                                async with aiofiles.open(chunk_path, 'rb') as f:
-                                    encrypted_chunk = await f.read()
 
                                 decrypted_chunk = await _run_heavy(
                                     _probe_decrypt_decompress,
@@ -687,6 +739,7 @@ class PreviewOptimizer:
 
                                 await probe_f.write(decrypted_chunk)
                                 probe_bytes += len(decrypted_chunk)
+                                await asyncio.sleep(0)  # Yield between chunks
 
                         logger.info(f"Probe complete: {probe_bytes/1024/1024:.1f}MB downloaded")
 
@@ -876,13 +929,13 @@ class PreviewOptimizer:
                             shard = upload_id[:2]
                             chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
 
-                        if not os.path.exists(chunk_path):
+                        # Read encrypted chunk
+                        try:
+                            async with aiofiles.open(chunk_path, 'rb') as f:
+                                encrypted_chunk = await f.read()
+                        except FileNotFoundError:
                             logger.warning(f"Chunk {i} not found at {chunk_path}")
                             break
-
-                        # Read encrypted chunk
-                        async with aiofiles.open(chunk_path, 'rb') as f:
-                            encrypted_chunk = await f.read()
 
                         # Decrypt + decompress (offloaded to thread pool)
                         decrypted_chunk = await _run_heavy_std(
@@ -901,6 +954,7 @@ class PreviewOptimizer:
                         else:
                             await temp_f.write(decrypted_chunk)
                             downloaded_bytes += bytes_to_write
+                        await asyncio.sleep(0)  # Yield between chunks
 
                 is_complete = (chunks_to_download >= total_chunks)
                 return temp_file_path, is_complete

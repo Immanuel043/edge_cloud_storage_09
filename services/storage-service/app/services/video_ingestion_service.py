@@ -278,160 +278,170 @@ class VideoIngestionService:
                 result['success'] = True
                 return result
 
-            # Update status to processing
-            file_obj.video_processing_status = 'processing'
-            file_obj.video_processing_progress = 0
-            await db_session.commit()
+            # Per-file lock: exclude concurrent dedup on the same file
+            from ..utils.file_locks import get_file_lock
 
-            logger.info(f"Processing video: {file_obj.file_name} ({file_obj.file_size / (1024*1024):.1f}MB)")
+            lock = get_file_lock(file_id)
 
-            # Step 1: Probe file to get codec info
-            probe_data = await video_transcoder._probe_file_metadata(file_obj, encryption_service)
+            async with lock:
+                # Refresh file_obj from DB — if dedup ran while we waited on
+                # the lock, chunk metadata and storage paths have changed.
+                await db_session.refresh(file_obj)
 
-            # Step 2: Determine action
-            decision = video_transcoder._needs_transcode(file_obj, probe_data)
-            logger.info(f"Transcode decision for {file_obj.file_name}: {decision}")
+                # Update status to processing
+                file_obj.video_processing_status = 'processing'
+                file_obj.video_processing_progress = 0
+                await db_session.commit()
 
-            file_obj.video_processing_progress = 10
-            await db_session.commit()
+                logger.info(f"Processing video: {file_obj.file_name} ({file_obj.file_size / (1024*1024):.1f}MB)")
 
-            # Step 3: Execute based on decision
-            target_path = os.path.join(self.OPTIMIZED_DIR, f"{file_id}.mp4")
+                # Step 1: Probe file to get codec info
+                probe_data = await video_transcoder._probe_file_metadata(file_obj, encryption_service)
 
-            if decision == 'skip':
-                # Already compatible - just apply faststart if needed
-                result['action'] = 'skipped'
+                # Step 2: Determine action
+                decision = video_transcoder._needs_transcode(file_obj, probe_data)
+                logger.info(f"Transcode decision for {file_obj.file_name}: {decision}")
 
-                # Check if faststart is needed
-                temp_path = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj, encryption_service, db=db_session
-                )
-                try:
-                    moov_info = await video_optimizer.detect_moov_location(temp_path)
+                file_obj.video_processing_progress = 10
+                await db_session.commit()
 
-                    if moov_info.get('needs_faststart', False):
-                        # Apply faststart without re-encoding
-                        success, optimized_path = await video_optimizer.apply_faststart(
-                            temp_path, target_path
-                        )
+                # Step 3: Execute based on decision
+                target_path = os.path.join(self.OPTIMIZED_DIR, f"{file_id}.mp4")
 
-                        if success:
-                            result['action'] = 'faststart'
-                            result['optimized_path'] = optimized_path
-                            result['optimized_size'] = os.path.getsize(optimized_path)
+                if decision == 'skip':
+                    # Already compatible - just apply faststart if needed
+                    result['action'] = 'skipped'
+
+                    # Check if faststart is needed
+                    temp_path = await preview_optimizer.download_full_file_for_transcode(
+                        file_obj, encryption_service, db=db_session
+                    )
+                    try:
+                        moov_info = await video_optimizer.detect_moov_location(temp_path)
+
+                        if moov_info.get('needs_faststart', False):
+                            # Apply faststart without re-encoding
+                            success, optimized_path = await video_optimizer.apply_faststart(
+                                temp_path, target_path
+                            )
+
+                            if success:
+                                result['action'] = 'faststart'
+                                result['optimized_path'] = optimized_path
+                                result['optimized_size'] = os.path.getsize(optimized_path)
+                            else:
+                                # Faststart failed, but file is still playable
+                                logger.warning(f"Faststart failed for {file_obj.file_name}, using original")
+                                result['action'] = 'skipped'
                         else:
-                            # Faststart failed, but file is still playable
-                            logger.warning(f"Faststart failed for {file_obj.file_name}, using original")
+                            # Already has faststart, no optimization needed
                             result['action'] = 'skipped'
-                    else:
-                        # Already has faststart, no optimization needed
-                        result['action'] = 'skipped'
 
-                finally:
-                    # Cleanup temp file
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
+                    finally:
+                        # Cleanup temp file
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
 
-            elif decision == 'remux':
-                # Fast container remux (H.264+AAC in wrong container)
-                file_obj.video_processing_progress = 20
+                elif decision == 'remux':
+                    # Fast container remux (H.264+AAC in wrong container)
+                    file_obj.video_processing_progress = 20
+                    await db_session.commit()
+
+                    temp_path = await preview_optimizer.download_full_file_for_transcode(
+                        file_obj, encryption_service, db=db_session
+                    )
+                    try:
+                        await video_transcoder._remux_without_transcode(
+                            temp_path, target_path, file_id
+                        )
+                        result['action'] = 'remux'
+                        result['optimized_path'] = target_path
+                        result['optimized_size'] = os.path.getsize(target_path)
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+
+                elif decision == 'transcode':
+                    # Full re-encoding needed
+                    file_obj.video_processing_progress = 20
+                    await db_session.commit()
+
+                    # Select policy based on file size
+                    file_size_mb = file_obj.file_size / (1024 * 1024)
+                    policy = TranscodePolicy.select(file_size_mb)
+
+                    temp_path = await preview_optimizer.download_full_file_for_transcode(
+                        file_obj, encryption_service, db=db_session
+                    )
+                    try:
+                        await video_transcoder._run_ffmpeg(
+                            temp_path, target_path, policy, file_id
+                        )
+                        result['action'] = 'transcode'
+                        result['optimized_path'] = target_path
+                        result['optimized_size'] = os.path.getsize(target_path)
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+
+                elif decision == 'reject':
+                    # File exceeds limits
+                    result['action'] = 'failed'
+                    result['error'] = f"Video exceeds limits (max {self.MAX_TRANSCODE_SIZE_GB}GB or {self.MAX_DURATION_MINUTES} minutes)"
+                    file_obj.video_processing_status = 'failed'
+                    file_obj.video_processing_error = result['error']
+                    await db_session.commit()
+                    return result
+
+                else:
+                    result['action'] = 'failed'
+                    result['error'] = f"Unknown transcode decision: {decision}"
+                    file_obj.video_processing_status = 'failed'
+                    file_obj.video_processing_error = result['error']
+                    await db_session.commit()
+                    return result
+
+                file_obj.video_processing_progress = 80
                 await db_session.commit()
 
-                temp_path = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj, encryption_service, db=db_session
-                )
+                # Step 4: Generate thumbnails
                 try:
-                    await video_transcoder._remux_without_transcode(
-                        temp_path, target_path, file_id
-                    )
-                    result['action'] = 'remux'
-                    result['optimized_path'] = target_path
-                    result['optimized_size'] = os.path.getsize(target_path)
-                finally:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
+                    if result['optimized_path'] and os.path.exists(result['optimized_path']):
+                        await video_transcoder._generate_thumbnails_for_transcoded(
+                            file_id, result['optimized_path']
+                        )
+                except Exception as e:
+                    logger.warning(f"Thumbnail generation failed for {file_id}: {e}")
 
-            elif decision == 'transcode':
-                # Full re-encoding needed
-                file_obj.video_processing_progress = 20
+                file_obj.video_processing_progress = 90
                 await db_session.commit()
 
-                # Select policy based on file size
-                file_size_mb = file_obj.file_size / (1024 * 1024)
-                policy = TranscodePolicy.select(file_size_mb)
+                # Step 5: Storage mode is plan-gated (always keep both files on disk)
+                # "optimized" plans: only optimized served to user
+                # "keep_both" plans: user can also download original
 
-                temp_path = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj, encryption_service, db=db_session
+                # Step 6: Update final status
+                end_time = datetime.utcnow()
+                duration = (end_time - start_time).total_seconds()
+                result['duration_seconds'] = duration
+
+                file_obj.video_processing_status = 'ready'
+                file_obj.video_processing_progress = 100
+                file_obj.video_processing_error = None
+                file_obj.optimized_path = result['optimized_path']
+                file_obj.optimized_size = result['optimized_size']
+                file_obj.video_processed_at = end_time
+                await db_session.commit()
+
+                result['success'] = True
+
+                logger.info(
+                    f"Video optimization complete: {file_obj.file_name} "
+                    f"[action={result['action']}, duration={duration:.1f}s, "
+                    f"optimized_size={(result.get('optimized_size') or 0) / (1024*1024):.1f}MB]"
                 )
-                try:
-                    await video_transcoder._run_ffmpeg(
-                        temp_path, target_path, policy, file_id
-                    )
-                    result['action'] = 'transcode'
-                    result['optimized_path'] = target_path
-                    result['optimized_size'] = os.path.getsize(target_path)
-                finally:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
 
-            elif decision == 'reject':
-                # File exceeds limits
-                result['action'] = 'failed'
-                result['error'] = f"Video exceeds limits (max {self.MAX_TRANSCODE_SIZE_GB}GB or {self.MAX_DURATION_MINUTES} minutes)"
-                file_obj.video_processing_status = 'failed'
-                file_obj.video_processing_error = result['error']
-                await db_session.commit()
                 return result
-
-            else:
-                result['action'] = 'failed'
-                result['error'] = f"Unknown transcode decision: {decision}"
-                file_obj.video_processing_status = 'failed'
-                file_obj.video_processing_error = result['error']
-                await db_session.commit()
-                return result
-
-            file_obj.video_processing_progress = 80
-            await db_session.commit()
-
-            # Step 4: Generate thumbnails
-            try:
-                if result['optimized_path'] and os.path.exists(result['optimized_path']):
-                    await video_transcoder._generate_thumbnails_for_transcoded(
-                        file_id, result['optimized_path']
-                    )
-            except Exception as e:
-                logger.warning(f"Thumbnail generation failed for {file_id}: {e}")
-
-            file_obj.video_processing_progress = 90
-            await db_session.commit()
-
-            # Step 5: Storage mode is plan-gated (always keep both files on disk)
-            # "optimized" plans: only optimized served to user
-            # "keep_both" plans: user can also download original
-
-            # Step 6: Update final status
-            end_time = datetime.utcnow()
-            duration = (end_time - start_time).total_seconds()
-            result['duration_seconds'] = duration
-
-            file_obj.video_processing_status = 'ready'
-            file_obj.video_processing_progress = 100
-            file_obj.video_processing_error = None
-            file_obj.optimized_path = result['optimized_path']
-            file_obj.optimized_size = result['optimized_size']
-            file_obj.video_processed_at = end_time
-            await db_session.commit()
-
-            result['success'] = True
-
-            logger.info(
-                f"Video optimization complete: {file_obj.file_name} "
-                f"[action={result['action']}, duration={duration:.1f}s, "
-                f"optimized_size={(result.get('optimized_size') or 0) / (1024*1024):.1f}MB]"
-            )
-
-            return result
 
         except VideoTranscodeError as e:
             logger.error(f"VideoTranscodeError for {file_obj.file_name}: {e.message}")

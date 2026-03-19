@@ -138,128 +138,158 @@ class BackgroundDeduplicationService:
         """Process a single deduplication job"""
         file_id = job["file_id"]
         session = job["session"]
-        
-        print(f"Processing deduplication: {session['name']} (file_id: {file_id})")
-        
-        self.active_jobs[file_id] = "processing"
-        redis_client = await get_redis()
-        
+
+        # --- Per-file lock: atomic non-blocking claim ---
+        from ..utils.file_locks import get_file_lock
+
+        lock = get_file_lock(file_id)
+
+        if not lock.try_acquire():
+            # Another worker (video) is active on this file — defer without blocking
+            job['_defer_count'] = job.get('_defer_count', 0) + 1
+            logger.info(
+                "⏳ Deferring dedup for %s: file locked by another worker "
+                "(attempt %d)",
+                file_id, job['_defer_count'],
+            )
+            return "deferred"
+
+        # Lock acquired atomically — do heavy work, release after DB commit
+        lock_held = True
         try:
-            await redis_client.setex(
-                f"dedup:job:{file_id}",
-                7200,
-                json.dumps({
-                    "status": "processing",
-                    "started_at": datetime.utcnow().isoformat()
-                })
-            )
-            
-            # Get database session
-            async for db in get_db():
-                result = await db.execute(
-                    select(Object).where(Object.id == file_id)
-                )
-                file_obj = result.scalar_one_or_none()
-                
-                if not file_obj:
-                    print(f"File not found: {file_id}")
-                    return
-                
-                # Read and decrypt original file data
-                file_data = await self._get_file_data(file_obj, session)
-                
-                if not file_data:
-                    print(f"Could not read file data for {file_id}")
-                    return
-                
-                # Perform deduplication - pass existing object to update in-place
-                dedup_result = await enhanced_dedup_service.store_deduplicated_file(
-                    file_data=file_data,
-                    file_name=session["name"],
-                    user_id=job["user_id"],
-                    db=db,
-                    metadata={
-                        'mime_type': mimetypes.guess_type(session["name"])[0],
-                        'folder_id': session.get("folder")
-                    },
-                    encrypt=True,
-                    existing_object=file_obj  # Pass existing object to update in-place
+            print(f"Processing deduplication: {session['name']} (file_id: {file_id})")
+
+            self.active_jobs[file_id] = "processing"
+            redis_client = await get_redis()
+
+            try:
+                await redis_client.setex(
+                    f"dedup:job:{file_id}",
+                    7200,
+                    json.dumps({
+                        "status": "processing",
+                        "started_at": datetime.utcnow().isoformat()
+                    })
                 )
 
-                # If dedup was skipped (file too large), just keep the original storage
-                if dedup_result is None:
-                    print(f"Deduplication skipped for {session['name']} - file too large, keeping original storage")
-                    await redis_client.setex(
-                        f"dedup:job:{file_id}",
-                        7200,
-                        json.dumps({
-                            "status": "skipped",
-                            "reason": "file_too_large",
-                            "completed_at": datetime.utcnow().isoformat()
-                        })
+                # Get database session
+                async for db in get_db():
+                    result = await db.execute(
+                        select(Object).where(Object.id == file_id)
                     )
-                    self.active_jobs.pop(file_id, None)
-                    return
+                    file_obj = result.scalar_one_or_none()
 
-                # Update storage usage
-                if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
-                    actual_saved = dedup_result.get('saved_size', 0)
+                    if not file_obj:
+                        print(f"File not found: {file_id}")
+                        return
 
-                    if dedup_result['status'] == 'full_duplicate':
-                        actual_saved = session["size"]
+                    # Read and decrypt original file data
+                    file_data = await self._get_file_data(file_obj, session)
 
-                    # No need to delete old object - it was updated in-place
-                    # This preserves the file_id so downloads continue to work
+                    if not file_data:
+                        print(f"Could not read file data for {file_id}")
+                        return
 
-                    # Update user storage
-                    user_result = await db.execute(
-                        select(User).where(User.id == job["user_id"])
+                    # Perform deduplication - pass existing object to update in-place
+                    dedup_result = await enhanced_dedup_service.store_deduplicated_file(
+                        file_data=file_data,
+                        file_name=session["name"],
+                        user_id=job["user_id"],
+                        db=db,
+                        metadata={
+                            'mime_type': mimetypes.guess_type(session["name"])[0],
+                            'folder_id': session.get("folder")
+                        },
+                        encrypt=True,
+                        existing_object=file_obj  # Pass existing object to update in-place
                     )
-                    user = user_result.scalar_one_or_none()
 
-                    if user:
-                        # Adjust storage used (subtract saved amount)
-                        user.storage_used = max(0, (user.storage_used or 0) - actual_saved)
+                    # If dedup was skipped (file too large), just keep the original storage
+                    if dedup_result is None:
+                        print(f"Deduplication skipped for {session['name']} - file too large, keeping original storage")
+                        await redis_client.setex(
+                            f"dedup:job:{file_id}",
+                            7200,
+                            json.dumps({
+                                "status": "skipped",
+                                "reason": "file_too_large",
+                                "completed_at": datetime.utcnow().isoformat()
+                            })
+                        )
+                        self.active_jobs.pop(file_id, None)
+                        return
 
-                    # CRITICAL: Commit BEFORE cleanup to prevent orphaned files
-                    await db.commit()
+                    # Update storage usage
+                    if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
+                        actual_saved = dedup_result.get('saved_size', 0)
 
-                    # Now safe to clean up original storage files (after successful DB commit)
-                    await self._cleanup_original_storage(file_obj, session)
-                    
-                    print(f"Deduplication successful: {session['name']} - Saved {actual_saved/1024/1024:.1f}MB")
-                    
-                    await redis_client.setex(
-                        f"dedup:job:{file_id}",
-                        7200,
-                        json.dumps({
-                            "status": "completed",
-                            "completed_at": datetime.utcnow().isoformat(),
-                            "saved_size": actual_saved,
-                            "dedup_ratio": dedup_result.get('dedup_ratio', 0)
-                        })
-                    )
-                
-                break
+                        if dedup_result['status'] == 'full_duplicate':
+                            actual_saved = session["size"]
+
+                        # No need to delete old object - it was updated in-place
+                        # This preserves the file_id so downloads continue to work
+
+                        # Update user storage
+                        user_result = await db.execute(
+                            select(User).where(User.id == job["user_id"])
+                        )
+                        user = user_result.scalar_one_or_none()
+
+                        if user:
+                            # Adjust storage used (subtract saved amount)
+                            user.storage_used = max(0, (user.storage_used or 0) - actual_saved)
+
+                        # CRITICAL: Commit BEFORE cleanup to prevent orphaned files
+                        await db.commit()
+
+                        # Release lock early — DB committed with new CAS paths,
+                        # video will see them after db_session.refresh(file_obj).
+                        # Cleanup only removes old files and doesn't need the lock.
+                        lock.release()
+                        lock_held = False
+
+                        # Fire cleanup as background task — grace period wait
+                        # (up to 5 min) must not block the serial dedup queue.
+                        asyncio.create_task(
+                            self._cleanup_original_storage(file_obj, session)
+                        )
+
+                        print(f"Deduplication successful: {session['name']} - Saved {actual_saved/1024/1024:.1f}MB")
+
+                        await redis_client.setex(
+                            f"dedup:job:{file_id}",
+                            7200,
+                            json.dumps({
+                                "status": "completed",
+                                "completed_at": datetime.utcnow().isoformat(),
+                                "saved_size": actual_saved,
+                                "dedup_ratio": dedup_result.get('dedup_ratio', 0)
+                            })
+                        )
+
+                    break
+
+                self.active_jobs.pop(file_id, None)
             
-            self.active_jobs.pop(file_id, None)
-            
-        except Exception as e:
-            print(f"Deduplication failed for {file_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            self.active_jobs[file_id] = "failed"
-            await redis_client.setex(
-                f"dedup:job:{file_id}",
-                7200,
-                json.dumps({
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": datetime.utcnow().isoformat()
-                })
-            )
-    
+            except Exception as e:
+                print(f"Deduplication failed for {file_id}: {e}")
+                import traceback
+                traceback.print_exc()
+
+                self.active_jobs[file_id] = "failed"
+                await redis_client.setex(
+                    f"dedup:job:{file_id}",
+                    7200,
+                    json.dumps({
+                        "status": "failed",
+                        "error": str(e),
+                        "failed_at": datetime.utcnow().isoformat()
+                    })
+                )
+        finally:
+            if lock_held:
+                lock.release()
+
     async def _get_file_data(self, file_obj: Object, session: Dict) -> Optional[bytes]:
         """Read and decrypt file data.
 
@@ -364,8 +394,7 @@ class BackgroundDeduplicationService:
         compress: bool,
     ) -> Optional[bytes]:
         """Attempt decryption via Rust /bulk-decrypt. Returns None to signal fallback."""
-        from ..config import Settings
-        settings = Settings()
+        from ..config import settings
         if not getattr(settings, "RUST_DATAPLANE_ENABLED", False):
             return None
 
@@ -398,15 +427,58 @@ class BackgroundDeduplicationService:
             else:
                 return None
 
-            plaintext = await rust_client.bulk_decrypt_chunks(
-                chunks=chunks,
-                file_key=file_key,
-                was_compressed=compress,
-                chunk_size=chunk_size,
-            )
+            DECRYPT_SUB_BATCH_BYTES = 96 * 1024 * 1024  # ~96MB per Rust call
+
+            # Partition chunks into sub-batches by cumulative byte size
+            total_bytes = sum(c.get("size", chunk_size) for c in chunks)
+
+            if total_bytes <= DECRYPT_SUB_BATCH_BYTES:
+                # Small file: single call (unchanged)
+                plaintext = await rust_client.bulk_decrypt_chunks(
+                    chunks=chunks, file_key=file_key,
+                    was_compressed=compress, chunk_size=chunk_size,
+                )
+                batch_count = 1
+            else:
+                # Large file: sub-batch by byte budget
+                plaintext = bytearray()
+                sub_batch = []
+                sub_bytes = 0
+                batch_num = 0
+
+                async def _flush(batch, batch_idx):
+                    t0 = time.monotonic()
+                    part = await rust_client.bulk_decrypt_chunks(
+                        chunks=batch, file_key=file_key,
+                        was_compressed=compress, chunk_size=chunk_size,
+                    )
+                    elapsed = time.monotonic() - t0
+                    logger.info(
+                        "Dedup sub-decrypt %d: chunks=%d bytes=%d elapsed=%.1fs",
+                        batch_idx, len(batch), len(part), elapsed,
+                    )
+                    plaintext.extend(part)
+                    await asyncio.sleep(0)  # yield between sub-batches
+
+                for c in chunks:
+                    c_size = c.get("size", chunk_size)
+                    sub_batch.append(c)
+                    sub_bytes += c_size
+                    if sub_bytes >= DECRYPT_SUB_BATCH_BYTES:
+                        batch_num += 1
+                        await _flush(sub_batch, batch_num)
+                        sub_batch = []
+                        sub_bytes = 0
+
+                if sub_batch:
+                    batch_num += 1
+                    await _flush(sub_batch, batch_num)
+
+                batch_count = batch_num
+
             logger.info(
-                "Dedup decrypt via Rust bulk-decrypt: file=%s size=%d chunks=%d",
-                file_obj.id, len(plaintext), len(chunks),
+                "Dedup decrypt via Rust bulk-decrypt: file=%s size=%d chunks=%d batches=%d",
+                file_obj.id, len(plaintext), len(chunks), batch_count,
             )
             return plaintext
 
