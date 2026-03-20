@@ -424,7 +424,11 @@ class EnhancedDeduplicationService:
                 """),
                 {"ids": duplicate_block_ids}
             )
-        
+
+        # Compute file-level hash here (last point where file_data is available)
+        # so the caller can free the plaintext buffer before block storage.
+        file_hash = await run_in_heavy_pool(self.calculate_block_hash, file_data)
+
         return {
             'blocks': blocks,
             'new_blocks': new_blocks,
@@ -433,6 +437,7 @@ class EnhancedDeduplicationService:
             'deduplicated_size': deduplicated_size,
             'saved_size': saved_size,
             'dedup_ratio': (saved_size / total_size * 100) if total_size > 0 else 0,
+            'file_hash': file_hash,
             'block_count': len(blocks)
         }
     
@@ -610,10 +615,17 @@ class EnhancedDeduplicationService:
             if dedup_result is None:
                 logger.info(f"Skipping deduplication for {file_name} - using regular storage")
                 return None
-            
-            # Calculate file-level hash (offloaded to heavy pool)
-            file_hash = await run_in_heavy_pool(self.calculate_block_hash, file_data)
-            await asyncio.sleep(0)  # yield after heavy hash computation
+
+            # Free the plaintext buffer — all block data is now in dedup_result['new_blocks']
+            # and the file hash was pre-computed inside deduplicate_before_encryption.
+            # Clearing in-place releases ~721MB even though the caller holds a reference.
+            if isinstance(file_data, bytearray):
+                file_data[:] = b''
+            del file_data
+            import gc; gc.collect()
+
+            # Use pre-computed file hash from dedup analysis
+            file_hash = dedup_result['file_hash']
 
             # Check for full-file duplicate
             query = select(Object).where(
@@ -623,7 +635,7 @@ class EnhancedDeduplicationService:
             
             result = await db.execute(query)
             existing_file = result.scalars().first()
-            
+
             if existing_file:
                 # Full file duplicate found
                 print(f"🎯 Full duplicate found! File hash: {file_hash[:16]}...")
@@ -713,6 +725,7 @@ class EnhancedDeduplicationService:
                     })
 
             # --- Phase 2: Batch store via Rust batch endpoint ---
+            logger.info("Dedup blocks to store: %d (total new blocks: %d)", len(blocks_to_store), len(new_blocks))
             batch_results: Dict[str, Dict] = {}
             if blocks_to_store and getattr(settings, 'RUST_DATAPLANE_ENABLED', False):
                 batch_results = await self._store_encrypted_blocks_batch(
