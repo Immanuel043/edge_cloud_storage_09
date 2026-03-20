@@ -622,7 +622,9 @@ class EnhancedDeduplicationService:
             if isinstance(file_data, bytearray):
                 file_data[:] = b''
             del file_data
-            import gc; gc.collect()
+            # gc.collect() removed — bytearray buffer already freed by in-place
+            # clear above (no reference cycles to break). Full GC scan of the
+            # entire interpreter was the primary suspect for 15s event loop stalls.
 
             # Use pre-computed file hash from dedup analysis
             file_hash = dedup_result['file_hash']

@@ -21,33 +21,25 @@ from ..utils.executors import run_in_heavy_pool
 logger = logging.getLogger(__name__)
 
 
-def _build_batch_body(blocks: list, user_id: str, should_compress: bool) -> bytes:
-    """Build the wire-format body for /dedup-chunk-batch.
-
-    Runs in the heavy thread pool so the ~144MB ``b"".join`` never blocks
-    the event loop.
-    """
+def _build_batch_manifest(blocks: list, user_id: str, should_compress: bool):
+    """Build JSON manifest line only. Block data streamed separately."""
     manifest_blocks = []
-    data_parts = []
-    offset = 0
+    data_size = 0
     for blk in blocks:
         length = len(blk["block_data"])
         manifest_blocks.append({
             "block_hash": blk["block_hash"],
             "cas_path": blk["cas_path"],
-            "offset": offset,
+            "offset": data_size,
             "length": length,
         })
-        data_parts.append(blk["block_data"])
-        offset += length
-
-    manifest = json.dumps({
+        data_size += length
+    manifest_line = json.dumps({
         "user_id": user_id,
         "should_compress": should_compress,
         "blocks": manifest_blocks,
-    }, separators=(",", ":"))
-
-    return manifest.encode("utf-8") + b"\n" + b"".join(data_parts)
+    }, separators=(",", ":")).encode("utf-8") + b"\n"
+    return manifest_line, data_size
 
 
 class RustDataPlaneClient:
@@ -621,16 +613,22 @@ class RustDataPlaneClient:
             and ``results`` (list of per-block outcomes).
         """
         t0 = time.monotonic()
-        body = await run_in_heavy_pool(
-            _build_batch_body, blocks, user_id, should_compress,
-        )
-        t_body = time.monotonic()
+        manifest_line, data_size = _build_batch_manifest(blocks, user_id, should_compress)
+        total_size = len(manifest_line) + data_size
+
+        async def _body_stream():
+            yield manifest_line
+            for blk in blocks:
+                yield blk["block_data"]
 
         try:
             response = await self.client.post(
                 "/dedup-chunk-batch",
-                content=body,
-                headers={"content-type": "application/octet-stream"},
+                content=_body_stream(),
+                headers={
+                    "content-type": "application/octet-stream",
+                    "content-length": str(total_size),
+                },
                 timeout=Timeout(120.0),
             )
             t_post = time.monotonic()
@@ -638,9 +636,8 @@ class RustDataPlaneClient:
             result = response.json()
 
             logger.info(
-                "dedup_chunk_batch: body_build=%.1fs http_post=%.1fs body_size=%.1fMB blocks=%d",
-                t_body - t0, t_post - t_body,
-                len(body) / (1024 * 1024), len(blocks),
+                "dedup_chunk_batch: http=%.1fs body_size=%.1fMB blocks=%d",
+                t_post - t0, total_size / (1024 * 1024), len(blocks),
             )
             return result
 

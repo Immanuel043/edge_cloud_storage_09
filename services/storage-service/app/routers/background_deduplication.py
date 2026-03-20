@@ -441,23 +441,37 @@ class BackgroundDeduplicationService:
                 batch_count = 1
             else:
                 # Large file: sub-batch by byte budget
-                plaintext = bytearray()
+                plaintext = bytearray(file_obj.file_size)
+                view = memoryview(plaintext)
+                write_offset = 0
                 sub_batch = []
                 sub_bytes = 0
                 batch_num = 0
 
                 async def _flush(batch, batch_idx):
+                    nonlocal write_offset, view, plaintext
                     t0 = time.monotonic()
                     part = await rust_client.bulk_decrypt_chunks(
                         chunks=batch, file_key=file_key,
                         was_compressed=compress, chunk_size=chunk_size,
                     )
                     elapsed = time.monotonic() - t0
+                    n = len(part)
                     logger.info(
                         "Dedup sub-decrypt %d: chunks=%d bytes=%d elapsed=%.1fs",
-                        batch_idx, len(batch), len(part), elapsed,
+                        batch_idx, len(batch), n, elapsed,
                     )
-                    plaintext.extend(part)
+                    if write_offset + n > len(plaintext):
+                        # file_size metadata mismatch — fall back to extend
+                        view.release()
+                        del plaintext[write_offset:]  # trim to actual written
+                        plaintext.extend(part)
+                        write_offset = len(plaintext)
+                        view = memoryview(plaintext)
+                    else:
+                        view[write_offset:write_offset + n] = part
+                        write_offset += n
+                    del part  # free decrypt buffer immediately
                     await asyncio.sleep(0)  # yield between sub-batches
 
                 for c in chunks:
@@ -473,6 +487,11 @@ class BackgroundDeduplicationService:
                 if sub_batch:
                     batch_num += 1
                     await _flush(sub_batch, batch_num)
+
+                view.release()
+                # Trim if actual plaintext is smaller than file_size
+                if write_offset < len(plaintext):
+                    del plaintext[write_offset:]
 
                 batch_count = batch_num
 
