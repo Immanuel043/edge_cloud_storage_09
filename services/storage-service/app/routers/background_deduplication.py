@@ -7,6 +7,7 @@ Uses SmartDeduplicationQueue for priority-based processing with backpressure.
 """
 
 import asyncio
+import mmap
 import time
 from typing import Dict, Optional
 from datetime import datetime
@@ -441,38 +442,91 @@ class BackgroundDeduplicationService:
                 batch_count = 1
             else:
                 # Large file: sub-batch by byte budget
-                plaintext = bytearray(file_obj.file_size)
+                t_alloc = time.monotonic()
+                plaintext = mmap.mmap(-1, file_obj.file_size)
+                alloc_ms = (time.monotonic() - t_alloc) * 1000
+                if alloc_ms > 100:
+                    logger.warning(
+                        "Dedup buffer alloc %dMB took %.0fms",
+                        file_obj.file_size >> 20, alloc_ms,
+                    )
                 view = memoryview(plaintext)
                 write_offset = 0
                 sub_batch = []
                 sub_bytes = 0
                 batch_num = 0
 
+                COPY_SLICE = 1_048_576  # 1MB — small enough to keep GIL hold <15ms under Docker page faults
+
                 async def _flush(batch, batch_idx):
                     nonlocal write_offset, view, plaintext
                     t0 = time.monotonic()
-                    part = await rust_client.bulk_decrypt_chunks(
-                        chunks=batch, file_key=file_key,
-                        was_compressed=compress, chunk_size=chunk_size,
-                    )
-                    elapsed = time.monotonic() - t0
-                    n = len(part)
-                    logger.info(
-                        "Dedup sub-decrypt %d: chunks=%d bytes=%d elapsed=%.1fs",
-                        batch_idx, len(batch), n, elapsed,
-                    )
-                    if write_offset + n > len(plaintext):
-                        # file_size metadata mismatch — fall back to extend
-                        view.release()
-                        del plaintext[write_offset:]  # trim to actual written
-                        plaintext.extend(part)
-                        write_offset = len(plaintext)
-                        view = memoryview(plaintext)
-                    else:
-                        view[write_offset:write_offset + n] = part
-                        write_offset += n
-                    del part  # free decrypt buffer immediately
+                    try:
+                        bytes_written = await rust_client.bulk_decrypt_into(
+                            chunks=batch, file_key=file_key,
+                            was_compressed=compress, chunk_size=chunk_size,
+                            target=view, target_offset=write_offset,
+                        )
+                        elapsed = time.monotonic() - t0
+                        logger.info(
+                            "Dedup sub-decrypt %d: chunks=%d bytes=%d elapsed=%.1fs (direct)",
+                            batch_idx, len(batch), bytes_written, elapsed,
+                        )
+                        write_offset += bytes_written
+                    except ValueError as exc:
+                        # Pre-flight rejected (header missing or overflow)
+                        # No bytes written to mmap — safe to fall back
+                        elapsed = time.monotonic() - t0
+                        logger.error(
+                            "Dedup sub-decrypt %d rejected after %.1fs: %s — "
+                            "falling back to bulk_decrypt_chunks",
+                            batch_idx, elapsed, exc,
+                        )
+                        part = await rust_client.bulk_decrypt_chunks(
+                            chunks=batch, file_key=file_key,
+                            was_compressed=compress, chunk_size=chunk_size,
+                        )
+                        n = len(part)
+                        if write_offset + n > len(plaintext):
+                            # Overflow — convert mmap to bytearray for extend
+                            # CRITICAL: release view BEFORE closing mmap
+                            view.release()
+                            old_buf = plaintext
+                            plaintext = bytearray(old_buf[:write_offset])
+                            if isinstance(old_buf, mmap.mmap):
+                                old_buf.close()
+                            part_mv = memoryview(part)
+                            fb_pos = 0
+                            while fb_pos < n:
+                                fb_end = min(fb_pos + COPY_SLICE, n)
+                                plaintext.extend(part_mv[fb_pos:fb_end])
+                                fb_pos = fb_end
+                                if fb_pos < n:
+                                    await asyncio.sleep(0)
+                            part_mv.release()
+                            del part
+                            write_offset = len(plaintext)
+                            view = memoryview(plaintext)
+                        else:
+                            # Fits in existing buffer — copy via slices
+                            part_mv = memoryview(part)
+                            copied = 0
+                            while copied < n:
+                                end = min(copied + COPY_SLICE, n)
+                                view[write_offset + copied:write_offset + end] = part_mv[copied:end]
+                                copied = end
+                                if copied < n:
+                                    await asyncio.sleep(0)
+                            part_mv.release()
+                            del part
+                            write_offset += n
                     await asyncio.sleep(0)  # yield between sub-batches
+
+                await asyncio.sleep(0)  # yield after alloc before first decrypt
+                logger.info(
+                    "Dedup decrypt setup complete: chunks=%d alloc=%dMB",
+                    len(chunks), file_obj.file_size >> 20,
+                )
 
                 for c in chunks:
                     c_size = c.get("size", chunk_size)
@@ -489,9 +543,17 @@ class BackgroundDeduplicationService:
                     await _flush(sub_batch, batch_num)
 
                 view.release()
-                # Trim if actual plaintext is smaller than file_size
+                # Trim if actual plaintext is smaller than allocated size
                 if write_offset < len(plaintext):
-                    del plaintext[write_offset:]
+                    logger.error(
+                        "Dedup trim needed: write_offset=%d < alloc=%d — "
+                        "file_size metadata is inconsistent",
+                        write_offset, len(plaintext),
+                    )
+                    trimmed = bytearray(plaintext[:write_offset])
+                    if isinstance(plaintext, mmap.mmap):
+                        plaintext.close()
+                    plaintext = trimmed
 
                 batch_count = batch_num
 

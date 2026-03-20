@@ -1,5 +1,6 @@
 # services/storage-service/app/services/deduplication_enhanced.py
 import hashlib
+import mmap
 import os
 import asyncio
 from typing import Optional, Dict, Tuple, List
@@ -619,12 +620,11 @@ class EnhancedDeduplicationService:
             # Free the plaintext buffer — all block data is now in dedup_result['new_blocks']
             # and the file hash was pre-computed inside deduplicate_before_encryption.
             # Clearing in-place releases ~721MB even though the caller holds a reference.
-            if isinstance(file_data, bytearray):
-                file_data[:] = b''
+            if isinstance(file_data, mmap.mmap):
+                file_data.close()      # munmap — releases all pages immediately
+            elif isinstance(file_data, bytearray):
+                file_data[:] = b''     # in-place clear for bytearray
             del file_data
-            # gc.collect() removed — bytearray buffer already freed by in-place
-            # clear above (no reference cycles to break). Full GC scan of the
-            # entire interpreter was the primary suspect for 15s event loop stalls.
 
             # Use pre-computed file hash from dedup analysis
             file_hash = dedup_result['file_hash']

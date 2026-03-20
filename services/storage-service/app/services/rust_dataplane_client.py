@@ -530,6 +530,100 @@ class RustDataPlaneClient:
             logger.error("Bulk decrypt Rust call error: %s", e)
             raise
 
+    async def bulk_decrypt_into(
+        self,
+        chunks: list,
+        file_key: bytes,
+        was_compressed: bool,
+        chunk_size: int,
+        target: memoryview,
+        target_offset: int,
+    ) -> int:
+        """
+        Decrypt chunks via Rust /bulk-decrypt, streaming directly into target buffer.
+
+        Requires the Rust response to include the x-plaintext-size header.
+        If the header is missing, raises ValueError BEFORE writing any bytes.
+        If the declared size overflows the target, raises ValueError BEFORE writing any bytes.
+
+        Returns the number of bytes written.
+        """
+        body = {
+            "chunks": chunks,
+            "file_key_b64": base64.b64encode(file_key).decode("ascii"),
+            "was_compressed": was_compressed,
+            "chunk_size": chunk_size,
+        }
+
+        t0 = time.monotonic()
+        try:
+            async with self.client.stream(
+                "POST", "/bulk-decrypt", json=body,
+                headers={"content-type": "application/json"},
+                timeout=Timeout(120.0),
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    response.raise_for_status()
+
+                plaintext_size_str = response.headers.get("x-plaintext-size")
+
+                # Pre-flight check 1: header must be present
+                if not plaintext_size_str or not plaintext_size_str.isdigit():
+                    raise ValueError(
+                        "bulk_decrypt_into requires x-plaintext-size header"
+                    )
+
+                plaintext_size = int(plaintext_size_str)
+
+                # Pre-flight check 2: must fit in target buffer
+                if target_offset + plaintext_size > len(target):
+                    raise ValueError(
+                        f"overflow: {target_offset} + {plaintext_size} > {len(target)}"
+                    )
+
+                # Both checks pass — stream directly into target
+                write_pos = target_offset
+                bytes_written = 0
+                async for chunk in response.aiter_bytes(chunk_size=1_048_576):
+                    n = len(chunk)
+                    # Per-chunk overrun guard
+                    if write_pos + n > target_offset + plaintext_size:
+                        raise RuntimeError(
+                            f"Rust sent more bytes than x-plaintext-size: "
+                            f"{bytes_written + n} > {plaintext_size}"
+                        )
+                    target[write_pos:write_pos + n] = chunk
+                    write_pos += n
+                    bytes_written += n
+                    await asyncio.sleep(0)  # yield every 1MB
+
+                # Verify complete read
+                if bytes_written != plaintext_size:
+                    raise RuntimeError(
+                        f"short read: expected {plaintext_size} bytes, "
+                        f"got {bytes_written}"
+                    )
+
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "bulk_decrypt_into: chunks=%d bytes_written=%d elapsed=%.1fs",
+                len(chunks), bytes_written, elapsed,
+            )
+            return bytes_written
+
+        except (ValueError, RuntimeError):
+            raise
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "bulk_decrypt_into Rust call failed: %d - %s",
+                e.response.status_code, e.response.text,
+            )
+            raise
+        except Exception as e:
+            logger.error("bulk_decrypt_into Rust call error: %s", e)
+            raise
+
     async def dedup_chunk(
         self,
         block_data: bytes,
