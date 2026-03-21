@@ -46,6 +46,9 @@ class Settings:
     INLINE_THRESHOLD: int = 1 * 1024 * 1024  # 1MB - store in Redis
     SINGLE_OBJECT_THRESHOLD: int = 100 * 1024 * 1024  # 100MB - store as single file
     
+    # Bandwidth Throttle (token-bucket rate limiting only; stream-slot limits are always active)
+    BANDWIDTH_THROTTLE_ENABLED: bool = os.getenv("BANDWIDTH_THROTTLE_ENABLED", "true").lower() == "true"
+
     # Backup Configuration
     BACKUP_ENABLED: bool = os.getenv("BACKUP_ENABLED", "true").lower() == "true"
     BACKUP_S3_BUCKET: str = os.getenv("BACKUP_S3_BUCKET", "edge-cloud-backup")

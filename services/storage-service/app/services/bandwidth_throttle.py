@@ -71,6 +71,33 @@ else
 end
 """
 
+# Lua script for force-consuming tokens (can go negative — recovers via natural refill)
+FORCE_CONSUME_LUA = """
+local bucket_key = KEYS[1]
+local refill_key = KEYS[2]
+local bytes_to_consume = tonumber(ARGV[1])
+local bytes_per_second = tonumber(ARGV[2])
+local bucket_capacity = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+
+local current_tokens = tonumber(redis.call("GET", bucket_key)) or bucket_capacity
+local last_refill = tonumber(redis.call("GET", refill_key)) or now
+
+-- Refill based on elapsed time
+local time_elapsed = now - last_refill
+local tokens_to_add = time_elapsed * bytes_per_second
+current_tokens = math.min(current_tokens + tokens_to_add, bucket_capacity)
+
+-- Force consume (can go negative — recovers via natural refill over time)
+current_tokens = current_tokens - bytes_to_consume
+
+redis.call("SETEX", bucket_key, ttl, tostring(current_tokens))
+redis.call("SETEX", refill_key, ttl, tostring(now))
+
+return current_tokens
+"""
+
 
 class BandwidthThrottleService:
     """
@@ -428,6 +455,9 @@ class BandwidthThrottleService:
         Returns:
             (allowed: bool, wait_time: float)
         """
+        if not settings.BANDWIDTH_THROTTLE_ENABLED:
+            return True, 0.0
+
         redis_client = await get_redis()
         if not redis_client:
             return True, 0.0
@@ -489,6 +519,9 @@ class BandwidthThrottleService:
         Returns:
             (allowed: bool, wait_time: float)
         """
+        if not settings.BANDWIDTH_THROTTLE_ENABLED:
+            return True, 0.0
+
         allowed, wait_time = await self.can_transfer(
             user_id, bytes_requested, limit_mbps, plan_type, db_bandwidth_override
         )
@@ -528,6 +561,12 @@ class BandwidthThrottleService:
         Raises:
             HTTPException 429 if wait time exceeds threshold
         """
+        # Bypass token-bucket rate limiting if disabled (stream-slot limits still active)
+        if not settings.BANDWIDTH_THROTTLE_ENABLED:
+            async for chunk in data_generator:
+                yield chunk
+            return
+
         # Auto-fetch limit once at start with plan awareness
         if limit_mbps is None:
             if plan_type or db_bandwidth_override is not None:
@@ -556,6 +595,7 @@ class BandwidthThrottleService:
                 sleep_time = min(wait_time, self.MAX_WAIT_SLEEP)
                 logger.debug(f"Throttling user {user_id}: waiting {sleep_time:.2f}s (requested: {wait_time:.2f}s)")
                 await asyncio.sleep(sleep_time)
+                await self.force_consume(user_id, chunk_size, plan_type=plan_type)
 
                 # If we only slept partial time, re-check
                 if wait_time > sleep_time:
@@ -591,6 +631,12 @@ class BandwidthThrottleService:
         Yields:
             Data chunks with appropriate delays
         """
+        # Bypass token-bucket rate limiting if disabled (stream-slot limits still active)
+        if not settings.BANDWIDTH_THROTTLE_ENABLED:
+            async for chunk in data_generator:
+                yield chunk
+            return
+
         if limit_mbps is None:
             limit_mbps = await self.get_user_limit(user_id)
 
@@ -612,8 +658,58 @@ class BandwidthThrottleService:
 
                 sleep_time = min(wait_time, self.MAX_WAIT_SLEEP)
                 await asyncio.sleep(sleep_time)
+                await self.force_consume(user_id, chunk_size, plan_type=plan_type)
 
             yield chunk
+
+    async def force_consume(
+        self,
+        user_id: str,
+        bytes_consumed: int,
+        plan_type: str = None,
+        db_bandwidth_override: int = None
+    ):
+        """
+        Force-debit the token bucket after a soft-throttle sleep so subsequent
+        can_transfer() calls see accurate token state.  Fire-and-forget: logs
+        warnings on error but never raises.
+
+        Args:
+            user_id: User identifier
+            bytes_consumed: Bytes actually transferred
+            plan_type: User's subscription plan tier
+            db_bandwidth_override: Database-stored bandwidth override
+        """
+        if not settings.BANDWIDTH_THROTTLE_ENABLED:
+            return
+
+        try:
+            redis_client = await get_redis()
+            if not redis_client:
+                return
+
+            # Resolve limit the same way can_transfer() does
+            if plan_type or db_bandwidth_override is not None:
+                limit_mbps, _ = await self.get_user_limit_with_plan(
+                    user_id, plan_type or "free", db_bandwidth_override
+                )
+            else:
+                limit_mbps = await self.get_user_limit(user_id)
+
+            bytes_per_second = (limit_mbps * 1024 * 1024) / 8
+            bucket_capacity = bytes_per_second * self.burst_multiplier
+
+            bucket_key = f"bandwidth:bucket:{user_id}"
+            last_refill_key = f"bandwidth:refill:{user_id}"
+
+            await redis_client.eval(
+                FORCE_CONSUME_LUA,
+                2,
+                bucket_key, last_refill_key,
+                bytes_consumed, bytes_per_second, bucket_capacity, time.time(), 300
+            )
+        except Exception as e:
+            logger.warning(f"force_consume failed for user {user_id}: {e}")
 
     async def get_usage_stats(self, user_id: str) -> Dict[str, Any]:
         """

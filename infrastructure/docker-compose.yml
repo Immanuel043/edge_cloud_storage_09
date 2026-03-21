@@ -331,6 +331,10 @@ services:
       RUST_DATAPLANE_ENABLED: "true"
       RUST_DATAPLANE_SOCKET: /run/dataplane/edge-storage-dataplane.sock
 
+      # Bandwidth throttle (token-bucket only; stream-slot limits always active)
+      # Set to "false" for local dev to skip rate-limit sleeps
+      BANDWIDTH_THROTTLE_ENABLED: "${BANDWIDTH_THROTTLE_ENABLED:-false}"
+
       # Frontend URL for CSP headers
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
       

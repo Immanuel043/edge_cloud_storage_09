@@ -355,6 +355,7 @@ class EnhancedDeduplicationService:
                 "Batch hashing complete: chunks=%d elapsed=%.1fs",
                 len(boundaries), time.monotonic() - t0_hash,
             )
+            await asyncio.sleep(0)  # Yield after hash — break GIL-contention cascade
         else:
             logger.info("Calculating hashes for %d chunks (Python fallback)...", len(boundaries))
             t0_hash = time.monotonic()
@@ -364,10 +365,12 @@ class EnhancedDeduplicationService:
                 "Batch hashing complete: chunks=%d elapsed=%.1fs",
                 len(boundaries), time.monotonic() - t0_hash,
             )
+            await asyncio.sleep(0)  # Yield after hash — break GIL-contention cascade
 
         # DB batch lookup — load only (block_hash, id), no full ORM instances
         BATCH_SIZE = 10000
         existing_block_map = {}  # {hash_str: uuid.UUID}
+        t0_phase = time.monotonic()
 
         for batch_start in range(0, len(block_hashes), BATCH_SIZE):
             hash_batch = block_hashes[batch_start:batch_start + BATCH_SIZE]
@@ -386,20 +389,33 @@ class EnhancedDeduplicationService:
 
             await asyncio.sleep(0)  # Yield after processing batch
 
+        logger.debug("dedup-phase:db-lookup elapsed=%.1fms", (time.monotonic() - t0_phase) * 1000)
+
         # Classification — offloaded to thread pool (plain data in, plain data out)
+        t0_phase = time.monotonic()
         (
             blocks, new_block_ranges, duplicate_blocks, duplicate_block_ids,
             new_hashes_for_bloom, deduplicated_size, saved_size,
         ) = await run_in_heavy_pool(
             _classify_blocks, block_hashes, chunk_sizes, chunk_offsets, existing_block_map,
         )
+        logger.debug("dedup-phase:classify elapsed=%.1fms", (time.monotonic() - t0_phase) * 1000)
 
         # Bloom filter updates — must stay on event loop (NOT thread-safe)
-        if self.bloom_enabled:
-            for h in new_hashes_for_bloom:
-                self.bloom_filter.add(h)
+        t0_phase = time.monotonic()
+        # Sub-batched to yield periodically (each .add() is fast Rust FFI,
+        # but yielding here breaks up the post-hash synchronous chain)
+        if self.bloom_enabled and new_hashes_for_bloom:
+            BLOOM_BATCH = 16
+            for i in range(0, len(new_hashes_for_bloom), BLOOM_BATCH):
+                for h in new_hashes_for_bloom[i:i + BLOOM_BATCH]:
+                    self.bloom_filter.add(h)
+                if i + BLOOM_BATCH < len(new_hashes_for_bloom):
+                    await asyncio.sleep(0)
+        logger.debug("dedup-phase:bloom elapsed=%.1fms", (time.monotonic() - t0_phase) * 1000)
 
         # Materialize unique block bytes — sub-batched to limit GIL hold per call
+        t0_phase = time.monotonic()
         if new_block_ranges:
             EXTRACT_BATCH = 8
             new_blocks = []
@@ -413,6 +429,7 @@ class EnhancedDeduplicationService:
                     await asyncio.sleep(0)
         else:
             new_blocks = []
+        logger.debug("dedup-phase:extract elapsed=%.1fms", (time.monotonic() - t0_phase) * 1000)
 
         # Batch increment reference counts for all duplicate blocks
         if duplicate_block_ids:

@@ -8,6 +8,7 @@ for secure encryption key transfer to the Rust data plane service.
 import socket
 import json
 import asyncio
+import time
 from typing import Dict, Any, Optional
 import logging
 import uuid
@@ -117,15 +118,19 @@ class RustSocketClient:
         sock = None
 
         try:
+            t0 = time.monotonic()
+
             # 1. Create memfd with key
             logger.debug(f"Creating memfd with key for chunk {chunk_index}")
             key_fd = MemfdHelper.create_memfd_with_key(file_key, name=f"key_{file_id}_{chunk_index}")
+            t_memfd = time.monotonic()
 
             # 2. Create Unix socket connection
             logger.debug(f"Connecting to {self.socket_path}")
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
             sock.connect(self.socket_path)
+            t_connect = time.monotonic()
 
             # 3. Build HTTP request
             request_id = str(uuid.uuid4())
@@ -153,21 +158,25 @@ class RustSocketClient:
             # 4. Send HTTP request + FD via SCM_RIGHTS
             logger.debug(f"Sending HTTP request + FD {key_fd} via SCM_RIGHTS")
             MemfdHelper.send_fd_over_socket(sock, key_fd, http_request.encode('utf-8'))
+            t_scm = time.monotonic()
 
             # 5. Send chunk data (regular socket send, not via SCM_RIGHTS)
             # Use sendall: loops in C with GIL released for syscalls,
             # avoids Python bytes slicing that causes GIL contention.
             logger.debug(f"Sending chunk data: {len(chunk_data)} bytes")
             sock.sendall(chunk_data)
+            t_send = time.monotonic()
             logger.debug(f"Sent {len(chunk_data)} bytes of chunk data")
 
             # 6. Receive HTTP response
             logger.debug("Receiving HTTP response")
             response_data = self._read_http_response(sock)
+            t_recv = time.monotonic()
 
             # 7. Parse JSON response
             try:
                 result = json.loads(response_data)
+                t_parse = time.monotonic()
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON response: {e}\nResponse: {response_data[:200]}")
 
@@ -176,10 +185,21 @@ class RustSocketClient:
                 error_msg = result.get("message", "Unknown error")
                 raise Exception(f"Rust processing failed: {error_msg}")
 
+            logger.debug(
+                f"chunk-timing-rust: chunk={chunk_index} "
+                f"total={(t_parse - t0)*1000:.0f}ms "
+                f"memfd={(t_memfd - t0)*1000:.0f}ms "
+                f"connect={(t_connect - t_memfd)*1000:.0f}ms "
+                f"scm={(t_scm - t_connect)*1000:.0f}ms "
+                f"sendall={(t_send - t_scm)*1000:.0f}ms "
+                f"rust_process={(t_recv - t_send)*1000:.0f}ms "
+                f"parse={(t_parse - t_recv)*1000:.0f}ms"
+            )
             logger.info(
                 f"Chunk {chunk_index} processed via Rust Non-ZK mode: "
                 f"hash={result.get('hash', 'N/A')[:20]}..., "
-                f"encrypted_size={result.get('encrypted_size', 0)}"
+                f"encrypted_size={result.get('encrypted_size', 0)}, "
+                f"rust_total={(t_parse - t0)*1000:.0f}ms"
             )
 
             return result

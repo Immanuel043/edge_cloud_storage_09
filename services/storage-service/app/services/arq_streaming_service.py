@@ -286,6 +286,12 @@ class ARQStreamingService:
                     )
                 # Short wait - apply throttling (capped at 1 second)
                 await asyncio.sleep(min(wait_time, 1.0))
+                await bandwidth_throttle_service.force_consume(
+                    user_id=session.user_id,
+                    bytes_consumed=chunk_size,
+                    plan_type=session.plan_type,
+                    db_bandwidth_override=session.db_bandwidth_override
+                )
 
         # Read chunk data
         async with aiofiles.open(session.file_path, 'rb') as f:

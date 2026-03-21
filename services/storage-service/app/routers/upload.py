@@ -368,6 +368,8 @@ async def upload_chunk(
     redis_client = await get_redis()
     user_id_str = str(current_user.id)
     stream_slot_released = False  # Track if stream slot was already released
+    t_total = time.monotonic()
+    processing_mode = "unknown"
 
     # Pipeline independent Redis calls concurrently
     max_streams, stream_acquired, session = await asyncio.gather(
@@ -383,6 +385,7 @@ async def upload_chunk(
         ),
         get_upload_session(redis_client, db, upload_id),
     )
+    t_redis = time.monotonic()
 
     if not stream_acquired:
         raise HTTPException(
@@ -415,6 +418,11 @@ async def upload_chunk(
                     )
                 # Short wait - apply throttling
                 await asyncio.sleep(min(wait_time, 1.0))
+                await bandwidth_throttle_service.force_consume(
+                    user_id_str, chunk_size,
+                    plan_type=current_user.plan_type,
+                    db_bandwidth_override=current_user.bandwidth_limit_mbps
+                )
         if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
 
@@ -430,6 +438,7 @@ async def upload_chunk(
 
         if chunk_index in session["done"]:
             return {"status": "already_uploaded", "chunk_index": chunk_index}
+        t_throttle = time.monotonic()
 
         # Prepare storage path
         storage_tier = "cache"
@@ -442,6 +451,8 @@ async def upload_chunk(
 
         # Read chunk data
         chunk_data = await chunk.read()
+        t_read = time.monotonic()
+        chunk_len = len(chunk_data)
 
         # LEGACY ZK: Defensive reject - ZK uploads must use zk-encryption-service.
         if session.get("zk_mode", False):
@@ -452,6 +463,7 @@ async def upload_chunk(
 
         # Server-side encryption
         file_key = encryption_service.decrypt_key(session["key"])
+        t_decrypt = time.monotonic()
 
         # Check Rust availability (cached after first call)
         use_compression = session.get("compress", False)
@@ -502,6 +514,8 @@ async def upload_chunk(
                         raise Exception(f"Rust encrypted chunk not found at {encrypted_path}")
 
                     logger.info(f"Chunk {chunk_index} processed fully via Rust (zero-copy direct write)")
+                    t_process = time.monotonic()
+                    processing_mode = "rust-full"
 
                 else:  # hybrid mode (default)
                     # Hybrid: Rust does hashing, Python does encryption
@@ -527,6 +541,8 @@ async def upload_chunk(
                         await f.write(encrypted_chunk)
 
                     logger.debug(f"Chunk {chunk_index} processed via Rust (hash) + Python (compress + encrypt)")
+                    t_process = time.monotonic()
+                    processing_mode = "hybrid"
 
             except Exception as e:
                 logger.warning(f"Rust processing failed for chunk {chunk_index}: {e}")
@@ -555,6 +571,8 @@ async def upload_chunk(
             # Write encrypted data asynchronously with larger buffer
             async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
                 await f.write(encrypted_chunk)
+            t_process = time.monotonic()
+            processing_mode = "python"
 
         # Atomically update session via Redis Lua script (single round-trip, no races)
         session = await update_upload_session_atomic(
@@ -563,6 +581,21 @@ async def upload_chunk(
             chunk_hash=chunk_hash,
             storage_path=storage_path,
         )
+        t_session = time.monotonic()
+
+        # Diagnostic timing summary (grep for "chunk-timing:")
+        logger.info(
+            f"chunk-timing: chunk={chunk_index}/{session['chunks']} "
+            f"size={chunk_len / (1024*1024):.1f}MB mode={processing_mode} "
+            f"total={(t_session - t_total)*1000:.0f}ms "
+            f"redis={(t_redis - t_total)*1000:.0f}ms "
+            f"throttle={(t_throttle - t_redis)*1000:.0f}ms "
+            f"read={(t_read - t_throttle)*1000:.0f}ms "
+            f"decrypt={(t_decrypt - t_read)*1000:.0f}ms "
+            f"process={(t_process - t_decrypt)*1000:.0f}ms "
+            f"session={(t_session - t_process)*1000:.0f}ms"
+        )
+        chunk_processing_duration.observe(t_session - t_total)
 
         progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
 
