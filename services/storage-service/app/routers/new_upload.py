@@ -28,6 +28,7 @@ import asyncio
 
 # Import our services
 from ..services.production_upload_service import production_upload_service
+from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..services.background_deduplication import background_dedup_service
 from ..services.upload_session_store import REDIS_TTL
 
@@ -127,12 +128,17 @@ async def init_upload(
     
     print(f"Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB)")
     
+    recommended_concurrency = await bandwidth_throttle_service.get_recommended_chunk_concurrency(
+        str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
+    )
+
     return UploadInitResponse(
         upload_id=upload_id,
         storage_strategy=storage_strategy,
         chunk_size=CHUNK_SIZE if storage_strategy == "chunked" else 0,
         total_chunks=total_chunks,
-        direct_upload=storage_strategy != "chunked"
+        direct_upload=storage_strategy != "chunked",
+        recommended_concurrency=recommended_concurrency,
     )
 
 @router.post("/chunk/{upload_id}")
@@ -660,7 +666,11 @@ async def get_upload_status(
     else:
         missing_chunks = []
         progress = 100 if session.get("hash") else 0
-    
+
+    recommended_concurrency = await bandwidth_throttle_service.get_recommended_chunk_concurrency(
+        str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
+    )
+
     return UploadStatusResponse(
         upload_id=upload_id,
         file_name=session["name"],
@@ -668,6 +678,7 @@ async def get_upload_status(
         uploaded_chunks=session["done"],
         missing_chunks=list(missing_chunks),
         progress=progress,
+        recommended_concurrency=recommended_concurrency,
     )
 
 @router.on_event("startup")

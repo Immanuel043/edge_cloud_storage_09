@@ -21,6 +21,7 @@ interface UploadInitResponse {
   storage_strategy: 'inline' | 'single' | 'chunked';
   chunk_size: number;
   total_chunks: number;
+  recommended_concurrency?: number;
 }
 
 interface UploadInitNormalResponse extends UploadInitResponse {
@@ -49,6 +50,7 @@ export interface ServerUploadStatus {
   uploaded_chunks: number[];
   missing_chunks: number[];
   progress: number;
+  recommended_concurrency?: number;
 }
 
 interface UploadOptions {
@@ -151,7 +153,7 @@ class NormalUploadService {
    */
   async uploadFile(file: File, options: UploadOptions = {}): Promise<UploadCompleteResponse & { serverUploadId?: string }> {
     const {
-      concurrency = this.defaultConcurrency,
+      concurrency: userConcurrency,
       onProgress,
       onChunkComplete,
       onSessionCreated,
@@ -167,6 +169,10 @@ class NormalUploadService {
       const initData = await this.initUpload(file, folderId, signal);
       const { upload_id, storage_strategy, chunk_size, total_chunks } = initData;
       serverUploadId = upload_id;
+
+      // Server hint caps concurrency (protects against bad parallelism on low-plan)
+      const serverHint = initData.recommended_concurrency ?? this.defaultConcurrency;
+      const concurrency = Math.min(userConcurrency ?? this.defaultConcurrency, serverHint);
 
       // Fire session created callback so context can checkpoint
       if (onSessionCreated) {
@@ -264,12 +270,16 @@ class NormalUploadService {
     options: UploadOptions = {}
   ): Promise<UploadCompleteResponse & { serverUploadId?: string }> {
     const {
-      concurrency = this.defaultConcurrency,
+      concurrency: userConcurrency,
       onProgress,
       onChunkComplete,
       onError,
       signal,
     } = options;
+
+    // Server hint caps concurrency (protects against bad parallelism on low-plan)
+    const serverHint = serverStatus.recommended_concurrency ?? this.defaultConcurrency;
+    const concurrency = Math.min(userConcurrency ?? this.defaultConcurrency, serverHint);
 
     try {
       // Build context from server status (not from initUpload)

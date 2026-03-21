@@ -89,8 +89,8 @@ local time_elapsed = now - last_refill
 local tokens_to_add = time_elapsed * bytes_per_second
 current_tokens = math.min(current_tokens + tokens_to_add, bucket_capacity)
 
--- Force consume (can go negative — recovers via natural refill over time)
-current_tokens = current_tokens - bytes_to_consume
+-- Force consume (floor at -bucket_capacity to bound recovery time)
+current_tokens = math.max(current_tokens - bytes_to_consume, -bucket_capacity)
 
 redis.call("SETEX", bucket_key, ttl, tostring(current_tokens))
 redis.call("SETEX", refill_key, ttl, tostring(now))
@@ -308,6 +308,19 @@ class BandwidthThrottleService:
 
         # Priority 2: Plan default
         return self.get_max_streams_for_plan(plan_type)
+
+    async def get_recommended_chunk_concurrency(
+        self,
+        user_id: str,
+        plan_type: str = "free",
+        db_streams_override: int = None,
+        default_concurrency: int = 4
+    ) -> int:
+        """Server-driven chunk upload concurrency: min(default, effective_max_streams)."""
+        max_streams = await self.get_max_streams_with_plan(
+            user_id, plan_type, db_streams_override
+        )
+        return min(default_concurrency, max_streams)
 
     async def _ensure_lua_scripts(self, redis_client):
         """Register Lua scripts with Redis for better performance"""

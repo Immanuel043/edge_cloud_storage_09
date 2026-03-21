@@ -279,6 +279,7 @@ class UploadInitResponse(BaseModel):
     chunk_size: int
     total_chunks: int
     direct_upload: bool
+    recommended_concurrency: int = 4
 
 class UploadStatusResponse(BaseModel):
     upload_id: str
@@ -289,6 +290,7 @@ class UploadStatusResponse(BaseModel):
     uploaded_chunks: List[int]
     missing_chunks: List[int]
     progress: float
+    recommended_concurrency: int = 4
 
 # Token Schemas
 class Token(BaseModel):

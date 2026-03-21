@@ -328,12 +328,17 @@ async def init_upload(
     
     print(f"📤 Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Compression: {use_compression}")
     
+    recommended_concurrency = await bandwidth_throttle_service.get_recommended_chunk_concurrency(
+        str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
+    )
+
     return UploadInitResponse(
         upload_id=upload_id,
         storage_strategy=storage_strategy,
         chunk_size=CHUNK_SIZE if storage_strategy == "chunked" else 0,
         total_chunks=total_chunks,
-        direct_upload=storage_strategy != "chunked"
+        direct_upload=storage_strategy != "chunked",
+        recommended_concurrency=recommended_concurrency,
     )
 
 
@@ -395,34 +400,12 @@ async def upload_chunk(
         )
 
     try:
-        # ============ BANDWIDTH THROTTLING: Check bandwidth limit (plan-aware) ============
-        # Use Content-Length header for size (Fix #3 from review)
-        chunk_size = int(request.headers.get("content-length", 0))
-        if chunk_size > 0:
-            allowed, wait_time = await bandwidth_throttle_service.can_transfer(
-                user_id_str,
-                chunk_size,
-                plan_type=current_user.plan_type,
-                db_bandwidth_override=current_user.bandwidth_limit_mbps
-            )
-            if not allowed:
-                wait_threshold = bandwidth_throttle_service.get_wait_threshold(current_user.plan_type)
-                if wait_time > wait_threshold:
-                    # Return 429 with Retry-After for long waits
-                    await bandwidth_throttle_service.release_stream_slot(user_id_str)
-                    stream_slot_released = True  # Mark as released to prevent double-release
-                    raise HTTPException(
-                        status_code=429,
-                        detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
-                        headers={"Retry-After": str(int(wait_time))}
-                    )
-                # Short wait - apply throttling
-                await asyncio.sleep(min(wait_time, 1.0))
-                await bandwidth_throttle_service.force_consume(
-                    user_id_str, chunk_size,
-                    plan_type=current_user.plan_type,
-                    db_bandwidth_override=current_user.bandwidth_limit_mbps
-                )
+        # Bandwidth note: token-bucket throttle removed from chunk upload path.
+        # The HTTP body is already received before this handler runs, so sleeping
+        # only delays server processing without rate-limiting network bandwidth.
+        # Concurrency is enforced by stream slots (above). Token-bucket throttling
+        # remains active on streaming download paths (throttled_transfer).
+
         if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
 
@@ -782,6 +765,10 @@ async def get_upload_status(
 
     # Calculate missing chunks
     storage_strategy = session.get("strategy", "chunked")
+    recommended_concurrency = await bandwidth_throttle_service.get_recommended_chunk_concurrency(
+        str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
+    )
+
     if storage_strategy == "chunked":
         total_chunks = session.get("chunks", 0)
         uploaded_chunks = set(session.get("done", []))
@@ -801,6 +788,7 @@ async def get_upload_status(
             "missing_chunks": missing_chunks,
             "progress": round(progress, 2),
             "started_at": session.get("start"),
+            "recommended_concurrency": recommended_concurrency,
         }
     else:
         # Direct upload
@@ -816,6 +804,7 @@ async def get_upload_status(
             "missing_chunks": [],
             "progress": 100 if session.get("hash") else 0,
             "started_at": session.get("start"),
+            "recommended_concurrency": recommended_concurrency,
         }
 
 
@@ -1318,14 +1307,18 @@ async def get_upload_status(
 
     if session["user"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
-    
+
     if session["strategy"] == "chunked":
         missing_chunks = set(range(session["chunks"])) - set(session["done"])
         progress = len(session["done"]) / session["chunks"] * 100 if session["chunks"] > 0 else 100
     else:
         missing_chunks = []
         progress = 100 if session.get("hash") else 0
-    
+
+    recommended_concurrency = await bandwidth_throttle_service.get_recommended_chunk_concurrency(
+        str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
+    )
+
     return UploadStatusResponse(
         upload_id=upload_id,
         file_name=session["name"],
@@ -1335,6 +1328,7 @@ async def get_upload_status(
         uploaded_chunks=session["done"],
         missing_chunks=list(missing_chunks),
         progress=progress,
+        recommended_concurrency=recommended_concurrency,
     )
 
 @router.post("/test-speed")
