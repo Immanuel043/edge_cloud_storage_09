@@ -796,10 +796,22 @@ class EnhancedDeduplicationService:
             # --- Phase 4: Assemble stored_blocks in original order ---
             for blk, cp in zip(new_blocks, cas_paths):
                 res = batch_results.get(blk['hash'], {})
+                # ``size`` is the logical plaintext block size used for range
+                # reconstruction. The physical CAS file can differ because
+                # convergent encryption adds AEAD overhead and some blocks are
+                # zstd-compressed before encryption.
+                encrypted_size = res.get('encrypted_size') or None
+                if encrypted_size is None and os.path.exists(cp):
+                    try:
+                        encrypted_size = os.path.getsize(cp)
+                    except OSError:
+                        encrypted_size = None
                 stored_blocks.append({
                     'hash': blk['hash'],
                     'path': cp,
                     'size': blk['size'],
+                    'plaintext_size': blk['size'],
+                    'encrypted_size': encrypted_size,
                     'offset': blk['offset'],
                     'was_compressed': res.get('was_compressed', False),
                 })

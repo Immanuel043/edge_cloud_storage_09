@@ -429,9 +429,9 @@ async def stream_chunked_range(
                 encrypted_data = await f.read()
 
             # Decrypt block
+            was_compressed = stored_block.get('was_compressed', False)
             if is_convergent:
                 user_id = str(file_obj.user_id)
-                was_compressed = stored_block.get('was_compressed', False)
 
                 # Try Rust data plane for fast PBKDF2 decryption
                 try:
@@ -441,8 +441,12 @@ async def stream_chunked_range(
                         encrypted_data, block_hash, user_id,
                         was_compressed=was_compressed,
                     )
-                except Exception:
+                except Exception as e:
                     # Fallback: Python PBKDF2 + AES-GCM
+                    logger.warning(
+                        "Rust convergent_decrypt failed for block %s, falling back to Python: %s",
+                        block_hash[:12], e,
+                    )
                     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
                     from cryptography.hazmat.backends import default_backend
                     import hashlib
@@ -462,9 +466,46 @@ async def stream_chunked_range(
                     )
                     decryptor = cipher.decryptor()
                     decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
+
+                    # Python fallback only decrypts — decompress if block was stored compressed
+                    if was_compressed:
+                        import zstandard
+                        dctx = zstandard.ZstdDecompressor()
+                        decrypted_block = dctx.decompress(decrypted_block, max_output_size=64 * 1024 * 1024)
             else:
                 # Standard file-key encryption
                 decrypted_block = encryption_service.decrypt_data(encrypted_data, file_key)
+
+            # Safety net: detect if block is still zstd-compressed after decrypt
+            _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+            if (was_compressed and len(decrypted_block) >= 4
+                    and decrypted_block[:4] == _ZSTD_MAGIC
+                    and len(decrypted_block) != block_size):
+                logger.warning(
+                    "Block %s still compressed after decrypt, attempting Python decompress",
+                    block_hash[:12],
+                )
+                try:
+                    import zstandard
+                    dctx = zstandard.ZstdDecompressor()
+                    decrypted_block = dctx.decompress(decrypted_block, max_output_size=64 * 1024 * 1024)
+                except Exception as decomp_err:
+                    logger.error(
+                        "Block %s decompression failed, aborting transfer: %s",
+                        block_hash[:12], decomp_err,
+                    )
+                    raise RuntimeError(f"Block {block_hash[:8]} decompression failed") from decomp_err
+
+            # Strict size validation — abort on mismatch (corruption signal)
+            actual_size = len(decrypted_block)
+            if actual_size != block_size:
+                logger.error(
+                    "Block %s corrupt: expected=%d actual=%d was_compressed=%s — aborting transfer",
+                    block_hash[:12], block_size, actual_size, was_compressed,
+                )
+                raise RuntimeError(
+                    f"Block {block_hash[:8]} size mismatch: expected={block_size} actual={actual_size}"
+                )
 
             # Calculate slice to yield
             slice_start = max(0, start - current_pos)
