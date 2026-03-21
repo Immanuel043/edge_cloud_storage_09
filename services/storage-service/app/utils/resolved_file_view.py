@@ -59,7 +59,10 @@ class ResolvedFileView:
 
         dangling = False
 
+        # Post-migration: no deduplicated_reference files should exist.
+        # Keep fallback with warning for safety.
         if storage_type == "deduplicated_reference" and file_obj.dedup_info:
+            logger.warning("Unmigrated deduplicated_reference: %s", file_obj.id)
             ref_id = file_obj.dedup_info.get("reference_file_id")
             if ref_id:
                 ref_result = await db.execute(
@@ -67,20 +70,11 @@ class ResolvedFileView:
                 )
                 ref_file = ref_result.scalar_one_or_none()
                 if ref_file:
-                    logger.info(
-                        "Resolved deduplicated_reference %s → %s "
-                        "(storage_type=%s)",
-                        file_obj.id, ref_id, ref_file.storage_type,
-                    )
                     enc_key = ref_file.encryption_key
                     chunk_info = ref_file.chunk_info
                     storage_type = ref_file.storage_type
                     object_path = ref_file.object_path
                 else:
-                    logger.warning(
-                        "Dangling dedup reference: file %s → missing ref %s",
-                        file_obj.id, ref_id,
-                    )
                     dangling = True
 
         return ResolvedFileView(

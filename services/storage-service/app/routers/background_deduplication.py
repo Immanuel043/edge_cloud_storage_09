@@ -644,9 +644,9 @@ class BackgroundDeduplicationService:
                 print("Running garbage collection...")
 
                 async for db in get_db():
-                    from ..services.deduplication_old import deduplication_service
-                    deleted_count = await deduplication_service.cleanup_unreferenced_blocks(db)
-                    print(f"Garbage collection complete: {deleted_count} blocks cleaned")
+                    from ..services.deduplication_enhanced import enhanced_dedup_service
+                    result = await enhanced_dedup_service.garbage_collect(db)
+                    print(f"Garbage collection: {result['deleted_blocks']} orphan blocks cleaned")
                     break
 
             except asyncio.CancelledError:

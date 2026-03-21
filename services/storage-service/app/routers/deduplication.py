@@ -29,34 +29,44 @@ async def get_dedup_analytics(
 ):
     """Get deduplication analytics with accurate calculations"""
     
-    # Get real statistics based on unique blocks
+    # Get real statistics based on unique blocks via file_block_mappings
     result = await db.execute(text("""
         WITH file_stats AS (
-            SELECT 
+            SELECT
                 COUNT(DISTINCT o.id) as file_count,
                 SUM(o.file_size) as logical_size
             FROM objects o
             WHERE o.user_id = :user_id
-            AND o.storage_type IN ('content_addressed', 'deduplicated_reference')
+            AND o.storage_type = 'content_addressed'
         ),
         block_stats AS (
             SELECT
-                COUNT(DISTINCT cb.block_hash) as unique_blocks,
-                COUNT(*) as total_block_refs,
-                AVG(cb.reference_count) as avg_refs,
+                COUNT(DISTINCT cb.id) as unique_blocks,
+                COUNT(fbm.id) as total_mappings,
                 SUM(DISTINCT cb.block_size) as physical_size
             FROM content_blocks cb
-            JOIN objects o ON cb.file_id = o.id
+            JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+            JOIN objects o ON fbm.file_id = o.id
             WHERE o.user_id = :user_id
+        ),
+        avg_refs AS (
+            SELECT COALESCE(AVG(cnt), 0) as avg_refs
+            FROM (
+                SELECT COUNT(*) as cnt
+                FROM file_block_mappings fbm
+                JOIN objects o ON fbm.file_id = o.id
+                WHERE o.user_id = :user_id
+                GROUP BY fbm.block_id
+            ) sub
         )
         SELECT
             f.file_count,
             f.logical_size,
             b.unique_blocks,
-            b.total_block_refs,
-            b.avg_refs,
+            b.total_mappings,
+            a.avg_refs,
             COALESCE(b.physical_size, 0) as physical_size
-        FROM file_stats f, block_stats b
+        FROM file_stats f, block_stats b, avg_refs a
     """), {"user_id": str(current_user.id)})
     
     stats = result.first()
@@ -93,7 +103,7 @@ async def get_dedup_analytics(
             "compression_ratio": round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
         },
         "blocks": {
-            "total_blocks": stats.total_block_refs or 0,
+            "total_blocks": stats.total_mappings or 0,
             "total_size": stats.physical_size or 0,
             "avg_references": float(stats.avg_refs or 0)
         },
@@ -107,33 +117,34 @@ async def get_storage_savings(
 ):
     """Get accurate storage savings from deduplication"""
     
-    # Use actual block sizes instead of assuming 16KB
+    # Use actual block sizes via file_block_mappings
     result = await db.execute(text("""
         WITH file_stats AS (
-            SELECT 
+            SELECT
                 COUNT(DISTINCT o.id) as file_count,
                 SUM(o.file_size) as logical_size
             FROM objects o
             WHERE o.user_id = :user_id
-            AND o.storage_type IN ('content_addressed', 'deduplicated_reference')
+            AND o.storage_type = 'content_addressed'
         ),
         block_stats AS (
-            SELECT 
+            SELECT
                 COUNT(DISTINCT cb.block_hash) as unique_blocks,
-                SUM(cb.block_size) as actual_physical_size  -- Use actual block sizes
+                SUM(DISTINCT cb.block_size) as actual_physical_size
             FROM content_blocks cb
-            JOIN objects o ON cb.file_id = o.id
+            JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+            JOIN objects o ON fbm.file_id = o.id
             WHERE o.user_id = :user_id
         )
-        SELECT 
+        SELECT
             f.file_count,
             f.logical_size,
             COALESCE(b.actual_physical_size, 0) as physical_size,
             f.logical_size - COALESCE(b.actual_physical_size, 0) as saved_size,
-            CASE 
-                WHEN f.logical_size > 0 
+            CASE
+                WHEN f.logical_size > 0
                 THEN ROUND(((f.logical_size - COALESCE(b.actual_physical_size, 0))::numeric / f.logical_size) * 100, 2)
-                ELSE 0 
+                ELSE 0
             END as savings_percentage
         FROM file_stats f, block_stats b
     """), {"user_id": str(current_user.id)})
@@ -178,7 +189,7 @@ async def optimize_file_dedup(
         raise HTTPException(404, "File not found")
     
     # Check if already deduplicated
-    if file_obj.storage_type in ['content_addressed', 'deduplicated_reference']:
+    if file_obj.storage_type == 'content_addressed':
         dedup_info = file_obj.dedup_info or {}
         return {
             "status": "already_optimized",
@@ -258,32 +269,27 @@ async def check_dangling_references(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Detect deduplicated_reference files whose target no longer exists (admin only)."""
+    """Detect orphan content_blocks with no file_block_mappings (admin only)."""
     allowed_emails_env = os.getenv("ALLOWED_GC_EMAILS", "")
     allowed_emails = [e.strip() for e in allowed_emails_env.split(",") if e.strip()]
     if current_user.plan_type != "admin" and current_user.email not in allowed_emails:
         raise HTTPException(403, f"Access denied for {current_user.email}")
 
     result = await db.execute(text("""
-        SELECT o.id, o.file_name, o.file_size, o.dedup_info
-        FROM objects o
-        WHERE o.storage_type = 'deduplicated_reference'
-          AND o.is_deleted = false
-          AND NOT EXISTS (
-              SELECT 1 FROM objects ref
-              WHERE ref.id::text = o.dedup_info->>'reference_file_id'
-                AND ref.is_deleted = false
-          )
+        SELECT cb.id, cb.block_hash, cb.block_size, cb.created_at
+        FROM content_blocks cb
+        LEFT JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+        WHERE fbm.id IS NULL
     """))
     rows = result.fetchall()
     return {
-        "dangling_count": len(rows),
-        "dangling_files": [
+        "orphan_count": len(rows),
+        "orphan_blocks": [
             {
                 "id": str(r.id),
-                "file_name": r.file_name,
-                "file_size": r.file_size,
-                "reference_file_id": (r.dedup_info or {}).get("reference_file_id"),
+                "block_hash": r.block_hash[:12] + "...",
+                "block_size": r.block_size,
+                "created_at": str(r.created_at),
             }
             for r in rows
         ]
@@ -333,17 +339,19 @@ async def get_detailed_analytics(
         LIMIT 10
     """), {"user_id": str(current_user.id)})
 
-    # Get top duplicate blocks
+    # Get top duplicate blocks (by mapping count)
     top_duplicates = await db.execute(text("""
         SELECT
             cb.block_hash,
             cb.block_size,
-            cb.reference_count,
-            cb.block_size * (cb.reference_count - 1) as bytes_saved
+            COUNT(fbm.id) as reference_count,
+            cb.block_size * (COUNT(fbm.id) - 1) as bytes_saved
         FROM content_blocks cb
-        JOIN objects o ON cb.file_id = o.id
+        JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+        JOIN objects o ON fbm.file_id = o.id
         WHERE o.user_id = :user_id
-        AND cb.reference_count > 1
+        GROUP BY cb.id, cb.block_hash, cb.block_size
+        HAVING COUNT(fbm.id) > 1
         ORDER BY bytes_saved DESC
         LIMIT 10
     """), {"user_id": str(current_user.id)})
@@ -396,7 +404,7 @@ async def get_efficiency_breakdown(
                 (dedup_info->>'saved_size')::bigint as saved_size
             FROM objects
             WHERE user_id = :user_id
-            AND storage_type IN ('content_addressed', 'deduplicated_reference')
+            AND storage_type = 'content_addressed'
             AND dedup_info->>'saved_size' IS NOT NULL
         )
         SELECT
@@ -427,7 +435,7 @@ async def get_efficiency_breakdown(
                 (dedup_info->>'saved_size')::bigint as saved_size
             FROM objects
             WHERE user_id = :user_id
-            AND storage_type IN ('content_addressed', 'deduplicated_reference')
+            AND storage_type = 'content_addressed'
             AND dedup_info->>'saved_size' IS NOT NULL
         )
         SELECT
@@ -536,3 +544,46 @@ def _get_recommendations(queue_status: Dict, user_status: Dict) -> list:
         })
 
     return recommendations
+
+
+@router.get("/health/dedup-consistency")
+async def check_dedup_consistency(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Compare chunk_info block hashes vs file_block_mappings for each content_addressed file."""
+    mismatches = await db.execute(text("""
+        WITH chunk_info_hashes AS (
+            SELECT o.id AS file_id, o.file_name,
+                   COALESCE(array_agg(DISTINCT b.val->>'hash' ORDER BY b.val->>'hash'), '{}') AS ci_hashes
+            FROM objects o
+            LEFT JOIN LATERAL jsonb_array_elements(
+                CASE WHEN o.chunk_info IS NOT NULL
+                      AND jsonb_typeof(o.chunk_info::jsonb->'blocks') = 'array'
+                     THEN o.chunk_info::jsonb->'blocks'
+                     ELSE '[]'::jsonb
+                END
+            ) AS b(val) ON true
+            WHERE o.storage_type = 'content_addressed'
+              AND o.user_id = :user_id
+              AND o.is_deleted = false
+            GROUP BY o.id
+        ),
+        mapping_hashes AS (
+            SELECT fbm.file_id,
+                   COALESCE(array_agg(DISTINCT cb.block_hash ORDER BY cb.block_hash), '{}') AS m_hashes
+            FROM file_block_mappings fbm
+            JOIN content_blocks cb ON cb.id = fbm.block_id
+            GROUP BY fbm.file_id
+        )
+        SELECT ci.file_id, ci.file_name, ci.ci_hashes, COALESCE(m.m_hashes, '{}') AS m_hashes
+        FROM chunk_info_hashes ci
+        LEFT JOIN mapping_hashes m ON m.file_id = ci.file_id
+        WHERE ci.ci_hashes != COALESCE(m.m_hashes, '{}')
+    """), {"user_id": str(current_user.id)})
+    rows = mismatches.fetchall()
+    return {
+        "consistent": len(rows) == 0,
+        "mismatched_files": len(rows),
+        "details": [{"file_id": str(r.file_id), "file_name": r.file_name} for r in rows]
+    }

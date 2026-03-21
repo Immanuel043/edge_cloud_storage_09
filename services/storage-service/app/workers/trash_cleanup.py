@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.database import Object, ActivityLog
 from dependencies import get_db_session, get_redis_client
-from utils.dedup_promotion import promote_dedup_references, decrement_dedup_ref_counts
 
 
 async def cleanup_old_trash_files():
@@ -46,52 +45,10 @@ async def cleanup_old_trash_files():
 
         deleted_count = 0
         freed_space = 0
-        batch_ids = {str(f.id) for f in files_to_delete}
 
         for file_obj in files_to_delete:
             try:
-                # Dedup-aware deletion: promote a reference or decrement ref counts
-                promoted = await promote_dedup_references(file_obj, db, exclude_ids=batch_ids)
-
-                if promoted:
-                    freed_space += file_obj.file_size
-                    await db.delete(file_obj)
-                    deleted_count += 1
-                    print(f"Promoted ref for: {file_obj.file_name} (ID: {file_obj.id})")
-                    continue
-
-                # For references: decrement the original's blocks
-                await decrement_dedup_ref_counts(file_obj, db)
-
-                # Handle content_blocks with proper reference counting
-                blocks_result = await db.execute(
-                    text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
-                    {"file_id": str(file_obj.id)}
-                )
-                file_blocks = blocks_result.fetchall()
-
-                for block in file_blocks:
-                    await db.execute(
-                        text("""
-                            UPDATE content_blocks
-                            SET reference_count = reference_count - 1
-                            WHERE block_hash = :block_hash
-                        """),
-                        {"block_hash": block.block_hash}
-                    )
-
-                # Delete blocks that are no longer referenced
-                await db.execute(
-                    text("DELETE FROM content_blocks WHERE reference_count <= 0")
-                )
-
-                # Delete this file's block associations
-                await db.execute(
-                    text("DELETE FROM content_blocks WHERE file_id = :file_id"),
-                    {"file_id": str(file_obj.id)}
-                )
-
-                # Handle different storage types - delete physical files
+                # Only non-dedup types need physical cleanup
                 if file_obj.storage_type == "inline":
                     if file_obj.storage_key:
                         try:
@@ -106,7 +63,8 @@ async def cleanup_old_trash_files():
                         except Exception as e:
                             print(f"Failed to delete file: {e}")
 
-                else:  # chunked / content_addressed
+                elif file_obj.storage_type == "chunked":
+                    # Non-dedup chunked: clean up chunk files
                     if file_obj.chunk_info:
                         chunk_info = file_obj.chunk_info
                         upload_id = chunk_info.get("upload_id", str(file_obj.id))
@@ -124,6 +82,10 @@ async def cleanup_old_trash_files():
                                     os.remove(chunk_path)
                                 except Exception as e:
                                     print(f"Failed to delete chunk: {e}")
+
+                # content_addressed: no physical cleanup needed here.
+                # CAS files are shared and immutable — GC worker handles orphans.
+                # file_block_mappings are CASCADE-deleted when Object is deleted.
 
                 freed_space += file_obj.file_size
 

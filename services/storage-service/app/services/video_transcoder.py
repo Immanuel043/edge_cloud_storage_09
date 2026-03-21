@@ -471,32 +471,14 @@ class VideoTranscoder:
         temp_probe_file = None
         tail_probe_file = None
         try:
-            # For chunked/content-addressed/deduplicated files, use two-pass head+tail
-            if file_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
+            # For chunked/content-addressed files, use two-pass head+tail
+            if file_obj.storage_type in ("chunked", "content_addressed"):
                 if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
                     return None
 
                 chunk_info = file_obj.chunk_info
                 chunk_paths = chunk_info.get('paths', {})
-
-                # Resolve deduplicated_reference to get actual file with chunk_info
                 resolved_obj = file_obj
-                if file_obj.storage_type == "deduplicated_reference":
-                    dedup_info = getattr(file_obj, "dedup_info", None) or {}
-                    ref_id = dedup_info.get("reference_file_id")
-                    if ref_id:
-                        from ..database import async_session
-                        from sqlalchemy import select
-                        from app.models.database import Object
-                        async with async_session() as session:
-                            result = await session.execute(
-                                select(Object).where(Object.id == ref_id)
-                            )
-                            ref_file = result.scalar_one_or_none()
-                            if ref_file and ref_file.chunk_info:
-                                resolved_obj = ref_file
-                                chunk_info = ref_file.chunk_info
-                                chunk_paths = chunk_info.get('paths', {})
 
                 # Content-addressed storage: use CAS block fetch for head/tail probe
                 if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
@@ -973,7 +955,7 @@ class VideoTranscoder:
             # Try streaming if feature flag is enabled and storage type supports it
             use_streaming = (
                 os.getenv("ENABLE_STREAMING_DECRYPT", "false").lower() == "true"
-                and snapshot.storage_type in ("chunked", "content_addressed", "deduplicated_reference")
+                and snapshot.storage_type in ("chunked", "content_addressed")
             )
 
             if use_streaming:
@@ -1375,7 +1357,7 @@ class VideoTranscoder:
         import aiofiles
 
         # Only works for chunked storage
-        if snapshot.storage_type not in ("chunked", "content_addressed", "deduplicated_reference"):
+        if snapshot.storage_type not in ("chunked", "content_addressed"):
             raise ValueError(f"Streaming not supported for storage_type: {snapshot.storage_type}")
 
         chunk_info = snapshot.chunk_info

@@ -974,9 +974,6 @@ class PreviewOptimizer:
         """
         Download and decrypt the entire file to a temp path for transcoding.
 
-        For deduplicated_reference storage, resolves the referenced file and uses
-        its chunk_info. Requires db session when storage_type is deduplicated_reference.
-
         Returns:
             Path to decrypted temp file.
         """
@@ -985,31 +982,6 @@ class PreviewOptimizer:
 
         try:
             resolved_obj = file_obj
-            if file_obj.storage_type == "deduplicated_reference":
-                dedup_info = getattr(file_obj, "dedup_info", None) or {}
-                ref_id = dedup_info.get("reference_file_id")
-                if not ref_id:
-                    raise ValueError("deduplicated_reference missing reference_file_id")
-                if db is not None:
-                    from sqlalchemy import select
-                    from app.models.database import Object
-                    result = await db.execute(select(Object).where(Object.id == ref_id))
-                    ref_file = result.scalar_one_or_none()
-                    if not ref_file:
-                        raise ValueError(f"Reference file {ref_id} not found")
-                    resolved_obj = ref_file
-                else:
-                    from ..database import async_session
-                    async with async_session() as session:
-                        from sqlalchemy import select
-                        from app.models.database import Object
-                        result = await session.execute(
-                            select(Object).where(Object.id == ref_id)
-                        )
-                        ref_file = result.scalar_one_or_none()
-                        if not ref_file:
-                            raise ValueError(f"Reference file {ref_id} not found")
-                        resolved_obj = ref_file
 
             file_key = encryption_service.decrypt_key(resolved_obj.encryption_key)
             was_compressed = False
@@ -1039,7 +1011,7 @@ class PreviewOptimizer:
                     await dest.write(decrypted)
                 return temp_file_path
 
-            if resolved_obj.storage_type in ("chunked", "content_addressed", "deduplicated_reference"):
+            if resolved_obj.storage_type in ("chunked", "content_addressed"):
                 chunk_info = resolved_obj.chunk_info
                 if not chunk_info:
                     raise ValueError("Chunk info not found for chunked file")

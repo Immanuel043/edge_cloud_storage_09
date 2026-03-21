@@ -541,7 +541,7 @@ async def get_dedup_status(
     
     if not job_status:
         # Check if file is already deduplicated
-        if file_obj.storage_type in ['content_addressed', 'deduplicated_reference']:
+        if file_obj.storage_type == 'content_addressed':
             return {
                 "status": "completed",
                 "message": "File already deduplicated",

@@ -161,17 +161,28 @@ class ContentBlock(Base):
     __tablename__ = 'content_blocks'
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    block_hash = Column(String(64), nullable=False, unique=True, index=True)  # Unique for deduplication
-    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id',ondelete='CASCADE'), index=True)
-    block_size = Column(Integer)
-    block_offset = Column(Integer)
-    reference_count = Column(Integer, default=1, index=True)
+    block_hash = Column(String(64), nullable=False, unique=True, index=True)
+    block_size = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Indexes and constraints for performance
     __table_args__ = (
-        Index('idx_block_file_id', 'file_id'),
-        Index('idx_ref_count_zero', 'reference_count'),
+        Index('idx_cb_block_hash', 'block_hash'),
+    )
+
+
+class FileBlockMapping(Base):
+    __tablename__ = 'file_block_mappings'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=False, index=True)
+    block_id = Column(UUID(as_uuid=True), ForeignKey('content_blocks.id'), nullable=False, index=True)
+    block_offset = Column(Integer, nullable=False)
+    block_index = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('file_id', 'block_index', name='uq_fbm_file_block_index'),
+        Index('idx_fbm_file_id', 'file_id'),
+        Index('idx_fbm_block_id', 'block_id'),
     )
 
 class ShareLink(Base):

@@ -378,7 +378,10 @@ class EnhancedDeduplicationService:
                 ContentBlock.block_hash.in_(hash_batch)
             )
             if not self.enable_cross_user_dedup:
-                query = query.join(Object).where(Object.user_id == user_id)
+                from ..models.database import FileBlockMapping
+                query = query.join(FileBlockMapping, FileBlockMapping.block_id == ContentBlock.id)\
+                             .join(Object, Object.id == FileBlockMapping.file_id)\
+                             .where(Object.user_id == user_id)
 
             result = await db.execute(query)
             await asyncio.sleep(0)  # Yield after database query
@@ -431,17 +434,8 @@ class EnhancedDeduplicationService:
             new_blocks = []
         logger.debug("dedup-phase:extract elapsed=%.1fms", (time.monotonic() - t0_phase) * 1000)
 
-        # Batch increment reference counts for all duplicate blocks
-        if duplicate_block_ids:
-            from sqlalchemy import text
-            await db.execute(
-                text("""
-                    UPDATE content_blocks
-                    SET reference_count = reference_count + 1
-                    WHERE id = ANY(:ids)
-                """),
-                {"ids": duplicate_block_ids}
-            )
+        # Duplicate block tracking returned in result for stats (no DB write needed —
+        # reference counting is derived from file_block_mappings)
 
         # Compute file-level hash here (last point where file_data is available)
         # so the caller can free the plaintext buffer before block storage.
@@ -646,37 +640,49 @@ class EnhancedDeduplicationService:
             # Use pre-computed file hash from dedup analysis
             file_hash = dedup_result['file_hash']
 
-            # Check for full-file duplicate
+            # Check for full-file duplicate (content_addressed with mappings only)
+            from sqlalchemy import text as sa_text
             query = select(Object).where(
                 Object.content_hash == file_hash,
-                Object.user_id == user_id if not self.enable_cross_user_dedup else True
-            ).order_by(Object.created_at.asc())
-            
+                Object.storage_type == 'content_addressed',
+                Object.is_deleted == False
+            )
+            if not self.enable_cross_user_dedup:
+                query = query.where(Object.user_id == user_id)
+            query = query.order_by(Object.created_at.asc())
+
             result = await db.execute(query)
             existing_file = result.scalars().first()
 
+            # Verify the match actually has mappings (safety check)
             if existing_file:
-                # Full file duplicate found
-                print(f"🎯 Full duplicate found! File hash: {file_hash[:16]}...")
+                has_mappings = await db.execute(sa_text(
+                    "SELECT 1 FROM file_block_mappings WHERE file_id = :fid LIMIT 1"
+                ), {"fid": str(existing_file.id)})
+                if not has_mappings.fetchone():
+                    existing_file = None  # Fall through to chunk-level dedup
 
-                # Update existing object if provided, otherwise create new
+            if existing_file:
+                # Full duplicate: copy chunk_info, create own mappings
+                print(f"Full duplicate found! File hash: {file_hash[:16]}...")
+
                 if existing_object:
                     existing_object.content_hash = file_hash
                     existing_object.file_size = dedup_result['total_size']
-                    existing_object.storage_type = 'deduplicated_reference'
+                    existing_object.storage_type = 'content_addressed'
+                    existing_object.chunk_info = existing_file.chunk_info
+                    existing_object.encryption_key = existing_file.encryption_key
                     existing_object.dedup_info = {
-                        'reference_file_id': str(existing_file.id),
                         'is_full_duplicate': True,
                         'saved_size': dedup_result['total_size']
                     }
-                    existing_object.encryption_key = existing_file.encryption_key
                     if metadata:
                         if metadata.get('mime_type'):
                             existing_object.mime_type = metadata.get('mime_type')
                         if metadata.get('folder_id'):
                             existing_object.folder_id = metadata.get('folder_id')
 
-                    await db.commit()
+                    await db.flush()
                     result_file = existing_object
                 else:
                     new_file = Object(
@@ -684,21 +690,30 @@ class EnhancedDeduplicationService:
                         user_id=user_id,
                         content_hash=file_hash,
                         file_size=dedup_result['total_size'],
-                        storage_type='deduplicated_reference',
+                        storage_type='content_addressed',
+                        chunk_info=existing_file.chunk_info,
                         dedup_info={
-                            'reference_file_id': str(existing_file.id),
                             'is_full_duplicate': True,
                             'saved_size': dedup_result['total_size']
                         },
                         mime_type=metadata.get('mime_type') if metadata else None,
                         folder_id=metadata.get('folder_id') if metadata else None,
-                        # Reference the same encryption key
                         encryption_key=existing_file.encryption_key
                     )
                     db.add(new_file)
-                    await db.commit()
+                    await db.flush()
                     result_file = new_file
 
+                # Create file_block_mappings for the new file (same blocks as existing)
+                await db.execute(sa_text("""
+                    INSERT INTO file_block_mappings (id, file_id, block_id, block_offset, block_index)
+                    SELECT gen_random_uuid(), :new_file_id, fbm.block_id, fbm.block_offset, fbm.block_index
+                    FROM file_block_mappings fbm
+                    WHERE fbm.file_id = :existing_file_id
+                    ON CONFLICT (file_id, block_index) DO NOTHING
+                """), {"new_file_id": str(result_file.id), "existing_file_id": str(existing_file.id)})
+
+                await db.commit()
                 return {
                     'file_id': str(result_file.id),
                     'status': 'full_duplicate',
@@ -866,14 +881,15 @@ class EnhancedDeduplicationService:
                 await db.flush()
                 result_file = new_file
 
-            # Create ContentBlock entries using batched writer for new blocks only
+            # Create ContentBlock entries + file_block_mappings for new blocks
             new_chunk_data = []
-            for block in dedup_result['blocks']:
+            for idx, block in enumerate(dedup_result['blocks']):
                 if not block['is_duplicate']:
                     new_chunk_data.append({
                         'hash': block['hash'],
                         'size': block['size'],
-                        'offset': block['offset']
+                        'offset': block['offset'],
+                        'block_index': idx
                     })
 
             # Use batched writer to prevent lock exhaustion
@@ -886,10 +902,26 @@ class EnhancedDeduplicationService:
                         db=db,
                         timeout_seconds=300  # 5 minute timeout
                     )
-                    logger.info(f"✅ Successfully stored {stored_count} chunks")
+                    logger.info(f"Successfully stored {stored_count} chunks")
                 except Exception as e:
                     logger.error(f"Batch chunk storage failed: {e}")
                     raise
+
+            # Create file_block_mappings for duplicate blocks
+            if dedup_result['duplicate_blocks']:
+                from sqlalchemy import text as sa_text
+                dup_values = [
+                    {'file_id': str(result_file.id), 'block_hash': b['hash'],
+                     'block_offset': b['offset'], 'block_index': idx}
+                    for idx, b in enumerate(dedup_result['blocks']) if b['is_duplicate']
+                ]
+                for dv in dup_values:
+                    await db.execute(sa_text("""
+                        INSERT INTO file_block_mappings (id, file_id, block_id, block_offset, block_index)
+                        SELECT gen_random_uuid(), :file_id, cb.id, :block_offset, :block_index
+                        FROM content_blocks cb WHERE cb.block_hash = :block_hash
+                        ON CONFLICT (file_id, block_index) DO NOTHING
+                    """), dv)
 
             await db.commit()
 
@@ -924,18 +956,14 @@ class EnhancedDeduplicationService:
         """
         # Base query
         if user_id:
-            # User-specific analytics
             objects_query = select(Object).where(
                 Object.user_id == user_id,
-                Object.storage_type.in_(['content_addressed', 'deduplicated_reference'])
+                Object.storage_type == 'content_addressed'
             )
-            blocks_query = select(ContentBlock).join(Object).where(Object.user_id == user_id)
         else:
-            # System-wide analytics
             objects_query = select(Object).where(
-                Object.storage_type.in_(['content_addressed', 'deduplicated_reference'])
+                Object.storage_type == 'content_addressed'
             )
-            blocks_query = select(ContentBlock)
         
         # Get file statistics
         files_result = await db.execute(objects_query)
@@ -949,32 +977,38 @@ class EnhancedDeduplicationService:
             if f.dedup_info
         )
         
-        # Get block statistics - FIXED query
+        # Get block statistics (derived from file_block_mappings)
+        from sqlalchemy import text as sa_text
+        from ..models.database import FileBlockMapping
         blocks_result = await db.execute(
             select(
                 func.count(ContentBlock.id).label('total_blocks'),
                 func.sum(ContentBlock.block_size).label('total_block_size'),
-                func.avg(ContentBlock.reference_count).label('avg_references')
             )
         )
         block_stats = blocks_result.first()
-        
+
+        # Average mappings per block (effective reference count)
+        avg_refs_result = await db.execute(sa_text("""
+            SELECT COALESCE(AVG(cnt), 0) AS avg_references
+            FROM (SELECT COUNT(*) AS cnt FROM file_block_mappings GROUP BY block_id) sub
+        """))
+        avg_references = float(avg_refs_result.scalar() or 0)
+
         # Calculate metrics
         physical_size = total_logical_size - total_saved
         dedup_ratio = (total_saved / total_logical_size * 100) if total_logical_size > 0 else 0
-        
-        # Get top duplicate blocks
-        top_duplicates = await db.execute(
-            select(
-                ContentBlock.block_hash,
-                ContentBlock.block_size,
-                func.count(ContentBlock.id).label('count')
-            )
-            .group_by(ContentBlock.block_hash, ContentBlock.block_size)
-            .having(func.count(ContentBlock.id) > 1)
-            .order_by(func.count(ContentBlock.id).desc())
-            .limit(10)
-        )
+
+        # Get top duplicate blocks (by mapping count)
+        top_duplicates = await db.execute(sa_text("""
+            SELECT cb.block_hash, cb.block_size, COUNT(fbm.id) AS count
+            FROM content_blocks cb
+            JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+            GROUP BY cb.id, cb.block_hash, cb.block_size
+            HAVING COUNT(fbm.id) > 1
+            ORDER BY COUNT(fbm.id) DESC
+            LIMIT 10
+        """))
         
         return {
             'summary': {
@@ -988,7 +1022,7 @@ class EnhancedDeduplicationService:
             'blocks': {
                 'total_blocks': block_stats.total_blocks or 0,
                 'total_size': block_stats.total_block_size or 0,
-                'avg_references': float(block_stats.avg_references or 0)
+                'avg_references': avg_references
             },
             'top_duplicates': [
                 {
@@ -1000,60 +1034,56 @@ class EnhancedDeduplicationService:
             ]
         }
     
+    GC_GRACE_PERIOD_MINUTES = 60
+
     async def garbage_collect(self, db: AsyncSession) -> Dict:
         """
-        Enhanced garbage collection with safety checks.
+        Garbage collection: find orphan blocks (no file_block_mappings) with
+        grace period + row locking to prevent racing with in-flight uploads.
         """
-        # Find blocks with zero references
-        unreferenced = await db.execute(
-            select(ContentBlock)
-            .where(ContentBlock.reference_count <= 0)
-        )
-        unreferenced_blocks = unreferenced.scalars().all()
-        
+        from sqlalchemy import text as sa_text
+
+        # Find orphan blocks older than grace period, with row locking
+        orphans = await db.execute(sa_text("""
+            SELECT cb.id, cb.block_hash
+            FROM content_blocks cb
+            LEFT JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+            WHERE fbm.id IS NULL
+              AND cb.created_at < NOW() - make_interval(mins => :grace)
+            FOR UPDATE OF cb SKIP LOCKED
+        """), {"grace": self.GC_GRACE_PERIOD_MINUTES})
+
         deleted_count = 0
         freed_space = 0
         errors = []
-        
-        for block in unreferenced_blocks:
+
+        for block in orphans.fetchall():
             try:
-                # Double-check no files reference this block
-                file_refs = await db.execute(
-                    select(func.count(Object.id))
-                    .where(
-                        Object.chunk_info['blocks'].contains(
-                            [{'hash': block.block_hash}]
-                        )
-                    )
-                )
-                ref_count = file_refs.scalar()
-                
-                if ref_count == 0:
-                    # Safe to delete
-                    content_path = self.get_content_address(block.block_hash)
-                    if os.path.exists(content_path):
-                        file_size = os.path.getsize(content_path)
-                        os.remove(content_path)
-                        freed_space += file_size
-                        
-                        # Remove key file if exists
-                        if os.path.exists(content_path + '.key'):
-                            os.remove(content_path + '.key')
-                    
-                    await db.delete(block)
-                    deleted_count += 1
-                else:
-                    # Fix reference count
-                    block.reference_count = ref_count
-                    
+                # Re-verify no mappings created since the SELECT
+                recheck = await db.execute(sa_text(
+                    "SELECT 1 FROM file_block_mappings WHERE block_id = :bid LIMIT 1"
+                ), {"bid": str(block.id)})
+                if recheck.fetchone():
+                    continue  # Mapping appeared — skip
+
+                content_path = self.get_content_address(block.block_hash)
+                if os.path.exists(content_path):
+                    freed_space += os.path.getsize(content_path)
+                    os.remove(content_path)
+                    if os.path.exists(content_path + '.key'):
+                        os.remove(content_path + '.key')
+
+                await db.execute(sa_text("DELETE FROM content_blocks WHERE id = :id"), {"id": str(block.id)})
+                deleted_count += 1
+
             except Exception as e:
                 errors.append({
                     'block_hash': block.block_hash,
                     'error': str(e)
                 })
-        
+
         await db.commit()
-        
+
         return {
             'deleted_blocks': deleted_count,
             'freed_space': freed_space,

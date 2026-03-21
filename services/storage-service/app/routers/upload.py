@@ -1256,7 +1256,7 @@ async def download_file(
             for i in range(0, len(file_data), chunk_size):
                 yield file_data[i:i+chunk_size]
         
-        else:  # chunked, content_addressed, deduplicated_reference
+        else:  # chunked, content_addressed
             # Stream chunks sequentially
             chunk_info = file_obj.chunk_info
             upload_id = chunk_info.get("upload_id", str(file_obj.id))

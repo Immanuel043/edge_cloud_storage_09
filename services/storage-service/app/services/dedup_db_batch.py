@@ -3,9 +3,9 @@
 Batched Deduplication Database Writer
 
 Prevents DB lock exhaustion through:
-1. UNLOGGED staging tables (no WAL overhead)
+1. Temp staging tables
 2. Batch inserts (10k chunks at a time)
-3. Single merge transaction (one lock vs thousands)
+3. Single merge to content_blocks + file_block_mappings
 
 Performance:
 - 100x faster than individual inserts
@@ -23,18 +23,9 @@ logger = logging.getLogger(__name__)
 
 class BatchedDeduplicationWriter:
     """
-    Batched chunk writes to prevent DB lock exhaustion
+    Batched chunk writes to prevent DB lock exhaustion.
 
-    Strategy:
-    1. Stage chunks in UNLOGGED temp table (fast writes, no WAL)
-    2. Batch COPY insert (PostgreSQL bulk load)
-    3. Merge to main table with single lock
-    4. ON CONFLICT DO UPDATE for reference counting
-
-    This approach:
-    - Reduces locks from N (chunks) to 1 (merge)
-    - Increases throughput by 100x
-    - Prevents "out of shared memory" errors
+    Caller owns the transaction — no commit/rollback here.
     """
 
     BATCH_SIZE = 10_000  # Write 10k chunks at a time
@@ -46,22 +37,16 @@ class BatchedDeduplicationWriter:
         db: AsyncSession
     ) -> int:
         """
-        Store chunks in batches to avoid lock exhaustion
+        Store chunks in batches to avoid lock exhaustion.
+        Caller must commit/rollback the transaction.
 
         Args:
-            chunks: List of chunk dicts with hash, size, offset
+            chunks: List of chunk dicts with hash, size, offset, block_index
             file_id: UUID of the file
             db: Database session
 
         Returns:
             Number of chunks stored
-
-        Example:
-            chunks = [
-                {'hash': 'abc123...', 'size': 4194304, 'offset': 0},
-                {'hash': 'def456...', 'size': 4194304, 'offset': 4194304},
-                ...
-            ]
         """
         if not chunks:
             return 0
@@ -74,77 +59,72 @@ class BatchedDeduplicationWriter:
             f"for file {file_id}"
         )
 
+        # Create staging table once (persists across batches within transaction)
+        await db.execute(text("""
+            CREATE TEMP TABLE IF NOT EXISTS chunk_staging (
+                block_hash VARCHAR(64),
+                file_id UUID,
+                block_size BIGINT,
+                block_offset BIGINT,
+                block_index INTEGER
+            )
+        """))
+
         for batch_idx in range(0, len(chunks), self.BATCH_SIZE):
             batch = chunks[batch_idx:batch_idx + self.BATCH_SIZE]
             batch_num = (batch_idx // self.BATCH_SIZE) + 1
 
-            try:
-                # Step 1: Create UNLOGGED staging table (no WAL overhead)
-                await db.execute(text("""
-                    CREATE TEMP TABLE IF NOT EXISTS chunk_staging (
-                        block_hash VARCHAR(64),
-                        file_id UUID,
-                        block_size BIGINT,
-                        block_offset BIGINT
-                    ) ON COMMIT DROP
-                """))
+            # Clear staging for this batch
+            await db.execute(text("TRUNCATE chunk_staging"))
 
-                # Step 2: Batch insert to staging
-                values = []
-                for chunk in batch:
-                    values.append({
-                        'block_hash': chunk['hash'],
-                        'file_id': file_id,
-                        'block_size': chunk['size'],
-                        'block_offset': chunk['offset']
-                    })
+            # Populate staging
+            values = [
+                {
+                    'block_hash': c['hash'],
+                    'file_id': file_id,
+                    'block_size': c['size'],
+                    'block_offset': c['offset'],
+                    'block_index': c['block_index']
+                }
+                for c in batch
+            ]
+            await db.execute(
+                text("""
+                    INSERT INTO chunk_staging (block_hash, file_id, block_size, block_offset, block_index)
+                    VALUES (:block_hash, :file_id, :block_size, :block_offset, :block_index)
+                """),
+                values
+            )
 
-                # Bulk insert (much faster than individual inserts)
-                await db.execute(
-                    text("""
-                        INSERT INTO chunk_staging (block_hash, file_id, block_size, block_offset)
-                        VALUES (:block_hash, :file_id, :block_size, :block_offset)
-                    """),
-                    values
-                )
+            # Merge blocks (no file_id, no reference_count)
+            await db.execute(text("""
+                INSERT INTO content_blocks (id, block_hash, block_size, created_at)
+                SELECT gen_random_uuid(), block_hash, block_size, CURRENT_TIMESTAMP
+                FROM chunk_staging
+                GROUP BY block_hash, block_size
+                ON CONFLICT (block_hash) DO NOTHING
+            """))
 
-                # Step 3: Merge from staging to main table (single lock)
-                # GROUP BY deduplicates rows with the same block_hash within
-                # the batch — without this, PostgreSQL raises
-                # "ON CONFLICT DO UPDATE command cannot affect row a second time"
-                # when a file contains repeated identical chunks.
-                await db.execute(text("""
-                    INSERT INTO content_blocks (id, block_hash, file_id, block_size, block_offset, reference_count, created_at)
-                    SELECT
-                        gen_random_uuid(),
-                        block_hash,
-                        file_id,
-                        block_size,
-                        MIN(block_offset),
-                        1,
-                        CURRENT_TIMESTAMP
-                    FROM chunk_staging
-                    GROUP BY block_hash, file_id, block_size
-                    ON CONFLICT (block_hash) DO UPDATE
-                    SET reference_count = content_blocks.reference_count + 1
-                """))
+            # Create file-to-block mappings
+            await db.execute(text("""
+                INSERT INTO file_block_mappings (id, file_id, block_id, block_offset, block_index)
+                SELECT gen_random_uuid(), cs.file_id, cb.id, cs.block_offset, cs.block_index
+                FROM chunk_staging cs
+                JOIN content_blocks cb ON cb.block_hash = cs.block_hash
+                ON CONFLICT (file_id, block_index) DO NOTHING
+            """))
 
-                await db.commit()
-                total_stored += len(batch)
+            total_stored += len(batch)
 
-                logger.info(
-                    f"Stored batch {batch_num}/{total_batches}: "
-                    f"{len(batch)} chunks ({total_stored}/{len(chunks)} total)"
-                )
-
-            except Exception as e:
-                logger.error(f"Batch {batch_num} failed: {e}")
-                await db.rollback()
-                raise
+            logger.info(
+                f"Stored batch {batch_num}/{total_batches}: "
+                f"{len(batch)} chunks ({total_stored}/{len(chunks)} total)"
+            )
 
         logger.info(
-            f"✅ Successfully stored {total_stored} chunks in {total_batches} batches"
+            f"Successfully stored {total_stored} chunks in {total_batches} batches"
         )
+        # No commit here — caller owns the transaction
         return total_stored
 
     async def store_chunks_safe(
@@ -152,22 +132,11 @@ class BatchedDeduplicationWriter:
         chunks: List[Dict],
         file_id: str,
         db: AsyncSession,
-        timeout_seconds: int = 60  # Reduced from 300s to 60s - fail fast if database is slow
+        timeout_seconds: int = 60
     ) -> int:
         """
-        Store chunks with timeout protection
-
-        Args:
-            chunks: List of chunk dicts
-            file_id: UUID of the file
-            db: Database session
-            timeout_seconds: Max time to wait (default 1 minute)
-
-        Returns:
-            Number of chunks stored
-
-        Raises:
-            TimeoutError: If operation exceeds timeout
+        Store chunks with timeout protection.
+        Caller must handle commit/rollback.
         """
         import asyncio
 
@@ -179,7 +148,6 @@ class BatchedDeduplicationWriter:
                 f"Chunk storage timeout after {timeout_seconds}s "
                 f"for file {file_id} ({len(chunks)} chunks)"
             )
-            await db.rollback()
             raise
 
 
