@@ -588,6 +588,18 @@ async def download_file(
     # the actual storage (CAS blocks) without mutating the ORM object.
     resolved = await ResolvedFileView.resolve(file_obj, db)
 
+    if resolved.dangling_reference:
+        logger.error(
+            "Dangling dedup reference: file %s references missing file %s",
+            file_obj.id,
+            (file_obj.dedup_info or {}).get("reference_file_id", "unknown"),
+        )
+        raise HTTPException(
+            status_code=404,
+            detail="This file's storage reference is no longer available. "
+                   "The original data has been removed. Please re-upload the file."
+        )
+
     # Decrypt key (None for unencrypted files, for defensive compatibility)
     file_key = encryption_service.decrypt_key(resolved.encryption_key) if resolved.encryption_key else None
 
@@ -1140,6 +1152,9 @@ async def get_file_preview(
 
     # Resolve dedup references so preview reads from the correct storage
     resolved = await ResolvedFileView.resolve(file_obj, db)
+
+    if resolved.dangling_reference:
+        return await _return_placeholder(status="error", reason="dangling_dedup_reference")
 
     # ============ CHECK BACKGROUND PREVIEW STATUS FOR LARGE VIDEOS ============
     # For large videos (>50MB), check if preview is being generated in background

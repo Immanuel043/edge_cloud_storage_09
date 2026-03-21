@@ -44,6 +44,9 @@ class ResolvedFileView:
     dedup_info: Optional[Dict]
     content_hash: Optional[str]
 
+    # True when storage_type was deduplicated_reference but the target is gone
+    dangling_reference: bool = False
+
     @staticmethod
     async def resolve(file_obj, db: AsyncSession) -> "ResolvedFileView":
         """Build a ResolvedFileView, resolving dedup references when needed."""
@@ -53,6 +56,8 @@ class ResolvedFileView:
         chunk_info = file_obj.chunk_info
         storage_type = file_obj.storage_type
         object_path = file_obj.object_path
+
+        dangling = False
 
         if storage_type == "deduplicated_reference" and file_obj.dedup_info:
             ref_id = file_obj.dedup_info.get("reference_file_id")
@@ -71,6 +76,12 @@ class ResolvedFileView:
                     chunk_info = ref_file.chunk_info
                     storage_type = ref_file.storage_type
                     object_path = ref_file.object_path
+                else:
+                    logger.warning(
+                        "Dangling dedup reference: file %s → missing ref %s",
+                        file_obj.id, ref_id,
+                    )
+                    dangling = True
 
         return ResolvedFileView(
             id=file_obj.id,
@@ -86,4 +97,5 @@ class ResolvedFileView:
             file_metadata=file_obj.file_metadata,
             dedup_info=file_obj.dedup_info,
             content_hash=file_obj.content_hash,
+            dangling_reference=dangling,
         )

@@ -253,6 +253,43 @@ async def run_garbage_collection(
     return {"status": "gc_initiated", "authorized_user": current_user.email}
 
 
+@router.get("/health/dangling-references")
+async def check_dangling_references(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Detect deduplicated_reference files whose target no longer exists (admin only)."""
+    allowed_emails_env = os.getenv("ALLOWED_GC_EMAILS", "")
+    allowed_emails = [e.strip() for e in allowed_emails_env.split(",") if e.strip()]
+    if current_user.plan_type != "admin" and current_user.email not in allowed_emails:
+        raise HTTPException(403, f"Access denied for {current_user.email}")
+
+    result = await db.execute(text("""
+        SELECT o.id, o.file_name, o.file_size, o.dedup_info
+        FROM objects o
+        WHERE o.storage_type = 'deduplicated_reference'
+          AND o.is_deleted = false
+          AND NOT EXISTS (
+              SELECT 1 FROM objects ref
+              WHERE ref.id::text = o.dedup_info->>'reference_file_id'
+                AND ref.is_deleted = false
+          )
+    """))
+    rows = result.fetchall()
+    return {
+        "dangling_count": len(rows),
+        "dangling_files": [
+            {
+                "id": str(r.id),
+                "file_name": r.file_name,
+                "file_size": r.file_size,
+                "reference_file_id": (r.dedup_info or {}).get("reference_file_id"),
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.get("/analytics/detailed")
 async def get_detailed_analytics(
     current_user: User = Depends(get_current_user),
