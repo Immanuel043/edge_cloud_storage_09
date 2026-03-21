@@ -23,6 +23,7 @@ from ..database import get_redis
 from ..config import settings
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..utils.resolved_file_view import ResolvedFileView
+from ..utils.dedup_promotion import promote_dedup_references, decrement_dedup_ref_counts
 from pydantic import BaseModel
 import re
 import base64
@@ -1846,68 +1847,75 @@ async def permanent_delete(
         raise HTTPException(status_code=404, detail="File not found in trash")
 
     try:
-        # Handle content_blocks with proper reference counting
-        blocks_result = await db.execute(
-            text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
-            {"file_id": file_id}
-        )
-        file_blocks = blocks_result.fetchall()
+        # Dedup-aware deletion: promote a reference or decrement ref counts
+        promoted = await promote_dedup_references(file_obj, db)
 
-        for block in file_blocks:
+        if not promoted:
+            # For references: decrement the original's blocks
+            await decrement_dedup_ref_counts(file_obj, db)
+
+            # Handle content_blocks with proper reference counting
+            blocks_result = await db.execute(
+                text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
+                {"file_id": file_id}
+            )
+            file_blocks = blocks_result.fetchall()
+
+            for block in file_blocks:
+                await db.execute(
+                    text("""
+                        UPDATE content_blocks
+                        SET reference_count = reference_count - 1
+                        WHERE block_hash = :block_hash
+                    """),
+                    {"block_hash": block.block_hash}
+                )
+
+            # Delete blocks that are no longer referenced
             await db.execute(
-                text("""
-                    UPDATE content_blocks
-                    SET reference_count = reference_count - 1
-                    WHERE block_hash = :block_hash
-                """),
-                {"block_hash": block.block_hash}
+                text("DELETE FROM content_blocks WHERE reference_count <= 0")
             )
 
-        # Delete blocks that are no longer referenced
-        await db.execute(
-            text("DELETE FROM content_blocks WHERE reference_count <= 0")
-        )
+            # Delete this file's block associations
+            await db.execute(
+                text("DELETE FROM content_blocks WHERE file_id = :file_id"),
+                {"file_id": file_id}
+            )
 
-        # Delete this file's block associations
-        await db.execute(
-            text("DELETE FROM content_blocks WHERE file_id = :file_id"),
-            {"file_id": file_id}
-        )
+            # Handle different storage types
+            if file_obj.storage_type == "inline":
+                if file_obj.storage_key:
+                    try:
+                        await redis_client.delete(file_obj.storage_key)
+                    except Exception as e:
+                        print(f"Failed to delete from Redis: {e}")
 
-        # Handle different storage types
-        if file_obj.storage_type == "inline":
-            if file_obj.storage_key:
-                try:
-                    await redis_client.delete(file_obj.storage_key)
-                except Exception as e:
-                    print(f"Failed to delete from Redis: {e}")
+            elif file_obj.storage_type == "single":
+                if file_obj.object_path and os.path.exists(file_obj.object_path):
+                    try:
+                        os.remove(file_obj.object_path)
+                    except Exception as e:
+                        print(f"Failed to delete file: {e}")
 
-        elif file_obj.storage_type == "single":
-            if file_obj.object_path and os.path.exists(file_obj.object_path):
-                try:
-                    os.remove(file_obj.object_path)
-                except Exception as e:
-                    print(f"Failed to delete file: {e}")
+            else:  # chunked / content_addressed
+                if file_obj.chunk_info:
+                    chunk_info = file_obj.chunk_info
+                    upload_id = chunk_info.get("upload_id", str(file_obj.id))
+                    chunk_count = chunk_info.get("count", 0)
+                    chunk_paths = chunk_info.get("paths", {})
 
-        else:  # chunked
-            if file_obj.chunk_info:
-                chunk_info = file_obj.chunk_info
-                upload_id = chunk_info.get("upload_id", str(file_obj.id))
-                chunk_count = chunk_info.get("count", 0)
-                chunk_paths = chunk_info.get("paths", {})
+                    for i in range(chunk_count):
+                        chunk_path = chunk_paths.get(str(i))
+                        if not chunk_path:
+                            shard = upload_id[:2] if len(upload_id) >= 2 else "00"
+                            chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
 
-                for i in range(chunk_count):
-                    chunk_path = chunk_paths.get(str(i))
-                    if not chunk_path:
-                        shard = upload_id[:2] if len(upload_id) >= 2 else "00"
-                        chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-
-                    if os.path.exists(chunk_path):
-                        try:
-                            os.remove(chunk_path)
-                            print(f"Deleted chunk: {chunk_path}")
-                        except Exception as e:
-                            print(f"Failed to delete chunk {chunk_path}: {e}")
+                        if os.path.exists(chunk_path):
+                            try:
+                                os.remove(chunk_path)
+                                print(f"Deleted chunk: {chunk_path}")
+                            except Exception as e:
+                                print(f"Failed to delete chunk {chunk_path}: {e}")
 
         # Delete optimized video file if it exists
         if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
@@ -2021,8 +2029,42 @@ async def empty_trash(
     freed_space = 0
 
     try:
+        batch_ids = {str(f.id) for f in files}
+
         for file_obj in files:
             try:
+                # Dedup-aware deletion: promote a reference or decrement ref counts
+                promoted = await promote_dedup_references(file_obj, db, exclude_ids=batch_ids)
+
+                if promoted:
+                    freed_space += file_obj.file_size
+                    deleted_count += 1
+                    if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+                        try:
+                            os.remove(file_obj.optimized_path)
+                        except Exception:
+                            pass
+                    continue
+
+                # For references: decrement the original's blocks
+                await decrement_dedup_ref_counts(file_obj, db)
+
+                # Per-file block ref-count accounting
+                blocks_result = await db.execute(
+                    text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
+                    {"file_id": str(file_obj.id)}
+                )
+                for block in blocks_result.fetchall():
+                    await db.execute(
+                        text("UPDATE content_blocks SET reference_count = reference_count - 1 WHERE block_hash = :hash"),
+                        {"hash": block.block_hash}
+                    )
+                await db.execute(text("DELETE FROM content_blocks WHERE reference_count <= 0"))
+                await db.execute(
+                    text("DELETE FROM content_blocks WHERE file_id = :file_id"),
+                    {"file_id": str(file_obj.id)}
+                )
+
                 # Handle storage cleanup
                 if file_obj.storage_type == "inline":
                     if file_obj.storage_key:
@@ -2038,7 +2080,7 @@ async def empty_trash(
                         except Exception as e:
                             print(f"Failed to delete file: {e}")
 
-                else:  # chunked
+                else:  # chunked / content_addressed
                     if file_obj.chunk_info:
                         chunk_info = file_obj.chunk_info
                         upload_id = chunk_info.get("upload_id", str(file_obj.id))
@@ -2112,10 +2154,6 @@ async def empty_trash(
         )
         await db.execute(
             text("DELETE FROM file_ocr WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
-        )
-        await db.execute(
-            text("DELETE FROM content_blocks WHERE file_id = ANY(:file_ids)"),
             {"file_ids": file_ids}
         )
 

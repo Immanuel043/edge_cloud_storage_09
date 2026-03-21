@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.database import Object, ActivityLog
 from dependencies import get_db_session, get_redis_client
+from utils.dedup_promotion import promote_dedup_references, decrement_dedup_ref_counts
 
 
 async def cleanup_old_trash_files():
@@ -45,9 +46,23 @@ async def cleanup_old_trash_files():
 
         deleted_count = 0
         freed_space = 0
+        batch_ids = {str(f.id) for f in files_to_delete}
 
         for file_obj in files_to_delete:
             try:
+                # Dedup-aware deletion: promote a reference or decrement ref counts
+                promoted = await promote_dedup_references(file_obj, db, exclude_ids=batch_ids)
+
+                if promoted:
+                    freed_space += file_obj.file_size
+                    await db.delete(file_obj)
+                    deleted_count += 1
+                    print(f"Promoted ref for: {file_obj.file_name} (ID: {file_obj.id})")
+                    continue
+
+                # For references: decrement the original's blocks
+                await decrement_dedup_ref_counts(file_obj, db)
+
                 # Handle content_blocks with proper reference counting
                 blocks_result = await db.execute(
                     text("SELECT id, block_hash FROM content_blocks WHERE file_id = :file_id"),
@@ -91,7 +106,7 @@ async def cleanup_old_trash_files():
                         except Exception as e:
                             print(f"Failed to delete file: {e}")
 
-                else:  # chunked
+                else:  # chunked / content_addressed
                     if file_obj.chunk_info:
                         chunk_info = file_obj.chunk_info
                         upload_id = chunk_info.get("upload_id", str(file_obj.id))
