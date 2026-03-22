@@ -229,9 +229,10 @@ async def reset_user_bandwidth_limit(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Reset to defaults
-    user.bandwidth_limit_mbps = 10
-    user.bandwidth_burst_mbps = 20
+    # Reset to plan defaults (not hardcoded values)
+    plan_limits = bandwidth_throttle_service.get_plan_limits(user.plan_type or "free")
+    user.bandwidth_limit_mbps = plan_limits["bandwidth_mbps"]
+    user.bandwidth_burst_mbps = plan_limits["burst_mbps"]
     await db.commit()
 
     # Clear Redis limit
@@ -241,7 +242,7 @@ async def reset_user_bandwidth_limit(
         "status": "success",
         "user_id": user_id,
         "reset_to_default": True,
-        "default_limit_mbps": 10,
+        "default_limit_mbps": plan_limits["bandwidth_mbps"],
     }
 
 

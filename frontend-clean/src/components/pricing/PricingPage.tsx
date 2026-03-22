@@ -60,7 +60,7 @@ const mockPlansData: {
         features: { support: 'email', versioning: 10, ai_features: false, video_optimization: 'optimized' as const },
         is_active: true,
         is_default: false,
-        is_most_popular: false,
+        is_most_popular: true,
       },
       {
         plan_code: 'normal_pro',
@@ -77,7 +77,7 @@ const mockPlansData: {
         features: { support: 'priority', versioning: 50, ai_features: true, video_optimization: 'optimized' as const },
         is_active: true,
         is_default: false,
-        is_most_popular: true,
+        is_most_popular: false,
       },
       {
         plan_code: 'normal_pro_plus',

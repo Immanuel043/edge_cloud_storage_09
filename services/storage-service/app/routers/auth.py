@@ -356,28 +356,18 @@ async def register_complete(
     if existing_username.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already taken")
 
-    # Get plan info first
+    # Validate plan_code early (before any commits)
     from shared_billing import BillingService
+    from sqlalchemy import update
     billing = BillingService(db, service_type='normal')
 
+    plan_code = payload.plan_code or "normal_free"
     try:
-        plan_code = payload.plan_code or "normal_free"
         plan = await billing.get_plan_by_code(plan_code)
-        storage_quota = plan.storage_bytes
-        bandwidth_limit = plan.bandwidth_mbps
     except Exception:
-        plan_code = "normal_free"
-        storage_quota = 5 * 1024**3  # 5GB fallback
-        bandwidth_limit = 5  # 5 Mbps fallback
+        raise HTTPException(status_code=400, detail=f"Invalid plan code: {plan_code}")
 
-    # Determine plan_type from plan_code
-    plan_type = plan_code.replace('normal_', '')  # e.g., "normal_basic_200" -> "basic_200"
-    if '_' in plan_type:
-        # Extract tier name (e.g., "basic_200" -> "basic")
-        plan_type = plan_type.split('_')[0]
-
-    # Update user with username, password, and plan_type
-    from sqlalchemy import update
+    # Step 1: Activate user (no plan-derived fields yet)
     await db.execute(
         update(User)
         .where(User.id == user.id)
@@ -385,24 +375,42 @@ async def register_complete(
             username=username,
             password_hash=auth_service.get_password_hash(password),
             is_active=True,
-            plan_type=plan_type,
-            storage_quota=storage_quota
+        )
+    )
+    await db.commit()
+
+    # Step 2: Create root folder (idempotent — safe on retry)
+    existing_root = await db.execute(
+        select(Folder).where(
+            Folder.user_id == user.id,
+            Folder.parent_id == None,
+            Folder.path == "/"
+        )
+    )
+    if not existing_root.scalar_one_or_none():
+        root_folder = Folder(user_id=user.id, parent_id=None, name="/", path="/")
+        db.add(root_folder)
+        await db.commit()
+
+    # Step 3: Create subscription (commits internally in BillingService)
+    billing_cycle = payload.billing_cycle if payload.billing_cycle else None
+    subscription = await billing.create_subscription(user.id, plan_code, billing_cycle=billing_cycle)
+
+    # Step 4: Sync plan-derived fields from subscription
+    await db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(
+            plan_type=subscription.plan.tier_name,
+            storage_quota=subscription.plan.storage_bytes,
+            bandwidth_limit_mbps=subscription.plan.bandwidth_mbps,
+            bandwidth_burst_mbps=subscription.plan.bandwidth_burst_mbps,
+            max_concurrent_streams=subscription.plan.max_concurrent_streams,
+            current_subscription_id=subscription.id,
         )
     )
     await db.commit()
     await db.refresh(user)
-
-    # Create root folder
-    root_folder = Folder(user_id=user.id, parent_id=None, name="/", path="/")
-    db.add(root_folder)
-    await db.commit()
-
-    # Create subscription with selected plan and billing cycle
-    try:
-        billing_cycle = payload.billing_cycle if payload.billing_cycle else None
-        await billing.create_subscription(user.id, plan_code, billing_cycle=billing_cycle)
-    except Exception as e:
-        logger.warning(f"Failed to create subscription for user {user.id}: {e}")
 
     # Log activity
     await log_activity(
@@ -414,6 +422,7 @@ async def register_complete(
     # Create access token
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 
+    # Build response from refreshed user (not stale locals)
     response_data = {
         "access_token": access_token,
         "token_type": "bearer",
@@ -422,9 +431,9 @@ async def register_complete(
             "email": email,
             "username": username,
             "plan_type": user.plan_type,
-            "storage_quota": storage_quota,
+            "storage_quota": user.storage_quota,
             "storage_used": 0,
-            "bandwidth_limit_mbps": bandwidth_limit,
+            "bandwidth_limit_mbps": user.bandwidth_limit_mbps,
             "theme": "light"
         },
     }

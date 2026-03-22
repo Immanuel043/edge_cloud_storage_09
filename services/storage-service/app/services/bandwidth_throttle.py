@@ -185,6 +185,24 @@ class BandwidthThrottleService:
                 "burst_mbps": 200,
                 "max_streams": 10,
             },
+            "pro_plus": {
+                "storage_bytes": 2 * 1024**4,
+                "bandwidth_mbps": 150,
+                "burst_mbps": 300,
+                "max_streams": 15,
+            },
+            "pro_ultra": {
+                "storage_bytes": 3 * 1024**4,
+                "bandwidth_mbps": 200,
+                "burst_mbps": 400,
+                "max_streams": 20,
+            },
+            "solo_max": {
+                "storage_bytes": 5 * 1024**4,
+                "bandwidth_mbps": 300,
+                "burst_mbps": 600,
+                "max_streams": 25,
+            },
             "team": {
                 "storage_bytes": 5 * 1024**4,
                 "bandwidth_mbps": 500,
