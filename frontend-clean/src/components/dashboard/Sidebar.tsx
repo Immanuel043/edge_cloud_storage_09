@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Cloud,
   Clock,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import type { SidebarProps, MenuItem as MenuItemType } from './types';
 import { formatBytes } from '../../utils/helpers';
+import { useSubscription } from '../../contexts/SubscriptionContext';
 
 /**
  * Internal MenuItem component props
@@ -82,7 +83,31 @@ const Sidebar: React.FC<SidebarProps> = ({
   isMobileOpen,
   onMobileToggle,
 }) => {
+  const { subscription, usage } = useSubscription();
   const [aiExpanded, setAiExpanded] = useState<boolean>(true);
+
+  // Compute percentage consistently with StorageStats component
+  const storagePercentage = useMemo(() => {
+    if (usage && typeof (usage as Record<string, unknown>).storage_percent === 'number') {
+      return (usage as Record<string, unknown>).storage_percent as number;
+    }
+    if (storageStats?.percentage_used != null) {
+      return storageStats.percentage_used;
+    }
+    const quota = storageStats?.quota ?? 0;
+    const used = storageStats?.used ?? 0;
+    if (quota > 0) {
+      return (used / quota) * 100;
+    }
+    return 0;
+  }, [usage, storageStats]);
+
+  // Use subscription quota for display if available
+  const displayQuota = useMemo(() => {
+    const storageQuotaGb = typeof subscription?.storage_quota_gb === 'number' ? subscription.storage_quota_gb : 0;
+    if (storageQuotaGb > 0) return storageQuotaGb * 1024 * 1024 * 1024;
+    return storageStats?.quota ?? 0;
+  }, [subscription, storageStats]);
 
   const menuItems: MenuItemType[] = [
     {
@@ -269,24 +294,24 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="space-y-1">
               <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {formatBytes(storageStats.used)} / {formatBytes(storageStats.quota)}
+                {formatBytes(storageStats.used)} / {formatBytes(displayQuota)}
               </div>
               <div className="w-full bg-gray-300 dark:bg-gray-600 rounded-full h-2 overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all duration-300"
                   style={{
-                    width: `${storageStats.percentage_used ?? 0}%`,
+                    width: `${storagePercentage}%`,
                     background:
-                      (storageStats.percentage_used ?? 0) > 90
+                      storagePercentage > 90
                         ? '#ef4444'
-                        : (storageStats.percentage_used ?? 0) > 70
+                        : storagePercentage > 70
                           ? '#f59e0b'
                           : 'linear-gradient(to right, #3b82f6, #8b5cf6)',
                   }}
                 />
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                {(storageStats.percentage_used ?? 0).toFixed(1)}% used
+                {storagePercentage.toFixed(1)}% used
               </div>
             </div>
           </div>
