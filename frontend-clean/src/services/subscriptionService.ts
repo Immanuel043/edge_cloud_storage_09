@@ -770,7 +770,7 @@ class SubscriptionService {
       const blob = await response.blob();
       const disposition = response.headers.get('Content-Disposition') || '';
       const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-      const filename = filenameMatch ? filenameMatch[1] : `invoice-${invoiceId}.pdf`;
+      const filename = filenameMatch?.[1] ?? `invoice-${invoiceId}.pdf`;
 
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
