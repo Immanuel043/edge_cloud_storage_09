@@ -38,16 +38,24 @@ async def get_dedup_analytics(
             FROM objects o
             WHERE o.user_id = :user_id
             AND o.storage_type = 'content_addressed'
+            AND o.is_deleted = false
         ),
-        block_stats AS (
-            SELECT
-                COUNT(DISTINCT cb.id) as unique_blocks,
-                COUNT(fbm.id) as total_mappings,
-                SUM(DISTINCT cb.block_size) as physical_size
+        unique_blocks AS (
+            SELECT DISTINCT cb.id, cb.block_size
             FROM content_blocks cb
             JOIN file_block_mappings fbm ON fbm.block_id = cb.id
             JOIN objects o ON fbm.file_id = o.id
             WHERE o.user_id = :user_id
+            AND o.is_deleted = false
+        ),
+        block_stats AS (
+            SELECT
+                COUNT(*) as unique_blocks,
+                (SELECT COUNT(*) FROM file_block_mappings fbm
+                 JOIN objects o ON fbm.file_id = o.id
+                 WHERE o.user_id = :user_id AND o.is_deleted = false) as total_mappings,
+                SUM(block_size) as physical_size
+            FROM unique_blocks
         ),
         avg_refs AS (
             SELECT COALESCE(AVG(cnt), 0) as avg_refs
@@ -56,6 +64,7 @@ async def get_dedup_analytics(
                 FROM file_block_mappings fbm
                 JOIN objects o ON fbm.file_id = o.id
                 WHERE o.user_id = :user_id
+                AND o.is_deleted = false
                 GROUP BY fbm.block_id
             ) sub
         )
@@ -126,15 +135,21 @@ async def get_storage_savings(
             FROM objects o
             WHERE o.user_id = :user_id
             AND o.storage_type = 'content_addressed'
+            AND o.is_deleted = false
         ),
-        block_stats AS (
-            SELECT
-                COUNT(DISTINCT cb.block_hash) as unique_blocks,
-                SUM(DISTINCT cb.block_size) as actual_physical_size
+        unique_blocks AS (
+            SELECT DISTINCT cb.id, cb.block_size
             FROM content_blocks cb
             JOIN file_block_mappings fbm ON fbm.block_id = cb.id
             JOIN objects o ON fbm.file_id = o.id
             WHERE o.user_id = :user_id
+            AND o.is_deleted = false
+        ),
+        block_stats AS (
+            SELECT
+                COUNT(*) as unique_blocks,
+                SUM(block_size) as actual_physical_size
+            FROM unique_blocks
         )
         SELECT
             f.file_count,
@@ -321,6 +336,7 @@ async def get_detailed_analytics(
             SUM(file_size) FILTER (WHERE dedup_info->>'classification_mode' = 'skip') as skipped_bytes
         FROM objects
         WHERE user_id = :user_id
+        AND is_deleted = false
     """), {"user_id": str(current_user.id)})
 
     class_stats = classification_stats.first()
@@ -333,6 +349,7 @@ async def get_detailed_analytics(
             SUM(file_size) as total_bytes
         FROM objects
         WHERE user_id = :user_id
+        AND is_deleted = false
         AND dedup_info->>'classification_mode' = 'skip'
         GROUP BY dedup_info->>'classification_reason'
         ORDER BY count DESC
@@ -350,6 +367,7 @@ async def get_detailed_analytics(
         JOIN file_block_mappings fbm ON fbm.block_id = cb.id
         JOIN objects o ON fbm.file_id = o.id
         WHERE o.user_id = :user_id
+        AND o.is_deleted = false
         GROUP BY cb.id, cb.block_hash, cb.block_size
         HAVING COUNT(fbm.id) > 1
         ORDER BY bytes_saved DESC
@@ -405,6 +423,7 @@ async def get_efficiency_breakdown(
             FROM objects
             WHERE user_id = :user_id
             AND storage_type = 'content_addressed'
+            AND is_deleted = false
             AND dedup_info->>'saved_size' IS NOT NULL
         )
         SELECT
@@ -436,6 +455,7 @@ async def get_efficiency_breakdown(
             FROM objects
             WHERE user_id = :user_id
             AND storage_type = 'content_addressed'
+            AND is_deleted = false
             AND dedup_info->>'saved_size' IS NOT NULL
         )
         SELECT
