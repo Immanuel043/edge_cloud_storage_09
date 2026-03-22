@@ -413,7 +413,7 @@ async def register_complete(
     try:
         subscription = await billing.create_subscription(
             user.id, actual_plan_code,
-            billing_cycle=billing_cycle if not pending_upgrade else None
+            billing_cycle=billing_cycle if not pending_upgrade else 'monthly'
         )
     except InvalidPlanChangeError:
         # Retry path: subscription already exists from a previous attempt
