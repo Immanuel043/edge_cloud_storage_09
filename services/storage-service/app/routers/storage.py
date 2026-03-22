@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 import json
 import secrets
-from ..dependencies import get_db, get_current_user, log_activity
+from ..dependencies import get_db, get_current_user, log_activity, get_plan_quota
 from ..services.auth import auth_service, pwd_context
 from ..models.database import User, Object, ActivityLog, ShareLink, SharedAccess, Folder
 from ..models.schemas import (
@@ -73,20 +73,27 @@ async def get_storage_stats(
     for storage_type, count, size in type_result:
         type_distribution[storage_type] = {"count": count, "size": size}
     
-    # Optionally update the user's storage_used field for caching
+    # Resolve quota from subscription plan (self-heals stale users.storage_quota)
+    original_quota = current_user.storage_quota
+    original_pointer = current_user.current_subscription_id
+    quota, _quota_healed = await get_plan_quota(current_user, db)
+
+    # Sync storage_used and persist any self-heal (quota or pointer changes)
     current_storage_used = current_user.storage_used or 0
-    if abs(current_storage_used - total_used) > 1024:  # Only update if difference > 1KB
+    used_changed = abs(current_storage_used - total_used) > 1024
+    quota_changed = current_user.storage_quota != original_quota
+    pointer_changed = current_user.current_subscription_id != original_pointer
+
+    if used_changed or quota_changed or pointer_changed:
         current_user.storage_used = total_used
         await db.commit()
-    
-    # Ensure quota and used are not None
-    quota = current_user.storage_quota or 0
+
     used = int(total_used) if total_used else 0
     available = max(0, quota - used)
 
-    # Calculate percentage safely
+    # Calculate percentage safely (1 decimal — matches subscription_helpers)
     if quota > 0:
-        percentage_used = round((used / quota) * 100, 2)
+        percentage_used = round((used / quota) * 100, 1)
     else:
         percentage_used = 0.0
 

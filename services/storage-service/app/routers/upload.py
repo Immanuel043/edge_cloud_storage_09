@@ -13,7 +13,7 @@ import base64
 import hashlib
 import mimetypes
 from datetime import datetime
-from ..dependencies import get_db, log_activity, get_current_user
+from ..dependencies import get_db, log_activity, get_current_user, get_plan_quota
 from ..services.auth import auth_service
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
@@ -937,6 +937,9 @@ async def complete_upload(
         )
 
     # ============ QUOTA ENFORCEMENT ============
+    # Self-heal quota from plan before locked read
+    await get_plan_quota(current_user, db)
+
     # Lock user row and check quota atomically to prevent TOCTOU race
     file_size = session["size"]
     user_row = (await db.execute(

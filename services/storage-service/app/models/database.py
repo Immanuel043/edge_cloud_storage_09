@@ -29,6 +29,9 @@ class User(Base):
     storage_quota = Column(BigInteger, default=5368709120)  # 5GB default (free tier)
     storage_used = Column(BigInteger, default=0)
 
+    # Pointer to the user's current subscription (for deterministic quota lookup)
+    current_subscription_id = Column(UUID(as_uuid=True), nullable=True)
+
     # Bandwidth overrides (NULL = use plan default from PLAN_LIMITS)
     bandwidth_limit_mbps = Column(Integer, nullable=True)
     bandwidth_burst_mbps = Column(Integer, nullable=True)

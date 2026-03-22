@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel, Field
 
-from shared_billing import BillingService, SubscriptionPlan, UserSubscription
+from shared_billing import BillingService, SubscriptionPlan, UserSubscription, SubscriptionNotFoundError
 from shared_billing.schemas import SubscriptionPlanSchema, UserSubscriptionSchema
 
 from ..dependencies import get_db, get_current_user
@@ -291,7 +291,7 @@ async def get_subscription_dashboard(
     # Get user's subscription
     try:
         subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
-    except:
+    except SubscriptionNotFoundError:
         # Create free tier if none exists
         subscription = await billing.create_subscription(current_user.id, 'normal_free')
 
@@ -514,7 +514,7 @@ async def get_usage_summary(
 
     try:
         subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
-    except:
+    except SubscriptionNotFoundError:
         subscription = await billing.create_subscription(current_user.id, 'normal_free')
 
     plan = subscription.plan

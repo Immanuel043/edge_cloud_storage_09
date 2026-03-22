@@ -14,7 +14,7 @@ import uuid
 import logging
 from datetime import datetime
 
-from ..dependencies import get_db, get_current_user, log_activity
+from ..dependencies import get_db, get_current_user, log_activity, get_plan_quota
 from ..database import get_redis
 from ..models.database import User, Folder, Object
 from ..models.schemas import (
@@ -76,6 +76,9 @@ async def init_folder_upload(
 
     # Sanitize folder name
     safe_folder_name = folder_upload_service.sanitize_path(init_data.folder_name)
+
+    # Self-heal quota from plan before check
+    await get_plan_quota(current_user, db)
 
     # Check storage quota
     if current_user.storage_used + init_data.total_size > current_user.storage_quota:

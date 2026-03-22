@@ -15,7 +15,7 @@ from typing import List
 import logging
 from datetime import datetime
 
-from ..dependencies import get_db, get_current_user, log_activity
+from ..dependencies import get_db, get_current_user, log_activity, get_plan_quota
 from ..database import get_redis
 from ..models.database import User, Object, URLUploadJob, Folder
 from ..models.schemas import (
@@ -212,6 +212,7 @@ async def process_url_download(
             )
             user = user_result.scalar_one_or_none()
             if user:
+                await get_plan_quota(user, db)
                 available = (user.storage_quota or 0) - (user.storage_used or 0)
                 if download_result['file_size'] > available:
                     # Over quota — clean up downloaded file and fail

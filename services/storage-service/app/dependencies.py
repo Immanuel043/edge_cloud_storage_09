@@ -1,5 +1,6 @@
 # services/storage-service/app/dependencies.py
-from typing import AsyncGenerator, Optional
+import logging
+from typing import AsyncGenerator, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Request, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -8,6 +9,8 @@ from sqlalchemy import select
 from .database import AsyncSessionLocal
 from .models.database import User, ActivityLog
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 # Security - SECURITY FIX: Made optional to support cookie-based auth
 security = HTTPBearer(auto_error=False)
@@ -147,3 +150,68 @@ async def get_user_subscription(
         await db.commit()
 
         return subscription
+
+
+async def get_plan_quota(user: User, db: AsyncSession) -> Tuple[int, bool]:
+    """Resolve quota from user's current subscription plan.
+
+    Uses current_subscription_id (validated) for deterministic lookup.
+    Falls back to status-based lookup with created_at DESC, id DESC tiebreak.
+    Self-heals users.storage_quota and current_subscription_id with explicit flush.
+
+    Returns:
+        (plan_quota_bytes, did_heal) — caller must commit if did_heal is True.
+    """
+    from shared_billing.models import UserSubscription, SubscriptionPlan
+
+    plan_quota = None
+    healed = False
+
+    # Primary: validated pointer lookup
+    if user.current_subscription_id:
+        result = await db.execute(
+            select(SubscriptionPlan.storage_bytes)
+            .join(UserSubscription, UserSubscription.plan_id == SubscriptionPlan.id)
+            .where(
+                UserSubscription.id == user.current_subscription_id,
+                UserSubscription.user_id == user.id,
+                UserSubscription.service_type == 'normal',
+                UserSubscription.status.in_(['active', 'over_quota']),
+            )
+        )
+        plan_quota = result.scalar_one_or_none()
+
+    # Fallback: status-based with deterministic tiebreak
+    if plan_quota is None:
+        result = await db.execute(
+            select(SubscriptionPlan.storage_bytes, UserSubscription.id)
+            .join(UserSubscription, UserSubscription.plan_id == SubscriptionPlan.id)
+            .where(
+                UserSubscription.user_id == user.id,
+                UserSubscription.service_type == 'normal',
+                UserSubscription.status.in_(['active', 'over_quota']),
+            )
+            .order_by(UserSubscription.created_at.desc(), UserSubscription.id.desc())
+        )
+        rows = result.all()
+        if len(rows) > 1:
+            logger.warning(
+                f"User {user.id} has {len(rows)} live normal subscriptions, "
+                f"using most recent (id={rows[0][1]})"
+            )
+        if rows:
+            plan_quota = rows[0][0]
+            sub_id = rows[0][1]
+            if user.current_subscription_id != sub_id:
+                user.current_subscription_id = sub_id
+                healed = True
+
+    # Self-heal: flush if quota or pointer changed
+    if plan_quota is not None and user.storage_quota != plan_quota:
+        user.storage_quota = plan_quota
+        healed = True
+
+    if healed:
+        await db.flush()
+
+    return (plan_quota if plan_quota is not None else (user.storage_quota or 0), healed)

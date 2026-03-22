@@ -262,6 +262,7 @@ async def _activate_subscription_after_payment(
 
     if user is not None:
         sync_user_plan_limits(user, subscription.plan)
+        user.current_subscription_id = subscription.id
         await db.commit()
 
     # Generate invoice (best-effort — never blocks payment flow)
@@ -518,6 +519,7 @@ async def upgrade_subscription(
 
             # Update user's quota and plan limits
             sync_user_plan_limits(current_user, subscription.plan)
+            current_user.current_subscription_id = subscription.id
             await db.commit()
 
             logger.info(f"User {current_user.id} upgraded to {request.new_plan_code} (DEV_MODE={settings.DEV_MODE})")
@@ -570,6 +572,7 @@ async def downgrade_subscription(
 
         # Update user's quota and plan limits
         sync_user_plan_limits(current_user, subscription.plan)
+        current_user.current_subscription_id = subscription.id
         await db.commit()
 
         logger.info(f"User {current_user.id} downgraded to {request.new_plan_code}")
@@ -890,6 +893,7 @@ async def create_payment(
 
             # Update user's quota and plan limits
             sync_user_plan_limits(current_user, subscription.plan)
+            current_user.current_subscription_id = subscription.id
             await db.commit()
 
             logger.info(f"DEV_MODE: Upgraded user {current_user.id} to {payment_request.plan_code} without payment")
@@ -916,6 +920,7 @@ async def create_payment(
             
             # Update user's quota and plan limits
             sync_user_plan_limits(current_user, subscription.plan)
+            current_user.current_subscription_id = subscription.id
             await db.commit()
 
             return {
