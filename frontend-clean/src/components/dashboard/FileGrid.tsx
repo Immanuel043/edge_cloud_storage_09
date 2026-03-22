@@ -183,13 +183,7 @@ const FileContextMenu: React.FC<FileContextMenuProps> = ({
           <button
             onClick={(e: React.MouseEvent) => {
               e.stopPropagation();
-              if (trashedView) {
-                if (window.confirm(`Are you sure you want to permanently delete "${file.name}"?`)) {
-                  onFileDelete(file.id, file.name);
-                }
-              } else {
-                onFileDelete(file.id, file.name);
-              }
+              onFileDelete(file.id, file.name);
               onClose();
             }}
             className={`w-full px-4 py-2.5 text-left flex items-center gap-3 text-sm transition-colors ${
