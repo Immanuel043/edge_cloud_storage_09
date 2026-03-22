@@ -572,6 +572,7 @@ export default function PricingPage(): ReactElement {
   // Plan change modal state
   const [selectedPlan, setSelectedPlan] = useState<PricingPlan | null>(null);
   const [modalOpen, setModalOpen] = useState<boolean>(false);
+  const [upgradeBillingCycle, setUpgradeBillingCycle] = useState<'monthly' | 'six_months' | 'yearly' | undefined>();
 
   // Fetch plans from API
   useEffect(() => {
@@ -700,7 +701,27 @@ export default function PricingPage(): ReactElement {
   const handleCloseModal = useCallback((): void => {
     setModalOpen(false);
     setSelectedPlan(null);
+    setUpgradeBillingCycle(undefined);
   }, []);
+
+  // Auto-open PlanChangeModal when redirected from registration with a pending upgrade
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const upgradePlan = params.get('upgrade');
+
+    if (upgradePlan && user && !loading) {
+      const allPlans = [...edgePlans.individual, ...edgePlans.business];
+      const targetPlan = allPlans.find(p => p.plan_code === upgradePlan);
+      if (targetPlan) {
+        const billingParam = params.get('billing') as 'monthly' | 'six_months' | 'yearly' | null;
+        setSelectedPlan(targetPlan);
+        setUpgradeBillingCycle(billingParam || undefined);
+        setModalOpen(true);
+        // Clear URL params to prevent re-triggering on refresh
+        window.history.replaceState({}, '', '/pricing');
+      }
+    }
+  }, [edgePlans, user, loading]);
 
   return (
     <div className={`min-h-screen ${darkMode ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
@@ -947,6 +968,7 @@ export default function PricingPage(): ReactElement {
           isOpen={modalOpen}
           onClose={handleCloseModal}
           targetPlan={selectedPlan}
+          initialBillingCycle={upgradeBillingCycle}
         />
       )}
     </div>

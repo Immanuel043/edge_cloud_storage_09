@@ -46,6 +46,7 @@ export default function PlanChangeModal({
   isOpen,
   onClose,
   targetPlan,
+  initialBillingCycle,
 }: PlanChangeModalProps): ReactElement | null {
   const navigate = useNavigate();
   const { subscription, upgrade, downgrade, previewChange, isUpgrade, refresh } = useSubscription();
@@ -57,8 +58,15 @@ export default function PlanChangeModal({
   const [confirming, setConfirming] = useState<boolean>(false);
   const [paymentGateways, setPaymentGateways] = useState<PaymentGatewayInfo[]>([]);
   const [selectedGateway, setSelectedGateway] = useState<string>('');
-  const [selectedBillingCycle, setSelectedBillingCycle] = useState<'monthly' | 'six_months' | 'yearly'>('monthly');
+  const [selectedBillingCycle, setSelectedBillingCycle] = useState<'monthly' | 'six_months' | 'yearly'>(initialBillingCycle || 'monthly');
   const [loadingGateways, setLoadingGateways] = useState<boolean>(false);
+
+  // Reset billing cycle when modal opens with a new initialBillingCycle
+  useEffect(() => {
+    if (isOpen && initialBillingCycle) {
+      setSelectedBillingCycle(initialBillingCycle);
+    }
+  }, [isOpen, initialBillingCycle]);
 
   // Load preview and payment gateways when modal opens
   useEffect(() => {

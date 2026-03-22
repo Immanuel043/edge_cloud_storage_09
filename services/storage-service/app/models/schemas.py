@@ -293,10 +293,15 @@ class UploadStatusResponse(BaseModel):
     recommended_concurrency: int = 4
 
 # Token Schemas
+class PendingUpgrade(BaseModel):
+    plan_code: str
+    billing_cycle: Optional[str] = None
+
 class Token(BaseModel):
     access_token: str
     token_type: str
     user: UserResponse
+    pending_upgrade: Optional[PendingUpgrade] = None
 #Storage Stats extended with type distribution
 class StorageStats(BaseModel):
     quota: int

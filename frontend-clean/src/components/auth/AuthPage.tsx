@@ -346,7 +346,7 @@ const AuthPage: React.FC = () => {
       setFormData((prev) => ({
         ...prev,
         planCode: plan,
-        billingCycle: (billing as 'monthly' | 'yearly') || 'monthly',
+        billingCycle: (billing as 'monthly' | 'six_months' | 'yearly') || 'monthly',
       }));
     }
 
@@ -594,7 +594,7 @@ const AuthPage: React.FC = () => {
           window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: true } }));
         }
       } else {
-        await authService.registerComplete(
+        const result = await authService.registerComplete(
           pendingFormData.email,
           pendingFormData.username,
           pendingFormData.password,
@@ -606,10 +606,20 @@ const AuthPage: React.FC = () => {
         await login(pendingFormData.email, pendingFormData.password);
 
         setLoading(false);
-        console.log('Normal registration complete - redirecting to homepage');
-        setTimeout(() => {
-          navigate('/');
-        }, 100);
+
+        if (result.pending_upgrade) {
+          const { plan_code, billing_cycle } = result.pending_upgrade;
+          const billingParam = billing_cycle ? `&billing=${billing_cycle}` : '';
+          console.log('Paid plan selected - redirecting to payment flow');
+          setTimeout(() => {
+            navigate(`/pricing?upgrade=${plan_code}&service=normal${billingParam}`);
+          }, 100);
+        } else {
+          console.log('Normal registration complete - redirecting to homepage');
+          setTimeout(() => {
+            navigate('/');
+          }, 100);
+        }
       }
     } catch (err: unknown) {
       setError(getErrorMessage(err) || 'Registration failed');

@@ -357,7 +357,7 @@ async def register_complete(
         raise HTTPException(status_code=400, detail="Username already taken")
 
     # Validate plan_code early (before any commits)
-    from shared_billing import BillingService
+    from shared_billing import BillingService, InvalidPlanChangeError
     from sqlalchemy import update
     billing = BillingService(db, service_type='normal')
 
@@ -366,6 +366,23 @@ async def register_complete(
         plan = await billing.get_plan_by_code(plan_code)
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid plan code: {plan_code}")
+
+    # Reject ZK plans — registration only supports normal storage
+    if plan.service_type != 'normal':
+        raise HTTPException(status_code=400, detail="ZK plans are not supported for standard registration")
+
+    # Determine if plan requires payment
+    billing_cycle = payload.billing_cycle if payload.billing_cycle else None
+    is_paid = plan.price_monthly is not None and float(plan.price_monthly) > 0
+
+    if is_paid and not settings.DEV_MODE:
+        # Paid plan without payment: register with free tier, return upgrade info
+        actual_plan_code = "normal_free"
+        pending_upgrade = {"plan_code": plan_code, "billing_cycle": billing_cycle}
+    else:
+        # Free plan or DEV_MODE: activate immediately
+        actual_plan_code = plan_code
+        pending_upgrade = None
 
     # Step 1: Activate user (no plan-derived fields yet)
     await db.execute(
@@ -392,9 +409,21 @@ async def register_complete(
         db.add(root_folder)
         await db.commit()
 
-    # Step 3: Create subscription (commits internally in BillingService)
-    billing_cycle = payload.billing_cycle if payload.billing_cycle else None
-    subscription = await billing.create_subscription(user.id, plan_code, billing_cycle=billing_cycle)
+    # Step 3: Create subscription (retry-safe — reuses matching existing subscription)
+    try:
+        subscription = await billing.create_subscription(
+            user.id, actual_plan_code,
+            billing_cycle=billing_cycle if not pending_upgrade else None
+        )
+    except InvalidPlanChangeError:
+        # Retry path: subscription already exists from a previous attempt
+        subscription = await billing.get_user_subscription(user.id, include_plan=True)
+        if subscription.plan.plan_code != actual_plan_code:
+            raise HTTPException(
+                status_code=409,
+                detail=f"User already has an active subscription ({subscription.plan.plan_code}), "
+                       f"cannot create {actual_plan_code}"
+            )
 
     # Step 4: Sync plan-derived fields from subscription
     await db.execute(
@@ -415,7 +444,7 @@ async def register_complete(
     # Log activity
     await log_activity(
         db, user.id, "user_registered",
-        metadata={"plan_code": plan_code, "billing_cycle": payload.billing_cycle},
+        metadata={"plan_code": plan_code, "actual_plan_code": actual_plan_code, "billing_cycle": payload.billing_cycle},
         request=request
     )
 
@@ -436,6 +465,7 @@ async def register_complete(
             "bandwidth_limit_mbps": user.bandwidth_limit_mbps,
             "theme": "light"
         },
+        "pending_upgrade": pending_upgrade,
     }
 
     # Set HTTP-only cookie

@@ -106,7 +106,7 @@ export interface AuthFormData {
   username: string;
   userType: 'individual' | 'team';
   planCode: string | null;
-  billingCycle: 'monthly' | 'yearly';
+  billingCycle: 'monthly' | 'six_months' | 'yearly';
 }
 
 /**

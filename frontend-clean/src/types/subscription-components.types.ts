@@ -164,6 +164,7 @@ export interface PlanChangeModalProps {
   isOpen: boolean;
   onClose: () => void;
   targetPlan: PlanDisplay | PricingPlan | null;
+  initialBillingCycle?: 'monthly' | 'six_months' | 'yearly';
 }
 
 /**

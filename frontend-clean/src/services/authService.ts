@@ -9,6 +9,10 @@ export interface AuthResponse {
   access_token: string;
   token_type: string;
   user: UserProfile;
+  pending_upgrade?: {
+    plan_code: string;
+    billing_cycle: string | null;
+  };
 }
 
 export interface UserProfile {
@@ -304,7 +308,7 @@ class AuthService {
     password: string,
     verificationToken: string,
     planCode = 'normal_free',
-    billingCycle: 'monthly' | 'yearly' = 'monthly'
+    billingCycle: 'monthly' | 'six_months' | 'yearly' = 'monthly'
   ): Promise<AuthResponse> {
     await rateLimiter.checkLimit();
 
@@ -410,7 +414,7 @@ class AuthService {
     zkData: ZKData,
     verificationToken: string,
     planCode = 'zk_pro',
-    billingCycle: 'monthly' | 'yearly' = 'monthly'
+    billingCycle: 'monthly' | 'six_months' | 'yearly' = 'monthly'
   ): Promise<AuthResponse> {
     await rateLimiter.checkLimit();
 
