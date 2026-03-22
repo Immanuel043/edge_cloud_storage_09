@@ -571,7 +571,7 @@ async def check_dedup_consistency(
         ),
         mapping_hashes AS (
             SELECT fbm.file_id,
-                   COALESCE(array_agg(DISTINCT cb.block_hash ORDER BY cb.block_hash), '{}') AS m_hashes
+                   COALESCE(array_agg(DISTINCT cb.block_hash::text ORDER BY cb.block_hash::text), '{}') AS m_hashes
             FROM file_block_mappings fbm
             JOIN content_blocks cb ON cb.id = fbm.block_id
             GROUP BY fbm.file_id
