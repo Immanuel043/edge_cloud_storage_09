@@ -153,7 +153,7 @@ async def process_url_download(
         folder_id: Optional folder ID
         override_filename: Optional filename override
     """
-    from ..database import async_session_maker
+    from ..database import async_session
 
     redis_client = await get_redis()
 
@@ -161,7 +161,7 @@ async def process_url_download(
         logger.info(f"Starting URL download for job {job_id}")
 
         # Update job status to downloading
-        async with async_session_maker() as db:
+        async with async_session() as db:
             result = await db.execute(
                 select(URLUploadJob).where(URLUploadJob.id == job_id)
             )
@@ -184,9 +184,30 @@ async def process_url_download(
         if override_filename:
             download_result['filename'] = override_filename
 
-        # Create file record in database
-        async with async_session_maker() as db:
-            # Create Object record
+        # Create file record and check quota
+        async with async_session() as db:
+            # Check quota BEFORE adding file to session
+            user_result = await db.execute(
+                select(User).where(User.id == user_id)
+            )
+            user = user_result.scalar_one_or_none()
+            if user:
+                await get_plan_quota(user, db)
+                available = (user.storage_quota or 0) - (user.storage_used or 0)
+                if download_result['file_size'] > available:
+                    # Over quota — clean up downloaded file and fail
+                    if download_result.get('storage_path'):
+                        import os
+                        try:
+                            os.remove(download_result['storage_path'])
+                        except OSError:
+                            pass
+                    raise URLUploadError(
+                        f"Storage quota exceeded. Available: {available} bytes, "
+                        f"File size: {download_result['file_size']} bytes"
+                    )
+
+            # Create Object record (after quota validated)
             file_obj = Object(
                 id=download_result['file_id'],
                 user_id=user_id,
@@ -206,27 +227,7 @@ async def process_url_download(
             )
             db.add(file_obj)
 
-            # Check quota before updating storage
-            user_result = await db.execute(
-                select(User).where(User.id == user_id)
-            )
-            user = user_result.scalar_one_or_none()
             if user:
-                await get_plan_quota(user, db)
-                available = (user.storage_quota or 0) - (user.storage_used or 0)
-                if download_result['file_size'] > available:
-                    # Over quota — clean up downloaded file and fail
-                    if download_result.get('storage_path'):
-                        import os
-                        try:
-                            os.remove(download_result['storage_path'])
-                        except OSError:
-                            pass
-                    await db.rollback()
-                    raise URLUploadError(
-                        f"Storage quota exceeded. Available: {available} bytes, "
-                        f"File size: {download_result['file_size']} bytes"
-                    )
                 user.storage_used = (user.storage_used or 0) + download_result['file_size']
 
             # Update job record
@@ -274,10 +275,10 @@ async def process_url_download(
 
 async def _mark_job_failed(job_id: str, error_message: str):
     """Mark job as failed in database"""
-    from ..database import async_session_maker
+    from ..database import async_session
 
     try:
-        async with async_session_maker() as db:
+        async with async_session() as db:
             result = await db.execute(
                 select(URLUploadJob).where(URLUploadJob.id == job_id)
             )

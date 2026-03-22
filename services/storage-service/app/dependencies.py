@@ -205,6 +205,19 @@ async def get_plan_quota(user: User, db: AsyncSession) -> Tuple[int, bool]:
             if user.current_subscription_id != sub_id:
                 user.current_subscription_id = sub_id
                 healed = True
+        else:
+            # No active subscription — fall back to free tier quota
+            free_result = await db.execute(
+                select(SubscriptionPlan.storage_bytes).where(
+                    SubscriptionPlan.plan_code == 'normal_free'
+                )
+            )
+            free_quota = free_result.scalar_one_or_none()
+            if free_quota is not None:
+                plan_quota = free_quota
+            if user.current_subscription_id is not None:
+                user.current_subscription_id = None
+                healed = True
 
     # Self-heal: flush if quota or pointer changed
     if plan_quota is not None and user.storage_quota != plan_quota:
