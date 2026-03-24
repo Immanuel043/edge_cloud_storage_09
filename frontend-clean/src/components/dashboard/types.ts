@@ -1064,30 +1064,11 @@ export type ActiveViewType =
 export type SortByType = 'name' | 'date' | 'size' | 'type';
 
 /**
- * ZKDashboardLayout component props
+ * ZKDashboard component props
+ * Theme, auth, and storage are read from contexts directly.
+ * Only cross-dashboard handoff props are passed from the parent.
  */
-export interface ZKDashboardLayoutProps extends DarkModeProps {
-  toggleTheme: () => void;
-  user: { username?: string } | null;
-  logout: () => void;
-  isUnlocked: boolean;
-  onLock: () => void;
-  files: FileItem[];
-  folders: FolderItem[];
-  currentFolder: string | null;
-  currentFolderName: string | null;
-  storageStats: StorageStatsData | null;
-  selectedFiles: Set<string>;
-  uploadFile: (file: File, onProgress?: (data: UploadProgressData) => void) => Promise<void>;
-  downloadFile: (fileId: string, fileName: string, onProgress?: (data: DownloadProgressData) => void) => Promise<void>;
-  deleteFile: (fileId: string, fileName?: string) => Promise<void>;
-  createFolder: (name: string) => Promise<void>;
-  navigateToFolder: (folderId: string | null) => void;
-  selectFile: (fileId: string, index: number, ctrlKey: boolean, shiftKey: boolean) => void;
-  selectAll: () => void;
-  clearSelection: () => void;
-  refreshFiles: () => Promise<void>;
-  // Pending download passed from parent Dashboard for cross-dashboard retry
+export interface ZKDashboardProps {
   pendingDownload?: PendingDownload | null;
   onClearPendingDownload?: () => void;
 }

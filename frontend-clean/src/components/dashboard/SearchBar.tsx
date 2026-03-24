@@ -42,6 +42,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
 
   const searchRef = useRef<HTMLDivElement>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasFetchedSmartSearch = useRef(false);
 
   useEffect(() => {
     // Click outside to close suggestions
@@ -55,13 +56,17 @@ const SearchBar: React.FC<SearchBarProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch smart search status on mount
+  // Disable smart search for ZK users on mount
   useEffect(() => {
-    // Skip smart search for ZK users
     if (zkMode) {
       setSmartSearchEnabled(false);
-      return;
     }
+  }, [zkMode]);
+
+  // Fetch smart search status on first input focus (not on mount)
+  const handleSearchFocus = (): void => {
+    if (hasFetchedSmartSearch.current || zkMode) return;
+    hasFetchedSmartSearch.current = true;
 
     const fetchSmartSearchStatus = async (): Promise<void> => {
       try {
@@ -80,7 +85,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
       }
     };
     fetchSmartSearchStatus();
-  }, [zkMode]);
+  };
 
   // Fetch autocomplete suggestions
   const fetchSuggestions = async (searchQuery: string): Promise<void> => {
@@ -311,6 +316,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
             value={query}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onFocus={handleSearchFocus}
             placeholder="Search files and folders..."
             className={`flex-1 bg-transparent outline-none ${
               darkMode ? 'placeholder-gray-500' : 'placeholder-gray-400'
@@ -352,7 +358,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
                   ? 'AI Smart Search enabled (click to disable)'
                   : 'Enable AI Smart Search'
               }
-              disabled={smartSearchStatus !== null && !smartSearchStatus.semantic_enabled}
+              disabled={smartSearchStatus === null || !smartSearchStatus.semantic_enabled}
             >
               <Sparkles size={16} />
               {smartSearchEnabled && (

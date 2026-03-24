@@ -61,6 +61,18 @@ export default defineConfig({
       '/api': 'http://localhost:3001',
       '/ws': { target: 'ws://localhost:3001', ws: true },
     },
+    warmup: {
+      clientFiles: [
+        './src/App.tsx',
+        './src/contexts/AuthContext.tsx',
+        './src/contexts/StorageContext.tsx',
+        './src/components/dashboard/Dashboard.tsx',
+        './src/components/dashboard/Sidebar.tsx',
+        './src/components/dashboard/FileGrid.tsx',
+        './src/components/dashboard/FileList.tsx',
+        './src/components/dashboard/StorageStats.tsx',
+      ],
+    },
   },
   define: {
     global: 'globalThis',
@@ -90,13 +102,13 @@ export default defineConfig({
             if (id.includes('react-dom') || id.includes('react-router')) {
               return 'vendor-react'
             }
-            if (id.includes('@noble') || id.includes('@scure/bip39') || id.includes('bip39')) {
+            if (id.includes('@noble') || id.includes('@scure/bip39')) {
               return 'vendor-crypto'
             }
             if (id.includes('lucide-react')) {
               return 'vendor-ui'
             }
-            if (id.includes('fflate') || id.includes('buffer')) {
+            if (id.includes('buffer')) {
               return 'vendor-utils'
             }
           }
@@ -111,6 +123,6 @@ export default defineConfig({
       },
     },
     include: ['buffer'],
-    exclude: ['bip39', 'argon2-browser'],
+    exclude: ['argon2-browser'],
   },
 })

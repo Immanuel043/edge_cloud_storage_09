@@ -12,10 +12,8 @@
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
     "argon2-browser": "^1.18.0",
-    "bip39": "^3.1.0",
     "buffer": "^6.0.3",
     "cookie": "^0.6.0",
-    "fflate": "^0.8.2",
     "lucide-react": "^0.542.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
@@ -53,7 +51,6 @@
     ]
   },
   "devDependencies": {
-    "@types/bip39": "^2.4.2",
     "@types/node": "^25.0.9",
     "@types/react": "^19.2.8",
     "@types/react-dom": "^19.2.3",

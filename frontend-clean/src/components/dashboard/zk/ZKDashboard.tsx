@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { Suspense, useState, useRef, useMemo, useEffect } from 'react';
 import {
   Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home,
   Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
@@ -7,7 +7,7 @@ import {
 import { ZK_SERVICE_URL } from '../../../config/constants';
 import zkEncryptionService from '../../../services/zkEncryptionService';
 import { UploadError, UPLOAD_ERROR_TYPES, restoreFromTrash as zkRestoreFromTrash } from '../../../services/zkAuthService';
-import TrashView from '../TrashView';
+// Eager imports — always visible on default cloud-drive view
 import ZKStorageStats from '../ZKStorageStats';
 import ZKEncryptionStatus from '../ZKEncryptionStatus';
 import QuickFilters from '../QuickFilters';
@@ -15,23 +15,31 @@ import FileGrid from '../FileGrid';
 import FileList from '../FileList';
 import UploadProgress from '../UploadProgress';
 import DownloadProgress from '../DownloadProgress';
-import FilePreview from '../FilePreview';
-import RenameModal from '../RenameModal';
-import FileInfoPanel from '../FileInfoPanel';
 import SearchBar from '../SearchBar';
-import SearchResults from '../SearchResults';
-import SettingsView from '../SettingsView';
-import SubscriptionDashboard from '../../subscription/SubscriptionDashboard';
-import PaymentPortal from '../../payment/PaymentPortal';
-import KeyboardShortcuts from '../KeyboardShortcuts';
 import MigrationBanner from '../MigrationBanner';
-import FileCorruptionModal from '../FileCorruptionModal';
-import ShareOptionsModal from '../ShareOptionsModal';
 import ServiceModeBadge from '../ServiceModeBadge';
+
+// Lazy-loaded views
+const TrashView = React.lazy(() => import('../TrashView'));
+const SettingsView = React.lazy(() => import('../SettingsView'));
+const SubscriptionDashboard = React.lazy(() => import('../../subscription/SubscriptionDashboard'));
+const PaymentPortal = React.lazy(() => import('../../payment/PaymentPortal'));
+const SearchResults = React.lazy(() => import('../SearchResults'));
+
+// Lazy-loaded modals
+const FilePreview = React.lazy(() => import('../FilePreview'));
+const RenameModal = React.lazy(() => import('../RenameModal'));
+const FileInfoPanel = React.lazy(() => import('../FileInfoPanel'));
+const ShareOptionsModal = React.lazy(() => import('../ShareOptionsModal'));
+const KeyboardShortcuts = React.lazy(() => import('../KeyboardShortcuts'));
+const FileCorruptionModal = React.lazy(() => import('../FileCorruptionModal'));
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { useNotification } from '../../../contexts/NotificationContext';
+import { useTheme } from '../../../contexts/ThemeContext';
+import { useAuth } from '../../../contexts/AuthContext';
+import { useStorage } from '../../../contexts/StorageContext';
 import { getFileType } from '../../../utils/helpers';
-import type { ZKDashboardLayoutProps, FileItem, FolderItem, UploadItem, DownloadItem, UploadProgressData, DownloadProgressData, UploadErrorInfo, CorruptionErrorInfo, SearchResults as SearchResultsType } from '../types';
+import type { ZKDashboardProps, FileItem, FolderItem, UploadItem, DownloadItem, UploadErrorInfo, CorruptionErrorInfo, SearchResults as SearchResultsType } from '../types';
 import { getErrorMessage } from '../types';
 
 type ViewMode = 'grid' | 'list';
@@ -42,31 +50,30 @@ type SortBy = 'name' | 'date' | 'size' | 'type';
  * ZKDashboard - Zero-Knowledge encrypted file management dashboard
  * Provides client-side encryption, decryption, and secure file operations
  */
-const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
-  darkMode,
-  toggleTheme,
-  user,
-  logout,
-  isUnlocked,
-  onLock,
-  files,
-  folders,
-  currentFolder,
-  currentFolderName,
-  storageStats,
-  selectedFiles,
-  uploadFile,
-  downloadFile,
-  deleteFile,
-  createFolder,
-  navigateToFolder,
-  selectFile,
-  selectAll,
-  clearSelection,
-  refreshFiles,
+const ZKDashboard: React.FC<ZKDashboardProps> = ({
   pendingDownload,
   onClearPendingDownload,
 }) => {
+  const { darkMode, toggleTheme } = useTheme();
+  const { user, logout, zkSessionUnlocked: isUnlocked, lockSession } = useAuth();
+  const onLock = lockSession || (() => {});
+  const {
+    files,
+    folders,
+    currentFolder,
+    currentFolderName,
+    storageStats,
+    selectedFiles,
+    uploadFile,
+    downloadFile,
+    deleteFile,
+    createFolder,
+    navigateToFolder,
+    selectFile,
+    selectAll,
+    clearSelection,
+    refreshFiles,
+  } = useStorage();
   const { success: showSuccess } = useNotification();
 
   const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
@@ -172,11 +179,11 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
                 [downloadId]: {
                   ...current,
                   status: 'downloading',
-                  progress: progressData.progress || 0,
-                  bytesDownloaded: progressData.bytesDownloaded || 0,
-                  ...(progressData.decryptProgress !== undefined && { decryptionProgress: progressData.decryptProgress }),
-                  ...(progressData.currentChunk !== undefined && { chunksDownloaded: progressData.currentChunk }),
-                  ...(progressData.totalChunks !== undefined && { totalChunks: progressData.totalChunks })
+                  progress: (progressData.progress as number) || 0,
+                  bytesDownloaded: (progressData.bytesDownloaded as number) || 0,
+                  ...(progressData.decryptProgress !== undefined && { decryptionProgress: progressData.decryptProgress as number }),
+                  ...(progressData.currentChunk !== undefined && { chunksDownloaded: progressData.currentChunk as number }),
+                  ...(progressData.totalChunks !== undefined && { totalChunks: progressData.totalChunks as number })
                 }
               };
             });
@@ -253,7 +260,7 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
         // Files from last 7 days only, no folders
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
         resultFiles = files.filter(f => {
-          const fileDate = new Date(f.last_accessed || f.updated_at || f.created_at || 0);
+          const fileDate = new Date((f.last_accessed as string) || f.updated_at || f.created_at || 0);
           return fileDate >= sevenDaysAgo;
         });
         resultFolders = [];
@@ -335,7 +342,9 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
       const controller = new AbortController();
       abortControllers.current[uploadId] = controller;
 
-      await uploadFile(file, (progressData: UploadProgressData) => {
+      await uploadFile(file, (progressData) => {
+        const chunksUploaded = progressData.chunksUploaded ?? 0;
+        const totalChunks = progressData.totalChunks ?? 1;
         setUploads(prev => {
           const current = prev[uploadId];
           if (!current) return prev;
@@ -344,9 +353,9 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
             [uploadId]: {
               ...current,
               progress: progressData.progress,
-              chunksUploaded: progressData.chunksUploaded,
-              totalChunks: progressData.totalChunks,
-              bytesUploaded: progressData.bytesUploaded || (progressData.chunksUploaded * (file.size / progressData.totalChunks)),
+              chunksUploaded,
+              totalChunks,
+              bytesUploaded: progressData.bytesUploaded || (chunksUploaded * (file.size / totalChunks)),
               elapsedTime: Date.now() - startTime
             }
           };
@@ -468,7 +477,7 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
         }
       }));
 
-      await downloadFile(fileId, fileName, (progressData: DownloadProgressData) => {
+      await downloadFile(fileId, fileName, (progressData) => {
         setDownloads(prev => {
           const current = prev[downloadId];
           if (!current) return prev;
@@ -477,11 +486,11 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
             [downloadId]: {
               ...current,
               status: 'downloading',
-              progress: progressData.progress || 0,
-              bytesDownloaded: progressData.bytesDownloaded || 0,
-              ...(progressData.decryptProgress !== undefined && { decryptionProgress: progressData.decryptProgress }),
-              ...(progressData.currentChunk !== undefined && { chunksDownloaded: progressData.currentChunk }),
-              ...(progressData.totalChunks !== undefined && { totalChunks: progressData.totalChunks })
+              progress: (progressData.progress as number) || 0,
+              bytesDownloaded: (progressData.bytesDownloaded as number) || 0,
+              ...(progressData.decryptProgress !== undefined && { decryptionProgress: progressData.decryptProgress as number }),
+              ...(progressData.currentChunk !== undefined && { chunksDownloaded: progressData.currentChunk as number }),
+              ...(progressData.totalChunks !== undefined && { totalChunks: progressData.totalChunks as number })
             }
           };
         });
@@ -1042,11 +1051,18 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
           )}
 
           {/* Main Content View */}
-          {renderMainContent()}
+          <Suspense fallback={
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          }>
+            {renderMainContent()}
+          </Suspense>
         </div>
       </div>
 
-      {/* Modals */}
+      {/* Modals — lazy-loaded, rendered only on user action */}
+      <Suspense fallback={null}>
       {shareFile && (
         <ShareOptionsModal
           file={shareFile}
@@ -1099,6 +1115,7 @@ const ZKDashboard: React.FC<ZKDashboardLayoutProps> = ({
           darkMode={darkMode}
         />
       )}
+      </Suspense>
 
       {/* Upload Complete Toast */}
       {showUploadCompleteToast && (

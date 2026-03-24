@@ -1,5 +1,5 @@
 /**
- * Minimal polyfill for Buffer - required by bip39
+ * Minimal polyfill for Buffer - required by crypto and WASM libraries
  * This file must be imported FIRST in main.tsx before any other imports
  */
 
@@ -9,7 +9,7 @@ import * as BufferModule from 'buffer'
 // Get the Buffer constructor
 const BufferClass = (BufferModule as any).Buffer || BufferModule
 
-// Make Buffer available globally for libraries like bip39
+// Make Buffer available globally for crypto and WASM libraries
 if (typeof globalThis !== 'undefined') {
   (globalThis as any).Buffer = BufferClass
 }

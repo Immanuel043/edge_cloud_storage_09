@@ -119,32 +119,32 @@ const App: React.FC = () => {
         <NotificationProvider>
           {bootstrapped ? (
             <AuthProvider>
-              <StorageProvider>
-                <SubscriptionProvider>
-                  <OfflineBanner />
-                  <Suspense fallback={<div>Loading app...</div>}>
-                    <Routes>
-                      <Route path="/auth" element={<AuthPage />} />
-                      <Route path="/pricing" element={<PricingPage />} />
-                      <Route path="/share/:token" element={<ShareViewer />} />
-                      <Route path="/share/bundle/:token" element={<ShareBundleViewer />} />
-                      <Route path="/billing/success" element={<BillingSuccessPage />} />
-                      <Route path="/billing/failure" element={<BillingFailurePage />} />
-                      <Route
-                        path="/"
-                        element={
-                          <ProtectedRoute>
+              <SubscriptionProvider>
+                <Suspense fallback={<div>Loading app...</div>}>
+                  <Routes>
+                    <Route path="/auth" element={<AuthPage />} />
+                    <Route path="/pricing" element={<PricingPage />} />
+                    <Route path="/share/:token" element={<ShareViewer />} />
+                    <Route path="/share/bundle/:token" element={<ShareBundleViewer />} />
+                    <Route path="/billing/success" element={<BillingSuccessPage />} />
+                    <Route path="/billing/failure" element={<BillingFailurePage />} />
+                    <Route
+                      path="/"
+                      element={
+                        <ProtectedRoute>
+                          <StorageProvider>
+                            <OfflineBanner />
                             <Dashboard />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* add more protected or public routes here */}
-                      <Route path="*" element={<Navigate to="/" replace />} />
-                    </Routes>
-                  </Suspense>
-                  <NotificationToast />
-                </SubscriptionProvider>
-              </StorageProvider>
+                          </StorageProvider>
+                        </ProtectedRoute>
+                      }
+                    />
+                    {/* add more protected or public routes here */}
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </Suspense>
+                <NotificationToast />
+              </SubscriptionProvider>
             </AuthProvider>
           ) : (
             <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">

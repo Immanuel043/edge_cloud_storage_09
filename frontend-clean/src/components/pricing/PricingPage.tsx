@@ -968,7 +968,7 @@ export default function PricingPage(): ReactElement {
           isOpen={modalOpen}
           onClose={handleCloseModal}
           targetPlan={selectedPlan}
-          initialBillingCycle={upgradeBillingCycle}
+          {...(upgradeBillingCycle != null && { initialBillingCycle: upgradeBillingCycle })}
         />
       )}
     </div>

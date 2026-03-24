@@ -1,22 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useMemo } from 'react';
 import {
   Upload, X, CheckCircle, Sun, Moon,
   LogOut, Home, ChevronRight, Grid,
   List, Info, Lock, ArrowUpDown, AlertTriangle, FolderPlus
 } from 'lucide-react';
+// Eager imports — always visible on default cloud-drive view
 import Sidebar from '../Sidebar';
-import RecentsView from '../RecentsView';
-import FavoritesView from '../FavoritesView';
-import SharedWithMeView from '../SharedWithMeView';
-import TrashView from '../TrashView';
-import AnalyticsView from '../AnalyticsView';
-import QuotaAlertsView from '../QuotaAlertsView';
-import DeduplicationPanel from '../DeduplicationPanel';
-import AutoOrganizeView from '../AutoOrganizeView';
-import RecommendationsView from '../RecommendationsView';
-import SettingsView from '../SettingsView';
-import SubscriptionDashboard from '../../subscription/SubscriptionDashboard';
-import PaymentPortal from '../../payment/PaymentPortal';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useStorage } from '../../../contexts/StorageContext';
@@ -27,23 +16,38 @@ import { API_URL } from '../../../config/constants';
 import FileGrid from '../FileGrid';
 import FileList from '../FileList';
 import UploadProgressComponent from '../UploadProgress';
-import FilePreview from '../FilePreview';
-import ShareOptionsModal from '../ShareOptionsModal';
-import VersionHistory from '../VersionHistory';
-import RenameModal from '../RenameModal';
-import FileInfoPanel from '../FileInfoPanel';
-import KeyboardShortcuts from '../KeyboardShortcuts';
 import BulkActions from '../BulkActions';
 import SearchBar from '../SearchBar';
-import SearchResults from '../SearchResults';
 import DownloadProgress from '../DownloadProgress';
 import MigrationBanner from '../MigrationBanner';
 import PaymentReminderBanner from '../PaymentReminderBanner';
 import FreeAccountUpgradeBanner from '../FreeAccountUpgradeBanner';
-import FileCorruptionModal from '../FileCorruptionModal';
-import ShareBundleComposer from '../ShareBundleComposer';
 import ServiceModeBadge from '../ServiceModeBadge';
-// ZKDashboardLayout not needed in Normal Dashboard
+
+// Lazy-loaded views — only one renders at a time via switch
+const RecentsView = React.lazy(() => import('../RecentsView'));
+const FavoritesView = React.lazy(() => import('../FavoritesView'));
+const SharedWithMeView = React.lazy(() => import('../SharedWithMeView'));
+const TrashView = React.lazy(() => import('../TrashView'));
+const AnalyticsView = React.lazy(() => import('../AnalyticsView'));
+const QuotaAlertsView = React.lazy(() => import('../QuotaAlertsView'));
+const DeduplicationPanel = React.lazy(() => import('../DeduplicationPanel'));
+const AutoOrganizeView = React.lazy(() => import('../AutoOrganizeView'));
+const RecommendationsView = React.lazy(() => import('../RecommendationsView'));
+const SettingsView = React.lazy(() => import('../SettingsView'));
+const SubscriptionDashboard = React.lazy(() => import('../../subscription/SubscriptionDashboard'));
+const PaymentPortal = React.lazy(() => import('../../payment/PaymentPortal'));
+const SearchResults = React.lazy(() => import('../SearchResults'));
+
+// Lazy-loaded modals — render only on user action
+const FilePreview = React.lazy(() => import('../FilePreview'));
+const ShareOptionsModal = React.lazy(() => import('../ShareOptionsModal'));
+const VersionHistory = React.lazy(() => import('../VersionHistory'));
+const RenameModal = React.lazy(() => import('../RenameModal'));
+const FileInfoPanel = React.lazy(() => import('../FileInfoPanel'));
+const KeyboardShortcuts = React.lazy(() => import('../KeyboardShortcuts'));
+const ShareBundleComposer = React.lazy(() => import('../ShareBundleComposer'));
+const FileCorruptionModal = React.lazy(() => import('../FileCorruptionModal'));
 import { getFileType } from '../../../utils/helpers';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../../services/storageService';
@@ -1285,11 +1289,18 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
           )}
 
           {/* Main Content View */}
-          {renderMainContent()}
+          <Suspense fallback={
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          }>
+            {renderMainContent()}
+          </Suspense>
         </div>
       </div>
 
-      {/* Modals */}
+      {/* Modals — lazy-loaded, rendered only on user action */}
+      <Suspense fallback={null}>
       {shareFile && (
         <ShareOptionsModal
           file={shareFile}
@@ -1367,6 +1378,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
           darkMode={darkMode}
         />
       )}
+      </Suspense>
 
       {/* Upload Complete Toast */}
       {showUploadCompleteToast && (

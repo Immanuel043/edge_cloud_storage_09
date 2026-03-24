@@ -2,7 +2,7 @@
  * Application Entry Point
  *
  * CRITICAL: Polyfills must be imported FIRST before any other modules
- * This ensures Buffer is available for libraries like bip39
+ * This ensures Buffer is available for crypto and WASM libraries
  */
 import './polyfills';
 
