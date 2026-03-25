@@ -20,6 +20,7 @@ from ..services.similarity_service import similarity_service
 from ..services.storage import storage_service
 from ..services.search_service import search_service
 from ..services.summarization_service import generate_summary, summarize_if_eligible
+from ..services.encryption import encryption_service
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,9 @@ async def extract_ocr_now(
     if not (file_obj.mime_type.startswith('image/') or file_obj.mime_type == 'application/pdf'):
         raise HTTPException(status_code=400, detail="File type does not support OCR")
 
-    # Load file data
-    file_data = await storage_service.retrieve_file(file_obj, str(current_user.id))
+    # Decrypt file key and load file data
+    file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+    file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
 
     # Extract text
     ocr_result = await ocr_service.extract_text(file_data, file_obj.mime_type)
@@ -703,8 +705,9 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
                 logger.info(f"Skipping analysis for chunked file {file_id}")
                 return
 
-            # Load file data
-            file_data = await storage_service.retrieve_file(file_obj, user_id)
+            # Decrypt file key and load file data (matches worker line 243-245)
+            file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+            file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
 
             # 1. Extract metadata
             logger.info(f"Extracting metadata for {file_id}")
