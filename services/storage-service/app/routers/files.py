@@ -2085,6 +2085,13 @@ async def permanent_delete(
 
         await db.commit()
 
+        # Remove from Elasticsearch index
+        if search_service.connected:
+            try:
+                await search_service.delete_file(str(file_id))
+            except Exception as e:
+                logger.warning(f"Failed to remove permanently deleted file from search index: {e}")
+
         return {"status": "success", "freed_space": freed_space, "message": "File permanently deleted"}
 
     except Exception as e:
@@ -2241,6 +2248,14 @@ async def empty_trash(
 
         await db.commit()
 
+        # Remove all deleted files from Elasticsearch index
+        if search_service.connected:
+            for fid in file_ids:
+                try:
+                    await search_service.delete_file(fid)
+                except Exception as e:
+                    logger.warning(f"Failed to remove file {fid} from search index: {e}")
+
         return {"status": "success", "deleted": deleted_count, "freed_space": freed_space, "message": f"Emptied trash: {deleted_count} files permanently deleted"}
 
     except Exception as e:
@@ -2296,6 +2311,14 @@ async def bulk_delete_files(
 
         # Commit all changes once
         await db.commit()
+
+        # Remove from Elasticsearch index
+        if search_service.connected:
+            for fid in deleted_files:
+                try:
+                    await search_service.delete_file(fid)
+                except Exception as e:
+                    logger.warning(f"Failed to remove file {fid} from search index: {e}")
 
         # Log activity
         if deleted_count > 0:
@@ -2589,6 +2612,24 @@ async def copy_file(
         )
 
         logger.info(f"File copied successfully: {original_file.file_name} -> {copy_name} (size: {original_file.file_size} bytes)")
+
+        # Index copied file in Elasticsearch
+        if search_service.connected:
+            try:
+                await search_service.index_file({
+                    'id': str(new_file.id),
+                    'user_id': str(current_user.id),
+                    'name': new_file.file_name,
+                    'original_name': new_file.file_name,
+                    'size': new_file.file_size,
+                    'mime_type': new_file.mime_type,
+                    'storage_tier': new_file.storage_tier or 'cache',
+                    'folder_id': str(new_file.folder_id) if new_file.folder_id else None,
+                    'created_at': new_file.created_at.isoformat() if new_file.created_at else None,
+                    'updated_at': new_file.updated_at.isoformat() if new_file.updated_at else None,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to index copied file in search: {e}")
 
         # Return file response
         return FileResponse(

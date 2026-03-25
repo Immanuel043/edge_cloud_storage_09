@@ -11,6 +11,9 @@ from ..models.database import User, Folder
 from ..models.schemas import FolderCreate, FolderResponse
 from ..services.search_service import search_service
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/folders", tags=["folders"])
 
@@ -177,12 +180,27 @@ async def update_folder(
             folder.path = f"/{folder.name}"
     
     await db.commit()
-    
+
+    # Re-index folder in Elasticsearch
+    if search_service.connected:
+        try:
+            await search_service.index_folder({
+                'id': str(folder.id),
+                'name': folder.name,
+                'parent_id': str(folder.parent_id) if folder.parent_id else None,
+                'user_id': str(current_user.id),
+                'path': folder.path,
+                'created_at': folder.created_at,
+                'updated_at': folder.created_at,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to update folder in search index: {e}")
+
     await log_activity(
         db, current_user.id, "folder_updated", str(folder_id),
         {"name": folder.name}, request
     )
-    
+
     return {
         "id": str(folder.id),
         "name": folder.name,
@@ -215,6 +233,10 @@ async def delete_folder(
     if folder.name == "/" and folder.parent_id is None:
         raise HTTPException(status_code=400, detail="Cannot delete root folder")
     
+    # Initialize for non-force path
+    deleted_file_ids: list[str] = []
+    deleted_folder_ids: list[str] = []
+
     if not force:
         # Check if folder has subfolders
         subfolders = await db.execute(
@@ -222,10 +244,10 @@ async def delete_folder(
         )
         if subfolders.scalar_one_or_none():
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="Folder contains subfolders. Use force=true to delete recursively"
             )
-        
+
         # Check if folder has files
         from ..models.database import Object
         files = await db.execute(
@@ -238,36 +260,67 @@ async def delete_folder(
             )
     else:
         # Force delete - recursively delete all contents
-        await delete_folder_contents_recursive(db, folder_id, current_user.id)
-    
+        deleted_file_ids, deleted_folder_ids = await delete_folder_contents_recursive(db, folder_id, current_user.id)
+
     await db.delete(folder)
     await db.commit()
-    
+
+    # Remove folder + contents from Elasticsearch index (after successful commit)
+    if search_service.connected:
+        try:
+            await search_service.delete_folder(str(folder_id))
+        except Exception as e:
+            logger.warning(f"Failed to remove folder {folder_id} from search index: {e}")
+        if force:
+            for fid in deleted_file_ids:
+                try:
+                    await search_service.delete_file(fid)
+                except Exception as e:
+                    logger.warning(f"Failed to remove file {fid} from search index: {e}")
+            for fold_id in deleted_folder_ids:
+                try:
+                    await search_service.delete_folder(fold_id)
+                except Exception as e:
+                    logger.warning(f"Failed to remove folder {fold_id} from search index: {e}")
+
     await log_activity(
         db, current_user.id, "folder_deleted", str(folder_id),
         {"name": folder.name, "forced": force}, request
     )
-    
+
     return {"status": "success", "message": "Folder deleted"}
 
-async def delete_folder_contents_recursive(db: AsyncSession, folder_id: str, user_id: str):
-    """Recursively delete folder contents"""
+async def delete_folder_contents_recursive(
+    db: AsyncSession, folder_id: str, user_id: str
+) -> tuple[list[str], list[str]]:
+    """Recursively delete folder contents. Returns (file_ids, folder_ids) deleted."""
     from ..models.database import Object
-    
+
+    deleted_file_ids: list[str] = []
+    deleted_folder_ids: list[str] = []
+
     # Delete all files in this folder
     files_result = await db.execute(
         select(Object).filter(Object.folder_id == folder_id)
     )
     files = files_result.scalars().all()
     for file in files:
+        deleted_file_ids.append(str(file.id))
         await db.delete(file)
-    
+
     # Recursively delete subfolders
     subfolders_result = await db.execute(
         select(Folder).filter(Folder.parent_id == folder_id)
     )
     subfolders = subfolders_result.scalars().all()
-    
+
     for subfolder in subfolders:
-        await delete_folder_contents_recursive(db, str(subfolder.id), user_id)
+        child_files, child_folders = await delete_folder_contents_recursive(
+            db, str(subfolder.id), user_id
+        )
+        deleted_file_ids.extend(child_files)
+        deleted_folder_ids.extend(child_folders)
+        deleted_folder_ids.append(str(subfolder.id))
         await db.delete(subfolder)
+
+    return deleted_file_ids, deleted_folder_ids

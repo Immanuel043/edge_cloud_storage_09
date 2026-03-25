@@ -506,6 +506,28 @@ class SearchService:
             logger.error(f"Failed to update file text in index: {e}")
             return False
 
+    async def update_file_tags(self, file_id: str, tags: list[str]) -> bool:
+        """Update file tags in index without overwriting other fields"""
+        if not self.connected or self.client is None:
+            logger.warning(f"Elasticsearch not connected, skipping tag update for file: {file_id}")
+            return False
+
+        try:
+            await self.client.update(
+                index=self.files_index,
+                id=str(file_id),
+                body={
+                    "doc": {
+                        "tags": tags
+                    }
+                }
+            )
+            logger.debug(f"Updated file tags in index: {file_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update file tags in index: {e}")
+            return False
+
     async def delete_file(self, file_id: str) -> bool:
         """Remove file from index"""
         # Check if connected

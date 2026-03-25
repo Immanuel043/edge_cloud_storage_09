@@ -315,6 +315,17 @@ async def add_file_tag(
             raise HTTPException(status_code=400, detail="Tag already exists")
         raise
 
+    # Update tags in Elasticsearch (partial update — preserves OCR/description)
+    if search_service.connected:
+        try:
+            tags_result = await db.execute(
+                select(FileTag.tag).filter(FileTag.file_id == file_id)
+            )
+            current_tags = [row[0] for row in tags_result.fetchall()]
+            await search_service.update_file_tags(str(file_id), current_tags)
+        except Exception as e:
+            logger.warning(f"Failed to update search index after adding tag: {e}")
+
     return {
         "success": True,
         "file_id": file_id,
@@ -350,6 +361,17 @@ async def remove_file_tag(
         )
     )
     await db.commit()
+
+    # Update tags in Elasticsearch (partial update — preserves OCR/description)
+    if search_service.connected:
+        try:
+            tags_result = await db.execute(
+                select(FileTag.tag).filter(FileTag.file_id == file_id)
+            )
+            current_tags = [row[0] for row in tags_result.fetchall()]
+            await search_service.update_file_tags(str(file_id), current_tags)
+        except Exception as e:
+            logger.warning(f"Failed to update search index after removing tag: {e}")
 
     return {
         "success": True,
