@@ -18,6 +18,7 @@ import {
   Menu,
   X,
   Trash2,
+  Shield,
   CreditCard,
 } from 'lucide-react';
 import type { SidebarProps, MenuItem as MenuItemType } from './types';
@@ -166,6 +167,12 @@ const Sidebar: React.FC<SidebarProps> = ({
       label: 'Auto-Organize',
       icon: FolderCog,
       description: 'Smart file organization',
+    },
+    {
+      id: 'security-alerts',
+      label: 'Security Alerts',
+      icon: Shield,
+      description: 'Anomaly detection alerts',
     },
     {
       id: 'recommendations',

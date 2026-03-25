@@ -15,7 +15,10 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 # Import your models
 #from app.models.database import Base
 # Import ALL your model classes - adjust these based on your actual models
-from app.models.database import Base, User, Folder, Object, ActivityLog, FileVersion,ContentBlock
+from app.models.database import (
+    Base, User, Folder, Object, ActivityLog, FileVersion, ContentBlock,
+    FileSummary, FileNameSuggestion,
+)
 
 
 # Alembic Config object

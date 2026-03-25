@@ -7,6 +7,7 @@ from datetime import timedelta
 import logging
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.auth import auth_service
+from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType, AuditSeverity
 from ..services.email_service import email_service
 from ..services.verification_service import verification_service
 from ..models.database import User, Folder
@@ -102,6 +103,22 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user or not auth_service.verify_password(password, user.password_hash):
+        # Audit: login failure (best-effort)
+        try:
+            await audit_logging_service.log_event(
+                db, AuditEventType.LOGIN_FAILURE,
+                user_id=user.id if user else None,
+                action="login",
+                result="failure",
+                severity=AuditSeverity.WARNING,
+                request=request,
+                details={"attempted_email": email},
+            )
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.is_active:
@@ -115,6 +132,21 @@ async def login(
         )
 
     await log_activity(db, user.id, "user_login", request=request)
+
+    # Audit: login success (best-effort)
+    try:
+        await audit_logging_service.log_event(
+            db, AuditEventType.LOGIN_SUCCESS,
+            user_id=user.id,
+            action="login",
+            result="success",
+            request=request,
+        )
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 

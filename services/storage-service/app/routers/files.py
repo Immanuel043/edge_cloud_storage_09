@@ -12,12 +12,13 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 from ..dependencies import get_db, log_activity, get_current_user
+from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
 from ..services.search_service import search_service
 from ..services.download_optimizer import download_optimizer
 from ..services.bandwidth_throttle import bandwidth_throttle_service
-from ..models.database import User, Object, ActivityLog, Favorite
+from ..models.database import User, Object, ActivityLog, Favorite, FileNameSuggestion
 from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
@@ -727,7 +728,24 @@ async def download_file(
         {"file_name": file_obj.file_name, "partial": parsed_range is not None},
         request
     )
-    
+
+    # Audit log (best-effort)
+    try:
+        await audit_logging_service.log_event(
+            db, AuditEventType.FILE_DOWNLOADED,
+            user_id=current_user.id,
+            resource_type="file",
+            resource_id=str(file_id),
+            action="download",
+            request=request,
+            details={"file_name": file_obj.file_name},
+        )
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
     # Handle different storage types
 
     # Video compatibility stream (transcoded H.264 MP4)
@@ -1513,6 +1531,119 @@ async def get_preview_status(
     }
 
 
+async def perform_rename(
+    file_obj: Object,
+    new_name: str,
+    user_id,
+    db: AsyncSession,
+    request=None,
+) -> Object:
+    """
+    Shared rename logic — validates, checks duplicates, updates, logs, re-indexes ES.
+    Used by both PATCH /rename and POST /name-suggestion/accept.
+    Raises HTTPException on validation failure.
+    """
+    new_name = new_name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="File name cannot be empty")
+
+    if len(new_name) > 255:
+        raise HTTPException(status_code=400, detail="File name too long (max 255 characters)")
+
+    invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+    if any(char in new_name for char in invalid_chars):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File name contains invalid characters: {', '.join(invalid_chars)}"
+        )
+
+    old_name = file_obj.file_name
+
+    if old_name == new_name:
+        raise HTTPException(status_code=400, detail="New name is the same as current name")
+
+    # Check for duplicate name in same folder
+    duplicate_check = await db.execute(
+        select(Object).where(
+            Object.user_id == user_id,
+            Object.folder_id == file_obj.folder_id,
+            Object.file_name == new_name,
+            Object.id != file_obj.id,
+        )
+    )
+    if duplicate_check.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="A file with this name already exists in the same location")
+
+    # Update file
+    file_obj.file_name = new_name
+    file_obj.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(file_obj)
+
+    # Log activity
+    await log_activity(
+        db, user_id, "file_renamed", str(file_obj.id),
+        {"old_name": old_name, "new_name": new_name},
+        request,
+    )
+
+    # Audit log (best-effort)
+    try:
+        await audit_logging_service.log_event(
+            db, AuditEventType.FILE_MODIFIED,
+            user_id=user_id,
+            resource_type="file",
+            resource_id=str(file_obj.id),
+            action="rename",
+            request=request,
+            details={"action": "rename", "old_name": old_name, "new_name": new_name},
+        )
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+    # Update Elasticsearch
+    if search_service.connected:
+        try:
+            await search_service.index_file({
+                'id': str(file_obj.id),
+                'user_id': str(file_obj.user_id),
+                'name': file_obj.file_name,
+                'original_name': file_obj.file_name,
+                'size': file_obj.file_size,
+                'mime_type': file_obj.mime_type,
+                'storage_tier': file_obj.storage_tier or 'cache',
+                'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
+                'created_at': file_obj.created_at.isoformat() if file_obj.created_at else None,
+                'updated_at': file_obj.updated_at.isoformat() if file_obj.updated_at else None,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to update search index after rename: {e}")
+
+    # Resolve stale name suggestions
+    try:
+        ns_result = await db.execute(
+            select(FileNameSuggestion).filter(
+                FileNameSuggestion.file_id == str(file_obj.id),
+                FileNameSuggestion.is_accepted == False,
+                FileNameSuggestion.is_dismissed == False,
+            )
+        )
+        suggestion = ns_result.scalar_one_or_none()
+        if suggestion:
+            if new_name == suggestion.suggested_name:
+                suggestion.is_accepted = True
+            else:
+                suggestion.is_dismissed = True
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to resolve name suggestion after rename: {e}")
+
+    return file_obj
+
+
 @router.patch("/{file_id}/rename", response_model=FileResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
 async def rename_file(
     file_id: str,
@@ -1528,22 +1659,6 @@ async def rename_file(
     - **name**: New file name
     """
     try:
-        # Validate file name
-        new_name = rename_request.name.strip()
-        if not new_name:
-            raise HTTPException(status_code=400, detail="File name cannot be empty")
-
-        if len(new_name) > 255:
-            raise HTTPException(status_code=400, detail="File name too long (max 255 characters)")
-
-        # Check for invalid characters
-        invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
-        if any(char in new_name for char in invalid_chars):
-            raise HTTPException(
-                status_code=400,
-                detail=f"File name contains invalid characters: {', '.join(invalid_chars)}"
-            )
-
         # Get file and verify ownership
         result = await db.execute(
             select(Object).where(
@@ -1556,61 +1671,10 @@ async def rename_file(
         if not file_obj:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Store old name for activity log
-        old_name = file_obj.file_name
-
-        # Check if name is actually different
-        if old_name == new_name:
-            raise HTTPException(status_code=400, detail="New name is the same as current name")
-
-        # Check for duplicate name in same folder
-        duplicate_check = await db.execute(
-            select(Object).where(
-                Object.user_id == current_user.id,
-                Object.folder_id == file_obj.folder_id,
-                Object.file_name == new_name,
-                Object.id != file_id
-            )
-        )
-        if duplicate_check.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="A file with this name already exists in the same location")
-
-        # Update file name and updated_at timestamp
-        file_obj.file_name = new_name
-        file_obj.updated_at = datetime.utcnow()
-
-        await db.commit()
-        await db.refresh(file_obj)
-
-        # Log activity
-        await log_activity(
-            db,
-            current_user.id,
-            "file_renamed",
-            str(file_id),
-            {"old_name": old_name, "new_name": new_name},
-            request
+        file_obj = await perform_rename(
+            file_obj, rename_request.name, current_user.id, db, request
         )
 
-        # Update Elasticsearch index with new name
-        if search_service.connected:
-            try:
-                await search_service.index_file({
-                    'id': str(file_obj.id),
-                    'user_id': str(file_obj.user_id),
-                    'name': file_obj.file_name,
-                    'original_name': file_obj.file_name,
-                    'size': file_obj.file_size,
-                    'mime_type': file_obj.mime_type,
-                    'storage_tier': file_obj.storage_tier or 'cache',
-                    'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                    'created_at': file_obj.created_at.isoformat() if file_obj.created_at else None,
-                    'updated_at': file_obj.updated_at.isoformat() if file_obj.updated_at else None,
-                })
-            except Exception as e:
-                logger.warning(f"Failed to update search index after rename: {e}")
-
-        # Return updated file details
         return FileResponse(
             id=str(file_obj.id),
             name=file_obj.file_name,
@@ -1622,17 +1686,15 @@ async def rename_file(
             created_at=file_obj.created_at,
             last_accessed=file_obj.last_accessed,
             updated_at=file_obj.updated_at,
-            path=None,  # Can be computed if needed
-            is_favorite=False  # Will be set by query if needed
+            path=None,
+            is_favorite=False,
         )
 
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        print(f"Rename error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Rename error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to rename file: {str(e)}")
 
 
@@ -1732,6 +1794,23 @@ async def delete_file(
         db.add(activity)
 
         await db.commit()
+
+        # Audit log (best-effort)
+        try:
+            await audit_logging_service.log_event(
+                db, AuditEventType.FILE_DELETED,
+                user_id=current_user.id,
+                resource_type="file",
+                resource_id=str(file_id),
+                action="delete",
+                request=request,
+                details={"file_name": file_name},
+            )
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
         # Remove from Elasticsearch index
         if search_service.connected:
@@ -2225,6 +2304,24 @@ async def bulk_delete_files(
                 {"deleted_count": deleted_count},
                 request
             )
+
+            # Audit: log each deletion for anomaly detection
+            for fid in deleted_files:
+                try:
+                    await audit_logging_service.log_event(
+                        db, AuditEventType.FILE_DELETED,
+                        user_id=current_user.id,
+                        resource_type="file",
+                        resource_id=fid,
+                        action="delete",
+                        request=request,
+                        details={"bulk": True, "deleted_count": deleted_count},
+                    )
+                except Exception:
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
 
         return {
             "deleted": deleted_count,

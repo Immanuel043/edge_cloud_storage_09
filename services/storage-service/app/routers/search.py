@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
 from app.services.search_service import search_service
 from app.services.embedding_service import embedding_service
-from app.models.database import User, Object, FileEmbedding, Folder
+from app.models.database import User, Object, FileEmbedding, Folder, FileTag
 from app.dependencies import get_current_user, get_db
 from app.database import get_redis
 from app.config import settings
@@ -75,20 +75,41 @@ async def database_fallback_search(
     folders_result = await db.execute(folders_query)
     folders = folders_result.scalars().all()
     
+    # Batch fetch tags for matched files
+    tags_by_file: dict = {}
+    if files:
+        try:
+            fids = [f.id for f in files]
+            tags_result = await db.execute(
+                select(FileTag).filter(FileTag.file_id.in_(fids))
+            )
+            for tag in tags_result.scalars().all():
+                fid = str(tag.file_id)
+                if fid not in tags_by_file:
+                    tags_by_file[fid] = []
+                tags_by_file[fid].append({
+                    'tag': tag.tag,
+                    'source': tag.source,
+                    'confidence': tag.confidence,
+                })
+        except Exception:
+            pass
+
     return {
         "files": {
             "total": total_files,
             "hits": [
                 {
                     "id": str(f.id),
-                    "name": f.file_name,  # Object uses file_name
-                    "size": f.file_size,  # Object uses file_size
+                    "name": f.file_name,
+                    "size": f.file_size,
                     "mime_type": f.mime_type,
                     "created_at": safe_isoformat(f.created_at),
                     "storage_tier": f.storage_tier,
                     "is_encrypted": f.encryption_mode != 'none' if hasattr(f, 'encryption_mode') else False,
                     "score": 1.0,
-                    "source": "database"
+                    "source": "database",
+                    "tags": tags_by_file.get(str(f.id), []),
                 }
                 for f in files
             ]
@@ -565,6 +586,24 @@ async def _enrich_results_with_metadata(
         logger.warning(f"Batch fetch failed: {e}")
         return results
 
+    # Batch fetch tags for all file IDs
+    tags_by_file: dict = {}
+    try:
+        tags_result = await db.execute(
+            select(FileTag).filter(FileTag.file_id.in_(file_ids))
+        )
+        for tag in tags_result.scalars().all():
+            fid = str(tag.file_id)
+            if fid not in tags_by_file:
+                tags_by_file[fid] = []
+            tags_by_file[fid].append({
+                'tag': tag.tag,
+                'source': tag.source,
+                'confidence': tag.confidence,
+            })
+    except Exception as e:
+        logger.debug(f"Tag fetch failed (non-critical): {e}")
+
     # Enrich results in original order
     enriched = []
     for r in results:
@@ -584,7 +623,8 @@ async def _enrich_results_with_metadata(
                 'size': file_obj.file_size,
                 'created_at': safe_isoformat(file_obj.created_at),
                 'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                **{k: v for k, v in r.items() if k not in ['file_id', 'id']}
+                **{k: v for k, v in r.items() if k not in ['file_id', 'id']},
+                'tags': tags_by_file.get(file_id_str, []),
             }
             enriched.append(enriched_result)
         else:

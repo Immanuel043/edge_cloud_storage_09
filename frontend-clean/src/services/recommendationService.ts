@@ -45,6 +45,7 @@ interface SimilarFile {
   mime_type: string;
   similarity_score: number;
   reason?: string;
+  common_keywords?: string[];
 }
 
 interface TrendingFile {
@@ -159,7 +160,28 @@ class RecommendationService {
       throw new Error(`Failed to fetch similar files: ${response.status}`);
     }
 
-    return await response.json();
+    const raw = await response.json();
+
+    // Normalize: backend returns nested { file: {...}, similarity_score } but we want flat
+    if (Array.isArray(raw)) {
+      return raw.map((item: Record<string, unknown>) => {
+        if (item.file && typeof item.file === 'object') {
+          const f = item.file as Record<string, unknown>;
+          return {
+            file_id: (f.id as string) || '',
+            file_name: (f.name as string) || '',
+            file_size: (f.size as number) || 0,
+            mime_type: (f.mime_type as string) || '',
+            similarity_score: (item.similarity_score as number) || 0,
+            reason: (item.reason as string) || undefined,
+            common_keywords: (item.common_keywords as string[]) || undefined,
+          } as SimilarFile;
+        }
+        return item as unknown as SimilarFile;
+      });
+    }
+
+    return raw;
   }
 
   /**

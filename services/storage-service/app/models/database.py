@@ -1560,3 +1560,35 @@ class UploadSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     expires_at = Column(DateTime, nullable=False)
+
+
+class FileSummary(Base):
+    """Cached AI/TF-IDF generated document summaries."""
+    __tablename__ = "file_summaries"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey("objects.id", ondelete="CASCADE"),
+                     nullable=False, unique=True, index=True)
+    summary = Column(Text, nullable=False)
+    word_count = Column(Integer)
+    model_used = Column(String(100))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    file = relationship("Object", backref="file_summary", uselist=False)
+
+
+class FileNameSuggestion(Base):
+    """AI-generated file rename suggestions."""
+    __tablename__ = "file_name_suggestions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey("objects.id", ondelete="CASCADE"),
+                     nullable=False, unique=True, index=True)
+    suggested_name = Column(String(500), nullable=False)
+    reason = Column(Text)
+    source = Column(String(50))  # 'ocr_title', 'ai_tags', 'exif_date', 'llm', etc.
+    is_accepted = Column(Boolean, server_default="false", default=False)
+    is_dismissed = Column(Boolean, server_default="false", default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    file = relationship("Object", backref="name_suggestion", uselist=False)

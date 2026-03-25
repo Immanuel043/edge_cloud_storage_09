@@ -259,6 +259,14 @@ export interface MenuPosition {
 }
 
 /**
+ * Name suggestion entry returned by pending-suggestions batch endpoint
+ */
+export interface NameSuggestionEntry {
+  suggested_name: string;
+  reason: string;
+}
+
+/**
  * FileGrid component props
  */
 export interface FileGridProps extends DarkModeProps {
@@ -278,6 +286,9 @@ export interface FileGridProps extends DarkModeProps {
   onFileCopy?: ((file: FileItem) => void) | undefined;
   trashedView?: boolean | undefined;
   onRestore?: ((fileId: string) => void) | undefined;
+  nameSuggestions?: Record<string, NameSuggestionEntry>;
+  onAcceptNameSuggestion?: (fileId: string) => void;
+  onDismissNameSuggestion?: (fileId: string) => void;
 }
 
 /**
@@ -405,6 +416,7 @@ export interface SearchHit {
     name?: string[];
   } | undefined;
   path?: string | undefined;
+  tags?: { tag: string; source: string; confidence: number }[] | undefined;
 }
 
 /**
@@ -1056,7 +1068,8 @@ export type ActiveViewType =
   | 'storage-optimization'
   | 'settings'
   | 'billing'
-  | 'payment-portal';
+  | 'payment-portal'
+  | 'security-alerts';
 
 /**
  * Sort By Type

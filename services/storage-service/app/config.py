@@ -124,6 +124,19 @@ class Settings:
     FOLDER_MAX_FILES: int = int(os.getenv("FOLDER_MAX_FILES", 1000))
     FOLDER_MAX_TOTAL_SIZE: int = int(os.getenv("FOLDER_MAX_TOTAL_SIZE", 10 * 1024**3))  # 10GB
 
+    # LLM Configuration (OpenAI-compatible API for summarization / naming)
+    LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+    LLM_API_URL: str = os.getenv("LLM_API_URL", "https://api.openai.com/v1")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+    LLM_ENABLED: bool = os.getenv("LLM_ENABLED", "false").lower() == "true"
+
+    # Anomaly Detection Configuration
+    ANOMALY_DETECTION_ENABLED: bool = os.getenv("ANOMALY_DETECTION_ENABLED", "true").lower() == "true"
+    ANOMALY_VOLUME_MULTIPLIER: float = float(os.getenv("ANOMALY_VOLUME_MULTIPLIER", "3.0"))
+    ANOMALY_BULK_DELETE_THRESHOLD: int = int(os.getenv("ANOMALY_BULK_DELETE_THRESHOLD", "10"))
+    ANOMALY_BULK_DELETE_WINDOW_MINUTES: int = int(os.getenv("ANOMALY_BULK_DELETE_WINDOW_MINUTES", "5"))
+
     # ML Features Configuration
     ML_FEATURES_ENABLED: bool = os.getenv("ML_FEATURES_ENABLED", "true").lower() == "true"
 

@@ -307,6 +307,72 @@ const QuotaAlertsView: React.FC<QuotaAlertsViewProps> = ({ darkMode, storageStat
         </div>
       )}
 
+      {/* Prediction Chart */}
+      {prediction && (prediction.predicted_7d || prediction.predicted_14d || prediction.predicted_30d) && (() => {
+        const currentBytes = storageStats?.used || prediction.current_usage_bytes || 0;
+        const quotaBytes = storageStats?.quota || prediction.quota_bytes || 1;
+        const points = [
+          { day: 0, bytes: currentBytes, label: 'Now' },
+          { day: 7, bytes: prediction.predicted_7d || currentBytes, label: '7d' },
+          { day: 14, bytes: prediction.predicted_14d || currentBytes, label: '14d' },
+          { day: 30, bytes: prediction.predicted_30d || currentBytes, label: '30d' },
+        ];
+        const maxBytes = Math.max(quotaBytes * 1.1, ...points.map(p => p.bytes));
+        const W = 600, H = 200, PL = 70, PR = 20, PT = 20, PB = 40;
+        const cw = W - PL - PR, ch = H - PT - PB;
+        const x = (d: number) => PL + (d / 30) * cw;
+        const y = (b: number) => PT + ch - (b / maxBytes) * ch;
+        const quotaY = y(quotaBytes);
+        const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.day).toFixed(1)},${y(p.bytes).toFixed(1)}`).join(' ');
+        const areaD = pathD + ` L${x(30).toFixed(1)},${(PT + ch).toFixed(1)} L${x(0).toFixed(1)},${(PT + ch).toFixed(1)} Z`;
+
+        return (
+          <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+            <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              <TrendingUp size={20} className="text-indigo-500" />
+              Usage Forecast
+            </h2>
+            <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 220 }}>
+              {/* Grid lines */}
+              {[0, 0.25, 0.5, 0.75, 1].map(f => {
+                const yPos = PT + ch - f * ch;
+                return (
+                  <g key={f}>
+                    <line x1={PL} y1={yPos} x2={W - PR} y2={yPos} stroke={darkMode ? '#374151' : '#e5e7eb'} strokeWidth={1} />
+                    <text x={PL - 8} y={yPos + 4} textAnchor="end" fontSize={10} fill={darkMode ? '#9ca3af' : '#6b7280'}>
+                      {formatBytes(f * maxBytes)}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Quota limit line */}
+              <line x1={PL} y1={quotaY} x2={W - PR} y2={quotaY} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="6 3" />
+              <text x={W - PR + 2} y={quotaY + 4} fontSize={9} fill="#ef4444">Quota</text>
+
+              {/* Area fill */}
+              <path d={areaD} fill={darkMode ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.1)'} />
+
+              {/* Line */}
+              <path d={pathD} fill="none" stroke="#6366f1" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+
+              {/* Points + labels */}
+              {points.map(p => (
+                <g key={p.day}>
+                  <circle cx={x(p.day)} cy={y(p.bytes)} r={4} fill="#6366f1" stroke={darkMode ? '#1f2937' : '#fff'} strokeWidth={2} />
+                  <text x={x(p.day)} y={PT + ch + 16} textAnchor="middle" fontSize={10} fill={darkMode ? '#9ca3af' : '#6b7280'}>
+                    {p.label}
+                  </text>
+                  <text x={x(p.day)} y={y(p.bytes) - 10} textAnchor="middle" fontSize={9} fill={darkMode ? '#d1d5db' : '#374151'}>
+                    {formatBytes(p.bytes)}
+                  </text>
+                </g>
+              ))}
+            </svg>
+          </div>
+        );
+      })()}
+
       {/* Active Alerts */}
       <div className={`rounded-lg p-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
         <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>

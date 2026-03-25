@@ -14,6 +14,7 @@ import {
   Lock,
   Copy,
   RotateCcw,
+  Lightbulb,
 } from 'lucide-react';
 import { formatBytes, formatDate, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
@@ -225,7 +226,11 @@ const FileGrid: React.FC<FileGridProps> = ({
   darkMode,
   trashedView = false,
   onRestore,
+  nameSuggestions,
+  onAcceptNameSuggestion,
+  onDismissNameSuggestion: _onDismissNameSuggestion,
 }) => {
+  void _onDismissNameSuggestion;
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [hoveredMenuId, setHoveredMenuId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<MenuPosition>({ top: 0, left: 0 });
@@ -427,6 +432,18 @@ const FileGrid: React.FC<FileGridProps> = ({
                     >
                       <Lock className="w-2.5 h-2.5" />
                     </span>
+                  )}
+                  {nameSuggestions?.[file.id] && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAcceptNameSuggestion?.(file.id);
+                      }}
+                      className="flex-shrink-0 text-yellow-500 hover:text-yellow-400 transition-colors"
+                      title={`Rename suggestion: ${nameSuggestions?.[file.id]?.suggested_name ?? ''}`}
+                    >
+                      <Lightbulb className="w-3.5 h-3.5" />
+                    </button>
                   )}
                 </div>
                 <div

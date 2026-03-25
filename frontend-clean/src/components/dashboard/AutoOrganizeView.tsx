@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   FolderCog,
   Loader,
@@ -20,9 +20,12 @@ import {
   ToggleLeft,
   ToggleRight,
   Brain,
-  Layers
+  Layers,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { organizationService } from '../../services/organizationService';
+import { API_URL } from '../../config/constants';
 import { formatBytes } from '../../utils/helpers';
 import type { AutoOrganizeViewProps, OrganizationCluster, OrganizationRule } from './types';
 import { getErrorMessage } from './types';
@@ -60,6 +63,43 @@ const AutoOrganizeView: React.FC<AutoOrganizeViewProps> = ({ darkMode }) => {
     autoApply: false,
     priority: 1
   });
+  const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
+  const [clusterFiles, setClusterFiles] = useState<Record<string, { name: string; mime_type?: string; size?: number; confidence?: number }[]>>({});
+  const [loadingClusterFiles, setLoadingClusterFiles] = useState<Set<string>>(new Set());
+
+  const toggleClusterExpand = useCallback(async (clusterId: string) => {
+    setExpandedClusters(prev => {
+      const next = new Set(prev);
+      if (next.has(clusterId)) {
+        next.delete(clusterId);
+      } else {
+        next.add(clusterId);
+      }
+      return next;
+    });
+
+    // Lazy load files if not already loaded
+    if (!clusterFiles[clusterId] && !loadingClusterFiles.has(clusterId)) {
+      setLoadingClusterFiles(prev => new Set(prev).add(clusterId));
+      try {
+        const res = await fetch(`${API_URL}/api/v1/organization/clusters/${clusterId}/files?limit=20`, {
+          credentials: 'include',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setClusterFiles(prev => ({ ...prev, [clusterId]: data.files || [] }));
+        }
+      } catch {
+        // Ignore
+      } finally {
+        setLoadingClusterFiles(prev => {
+          const next = new Set(prev);
+          next.delete(clusterId);
+          return next;
+        });
+      }
+    }
+  }, [clusterFiles, loadingClusterFiles]);
 
   useEffect(() => {
     loadData();
@@ -363,6 +403,14 @@ const AutoOrganizeView: React.FC<AutoOrganizeViewProps> = ({ darkMode }) => {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
+                        onClick={() => toggleClusterExpand(cluster.id)}
+                        className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-600'}`}
+                        type="button"
+                        title="Preview files"
+                      >
+                        {expandedClusters.has(cluster.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                      </button>
+                      <button
                         onClick={() => handleApplyCluster(cluster.id)}
                         className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium"
                         type="button"
@@ -379,6 +427,46 @@ const AutoOrganizeView: React.FC<AutoOrganizeViewProps> = ({ darkMode }) => {
                       </button>
                     </div>
                   </div>
+
+                  {/* Expanded file list */}
+                  {expandedClusters.has(cluster.id) && (
+                    <div className={`mt-3 pt-3 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                      {loadingClusterFiles.has(cluster.id) ? (
+                        <div className="flex items-center gap-2 py-2">
+                          <Loader className="animate-spin" size={14} />
+                          <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Loading files...</span>
+                        </div>
+                      ) : (clusterFiles[cluster.id] ?? []).length > 0 ? (
+                        <div className="space-y-1">
+                          {(clusterFiles[cluster.id] ?? []).map((f, idx) => (
+                            <div
+                              key={idx}
+                              className={`flex items-center gap-2 px-2 py-1 rounded text-sm ${
+                                darkMode ? 'text-gray-300 hover:bg-gray-700/50' : 'text-gray-700 hover:bg-gray-50'
+                              }`}
+                            >
+                              {getFileIcon(f.mime_type ? [f.mime_type.split('/').pop() || ''] : undefined)}
+                              <span className="flex-1 truncate">{f.name}</span>
+                              {f.size != null && (
+                                <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                  {formatBytes(f.size)}
+                                </span>
+                              )}
+                              {f.confidence != null && (
+                                <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                  {(f.confidence * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className={`text-sm py-2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                          No files found in this cluster.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

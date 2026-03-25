@@ -18,7 +18,7 @@ import logging
 
 from ..dependencies import get_db, get_current_user
 from ..models.database import (
-    User, OrganizationCluster, OrganizationRule, OrganizationSession)
+    User, Object, OrganizationCluster, OrganizationRule, OrganizationSession, FileClusterAssignment)
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..models.schemas import (
     OrganizationClusterResponse,
@@ -267,6 +267,70 @@ async def dismiss_cluster(
     except Exception as e:
         logger.error(f"Failed to dismiss cluster: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to dismiss cluster: {str(e)}")
+
+
+@router.get("/clusters/{cluster_id}/files")
+async def get_cluster_files(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """
+    Get files belonging to a cluster.
+
+    Returns file names, IDs, and paths for preview.
+    """
+    try:
+        from uuid import UUID
+
+        # Verify cluster belongs to user
+        cluster_result = await db.execute(
+            select(OrganizationCluster).where(
+                OrganizationCluster.id == UUID(cluster_id),
+                OrganizationCluster.user_id == current_user.id,
+            )
+        )
+        cluster = cluster_result.scalar_one_or_none()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        # Fetch assigned files
+        result = await db.execute(
+            select(Object, FileClusterAssignment.confidence_score)
+            .join(FileClusterAssignment, FileClusterAssignment.file_id == Object.id)
+            .where(
+                FileClusterAssignment.cluster_id == UUID(cluster_id),
+                FileClusterAssignment.user_id == current_user.id,
+                Object.is_deleted == False,
+            )
+            .order_by(FileClusterAssignment.confidence_score.desc())
+            .limit(limit)
+        )
+
+        files = []
+        for file_obj, confidence in result.all():
+            files.append({
+                "id": str(file_obj.id),
+                "name": file_obj.file_name,
+                "mime_type": file_obj.mime_type,
+                "size": file_obj.file_size,
+                "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                "confidence": round(confidence, 3) if confidence else None,
+            })
+
+        return {
+            "cluster_id": cluster_id,
+            "cluster_name": cluster.suggested_name,
+            "file_count": len(files),
+            "files": files,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get cluster files: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get cluster files: {str(e)}")
 
 
 # Organization Rules

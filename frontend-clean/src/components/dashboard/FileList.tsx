@@ -13,6 +13,7 @@ import {
   Copy,
   Shield,
   RotateCcw,
+  Lightbulb,
 } from 'lucide-react';
 import { formatBytes, formatDate, sanitizeInput } from '../../utils/helpers';
 import FileThumbnail from './FileThumbnail';
@@ -43,7 +44,11 @@ const FileList: React.FC<FileListProps> = ({
   isZKMode: _isZKMode = false,
   trashedView = false,
   onRestore,
+  nameSuggestions,
+  onAcceptNameSuggestion,
+  onDismissNameSuggestion: _onDismissNameSuggestion,
 }) => {
+  void _onDismissNameSuggestion;
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [hoveredMenuId, setHoveredMenuId] = useState<string | null>(null);
 
@@ -192,6 +197,18 @@ const FileList: React.FC<FileListProps> = ({
                 <Shield size={10} />
                 ZK
               </span>
+            )}
+            {nameSuggestions?.[file.id] && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAcceptNameSuggestion?.(file.id);
+                }}
+                className="flex-shrink-0 text-yellow-500 hover:text-yellow-400 transition-colors"
+                title={`Rename suggestion: ${nameSuggestions?.[file.id]?.suggested_name ?? ''}`}
+              >
+                <Lightbulb size={14} />
+              </button>
             )}
           </div>
           <div

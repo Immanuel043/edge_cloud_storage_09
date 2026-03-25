@@ -15,6 +15,7 @@ import mimetypes
 from datetime import datetime
 from ..dependencies import get_db, log_activity, get_current_user, get_plan_quota
 from ..services.auth import auth_service
+from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
 from ..models.database import User, Object, FileVersion
@@ -1108,6 +1109,23 @@ async def complete_upload(
             },
             request,
         )
+
+        # Audit log (best-effort)
+        try:
+            await audit_logging_service.log_event(
+                db, AuditEventType.FILE_UPLOADED,
+                user_id=current_user.id,
+                resource_type="file",
+                resource_id=str(file_id),
+                action="upload",
+                request=request,
+                details={"file_name": session["name"], "size": session["size"]},
+            )
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
         # Notify connected WebSocket clients via Redis Pub/Sub
         try:

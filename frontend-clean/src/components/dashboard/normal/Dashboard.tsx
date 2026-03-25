@@ -35,6 +35,7 @@ const DeduplicationPanel = React.lazy(() => import('../DeduplicationPanel'));
 const AutoOrganizeView = React.lazy(() => import('../AutoOrganizeView'));
 const RecommendationsView = React.lazy(() => import('../RecommendationsView'));
 const SettingsView = React.lazy(() => import('../SettingsView'));
+const SecurityAlertsView = React.lazy(() => import('../SecurityAlertsView'));
 const SubscriptionDashboard = React.lazy(() => import('../../subscription/SubscriptionDashboard'));
 const PaymentPortal = React.lazy(() => import('../../payment/PaymentPortal'));
 const SearchResults = React.lazy(() => import('../SearchResults'));
@@ -63,9 +64,16 @@ import type {
   ViewMode,
   PendingDownload,
   CorruptionErrorInfo,
-  NormalDashboardProps
+  NormalDashboardProps,
+  NameSuggestionEntry,
 } from '../types';
 import { getErrorMessage } from '../types';
+import {
+  getPendingSuggestions,
+  acceptNameSuggestion as apiAcceptSuggestion,
+  dismissNameSuggestion as apiDismissSuggestion,
+  getAnalysisStatus,
+} from '../../../services/nameSuggestionService';
 
 interface ErrorWithStatus extends Error {
   status?: number;
@@ -164,6 +172,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   const [corruptionError, setCorruptionError] = useState<CorruptionErrorInfo | null>(null);
   const [showShareBundleComposer, setShowShareBundleComposer] = useState<boolean>(false);
 
+  // Name suggestion state
+  const [nameSuggestions, setNameSuggestions] = useState<Record<string, NameSuggestionEntry>>({});
+
   useEffect(() => {
     // Don't attempt to load if auth is still loading or not authenticated
     if (authLoading || !isAuthenticated) {
@@ -176,7 +187,16 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     }
   }, [isAuthenticated, authLoading, activeView]);
 
-  // Watch for upload completion to show toast
+  // Fetch pending name suggestions when files change
+  useEffect(() => {
+    if (!files || files.length === 0) return;
+    const fileIds = files.map(f => f.id);
+    getPendingSuggestions(fileIds)
+      .then(res => setNameSuggestions(res.suggestions))
+      .catch(() => setNameSuggestions({}));
+  }, [files]);
+
+  // Watch for upload completion to show toast + poll for name suggestions
   useEffect(() => {
     const uploadValues = Object.values(uploads);
     const allCompleted = uploadValues.length > 0 &&
@@ -190,8 +210,83 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
       setTimeout(() => {
         setShowUploadCompleteToast(false);
       }, 5000);
+
+      // Poll analysis status for recently uploaded files (name suggestion polling)
+      // Use file names to match against recently loaded files since UploadItem doesn't store server file ID
+      const uploadedNames = new Set(uploadValues.map(u => u.name));
+      const recentFileIds = (files || [])
+        .filter(f => uploadedNames.has(f.name))
+        .map(f => f.id);
+      if (recentFileIds.length > 0) {
+        pollAnalysisStatus(recentFileIds);
+      }
     }
   }, [uploads]);
+
+  // Poll analysis-status for recently uploaded files (3s intervals, max 10 attempts)
+  const pollAnalysisStatus = async (fileIds: string[]) => {
+    const pending = new Set(fileIds);
+    let attempts = 0;
+    const maxAttempts = 10;
+    const interval = 3000;
+
+    const poll = async () => {
+      if (pending.size === 0 || attempts >= maxAttempts) return;
+      attempts++;
+
+      for (const fid of [...pending]) {
+        try {
+          const status = await getAnalysisStatus(fid);
+          if (status.status === 'completed' || status.status === 'skipped') {
+            pending.delete(fid);
+            if (status.has_suggestion) {
+              // Refresh pending suggestions batch
+              const allFileIds = files.map(f => f.id);
+              const res = await getPendingSuggestions(allFileIds);
+              setNameSuggestions(res.suggestions);
+            }
+          }
+        } catch {
+          // Ignore — will retry
+        }
+      }
+
+      if (pending.size > 0 && attempts < maxAttempts) {
+        setTimeout(poll, interval);
+      }
+    };
+
+    setTimeout(poll, interval);
+  };
+
+  // Accept/dismiss name suggestion handlers
+  const handleAcceptNameSuggestion = async (fileId: string) => {
+    try {
+      await apiAcceptSuggestion(fileId);
+      setNameSuggestions(prev => {
+        const next = { ...prev };
+        delete next[fileId];
+        return next;
+      });
+      await refreshFiles();
+      showSuccess('File renamed successfully');
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleDismissNameSuggestion = async (fileId: string) => {
+    try {
+      await apiDismissSuggestion(fileId);
+      setNameSuggestions(prev => {
+        const next = { ...prev };
+        delete next[fileId];
+        return next;
+      });
+    } catch {
+      // Ignore
+    }
+  };
 
   // Setup keyboard shortcuts
   useKeyboardShortcuts({
@@ -945,6 +1040,11 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
           />
         );
 
+      case 'security-alerts':
+        return (
+          <SecurityAlertsView darkMode={darkMode} />
+        );
+
       case 'settings':
         return (
           <SettingsView darkMode={darkMode} />
@@ -1031,6 +1131,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                         onFileInfo={setFileInfo}
                         onFileCopy={handleFileCopy}
                         darkMode={darkMode}
+                        nameSuggestions={nameSuggestions}
+                        onAcceptNameSuggestion={handleAcceptNameSuggestion}
+                        onDismissNameSuggestion={handleDismissNameSuggestion}
                       />
                     ) : (
                       <FileList
@@ -1049,6 +1152,9 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                         onFileInfo={setFileInfo}
                         onFileCopy={handleFileCopy}
                         darkMode={darkMode}
+                        nameSuggestions={nameSuggestions}
+                        onAcceptNameSuggestion={handleAcceptNameSuggestion}
+                        onDismissNameSuggestion={handleDismissNameSuggestion}
                       />
                     )}
 

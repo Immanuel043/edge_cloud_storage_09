@@ -223,6 +223,20 @@ class FileAnalysisWorker:
                 # Skip chunked files (too large to load into memory)
                 if file_obj.storage_type == "chunked":
                     logger.info(f"Skipping analysis for chunked file {file_id} ({file_name})")
+                    # Write terminal Redis status so frontend polling stops immediately
+                    try:
+                        import json as _json
+                        from datetime import datetime as _dt, timezone as _tz
+                        status_data = _json.dumps({
+                            "status": "skipped",
+                            "reason": "chunked",
+                            "completed_at": _dt.now(_tz.utc).isoformat(),
+                        })
+                        await redis.setex(
+                            f"analysis:status:{file_id}", 86400, status_data
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to write skipped Redis status for {file_id}: {e}")
                     return
 
                 # Decrypt file key and retrieve file data
@@ -341,16 +355,33 @@ class FileAnalysisWorker:
 
                 await db.commit()
 
+                # 5. Summarization (best-effort, after OCR)
+                try:
+                    from ..services.summarization_service import summarize_if_eligible
+                    await summarize_if_eligible(file_id, db)
+                except Exception as e:
+                    logger.warning(f"Summarization failed for {file_id}: {e}")
+
+                # 6. Smart naming (best-effort)
+                has_name_suggestion = False
+                try:
+                    from ..services.file_naming_service import suggest_name_if_eligible
+                    result = await suggest_name_if_eligible(file_id, db)
+                    has_name_suggestion = result is not None
+                except Exception as e:
+                    logger.warning(f"Name suggestion failed for {file_id}: {e}")
+
                 # Update analysis status in Redis
                 await self.redis.setex(
                     f"analysis:status:{file_id}",
-                    3600,  # 1 hour TTL
+                    86400,  # 24 hour TTL
                     json.dumps({
                         "status": "completed",
                         "completed_at": datetime.utcnow().isoformat(),
                         "has_ocr": ocr_text is not None,
                         "has_metadata": metadata is not None,
-                        "tag_count": len(tags) if 'tags' in dir() else 0
+                        "tag_count": len(tags) if 'tags' in dir() else 0,
+                        "has_suggestion": has_name_suggestion,
                     })
                 )
 

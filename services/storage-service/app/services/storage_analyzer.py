@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, text
 from uuid import UUID
 import time
 
@@ -368,11 +368,13 @@ class StorageAnalyzerService:
         user_id: UUID,
         db: AsyncSession,
         limit: int = 100
-    ) -> List[Object]:
+    ) -> List[Dict]:
         """
-        Get specific files that should be moved to cold storage
+        Get specific files that should be moved to cold storage.
 
-        Returns list of file objects ready for migration
+        Returns list of dicts with 'file' (Object), 'score' (float),
+        and 'scoring_method' ('access_data' | 'age_based').
+        Scored candidates are sorted by score descending (highest = best to migrate).
         """
         threshold_date = datetime.utcnow() - timedelta(days=90)
 
@@ -389,15 +391,95 @@ class StorageAnalyzerService:
                             Object.created_at < threshold_date
                         )
                     ),
-                    # Object.access_count <= 5,  # Commented out - access_count not in Object model
                     Object.file_size >= 1024 * 1024  # 1MB
                 )
             )
-            .order_by(Object.file_size.desc())  # Largest files first
+            .order_by(Object.file_size.desc())
             .limit(limit)
         )
 
-        return result.scalars().all()
+        candidates = result.scalars().all()
+        if not candidates:
+            return []
+
+        # Try to enhance with access-data scoring
+        scored = await self._score_candidates_with_access_data(candidates, db)
+        if scored is not None:
+            return scored
+
+        # Fallback: age-based scoring
+        now = datetime.utcnow()
+        return [
+            {
+                'file': c,
+                'score': (now - (c.last_accessed or c.created_at)).days,
+                'scoring_method': 'age_based',
+            }
+            for c in candidates
+        ]
+
+    async def _score_candidates_with_access_data(
+        self,
+        candidates: List[Object],
+        db: AsyncSession,
+    ) -> Optional[List[Dict]]:
+        """
+        Score cold-storage candidates using file_access_log data.
+        Returns None if the table doesn't exist or has no data (fallback to age-based).
+
+        Score formula: days_since_last_access * (1 / (access_count + 1)) * size_weight
+        Higher score = better candidate for cold storage.
+        """
+        try:
+            file_ids = [str(c.id) for c in candidates]
+            result = await db.execute(
+                text("""
+                    SELECT file_id,
+                           COUNT(*) AS access_count,
+                           MAX(accessed_at) AS last_access
+                    FROM file_access_log
+                    WHERE file_id = ANY(:ids)
+                    GROUP BY file_id
+                """),
+                {"ids": file_ids},
+            )
+            access_map = {
+                str(row.file_id): {
+                    'access_count': row.access_count,
+                    'last_access': row.last_access,
+                }
+                for row in result.all()
+            }
+        except Exception:
+            # Table may not exist — fall back to age-based
+            return None
+
+        now = datetime.utcnow()
+        scored = []
+        for c in candidates:
+            fid = str(c.id)
+            if fid in access_map:
+                info = access_map[fid]
+                days_since = max(1, (now - info['last_access']).days) if info['last_access'] else 180
+                count = info['access_count']
+            else:
+                # No access log entries — treat as very cold
+                days_since = (now - (c.last_accessed or c.created_at)).days
+                count = 0
+
+            size_weight = min(2.0, (c.file_size or 0) / (100 * 1024 * 1024))  # 0-2 scale, cap at 200MB
+            score = days_since * (1 / (count + 1)) * (1 + size_weight)
+
+            scored.append({
+                'file': c,
+                'score': round(score, 2),
+                'scoring_method': 'access_data',
+                'access_count': count,
+                'days_since_last_access': days_since,
+            })
+
+        scored.sort(key=lambda x: x['score'], reverse=True)
+        return scored
 
     async def get_compressible_files(
         self,

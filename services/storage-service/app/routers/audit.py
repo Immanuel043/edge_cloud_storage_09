@@ -419,12 +419,65 @@ async def get_security_alerts(
                 "severity": alert.severity,
                 "status": alert.status,
                 "title": alert.title,
+                "description": alert.description,
                 "risk_score": alert.risk_score,
+                "evidence": alert.evidence,
+                "trigger_pattern": alert.trigger_pattern,
+                "first_seen": alert.first_seen.isoformat() if alert.first_seen else None,
+                "last_seen": alert.last_seen.isoformat() if alert.last_seen else None,
                 "detected_at": alert.detected_at.isoformat() if alert.detected_at else None,
-                "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None
+                "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
             }
             for alert in alerts
         ]
+    }
+
+
+@router.post("/security/alerts/{alert_id}/dismiss", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+async def dismiss_security_alert(
+    alert_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a security alert (marks as false_positive)"""
+    conditions = [SecurityAlert.id == alert_id]
+    if not getattr(current_user, 'is_admin', False):
+        conditions.append(SecurityAlert.user_id == current_user.id)
+
+    result = await db.execute(
+        select(SecurityAlert).filter(and_(*conditions))
+    )
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    alert.status = "false_positive"
+    alert.resolved_at = datetime.utcnow()
+    await db.commit()
+
+    return {"success": True, "alert_id": alert_id, "status": "false_positive"}
+
+
+@router.get("/security/alerts/summary", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+async def get_security_alerts_summary(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get counts of open alerts by severity"""
+    conditions = [SecurityAlert.status == "open"]
+    if not getattr(current_user, 'is_admin', False):
+        conditions.append(SecurityAlert.user_id == current_user.id)
+
+    result = await db.execute(
+        select(SecurityAlert.severity, func.count().label("cnt"))
+        .filter(and_(*conditions))
+        .group_by(SecurityAlert.severity)
+    )
+
+    summary = {row.severity: row.cnt for row in result.all()}
+    return {
+        "total": sum(summary.values()),
+        "by_severity": summary,
     }
 
 

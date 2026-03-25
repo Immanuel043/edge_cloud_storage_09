@@ -82,6 +82,7 @@ class AuditEventType(str, Enum):
     ENCRYPTION_KEY_CREATED = "security.key.created"
     ENCRYPTION_KEY_RETIRED = "security.key.retired"
     SECURITY_VIOLATION = "security.violation"
+    SECURITY_SCAN_COMPLETED = "security.scan.completed"
     RATE_LIMIT_EXCEEDED = "security.rate_limit.exceeded"
     SUSPICIOUS_ACTIVITY = "security.suspicious"
 
@@ -306,30 +307,37 @@ class AuditLoggingService:
             metadata=metadata
         )
 
-        # Store in database (using existing ActivityLog table for now)
-        # In production, you'd want a separate AuditLog table
-        from ..models.database import ActivityLog
+        # Store in AuditLog table (not ActivityLog — main flows write ActivityLog via log_activity())
+        from ..models.database import AuditLog as AuditLogModel
 
-        audit_log = ActivityLog(
+        audit_record = AuditLogModel(
+            event_type=event_type.value,
+            event_category=event.category.value,
+            event_hash=event.event_hash,
             user_id=user_id,
-            action=event_type.value,
-            object_id=resource_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action=action or event_type.value,
+            result=result,
+            severity=severity.value,
             ip_address=ip_address,
             user_agent=user_agent,
-            meta_data={
-                "event_id": str(event.id),
-                "resource_type": resource_type,
-                "result": result,
-                "severity": severity.value,
-                "category": event.category.value,
-                "details": details,
-                "metadata": metadata,
-                "event_hash": event.event_hash
-            }
+            request_id=request_id,
+            details=details,
+            audit_metadata=metadata,
+            previous_event_hash=None,
         )
 
-        db.add(audit_log)
-        await db.commit()
+        try:
+            db.add(audit_record)
+            await db.commit()
+        except Exception as db_err:
+            # Rollback to prevent poisoned session state
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.error(f"Failed to write audit log: {db_err}")
 
         # Log to file
         self._write_to_log_file(event)

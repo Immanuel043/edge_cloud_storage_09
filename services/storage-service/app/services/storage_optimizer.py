@@ -109,12 +109,34 @@ class StorageOptimizerService:
         savings_percent = (analysis.estimated_savings_tiering / analysis.total_size) if analysis.total_size > 0 else 0
         priority = self._calculate_priority(savings_percent)
 
-        # Get specific file candidates
-        candidates = await storage_analyzer.get_file_candidates_for_cold_storage(
+        # Get specific file candidates (scored)
+        scored_candidates = await storage_analyzer.get_file_candidates_for_cold_storage(
             user_id=analysis.user_id,
             db=db,
             limit=100
         )
+
+        # Determine scoring method for description
+        scoring_method = scored_candidates[0]['scoring_method'] if scored_candidates else 'age_based'
+
+        if scoring_method == 'access_data' and scored_candidates:
+            # Enhanced description with access data insights
+            avg_days = sum(c.get('days_since_last_access', 90) for c in scored_candidates) / len(scored_candidates)
+            avg_accesses = sum(c.get('access_count', 0) for c in scored_candidates) / len(scored_candidates)
+            description = (
+                f"Move {analysis.files_to_cold} files "
+                f"({self._format_bytes(analysis.size_to_cold)}) to cold storage tier. "
+                f"Predicted low access — last accessed {avg_days:.0f} days ago on average, "
+                f"{avg_accesses:.1f} accesses in the past 30 days. "
+                f"Estimated savings: {self._format_bytes(analysis.estimated_savings_tiering)}."
+            )
+        else:
+            description = (
+                f"Move {analysis.files_to_cold} infrequently accessed files "
+                f"({self._format_bytes(analysis.size_to_cold)}) to cold storage tier. "
+                f"Not accessed in over 90 days (age-based). "
+                f"Estimated savings: {self._format_bytes(analysis.estimated_savings_tiering)}."
+            )
 
         suggestion = OptimizationSuggestion(
             user_id=analysis.user_id,
@@ -122,21 +144,17 @@ class StorageOptimizerService:
             suggestion_type='tier_migration',
             priority=priority,
             title=f"Move {analysis.files_to_cold} files to cold storage",
-            description=(
-                f"Move {analysis.files_to_cold} infrequently accessed files "
-                f"({self._format_bytes(analysis.size_to_cold)}) to cold storage tier. "
-                f"These files haven't been accessed in over 90 days and could save "
-                f"{self._format_bytes(analysis.estimated_savings_tiering)} in storage costs."
-            ),
+            description=description,
             files_affected=analysis.files_to_cold,
             size_affected=analysis.size_to_cold,
             estimated_savings=analysis.estimated_savings_tiering,
             estimated_savings_percent=savings_percent * 100,
             action_type='move_to_cold',
             action_details={
-                'file_ids': [str(f.id) for f in candidates[:100]],
+                'file_ids': [str(c['file'].id) for c in scored_candidates[:100]],
                 'target_tier': 'cold',
-                'reason': 'infrequent_access'
+                'reason': 'infrequent_access',
+                'scoring_method': scoring_method,
             },
             is_auto_applicable=True  # Safe to auto-apply
         )

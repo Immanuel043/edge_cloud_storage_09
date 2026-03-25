@@ -278,6 +278,31 @@ const SearchResults: React.FC<SearchResultsProps> = ({
                       </>
                     )}
                   </div>
+                  {file.tags && file.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {file.tags.slice(0, 5).map((t) => (
+                        <span
+                          key={t.tag}
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            t.source === 'ai_vision' || t.source === 'ai_nlp'
+                              ? darkMode
+                                ? 'bg-purple-900/30 text-purple-400'
+                                : 'bg-purple-100 text-purple-700'
+                              : darkMode
+                                ? 'bg-gray-700 text-gray-300'
+                                : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {t.tag}
+                        </span>
+                      ))}
+                      {file.tags.length > 5 && (
+                        <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                          +{file.tags.length - 5}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {(() => {
                   const relevance = getRelevanceDisplay(getScore(file));
