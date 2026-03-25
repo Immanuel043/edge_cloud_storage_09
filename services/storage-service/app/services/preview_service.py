@@ -308,12 +308,13 @@ class PreviewService:
                     use_transcoded = True
 
             if not use_transcoded:
-                temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+                result = await preview_optimizer.download_partial_for_preview(
                     file_obj=file_obj,
                     encryption_service=encryption_service,
                 )
-                if temp_file_path is None:
+                if result.status != 'ok':
                     return None
+                temp_file_path = result.temp_file_path
 
             # Generate all 3 sizes
             ttl = _cache_ttl(file_obj.mime_type)

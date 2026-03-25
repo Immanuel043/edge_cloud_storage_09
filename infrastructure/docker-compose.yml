@@ -728,6 +728,7 @@ services:
       STORAGE_ROOT: /app/storage
       SECRET_KEY: ${SECRET_KEY}
       ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY}
+      RUST_DATAPLANE_SOCKET: /run/dataplane/edge-storage-dataplane.sock
     depends_on:
       kafka:
         condition: service_healthy
@@ -737,9 +738,12 @@ services:
         condition: service_healthy
       storage-service:
         condition: service_healthy
+      rust-dataplane:
+        condition: service_healthy
     volumes:
       - storage_data:/app/storage
       - /tmp/preview_temp:/tmp/preview_temp
+      - dataplane-socket:/run/dataplane
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'preview_worker' || exit 1"]
       interval: 30s

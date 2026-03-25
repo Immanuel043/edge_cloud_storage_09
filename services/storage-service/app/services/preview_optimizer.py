@@ -18,6 +18,7 @@ import aiofiles
 import base64
 import logging
 import struct
+from dataclasses import dataclass
 from typing import Optional, Tuple
 from .video_optimizer import video_optimizer
 
@@ -25,6 +26,18 @@ logger = logging.getLogger(__name__)
 
 MB = 1024 * 1024
 MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB = 100  # Hard cap for blocking preview fetches (lowered to prevent OOM)
+MAX_BG_ENCRYPTED_VIDEO_MB = 200   # Background: single-storage encrypted (full file in memory + decrypted copy)
+MAX_BG_CAS_VIDEO_MB = 500         # Background: CAS/chunked (streamed to disk, no double-buffer)
+
+
+@dataclass
+class PreviewDownloadResult:
+    """Explicit result from download_partial_for_preview."""
+    status: str               # 'ok', 'deferred', 'failed'
+    temp_file_path: Optional[str] = None
+    is_complete: bool = False
+    error: Optional[str] = None
+
 
 TAIL_HEAVY_VIDEO_EXTS = {
     '.mov', '.qt', '.mp4', '.m4v', '.3gp', '.3g2', '.f4v', '.m4a'
@@ -510,13 +523,16 @@ class PreviewOptimizer:
         self,
         file_obj,
         encryption_service,
-        max_size: Optional[int] = None
-    ) -> Tuple[str, bool]:
+        max_size: Optional[int] = None,
+        background: bool = False,
+    ) -> PreviewDownloadResult:
         """
-        Download only the first portion of a file for preview generation
+        Download only the first portion of a file for preview generation.
 
-        Returns: (temp_file_path, is_complete)
-        - is_complete: True if entire file was downloaded, False if partial
+        Returns PreviewDownloadResult with:
+        - status='ok': temp_file_path set, ready for preview generation
+        - status='deferred': too large for sync, caller should queue to Kafka
+        - status='failed': too large even for background, deterministic failure
         """
 
         if max_size is None:
@@ -563,7 +579,7 @@ class PreviewOptimizer:
                 async with aiofiles.open(temp_file_path, 'wb') as f:
                     await f.write(file_data)
 
-                return temp_file_path, True  # Complete
+                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
 
             elif file_obj.storage_type == "single":
                 # Single file storage
@@ -581,16 +597,20 @@ class PreviewOptimizer:
                 mime = (file_obj.mime_type or '').lower()
                 is_video = mime.startswith('video/')
 
-                # For large single-storage videos (>100MB), trigger background processing
-                # to prevent OOM and long blocking requests
-                if is_video and file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
+                # For large single-storage videos, guard based on caller context.
+                # Encrypted single-storage loads full ciphertext + decrypted copy (2x memory).
+                effective_limit = MAX_BG_ENCRYPTED_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                if is_video and file_size_mb > effective_limit:
                     logger.info(
-                        f"⏳ Large single-storage video: {file_obj.file_name} "
-                        f"({file_size_mb:.1f}MB > {MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB}MB limit). "
-                        f"Returning None to trigger background processing."
+                        f"Large single-storage video: {file_obj.file_name} "
+                        f"({file_size_mb:.1f}MB > {effective_limit}MB limit)"
                     )
                     os.unlink(temp_file_path)
-                    return None, False
+                    status = 'failed' if background else 'deferred'
+                    return PreviewDownloadResult(
+                        status=status,
+                        error=f"Video {file_size_mb:.0f}MB exceeds {effective_limit}MB limit",
+                    )
 
                 # Standard approach: decrypt FULL file
                 # NOTE: For encrypted files, we must read the COMPLETE file for decryption
@@ -629,7 +649,7 @@ class PreviewOptimizer:
                                 f"(not truncated to {max_size/1024/1024:.1f}MB to preserve {'xref table' if is_pdf else 'moov atom'})"
                             )
 
-                return temp_file_path, True  # Always complete since we wrote full decrypted data
+                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
 
             else:  # chunked or content-addressed storage
                 # Download only first N chunks (or full file for CAS)
@@ -647,18 +667,24 @@ class PreviewOptimizer:
                     fetch_end = file_obj.file_size - 1
                     if _needs_head_tail(file_obj, is_partial):
                         file_size_mb = file_obj.file_size / MB
-                        if file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
+                        effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                        if file_size_mb > effective_limit:
                             logger.info(
-                                f"CAS file {file_size_mb:.1f}MB > {MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB}MB - "
-                                "queuing for async processing"
+                                f"CAS file {file_size_mb:.1f}MB > {effective_limit}MB - "
+                                f"{'failed' if background else 'deferring to background'}"
                             )
-                            return None, False
+                            os.unlink(temp_file_path)
+                            status = 'failed' if background else 'deferred'
+                            return PreviewDownloadResult(
+                                status=status,
+                                error=f"CAS video {file_size_mb:.0f}MB exceeds {effective_limit}MB limit",
+                            )
                     elif is_partial:
                         fetch_end = min(max_size - 1, fetch_end)
 
                     await _fetch_from_cas(chunk_info, file_obj, 0, fetch_end, temp_file_path)
                     is_complete = (fetch_end >= file_obj.file_size - 1)
-                    return temp_file_path, is_complete
+                    return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=is_complete)
 
                 if _needs_head_tail(file_obj, is_partial):
                     # ==================================================================
@@ -758,13 +784,18 @@ class PreviewOptimizer:
                             os.unlink(probe_file_path)
 
                             file_size_mb = file_obj.file_size / MB
-                            if file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
+                            effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                            if file_size_mb > effective_limit:
                                 logger.info(
-                                    f"File is {file_size_mb:.1f}MB (> {MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB}MB). "
-                                    f"Queuing preview for async processing."
+                                    f"File is {file_size_mb:.1f}MB (> {effective_limit}MB). "
+                                    f"{'Failed' if background else 'Deferring to background'}."
                                 )
                                 os.unlink(temp_file_path)
-                                return None, False
+                                status = 'failed' if background else 'deferred'
+                                return PreviewDownloadResult(
+                                    status=status,
+                                    error=f"Video {file_size_mb:.0f}MB exceeds {effective_limit}MB (moov not found)",
+                                )
 
                             await _fetch_contiguous_range(
                                 start_byte=0,
@@ -779,7 +810,7 @@ class PreviewOptimizer:
                                 chunk_info=chunk_info,
                                 file_obj=file_obj,
                             )
-                            return temp_file_path, True
+                            return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
 
                         logger.info(
                             f"Phase 2 - Detection: "
@@ -793,14 +824,15 @@ class PreviewOptimizer:
                             file_size_mb = file_obj.file_size / 1024 / 1024
 
                             if file_size_mb > 500:
-                                # Too large for sync preview - return None to trigger 202
                                 logger.info(
-                                    f"⏳ Large fMP4 file ({file_size_mb:.1f}MB > 500MB) - "
-                                    f"returning None to trigger background processing"
+                                    f"Large fMP4 file ({file_size_mb:.1f}MB > 500MB hard limit)"
                                 )
                                 os.unlink(probe_file_path)
                                 os.unlink(temp_file_path)
-                                return None, False
+                                return PreviewDownloadResult(
+                                    status='failed',
+                                    error=f"Fragmented MP4 {file_size_mb:.0f}MB exceeds 500MB hard limit",
+                                )
 
                             # Download full file contiguously
                             logger.info(
@@ -823,7 +855,7 @@ class PreviewOptimizer:
                             )
 
                             os.unlink(probe_file_path)
-                            return temp_file_path, True  # Complete file
+                            return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
 
                         else:
                             # Progressive MP4/MOV: Fetch [0...moov_end+guard] contiguously
@@ -841,6 +873,20 @@ class PreviewOptimizer:
                             if moov_near_end_of_probe:
                                 # moov is in the tail portion - must download entire file
                                 # because gappy probe offset doesn't map to actual file offset
+                                file_size_mb = file_obj.file_size / MB
+                                effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                                if file_size_mb > effective_limit:
+                                    logger.info(
+                                        f"moov-at-end: {file_obj.file_name} ({file_size_mb:.1f}MB > {effective_limit}MB)"
+                                    )
+                                    os.unlink(probe_file_path)
+                                    os.unlink(temp_file_path)
+                                    status = 'failed' if background else 'deferred'
+                                    return PreviewDownloadResult(
+                                        status=status,
+                                        error=f"Video {file_size_mb:.0f}MB exceeds {effective_limit}MB (moov at end)",
+                                    )
+
                                 logger.info(
                                     f"Phase 3 - Fetch: moov found late in probe buffer "
                                     f"(offset {moov_offset/1024/1024:.1f}MB in {probe_bytes/1024/1024:.1f}MB probe), "
@@ -862,7 +908,7 @@ class PreviewOptimizer:
                                 )
 
                                 os.unlink(probe_file_path)
-                                return temp_file_path, True  # Complete file
+                                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
 
                             else:
                                 # moov is early in the file - safe to use partial download
@@ -890,7 +936,7 @@ class PreviewOptimizer:
                                 )
 
                                 os.unlink(probe_file_path)
-                                return temp_file_path, False  # Partial but contiguous
+                                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=False)
 
                     except Exception as e:
                         # Cleanup on error
@@ -957,7 +1003,7 @@ class PreviewOptimizer:
                         await asyncio.sleep(0)  # Yield between chunks
 
                 is_complete = (chunks_to_download >= total_chunks)
-                return temp_file_path, is_complete
+                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=is_complete)
 
         except Exception as e:
             # Cleanup on error

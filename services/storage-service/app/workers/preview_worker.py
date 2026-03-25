@@ -230,29 +230,42 @@ class PreviewWorker:
                     # Download file for preview (can take time - that's OK, we're in background!)
                     logger.info(f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)")
 
-                    temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+                    result = await preview_optimizer.download_partial_for_preview(
                         file_obj=file_obj,
-                        encryption_service=encryption_service
+                        encryption_service=encryption_service,
+                        background=True,
                     )
 
-                    if temp_file_path is None:
-                        # None means file is too large for sync processing — not a failure
-                        logger.info(f"⏳ File too large for sync preview, queued for async processing: {file_id} ({file_obj.file_name})")
-                        await self._set_status(file_id, 'queued', 'Queued for async processing')
-                        await self._publish_notification(file_id, str(file_obj.user_id), 'queued', 'Queued for async processing')
+                    if result.status != 'ok':
+                        # Worker is the final stop — never re-queue from here
+                        error_msg = result.error or f"Download failed ({file_obj.file_size / 1024 / 1024:.0f}MB)"
+                        logger.warning(f"❌ {error_msg}: {file_id} ({file_obj.file_name})")
+                        # Size-limit failures are deterministic — mark non-retryable
+                        await self._set_status(file_id, 'failed', error_msg, retryable=False)
+                        await self._publish_notification(file_id, str(file_obj.user_id), 'failed', error_msg)
                         return
 
+                    temp_file_path = result.temp_file_path
                     try:
-                        # Generate previews for all sizes
+                        # Generate previews for all sizes with per-size tracking
+                        sizes_cached = 0
                         for size in PREVIEW_SIZES:
-                            await self._generate_and_cache_preview(
-                                file_obj, temp_file_path, size
-                            )
+                            try:
+                                await self._generate_and_cache_preview(
+                                    file_obj, temp_file_path, size
+                                )
+                                sizes_cached += 1
+                            except Exception as e:
+                                logger.warning(f"   ⚠️ Failed to generate {size} preview: {e}")
 
-                        # Update status to 'ready'
-                        await self._set_status(file_id, 'ready')
-                        await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
-                        logger.info(f"✅ Preview ready for {file_obj.file_name}")
+                        if sizes_cached > 0:
+                            await self._set_status(file_id, 'ready')
+                            await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
+                            logger.info(f"✅ Preview ready for {file_obj.file_name} ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)")
+                        else:
+                            await self._set_status(file_id, 'failed', 'All preview sizes failed to generate')
+                            await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'All preview sizes failed')
+                            logger.warning(f"❌ All preview sizes failed for {file_obj.file_name}")
 
                     finally:
                         # Cleanup temp file
@@ -283,24 +296,20 @@ class PreviewWorker:
                     pass
 
     async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str):
-        """Generate preview and cache in Redis"""
-        try:
-            preview_bytes, content_type = await preview_generator.generate_preview(
-                file_path=temp_file_path,
-                mime_type=file_obj.mime_type,
-                size=size,
-                file_name=file_obj.file_name
-            )
+        """Generate preview and cache in Redis. Raises on failure (caller handles per-size tracking)."""
+        preview_bytes, content_type = await preview_generator.generate_preview(
+            file_path=temp_file_path,
+            mime_type=file_obj.mime_type,
+            size=size,
+            file_name=file_obj.file_name
+        )
 
-            # Cache in Redis
-            cache_key = f"preview:{file_obj.id}:{size}"
-            await self.redis.setex(cache_key, PREVIEW_CACHE_TTL, preview_bytes)
-            logger.info(f"   📦 Cached preview {size} for {file_obj.id}")
+        # Cache in Redis
+        cache_key = f"preview:{file_obj.id}:{size}"
+        await self.redis.setex(cache_key, PREVIEW_CACHE_TTL, preview_bytes)
+        logger.info(f"   📦 Cached preview {size} for {file_obj.id}")
 
-        except Exception as e:
-            logger.warning(f"   ⚠️ Failed to generate {size} preview: {e}")
-
-    async def _set_status(self, file_id: str, status: str, error: str = None):
+    async def _set_status(self, file_id: str, status: str, error: str = None, retryable: Optional[bool] = None):
         """Update preview status in Redis, preserving retry_count across transitions."""
         status_key = f"preview:status:{file_id}"
         retry_count = 0
@@ -324,6 +333,8 @@ class PreviewWorker:
             status_data['error'] = error
         if retry_count > 0:
             status_data['retry_count'] = retry_count
+        if retryable is not None:
+            status_data['retryable'] = retryable
 
         await self.redis.setex(
             status_key,

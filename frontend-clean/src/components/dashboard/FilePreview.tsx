@@ -377,6 +377,11 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
           'Preview is still generating. Video playback will start using the inline player.',
           { fatal: false }
         );
+      } else if (response.status === 409) {
+        setPreviewFailure(
+          'Preview unavailable for this file. You can still stream or download it below.',
+          { fatal: false }
+        );
       } else if (response.status === 400) {
         // ZK-encrypted files cannot be previewed server-side
         setPreviewFailure(

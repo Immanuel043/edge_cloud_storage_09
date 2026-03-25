@@ -100,6 +100,14 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
   const abortCountRef = useRef<number>(0);
   const wsReadyRef = useRef<boolean>(false);
   const processingStartRef = useRef<number>(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearRetryTimer = () => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  };
 
   // Derive file name from various possible sources
   const fileName = file.name || file.file_name || 'Unknown File';
@@ -153,11 +161,14 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
 
       console.log(`[FileThumbnail] Match! Bumping retryCount for file ${fileId}, status=${msg.status}`);
       if (msg.status === 'ready') {
+        clearRetryTimer();
         wsReadyRef.current = true;
         abortCountRef.current = 0;
         setRetryCount((prev) => prev + 1);
       } else if (msg.status === 'failed') {
+        clearRetryTimer();
         setIsProcessing(false);
+        setLoading(false);
       }
     });
 
@@ -198,7 +209,8 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
               const delay = wsReadyRef.current
                 ? 2000
                 : Math.min(5000 * abortCountRef.current, 30000);
-              setTimeout(() => {
+              clearRetryTimer();
+              retryTimerRef.current = setTimeout(() => {
                 if (mounted) setRetryCount((prev) => prev + 1);
               }, delay);
             } else {
@@ -238,6 +250,17 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
           return;
         }
 
+        // Handle 409 - terminal preview failure (non-retryable)
+        if (response.status === 409) {
+          if (mounted) {
+            clearRetryTimer();
+            setIsProcessing(false);
+            setLoading(false);
+            setError(false);
+          }
+          return;
+        }
+
         // Handle 202 Accepted - preview is being generated
         if (response.status === 202) {
           if (mounted) {
@@ -249,6 +272,15 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
 
             try {
               const data = (await response.json()) as { retry_after?: number; status?: string };
+
+              // Backend may send 202 with status=failed body
+              if (data.status === 'failed') {
+                clearRetryTimer();
+                setIsProcessing(false);
+                setLoading(false);
+                return;
+              }
+
               const retryAfter = wsConnected ? pollInterval : (data.retry_after || 5) * 1000;
 
               abortCountRef.current = 0;
@@ -267,7 +299,8 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
               setIsProcessing(true);
 
               if (retryCount < maxRetries) {
-                setTimeout(() => {
+                clearRetryTimer();
+                retryTimerRef.current = setTimeout(() => {
                   if (mounted) {
                     setRetryCount((prev) => prev + 1);
                   }
@@ -294,7 +327,8 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
 
               setIsProcessing(true);
               if (retryCount < maxRetries) {
-                setTimeout(() => {
+                clearRetryTimer();
+                retryTimerRef.current = setTimeout(() => {
                   if (mounted) {
                     setRetryCount((prev) => prev + 1);
                   }
@@ -406,6 +440,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
 
     return () => {
       mounted = false;
+      clearRetryTimer();
       if (timeoutId) {
         clearTimeout(timeoutId);
       }

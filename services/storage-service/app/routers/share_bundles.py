@@ -1116,13 +1116,14 @@ async def get_bundle_file_thumbnail(
     temp_file_path = None
     try:
         # Download file content for preview generation
-        temp_file_path, is_complete = await preview_optimizer.download_partial_for_preview(
+        result = await preview_optimizer.download_partial_for_preview(
             file_obj=file_obj,
             encryption_service=encryption_service
         )
 
-        if temp_file_path is None:
+        if result.status != 'ok':
             raise HTTPException(status_code=404, detail="Could not download file for thumbnail")
+        temp_file_path = result.temp_file_path
 
         # Generate preview using the preview generator
         preview_bytes, content_type = await preview_generator.generate_preview(

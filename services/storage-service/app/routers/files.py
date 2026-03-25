@@ -1252,7 +1252,8 @@ async def get_file_preview(
                         'file_name': file_obj.file_name,
                         'file_size': file_obj.file_size,
                         'mime_type': file_obj.mime_type,
-                        'storage_type': file_obj.storage_type
+                        'storage_type': file_obj.storage_type,
+                        'upload_id': (resolved.chunk_info or {}).get('upload_id', '') if resolved.chunk_info else '',
                     }
                 )
                 new_status = {
@@ -1311,7 +1312,10 @@ async def get_file_preview(
 
                 elif status == 'failed':
                     retry_count = status_info.get('retry_count', 0)
-                    if retry_count < 3:
+                    is_retryable = status_info.get('retryable', True)  # default True for backwards compat
+                    error_msg = status_info.get('error', 'Preview generation failed')
+
+                    if is_retryable and retry_count < 3:
                         logger.info(f"Re-queuing failed preview for {file_id} (retry {retry_count + 1}/3)")
                         try:
                             await _queue_preview_to_kafka(carry_retry_count=retry_count)
@@ -1319,8 +1323,17 @@ async def get_file_preview(
                             logger.warning(f"Failed to re-queue preview for {file_id}: {e}")
                         return _return_202('queued', 'Preview generation retrying')
                     else:
-                        logger.warning(f"Preview generation failed after {retry_count} retries for {file_id}")
-                        return _return_202('failed', 'Preview generation failed after multiple attempts')
+                        reason = 'non-retryable' if not is_retryable else f'after {retry_count} retries'
+                        logger.warning(f"Preview generation failed ({reason}) for {file_id}")
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                'status': 'failed',
+                                'message': error_msg,
+                                'error': error_msg,
+                                'file_id': file_id,
+                            }
+                        )
 
                 else:
                     logger.info(f"🎬 Unknown preview status '{status}' for large video {file_id}, returning 202")
