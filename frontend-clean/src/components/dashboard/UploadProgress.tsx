@@ -54,7 +54,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, onRe
                 <CheckCircle size={16} className="text-green-500" />
               )}
               {upload.status === 'error' && <AlertCircle size={16} className="text-red-500" />}
-              {upload.status === 'error' && onRetry && upload.isNetworkError && (
+              {upload.status === 'error' && onRetry && upload.canRetry && (
                 <button
                   onClick={() => onRetry(id)}
                   className="text-blue-500 hover:text-blue-600 flex items-center gap-1 text-xs"

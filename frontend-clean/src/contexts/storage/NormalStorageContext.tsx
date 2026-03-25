@@ -8,7 +8,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../AuthContext';
 import { storageService } from '../../services/storageService';
-import { normalUploadService, type ServerUploadStatus } from '../../services/normalUploadService';
+import { normalUploadService } from '../../services/normalUploadService';
 import { normalDownloadService } from '../../services/normalDownloadService';
 import { websocketService } from '../../services/websocketService';
 import { offlineDB } from '../../utils/offlineStorage';
@@ -27,6 +27,7 @@ import type {
   StorageContextValue,
 } from './types';
 import { API_URL } from '../../config/constants';
+import { TransientUploadError } from '../../utils/uploadErrors';
 
 const NormalStorageContext = createContext<StorageContextValue | undefined>(undefined);
 
@@ -353,9 +354,14 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     const checkpoint = loadCheckpoint(file.name, file.size);
     if (checkpoint) {
       console.log('[Normal] Found checkpoint for', file.name, '— checking server session...');
-      const serverStatus: ServerUploadStatus | null = await normalUploadService.getServerUploadStatus(checkpoint.serverUploadId);
+      const serverStatus = await normalUploadService.getServerUploadStatus(checkpoint.serverUploadId);
 
-      if (serverStatus && serverStatus.missing_chunks.length < serverStatus.total_chunks) {
+      if (serverStatus === 'unknown') {
+        // Can't reach server to verify session — do NOT start fresh upload
+        // (fresh upload would overwrite the checkpoint with a new serverUploadId,
+        // abandoning the potentially-resumable session)
+        throw new TransientUploadError('Unable to check upload status. Please try again when connected.');
+      } else if (serverStatus && serverStatus.missing_chunks.length < serverStatus.total_chunks) {
         // Server session alive with some chunks uploaded — resume
         console.log('[Normal] Resuming upload:', checkpoint.serverUploadId,
           `${serverStatus.uploaded_chunks.length}/${serverStatus.total_chunks} chunks done`);
@@ -493,8 +499,14 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       return uploadResult;
     } catch (error) {
       console.error('[Normal] Upload failed:', error);
-      // Checkpoint was already saved by onSessionCreated + onChunkComplete during upload
-      // Don't clear it — it enables resume on retry
+      const isNetwork = error instanceof Error && error.message.includes('Internet connection lost');
+      const isTransient = error instanceof TransientUploadError;
+      if (!isNetwork && !isTransient) {
+        // Server session was destroyed for cancels and non-network errors.
+        // Clear checkpoint so resume notification doesn't falsely fire.
+        clearCheckpoint(file.name, file.size);
+      }
+      // Network + transient errors: keep checkpoint for future resume
       throw error;
     }
   };

@@ -237,25 +237,29 @@ class NormalUploadService {
   }
 
   /**
-   * Get server-side upload status for resume
-   * Returns null if session expired (404) or network error
+   * Get server-side upload status for resume.
+   * Returns ServerUploadStatus if session alive, null if definitively gone (404/403),
+   * or 'unknown' if transient failure (network error, 500, 503, etc.).
    */
-  async getServerUploadStatus(uploadId: string): Promise<ServerUploadStatus | null> {
+  async getServerUploadStatus(uploadId: string): Promise<ServerUploadStatus | null | 'unknown'> {
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/upload/status/${uploadId}`, {
         method: 'GET',
         credentials: 'include',
       });
 
-      if (!response.ok) {
-        // 404 = session expired, 403 = different user
+      if (response.ok) {
+        return (await response.json()) as ServerUploadStatus;
+      }
+      // 404 = session expired, 403 = wrong user — definitively gone
+      if (response.status === 404 || response.status === 403) {
         return null;
       }
-
-      return (await response.json()) as ServerUploadStatus;
+      // Other non-OK (401, 500, 503) — transient, preserve checkpoint
+      return 'unknown';
     } catch {
-      // Network error — can't check status
-      return null;
+      // Network error — can't determine, preserve checkpoint
+      return 'unknown';
     }
   }
 

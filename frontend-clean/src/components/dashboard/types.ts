@@ -103,6 +103,7 @@ export interface UploadItem {
   elapsedTime?: number;
   serverUploadId?: string;
   isNetworkError?: boolean;
+  canRetry?: boolean;
 }
 
 /**

@@ -705,21 +705,33 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
                 logger.info(f"Skipping analysis for chunked file {file_id}")
                 return
 
-            # Decrypt file key and load file data (matches worker line 243-245)
+            # Decrypt file key and load file data
             file_key = encryption_service.decrypt_key(file_obj.encryption_key)
-            file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
+            if file_obj.storage_type == "inline" and file_obj.storage_key and len(file_obj.storage_key) > 200:
+                # Inline files: encrypted data is base64-encoded in storage_key column
+                import base64
+                encrypted_data = base64.b64decode(file_obj.storage_key)
+                file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+                # Handle compression
+                if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
+                    from ..utils.compression import compressor
+                    file_data = compressor.decompress(file_data)
+            else:
+                file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
 
             # 1. Extract metadata
             logger.info(f"Extracting metadata for {file_id}")
             metadata = await metadata_service.extract_metadata(file_data, mime_type, filename)
 
-            # Save metadata
+            # Save metadata (sanitize null bytes that break PostgreSQL JSONB)
+            import json as _json
+            sanitized_metadata = _json.loads(_json.dumps(metadata).replace('\\u0000', ''))
             await db.execute(delete(FileMetadata).where(FileMetadata.file_id == file_id))
             await db.execute(
                 insert(FileMetadata).values(
                     file_id=file_id,
                     metadata_type=metadata.get('type', 'unknown'),
-                    raw_metadata=metadata,
+                    raw_metadata=sanitized_metadata,
                     width=metadata.get('width'),
                     height=metadata.get('height'),
                     duration=metadata.get('duration'),

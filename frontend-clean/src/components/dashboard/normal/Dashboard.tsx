@@ -23,6 +23,8 @@ import MigrationBanner from '../MigrationBanner';
 import PaymentReminderBanner from '../PaymentReminderBanner';
 import FreeAccountUpgradeBanner from '../FreeAccountUpgradeBanner';
 import ServiceModeBadge from '../ServiceModeBadge';
+import { TransientUploadError } from '../../../utils/uploadErrors';
+import { normalUploadService } from '../../../services/normalUploadService';
 
 // Lazy-loaded views — only one renders at a time via switch
 const RecentsView = React.lazy(() => import('../RecentsView'));
@@ -477,6 +479,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
         const errorWithStatus = error as ErrorWithStatus;
         const errorMessage = getErrorMessage(error);
         const isNetworkError = errorMessage.includes('Internet connection lost');
+        const isTransient = error instanceof TransientUploadError;
 
         // For 429 errors, show specific guidance
         if (errorWithStatus.status === 429) {
@@ -510,12 +513,13 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
               status: 'error',
               error: errorMessage,
               isNetworkError,
+              canRetry: isNetworkError || isTransient,
             }
           };
         });
 
-        if (isNetworkError) {
-          // Keep file ref for retry — don't auto-clear network errors
+        if (isNetworkError || isTransient) {
+          // Keep file ref for retry — don't auto-clear
           // User will see retry button
         } else {
           // Non-network error — clean up file ref and auto-clear after 10 seconds
@@ -565,33 +569,63 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   // Notify user about interrupted uploads that can be resumed
   useEffect(() => {
     const checkpointPrefix = 'upload_checkpoint_';
-    const now = Date.now();
     const maxAge = 24 * 60 * 60 * 1000;
-    let resumableCount = 0;
 
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(checkpointPrefix)) {
+    (async () => {
+      const now = Date.now();
+      // Snapshot keys first — safe to remove during iteration
+      const allKeys = Array.from(
+        { length: localStorage.length },
+        (_, i) => localStorage.key(i)
+      ).filter(Boolean) as string[];
+      const checkpointKeys = allKeys.filter(k => k.startsWith(checkpointPrefix));
+
+      let resumableCount = 0;
+
+      for (const key of checkpointKeys) {
         try {
           const raw = localStorage.getItem(key);
-          if (raw) {
-            const checkpoint = JSON.parse(raw) as { savedAt: number };
-            if (now - checkpoint.savedAt < maxAge) {
-              resumableCount++;
-            }
+          if (!raw) continue;
+          const checkpoint = JSON.parse(raw) as { savedAt: number; serverUploadId?: string };
+
+          // Expired (>24hr) — garbage-collect
+          if (now - checkpoint.savedAt >= maxAge) {
+            localStorage.removeItem(key);
+            continue;
+          }
+
+          // No serverUploadId — shouldn't exist, garbage-collect
+          if (!checkpoint.serverUploadId) {
+            localStorage.removeItem(key);
+            continue;
+          }
+
+          // Validate against server
+          const result = await normalUploadService.getServerUploadStatus(checkpoint.serverUploadId);
+
+          if (result === 'unknown') {
+            // Can't reach server — preserve checkpoint, count as resumable (offline-safe)
+            resumableCount++;
+          } else if (result && result.missing_chunks.length < result.total_chunks) {
+            // Server session alive with some chunks uploaded — resumable
+            resumableCount++;
+          } else {
+            // null (server confirmed gone) or zero progress — garbage-collect
+            localStorage.removeItem(key);
           }
         } catch {
-          // skip invalid entries
+          // Invalid JSON or other parse error — garbage-collect
+          localStorage.removeItem(key);
         }
       }
-    }
 
-    if (resumableCount > 0) {
-      showInfo(
-        `You have ${resumableCount} interrupted upload(s) that can be resumed. Re-select the file(s) to continue.`,
-        { duration: 8000 }
-      );
-    }
+      if (resumableCount > 0) {
+        showInfo(
+          `You have ${resumableCount} interrupted upload(s) that can be resumed. Re-select the file(s) to continue.`,
+          { duration: 8000 }
+        );
+      }
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
