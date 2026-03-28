@@ -135,6 +135,88 @@ def _is_fragmented_mp4(data: bytes) -> bool:
     return b'moof' in data or b'mfhd' in data
 
 
+def _moov_has_mvex(data: bytes, start: int, end: int) -> bool:
+    """Walk immediate child boxes of moov looking for 'mvex'.
+
+    Uses the same box-header validation as the top-level walker.
+    Only called when the full moov body is in the buffer.
+    """
+    pos = start
+    while pos + 8 <= end:
+        raw_size = struct.unpack('>I', data[pos:pos + 4])[0]
+        child_type = data[pos + 4:pos + 8]
+
+        if raw_size == 1:
+            if pos + 16 > end:
+                break
+            child_size = struct.unpack('>Q', data[pos + 8:pos + 16])[0]
+            if child_size < 16:
+                break
+        elif raw_size == 0:
+            break
+        else:
+            child_size = raw_size
+            if child_size < 8:
+                break
+
+        if child_type == b'mvex':
+            return True
+
+        pos += child_size
+
+    return False
+
+
+def _quick_probe_moov(
+    data: bytes,
+) -> tuple[bool, Optional[int], Optional[int], bool, bool]:
+    """Walk top-level MP4 boxes from byte 0 to find moov.
+
+    Unlike _has_moov (string search), this validates box structure by
+    advancing cursor by box_size at each step.
+
+    Returns: (found, offset, box_size, is_complete, is_fragmented)
+    - is_complete: True only if the full moov body fits in *data*
+    - is_fragmented: True if moov contains 'mvex' sub-box (only reliable when is_complete)
+    """
+    pos = 0
+    while pos + 8 <= len(data):
+        raw_size = struct.unpack('>I', data[pos:pos + 4])[0]
+        box_type = data[pos + 4:pos + 8]
+
+        if raw_size == 1:
+            # 64-bit extended size — minimum valid box is 16 bytes
+            if pos + 16 > len(data):
+                break
+            box_size = struct.unpack('>Q', data[pos + 8:pos + 16])[0]
+            if box_size < 16:
+                break  # Invalid extended-size box
+        elif raw_size == 0:
+            break  # Box extends to EOF — can't walk past it
+        else:
+            box_size = raw_size
+            if box_size < 8:
+                break  # Invalid box
+
+        if box_type == b'moov':
+            moov_end = pos + box_size
+            is_complete = moov_end <= len(data)
+
+            if is_complete:
+                # Full moov in buffer — walk child boxes to find mvex
+                has_mvex = _moov_has_mvex(data, pos + 8, moov_end)
+            else:
+                # Truncated — can't confirm progressive vs fragmented
+                has_mvex = False
+
+            return True, pos, box_size, is_complete, has_mvex
+
+        # Advance to next top-level box
+        pos += box_size
+
+    return False, None, None, False, False
+
+
 # Zstd magic bytes for detecting compressed CAS blocks
 _ZSTD_MAGIC = bytes([0x28, 0xB5, 0x2F, 0xFD])
 
@@ -815,6 +897,50 @@ class PreviewOptimizer:
                             f"({file_size_mb:.1f}MB, {len(blocks_list)} blocks)"
                         )
 
+                        MOOV_EARLY_THRESHOLD = 64 * MB
+
+                        # --- Quick probe: block 0 only ---
+                        try:
+                            quick_data, quick_map = await _fetch_cas_probe(
+                                chunk_info, file_obj, [0]
+                            )
+                            found, moov_off, moov_size, is_complete, is_fmp4 = _quick_probe_moov(quick_data)
+
+                            if found and is_complete and not is_fmp4:
+                                real_offset = _probe_offset_to_file_offset(moov_off, quick_map)
+                                if real_offset is not None and real_offset <= MOOV_EARLY_THRESHOLD:
+                                    moov_end = real_offset + moov_size
+                                    fetch_end = min(moov_end + 2 * MB, file_obj.file_size - 1)
+                                    logger.info(
+                                        f"CAS quick probe: moov at file offset {real_offset} "
+                                        f"({moov_size} bytes), progressive MP4 — "
+                                        f"fetching [0...{fetch_end/MB:.1f}MB], skipped full sparse probe"
+                                    )
+                                    del quick_data
+                                    await _fetch_from_cas(
+                                        chunk_info, file_obj, 0, fetch_end, temp_file_path
+                                    )
+                                    return PreviewDownloadResult(
+                                        status='ok',
+                                        temp_file_path=temp_file_path,
+                                        is_complete=False,
+                                    )
+
+                            if found and is_complete and is_fmp4:
+                                logger.info("CAS quick probe: fMP4 detected (mvex in moov), using full probe path")
+                            elif found and not is_complete:
+                                logger.info(
+                                    f"CAS quick probe: moov found at {moov_off} but truncated "
+                                    f"(needs {moov_off + moov_size} bytes), using full probe path"
+                                )
+                            elif not found:
+                                logger.info("CAS quick probe: moov not in block 0, using full probe path")
+
+                            del quick_data
+                        except (ValueError, FileNotFoundError) as exc:
+                            logger.warning(f"CAS quick probe failed ({type(exc).__name__}): {exc}")
+                        # All other cases: fall through to existing full sparse probe
+
                         # Phase 1: Sparse probe (~64MB head + middle + ~64MB tail)
                         probe_data = b''
                         offset_map = []
@@ -839,7 +965,6 @@ class PreviewOptimizer:
                         )
 
                         # Phase 3: Route based on detection
-                        MOOV_EARLY_THRESHOLD = 64 * MB
 
                         if has_moov and not is_fragmented and moov_probe_offset is not None:
                             real_moov_offset = _probe_offset_to_file_offset(
@@ -940,6 +1065,82 @@ class PreviewOptimizer:
                         f"using probe-then-fetch pattern"
                     )
 
+                    # Shared helpers for Stage A quick probe and Stage B full probe
+                    from ..utils.executors import run_in_heavy_pool as _run_heavy
+
+                    def _probe_decrypt_decompress(enc, enc_svc, key, idx, compressed):
+                        dec = enc_svc.decrypt_chunk(enc, key, idx)
+                        if compressed:
+                            from ..utils.compression import compressor
+                            dec = compressor.decompress(dec)
+                        return dec
+
+                    # --- STAGE A: Quick probe (chunk 0 only) ---
+                    # For fast-start MP4s (moov at front), we can skip the full
+                    # 9-chunk sparse probe by checking just the first chunk.
+                    # Short-circuit ONLY if full moov body is in the buffer.
+                    chunk0_data = None
+                    try:
+                        c0_path = chunk_paths.get(str(0))
+                        if not c0_path:
+                            shard = upload_id[:2]
+                            c0_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_0.enc"
+
+                        async with aiofiles.open(c0_path, 'rb') as f:
+                            c0_enc = await f.read()
+                        chunk0_data = await _run_heavy(
+                            _probe_decrypt_decompress, c0_enc, encryption_service, file_key, 0, was_compressed
+                        )
+                        del c0_enc
+
+                        found, moov_off, moov_size, is_complete, is_fmp4 = _quick_probe_moov(chunk0_data)
+
+                        if found and is_complete and not is_fmp4:
+                            # Progressive MP4, full moov in chunk 0 — short-circuit
+                            fetch_end = min(moov_off + moov_size + 2 * MB, file_obj.file_size - 1)
+                            fetch_end = max(fetch_end, min(10 * MB, file_obj.file_size - 1))  # 10MB floor
+
+                            logger.info(
+                                f"Quick probe: moov at offset {moov_off} ({moov_size} bytes), "
+                                f"progressive MP4 — fetching [0...{fetch_end/MB:.1f}MB], "
+                                f"skipped full sparse probe"
+                            )
+
+                            await _fetch_contiguous_range(
+                                start_byte=0, end_byte=fetch_end,
+                                chunk_paths=chunk_paths, file_key=file_key,
+                                encryption_service=encryption_service,
+                                output_path=temp_file_path, upload_id=upload_id,
+                                chunk_size=chunk_size, was_compressed=was_compressed,
+                                chunk_info=chunk_info, file_obj=file_obj,
+                            )
+                            return PreviewDownloadResult(
+                                status='ok', temp_file_path=temp_file_path, is_complete=False
+                            )
+
+                        if found and is_complete and is_fmp4:
+                            logger.info("Quick probe: fMP4 detected (mvex in moov), using full probe path")
+                            # Fall through — existing path has 500MB limit + defer/background gating
+
+                        if found and not is_complete:
+                            logger.info(
+                                f"Quick probe: moov found at offset {moov_off} but truncated "
+                                f"(needs {moov_off + moov_size} bytes, buffer has {len(chunk0_data)}), "
+                                f"using full probe path"
+                            )
+
+                        if not found:
+                            logger.info("Quick probe: moov not in chunk 0, falling back to full sparse probe")
+
+                    except (FileNotFoundError, OSError) as e:
+                        logger.warning(f"Quick probe failed ({type(e).__name__}: {e}), falling back to full probe")
+                        chunk0_data = None
+                    except (ValueError, struct.error) as e:
+                        logger.warning(f"Quick probe decrypt/parse error: {e}, falling back to full probe")
+                        chunk0_data = None
+                    # All other exceptions propagate — matching existing behavior at the outer try/except
+
+                    # --- STAGE B: Full sparse probe (existing logic) ---
                     # --- PHASE 1: PROBE (Download sparse chunks for detection) ---
                     head_limit = min(3, total_chunks)
                     head_chunks_list = list(range(head_limit))
@@ -963,9 +1164,14 @@ class PreviewOptimizer:
                     # Combine and deduplicate
                     probe_chunks = sorted(set(head_chunks_list + middle_chunks_list + tail_chunks_list))
 
+                    # If Stage A already downloaded chunk 0, reuse it
+                    if chunk0_data is not None and 0 in probe_chunks:
+                        probe_chunks = [c for c in probe_chunks if c != 0]
+
                     logger.info(
                         f"Phase 1 - Probe: downloading {len(probe_chunks)} chunks {probe_chunks} "
                         f"for format detection (gappy file OK - detection only)"
+                        f"{' (chunk 0 reused from quick probe)' if chunk0_data is not None else ''}"
                     )
 
                     # Download probe chunks to temporary probe file
@@ -973,17 +1179,14 @@ class PreviewOptimizer:
                     os.close(probe_fd)
 
                     try:
-                        from ..utils.executors import run_in_heavy_pool as _run_heavy
-
-                        def _probe_decrypt_decompress(enc, enc_svc, key, idx, compressed):
-                            dec = enc_svc.decrypt_chunk(enc, key, idx)
-                            if compressed:
-                                from ..utils.compression import compressor
-                                dec = compressor.decompress(dec)
-                            return dec
-
                         probe_bytes = 0
                         async with aiofiles.open(probe_file_path, 'wb') as probe_f:
+                            # Write chunk 0 first if reusing from quick probe
+                            if chunk0_data is not None:
+                                await probe_f.write(chunk0_data)
+                                probe_bytes += len(chunk0_data)
+                                chunk0_data = None  # Free memory
+
                             for i in probe_chunks:
                                 chunk_path = chunk_paths.get(str(i))
                                 if not chunk_path:

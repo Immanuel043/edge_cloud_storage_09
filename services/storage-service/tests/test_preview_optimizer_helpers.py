@@ -25,6 +25,8 @@ from app.services.preview_optimizer import (
     _probe_offset_to_file_offset,
     _has_moov,
     _is_fragmented_mp4,
+    _quick_probe_moov,
+    _moov_has_mvex,
     MB,
 )
 
@@ -263,3 +265,221 @@ class TestRoutingLogic:
         real_moov_offset = 5 * MB
         # Even though moov is early, fragmented means full download
         assert is_fragmented  # Would trigger full download
+
+
+# ---------------------------------------------------------------------------
+# _moov_has_mvex (child-box walker)
+# ---------------------------------------------------------------------------
+
+class TestMoovHasMvex:
+    """Test child-box walker for mvex detection inside moov."""
+
+    def _make_child_box(self, box_type: bytes, body_size: int) -> bytes:
+        """Create a child box: 4-byte size (big-endian) + 4-byte type + body."""
+        total_size = 8 + body_size
+        return struct.pack('>I', total_size) + box_type + b'\x00' * body_size
+
+    def test_mvex_present(self):
+        """moov with trak + mvex child boxes -> True."""
+        trak = self._make_child_box(b'trak', 100)
+        mvex = self._make_child_box(b'mvex', 50)
+        data = trak + mvex
+        assert _moov_has_mvex(data, 0, len(data)) is True
+
+    def test_no_mvex(self):
+        """moov with trak + udta only -> False."""
+        trak = self._make_child_box(b'trak', 100)
+        udta = self._make_child_box(b'udta', 50)
+        data = trak + udta
+        assert _moov_has_mvex(data, 0, len(data)) is False
+
+    def test_invalid_child_box(self):
+        """Corrupted child box sizes -> False (halts walk)."""
+        # box_size = 3 which is < 8 minimum
+        data = struct.pack('>I', 3) + b'trak' + b'\x00' * 100
+        assert _moov_has_mvex(data, 0, len(data)) is False
+
+    def test_empty_moov(self):
+        """moov with no children -> False."""
+        assert _moov_has_mvex(b'', 0, 0) is False
+
+    def test_mvex_with_offset(self):
+        """mvex found when start offset is non-zero."""
+        prefix = b'\x00' * 50
+        mvex = self._make_child_box(b'mvex', 20)
+        data = prefix + mvex
+        assert _moov_has_mvex(data, 50, len(data)) is True
+
+    def test_mvex_beyond_end_boundary(self):
+        """mvex exists but end boundary cuts it short -> False."""
+        trak = self._make_child_box(b'trak', 100)
+        mvex = self._make_child_box(b'mvex', 50)
+        data = trak + mvex
+        # Set end to only cover trak, not mvex
+        assert _moov_has_mvex(data, 0, len(trak)) is False
+
+
+# ---------------------------------------------------------------------------
+# _quick_probe_moov (top-level box walker)
+# ---------------------------------------------------------------------------
+
+class TestQuickProbeMoov:
+    """Test the box-walking moov detector for quick probe."""
+
+    def _make_box(self, box_type: bytes, total_size: int, body: bytes = b'') -> bytes:
+        """Create an MP4 box with given type, total size, and optional body content."""
+        header = struct.pack('>I', total_size) + box_type
+        padding = total_size - 8 - len(body)
+        return header + body + b'\x00' * max(0, padding)
+
+    def _make_ftyp(self, size: int = 32) -> bytes:
+        return self._make_box(b'ftyp', size)
+
+    def _make_mvex_child(self, size: int = 28) -> bytes:
+        """Create an mvex child box."""
+        return struct.pack('>I', size) + b'mvex' + b'\x00' * (size - 8)
+
+    def test_fast_start_progressive(self):
+        """ftyp + moov (no mvex) + mdat -> progressive short-circuit."""
+        ftyp = self._make_ftyp(32)
+        moov_body = b'\x00' * 192  # Just padding, no mvex
+        moov = self._make_box(b'moov', 200, moov_body)
+        mdat = self._make_box(b'mdat', 1000)
+        data = ftyp + moov + mdat
+
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is True
+        assert offset == 32
+        assert box_size == 200
+        assert is_complete is True
+        assert is_fmp4 is False
+
+    def test_fragmented_with_mvex(self):
+        """ftyp + moov (contains mvex) -> fMP4 detected."""
+        ftyp = self._make_ftyp(32)
+        # moov body contains a trak and mvex child box
+        trak_child = struct.pack('>I', 108) + b'trak' + b'\x00' * 100
+        mvex_child = self._make_mvex_child(28)
+        moov_body = trak_child + mvex_child
+        moov = self._make_box(b'moov', 8 + len(moov_body), moov_body)
+        data = ftyp + moov
+
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is True
+        assert offset == 32
+        assert box_size == 8 + len(moov_body)
+        assert is_complete is True
+        assert is_fmp4 is True
+
+    def test_truncated_moov(self):
+        """ftyp + moov header says 10MB but only 1MB of data -> truncated."""
+        ftyp = self._make_ftyp(32)
+        moov_size = 10 * MB
+        # Only provide the header + small amount of body
+        moov_header = struct.pack('>I', moov_size) + b'moov'
+        partial_body = b'\x00' * (1 * MB)
+        data = ftyp + moov_header + partial_body
+
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is True
+        assert offset == 32
+        assert box_size == moov_size
+        assert is_complete is False
+        assert is_fmp4 is False  # Can't confirm — truncated
+
+    def test_no_moov(self):
+        """ftyp + mdat only -> no moov found."""
+        ftyp = self._make_ftyp(32)
+        mdat = self._make_box(b'mdat', 1000)
+        data = ftyp + mdat
+
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is False
+        assert offset is None
+        assert box_size is None
+
+    def test_invalid_box_sizes(self):
+        """Garbage data -> not found."""
+        data = b'\xff' * 100
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        # \xff\xff\xff\xff is a huge size, will break the walk
+        assert found is False
+
+    def test_extended_size_box(self):
+        """Box with size==1 (64-bit extended size) is walked past correctly."""
+        # ftyp with extended size: raw_size=1, then 8-byte actual size
+        ftyp_ext_size = 24  # 16-byte header + 8 bytes body
+        ftyp = struct.pack('>I', 1) + b'ftyp' + struct.pack('>Q', ftyp_ext_size) + b'\x00' * 8
+        moov = self._make_box(b'moov', 100)
+        data = ftyp + moov
+
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is True
+        assert offset == ftyp_ext_size
+        assert box_size == 100
+        assert is_complete is True
+
+    def test_extended_size_too_small(self):
+        """Extended size box with size < 16 -> halts walk."""
+        # raw_size=1, extended_size=10 (invalid, must be >= 16)
+        data = struct.pack('>I', 1) + b'ftyp' + struct.pack('>Q', 10) + b'\x00' * 100
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is False
+
+    def test_size_zero_box(self):
+        """Box with size==0 (extends to EOF) halts walk."""
+        data = struct.pack('>I', 0) + b'ftyp' + b'\x00' * 100
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is False
+
+    def test_empty_data(self):
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(b'')
+        assert found is False
+        assert offset is None
+        assert box_size is None
+        assert is_complete is False
+        assert is_fmp4 is False
+
+    def test_moov_at_byte_zero(self):
+        """moov directly at start (no ftyp prefix)."""
+        moov = self._make_box(b'moov', 100)
+        data = moov + b'\x00' * 100
+
+        found, offset, box_size, is_complete, is_fmp4 = _quick_probe_moov(data)
+        assert found is True
+        assert offset == 0
+        assert box_size == 100
+        assert is_complete is True
+        assert is_fmp4 is False
+
+
+# ---------------------------------------------------------------------------
+# Quick probe routing (decision table)
+# ---------------------------------------------------------------------------
+
+class TestQuickProbeRouting:
+    """Test the decision logic for quick probe short-circuit vs fallback."""
+
+    def test_complete_progressive_short_circuits(self):
+        """found=True, is_complete=True, is_fmp4=False -> partial fetch."""
+        found, is_complete, is_fmp4 = True, True, False
+        should_short_circuit = found and is_complete and not is_fmp4
+        assert should_short_circuit is True
+
+    def test_complete_fmp4_falls_through(self):
+        """found=True, is_complete=True, is_fmp4=True -> fall through to full probe."""
+        found, is_complete, is_fmp4 = True, True, True
+        should_short_circuit = found and is_complete and not is_fmp4
+        assert should_short_circuit is False
+
+    def test_truncated_moov_falls_through(self):
+        """found=True, is_complete=False -> fall through to full probe."""
+        found, is_complete, is_fmp4 = True, False, False
+        should_short_circuit = found and is_complete and not is_fmp4
+        assert should_short_circuit is False
+
+    def test_no_moov_falls_through(self):
+        """found=False -> fall through to full probe."""
+        found, is_complete, is_fmp4 = False, False, False
+        should_short_circuit = found and is_complete and not is_fmp4
+        assert should_short_circuit is False
