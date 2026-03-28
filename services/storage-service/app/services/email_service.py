@@ -207,6 +207,65 @@ class EmailService:
         )
 
 
+    async def send_share_notification(
+        self,
+        to_email: str,
+        owner_email: str,
+        item_name: str,
+        item_type: str,
+        permission: str,
+        message: Optional[str] = None,
+        share_url: Optional[str] = None,
+    ) -> bool:
+        """
+        Send notification when someone shares a file/folder with a user.
+
+        Args:
+            to_email: Recipient email
+            owner_email: Email of the person sharing
+            item_name: Name of the shared file/folder
+            item_type: 'file' or 'folder'
+            permission: Permission level (view, download, edit)
+            message: Optional personal message from the sharer
+            share_url: Optional direct link to the shared content
+
+        Returns:
+            True if sent successfully
+        """
+        try:
+            template = self.jinja_env.get_template("share_notification_email.html")
+            html_content = template.render(
+                owner_email=owner_email,
+                item_name=item_name,
+                item_type=item_type,
+                permission=permission,
+                message=message,
+                share_url=share_url,
+                app_name=self.from_name,
+            )
+        except Exception:
+            # Fallback if template is missing
+            html_content = (
+                f"<p><b>{owner_email}</b> shared a {item_type} with you: "
+                f"<b>{item_name}</b> ({permission} access).</p>"
+            )
+            if message:
+                html_content += f'<p>Message: "{message}"</p>'
+
+        text_content = (
+            f"{owner_email} shared a {item_type} with you: {item_name} ({permission} access)."
+        )
+        if message:
+            text_content += f'\nMessage: "{message}"'
+
+        return await self.send_email(
+            to_email=to_email,
+            subject=f"{owner_email} shared a {item_type} with you — {self.from_name}",
+            html_content=html_content,
+            text_content=text_content,
+        )
+
+
 # Global service instance
 email_service = EmailService()
 

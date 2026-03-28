@@ -986,6 +986,8 @@ export interface ShareBundleResult {
   share_type?: string;
   expires_at?: string;
   password_protected?: boolean;
+  excluded_zk_count?: number;
+  warning?: string;
 }
 
 /**
@@ -1070,7 +1072,9 @@ export type ActiveViewType =
   | 'settings'
   | 'billing'
   | 'payment-portal'
-  | 'security-alerts';
+  | 'security-alerts'
+  | 'my-share-links'
+  | 'share-analytics';
 
 /**
  * Sort By Type

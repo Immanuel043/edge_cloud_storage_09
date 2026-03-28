@@ -179,7 +179,7 @@ const ShareViewer: React.FC = () => {
   const handleDownload = async (fileId: string | null = null): Promise<void> => {
     try {
       const downloadUrl = fileId
-        ? `${API_URL}/api/v1/files/${fileId}/download`
+        ? `${API_URL}/api/v1/share/${token}/file/${fileId}/download`
         : `${API_URL}/api/v1/share/${token}`;
 
       const url = new URL(downloadUrl);
@@ -362,7 +362,27 @@ const ShareViewer: React.FC = () => {
             </div>
 
             {shareInfo.allow_preview && (
-              <div className="border rounded-lg p-4 bg-gray-50">
+              <div className="border rounded-lg p-4 bg-gray-50 relative">
+                {shareInfo.watermark_text && (
+                  <div
+                    className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none"
+                    aria-hidden="true"
+                  >
+                    {Array.from({ length: 12 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="absolute whitespace-nowrap text-gray-400/20 font-bold text-2xl"
+                        style={{
+                          top: `${(i % 4) * 30 + 5}%`,
+                          left: `${Math.floor(i / 4) * 35 - 10}%`,
+                          transform: 'rotate(-35deg)',
+                        }}
+                      >
+                        {shareInfo.watermark_text}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* Video Preview */}
                 {isVideoFile(shareInfo) ? (
                   <div className="relative">
@@ -451,7 +471,27 @@ const ShareViewer: React.FC = () => {
           </div>
         ) : (
           // Folder browser
-          <div className="bg-white rounded-xl shadow-lg p-6">
+          <div className="bg-white rounded-xl shadow-lg p-6 relative">
+            {folderContents?.watermark_text && (
+              <div
+                className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none rounded-xl"
+                aria-hidden="true"
+              >
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="absolute whitespace-nowrap text-gray-400/20 font-bold text-2xl"
+                    style={{
+                      top: `${(i % 4) * 30 + 5}%`,
+                      left: `${Math.floor(i / 4) * 35 - 10}%`,
+                      transform: 'rotate(-35deg)',
+                    }}
+                  >
+                    {folderContents.watermark_text}
+                  </div>
+                ))}
+              </div>
+            )}
             <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
               <Folder className="text-blue-500" size={24} />
               {folderContents?.folder_name}
@@ -486,7 +526,7 @@ const ShareViewer: React.FC = () => {
             {folderContents?.files?.length === 0 && (
               <div className="text-center py-12 text-gray-500">
                 <Folder size={48} className="mx-auto mb-3 opacity-50" />
-                <p>This folder is empty</p>
+                <p>{folderContents.notice || 'This folder is empty'}</p>
               </div>
             )}
           </div>

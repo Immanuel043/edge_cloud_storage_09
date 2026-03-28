@@ -38,6 +38,8 @@ const AutoOrganizeView = React.lazy(() => import('../AutoOrganizeView'));
 const RecommendationsView = React.lazy(() => import('../RecommendationsView'));
 const SettingsView = React.lazy(() => import('../SettingsView'));
 const SecurityAlertsView = React.lazy(() => import('../SecurityAlertsView'));
+const ShareLinkManager = React.lazy(() => import('../ShareLinkManager'));
+const ShareAnalyticsDashboard = React.lazy(() => import('../ShareAnalyticsDashboard'));
 const SubscriptionDashboard = React.lazy(() => import('../../subscription/SubscriptionDashboard'));
 const PaymentPortal = React.lazy(() => import('../../payment/PaymentPortal'));
 const SearchResults = React.lazy(() => import('../SearchResults'));
@@ -1000,6 +1002,12 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
             onRename={setRenameFile}
           />
         );
+
+      case 'my-share-links':
+        return <ShareLinkManager darkMode={darkMode} />;
+
+      case 'share-analytics':
+        return <ShareAnalyticsDashboard darkMode={darkMode} />;
 
       case 'trash':
         return (

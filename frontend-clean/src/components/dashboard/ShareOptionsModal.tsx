@@ -20,6 +20,8 @@ interface ErrorResponse {
 
 interface ShareResponse {
   share_url: string;
+  zk_files_hidden?: number;
+  warning?: string;
 }
 
 /**
@@ -30,6 +32,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
   const isZKEncrypted = file?.is_encrypted || file?.encryption_mode === 'client_zk';
 
   const [shareUrl, setShareUrl] = useState<string>('');
+  const [shareWarning, setShareWarning] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -53,6 +56,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
   const [password, setPassword] = useState<string>('');
   const [downloadLimitEnabled, setDownloadLimitEnabled] = useState<boolean>(false);
   const [maxDownloads, setMaxDownloads] = useState<number>(10);
+  const [watermarkText, setWatermarkText] = useState<string>('');
 
   // Collaborative sharing
   const [emails, setEmails] = useState<string>('');
@@ -146,6 +150,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
         password: passwordEnabled ? password : null,
         max_downloads: downloadLimitEnabled ? maxDownloads : null,
         allow_preview: true,
+        watermark_text: watermarkText.trim() || null,
       };
 
       const itemType = folder ? 'folders' : 'files';
@@ -177,6 +182,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
 
       const data = await response.json() as ShareResponse;
       setShareUrl(data.share_url);
+      if (data.warning) setShareWarning(data.warning);
       
       if (onShareComplete) {
         onShareComplete({
@@ -344,6 +350,18 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
                 </button>
               </div>
             </div>
+
+            {shareWarning && (
+              <div className={`p-3 rounded-lg border ${
+                darkMode
+                  ? 'bg-yellow-900/20 border-yellow-700/40'
+                  : 'bg-yellow-50 border-yellow-200'
+              }`}>
+                <p className={`text-sm ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
+                  {shareWarning}
+                </p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <div className="flex justify-between items-center py-2">
@@ -590,6 +608,25 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({ file, folder, onC
                   />
                 </div>
               )}
+            </div>
+
+            {/* Watermark */}
+            <div>
+              <label className={`block text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                Watermark text (overlaid on previews):
+              </label>
+              <input
+                type="text"
+                value={watermarkText}
+                onChange={(e) => setWatermarkText(e.target.value)}
+                placeholder="e.g. Confidential"
+                maxLength={100}
+                className={`w-full px-3 py-2 rounded border text-sm ${
+                  darkMode
+                    ? 'bg-gray-700 border-gray-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-900'
+                }`}
+              />
             </div>
               </>
             )}

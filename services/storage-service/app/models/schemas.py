@@ -115,6 +115,8 @@ class ShareCreate(BaseModel):
     password: Optional[str] = None
     max_downloads: Optional[int] = None  # None = unlimited
     allow_preview: bool = True
+    allowed_ips: Optional[List[str]] = None  # IP whitelist (null = unrestricted)
+    watermark_text: Optional[str] = None  # Overlay watermark on previews
 
 class ShareResponse(BaseModel):
     share_url: str
@@ -125,6 +127,8 @@ class ShareResponse(BaseModel):
     max_downloads: Optional[int] = None
     downloads_used: int = 0
     allow_preview: bool = True
+    zk_files_hidden: int = 0  # Count of ZK files hidden from folder share viewers
+    warning: Optional[str] = None  # Warning message (e.g., ZK files hidden)
 
 class CollaborativeShareCreate(BaseModel):
     emails: List[str]  # List of emails to share with
@@ -144,11 +148,131 @@ class SharedItemResponse(BaseModel):
     id: str
     owner_email: str
     item_name: str
-    item_type: str  # file or folder
+    item_type: str  # file, folder, or bundle
     permission: str
     shared_at: datetime
     file_id: Optional[str] = None
     folder_id: Optional[str] = None
+    bundle_id: Optional[str] = None
+
+
+class PendingInvitationResponse(BaseModel):
+    id: str
+    owner_email: str
+    item_name: str
+    item_type: str  # file or folder
+    permission: str
+    invitation_token: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    file_id: Optional[str] = None
+    folder_id: Optional[str] = None
+
+
+# ============================================================================
+# Share Link Management Schemas
+# ============================================================================
+
+
+class ShareLinkUpdate(BaseModel):
+    share_type: Optional[str] = None  # view, download, edit
+    password: Optional[str] = None  # Set new password (empty string to remove)
+    expires_hours: Optional[int] = None  # Hours from now (0 to remove expiry)
+    max_downloads: Optional[int] = None  # -1 to remove limit
+    allow_preview: Optional[bool] = None
+    is_active: Optional[bool] = None
+    notify_on_access: Optional[bool] = None
+    allowed_ips: Optional[List[str]] = None  # Set whitelist (empty list to remove)
+    watermark_text: Optional[str] = None
+
+
+class ShareLinkDetail(BaseModel):
+    id: str
+    share_token: str
+    share_type: str
+    item_name: str
+    item_type: str  # file or folder
+    file_id: Optional[str] = None
+    folder_id: Optional[str] = None
+    password_protected: bool
+    expires_at: Optional[datetime] = None
+    max_downloads: Optional[int] = None
+    download_count: int = 0
+    view_count: int = 0
+    is_active: bool = True
+    allow_preview: bool = True
+    notify_on_access: bool = False
+    allowed_ips: Optional[List[str]] = None
+    watermark_text: Optional[str] = None
+    created_at: datetime
+    last_accessed: Optional[datetime] = None
+
+
+class ShareLinkListResponse(BaseModel):
+    items: List[ShareLinkDetail]
+    total: int
+    limit: int
+    offset: int
+
+
+class ShareAccessLogEntry(BaseModel):
+    id: str
+    access_type: str
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    file_id: Optional[str] = None
+    accessed_at: datetime
+
+
+class ShareAccessLogResponse(BaseModel):
+    items: List[ShareAccessLogEntry]
+    total: int
+    limit: int
+    offset: int
+
+
+class ShareAnalyticsSummary(BaseModel):
+    """Aggregate analytics across all user's shares"""
+    total_shares: int = 0
+    active_shares: int = 0
+    total_views: int = 0
+    total_downloads: int = 0
+    total_unique_ips: int = 0
+    most_viewed_share: Optional[dict] = None  # {id, name, type, views}
+    most_downloaded_share: Optional[dict] = None  # {id, name, type, downloads}
+
+
+class ShareDailyStats(BaseModel):
+    """Daily access stats for a single day"""
+    date: str  # YYYY-MM-DD
+    views: int = 0
+    downloads: int = 0
+
+
+class ShareAnalyticsTrends(BaseModel):
+    """Time-series access data"""
+    daily: List[ShareDailyStats]
+    period_days: int
+
+
+class ShareItemStats(BaseModel):
+    """Per-share analytics"""
+    id: str
+    name: str
+    share_type: str  # link or bundle
+    item_type: str  # file, folder, bundle
+    views: int = 0
+    downloads: int = 0
+    unique_ips: int = 0
+    is_active: bool = True
+    created_at: datetime
+    last_accessed: Optional[datetime] = None
+
+
+class ShareAnalyticsTopItems(BaseModel):
+    """Top shares by views/downloads"""
+    items: List[ShareItemStats]
+    total: int
 
 
 # ============================================================================
@@ -167,6 +291,9 @@ class ShareBundleCreate(BaseModel):
     max_downloads: Optional[int] = None
     allow_preview: bool = True
     allow_zip_download: bool = True
+    show_file_sizes: bool = True
+    allowed_ips: Optional[List[str]] = None
+    watermark_text: Optional[str] = None
 
 
 class ShareBundleUpdate(BaseModel):
@@ -179,7 +306,10 @@ class ShareBundleUpdate(BaseModel):
     max_downloads: Optional[int] = None
     allow_preview: Optional[bool] = None
     allow_zip_download: Optional[bool] = None
+    show_file_sizes: Optional[bool] = None
     is_active: Optional[bool] = None
+    allowed_ips: Optional[List[str]] = None
+    watermark_text: Optional[str] = None
 
 
 class ShareBundleFileItem(BaseModel):
@@ -214,6 +344,8 @@ class ShareBundleResponse(BaseModel):
     created_at: datetime
     last_accessed: Optional[datetime] = None
     files: Optional[List[ShareBundleFileItem]] = None  # Included when fetching details
+    excluded_zk_count: int = 0  # Number of ZK-encrypted files excluded from bundle
+    warning: Optional[str] = None  # Warning message (e.g., ZK files excluded)
 
 
 class ShareBundleListResponse(BaseModel):
@@ -240,9 +372,11 @@ class ShareBundlePublicInfo(BaseModel):
     share_type: str  # view, download
     allow_preview: bool
     allow_zip_download: bool
+    show_file_sizes: bool = True
     requires_password: bool = False
     files: List[ShareBundleFileItem]
     owner_name: Optional[str] = None  # Optional: show who shared
+    watermark_text: Optional[str] = None
 
 
 class ShareBundleAddFiles(BaseModel):

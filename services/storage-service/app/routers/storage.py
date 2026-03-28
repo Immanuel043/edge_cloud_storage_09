@@ -19,6 +19,8 @@ from ..database import get_redis, AsyncSessionLocal
 from ..services.storage import storage_service
 from ..config import settings
 from ..utils.cache import cached
+from ..utils.rate_limiter import limiter, share_limiter, RateLimitConfig, check_ip_whitelist
+from ..utils.access_logger import log_share_access
 from typing import Optional, List
 
 router = APIRouter(prefix="/api/v1", tags=["storage"])
@@ -191,6 +193,8 @@ async def create_share_link(
         view_count=0,
         is_active=True,
         allow_preview=share_data.allow_preview,
+        allowed_ips=share_data.allowed_ips,
+        watermark_text=share_data.watermark_text,
     )
 
     db.add(share_link)
@@ -232,8 +236,11 @@ async def create_share_link(
     )
 
 @router.get("/share/{share_token}/zk-info")
+@share_limiter.limit(RateLimitConfig.SHARE_PASSWORD_CHECK)
 async def get_share_zk_info(
     share_token: str,
+    request: Request,
+    password: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -253,6 +260,10 @@ async def get_share_zk_info(
     # Check expiration
     if share_link.expires_at and share_link.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Check IP whitelist
+    if not check_ip_whitelist(request, share_link.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
 
     # Check download limit
     if share_link.max_downloads and share_link.download_count >= share_link.max_downloads:
@@ -295,9 +306,11 @@ async def get_share_zk_info(
 
 
 @router.get("/share/{share_token}/chunk/{chunk_index}")
+@share_limiter.limit(RateLimitConfig.SHARE_ZK_CHUNK)
 async def download_share_chunk(
     share_token: str,
     chunk_index: int,
+    request: Request,
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
@@ -320,11 +333,16 @@ async def download_share_chunk(
     if share_link.expires_at and share_link.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    # Verify password if required (only checks hash, doesn't use for decryption)
+    # Check IP whitelist
+    if not check_ip_whitelist(request, share_link.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Verify password (accept from both header and query param, header takes precedence)
+    pw = request.headers.get("X-Share-Password") or password
     if share_link.password_hash:
-        if not password:
+        if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(password, share_link.password_hash):
+        if not pwd_context.verify(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check download limit
@@ -370,8 +388,11 @@ async def download_share_chunk(
 
 
 @router.get("/share/{share_token}")
+@share_limiter.limit(RateLimitConfig.SHARE_DOWNLOAD)
 async def download_shared(
     share_token: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
@@ -395,11 +416,16 @@ async def download_shared(
     if share_link.expires_at and share_link.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    # Verify password if required
+    # Check IP whitelist
+    if not check_ip_whitelist(request, share_link.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Verify password (accept from both header and query param, header takes precedence)
+    pw = request.headers.get("X-Share-Password") or password
     if share_link.password_hash:
-        if not password:
+        if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(password, share_link.password_hash):
+        if not pwd_context.verify(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check download limit
@@ -424,6 +450,8 @@ async def download_shared(
     share_link.download_count += 1
     share_link.last_accessed = datetime.utcnow()
     await db.commit()
+
+    background_tasks.add_task(log_share_access, request, "download", share_link_id=share_link.id, file_id=file_obj.id)
 
     # LEGACY: Server-side decryption for non-ZK files only
     from ..services.encryption import encryption_service

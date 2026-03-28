@@ -32,10 +32,12 @@ export interface BundleInfo {
   total_size: number;
   files: ShareFile[];
   allow_zip_download: boolean;
+  show_file_sizes: boolean;
   share_type: 'view' | 'download';
   allow_preview: boolean;
   owner_name?: string;
   requires_password?: boolean;
+  watermark_text?: string;
 }
 
 /**
@@ -50,6 +52,7 @@ export interface ShareInfo {
   file_size?: number;
   allow_preview?: boolean;
   password_required?: boolean;
+  watermark_text?: string;
 }
 
 /**
@@ -72,6 +75,8 @@ export interface FolderContents {
     size: number;
     mime_type?: string;
   }>;
+  notice?: string;
+  watermark_text?: string;
 }
 
 /**

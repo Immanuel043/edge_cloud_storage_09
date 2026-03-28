@@ -10,24 +10,25 @@ Key features:
 - View/download permissions
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
 import logging
-import io
-import zipfile
 
 from ..dependencies import get_db, get_current_user, log_activity
 from ..services.auth import pwd_context
-from ..models.database import User, Object, ShareBundle, ShareBundleFile, Folder
+from ..utils.rate_limiter import limiter, share_limiter, RateLimitConfig, check_ip_whitelist
+from ..utils.access_logger import log_share_access
+from ..models.database import User, Object, ShareBundle, ShareBundleFile, Folder, SharedAccess
 from ..models.schemas import (
     ShareBundleCreate, ShareBundleUpdate, ShareBundleResponse,
     ShareBundleListResponse, ShareBundlePublicInfo, ShareBundleFileItem,
-    ShareBundleAddFiles, ShareBundleRemoveFiles
+    ShareBundleAddFiles, ShareBundleRemoveFiles,
+    CollaborativeShareCreate, CollaborativeShareResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,17 @@ async def create_share_bundle(
     if not files_with_paths:
         raise HTTPException(status_code=400, detail="No files found in selected items")
 
+    # Filter out ZK-encrypted files (server cannot decrypt them for public sharing)
+    zk_excluded = [(f, p) for f, p in files_with_paths if f.encryption_mode == 'client_zk']
+    excluded_zk_count = len(zk_excluded)
+    if excluded_zk_count > 0:
+        files_with_paths = [(f, p) for f, p in files_with_paths if f.encryption_mode != 'client_zk']
+        if not files_with_paths:
+            raise HTTPException(
+                status_code=400,
+                detail="All selected files use zero-knowledge encryption and cannot be shared via bundles"
+            )
+
     if len(files_with_paths) > 500:
         raise HTTPException(status_code=400, detail="Maximum 500 files per bundle")
 
@@ -211,6 +223,9 @@ async def create_share_bundle(
         max_downloads=bundle_data.max_downloads,
         allow_preview=bundle_data.allow_preview,
         allow_zip_download=bundle_data.allow_zip_download,
+        show_file_sizes=bundle_data.show_file_sizes,
+        allowed_ips=bundle_data.allowed_ips,
+        watermark_text=bundle_data.watermark_text,
         total_size=total_size,
         file_count=len(files_with_paths),
     )
@@ -277,6 +292,10 @@ async def create_share_bundle(
         for idx, (f, path) in enumerate(files_with_paths)
     ]
 
+    zk_warning = None
+    if excluded_zk_count > 0:
+        zk_warning = f"{excluded_zk_count} ZK-encrypted file{'s' if excluded_zk_count > 1 else ''} excluded from bundle"
+
     return ShareBundleResponse(
         id=str(bundle.id),
         name=bundle.name,
@@ -297,6 +316,8 @@ async def create_share_bundle(
         created_at=bundle.created_at,
         last_accessed=bundle.last_accessed,
         files=file_items,
+        excluded_zk_count=excluded_zk_count,
+        warning=zk_warning,
     )
 
 
@@ -448,8 +469,14 @@ async def update_share_bundle(
         bundle.allow_preview = update_data.allow_preview
     if update_data.allow_zip_download is not None:
         bundle.allow_zip_download = update_data.allow_zip_download
+    if update_data.show_file_sizes is not None:
+        bundle.show_file_sizes = update_data.show_file_sizes
     if update_data.is_active is not None:
         bundle.is_active = update_data.is_active
+    if update_data.allowed_ips is not None:
+        bundle.allowed_ips = update_data.allowed_ips if update_data.allowed_ips else None
+    if update_data.watermark_text is not None:
+        bundle.watermark_text = update_data.watermark_text or None
 
     await db.commit()
     await db.refresh(bundle)
@@ -641,13 +668,116 @@ async def remove_files_from_bundle(
     }
 
 
+@router.post("/share-bundles/{bundle_id}/collaborate", response_model=List[CollaborativeShareResponse])
+async def share_bundle_with_users(
+    bundle_id: str,
+    share_data: CollaborativeShareCreate,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+):
+    """Share a bundle with specific users by email — collaborative sharing"""
+    import secrets as _secrets
+
+    # Verify bundle exists and belongs to user
+    result = await db.execute(
+        select(ShareBundle).filter(ShareBundle.id == bundle_id, ShareBundle.user_id == current_user.id)
+    )
+    bundle = result.scalar_one_or_none()
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Share bundle not found")
+
+    # Calculate expiration
+    expires_at = None
+    if share_data.expires_hours:
+        from datetime import timedelta
+        expires_at = datetime.utcnow() + timedelta(hours=share_data.expires_hours)
+
+    shared_items = []
+    for email in share_data.emails:
+        if email == current_user.email:
+            continue  # Skip self-sharing
+
+        # Check for existing share
+        existing = await db.execute(
+            select(SharedAccess).filter(
+                SharedAccess.bundle_id == bundle_id,
+                SharedAccess.shared_with_email == email,
+                SharedAccess.invitation_status != 'declined',
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue  # Skip duplicates
+
+        # Check if recipient is a registered user
+        recipient_result = await db.execute(
+            select(User).filter(User.email == email)
+        )
+        recipient_user = recipient_result.scalar_one_or_none()
+
+        invitation_token = _secrets.token_urlsafe(32)
+
+        shared_access = SharedAccess(
+            owner_id=current_user.id,
+            shared_with_email=email,
+            shared_with_user_id=recipient_user.id if recipient_user else None,
+            bundle_id=bundle_id,
+            permission=share_data.permission,
+            invitation_status='accepted' if recipient_user else 'pending',
+            invitation_token=invitation_token,
+            expires_at=expires_at,
+        )
+        db.add(shared_access)
+        shared_items.append((shared_access, email, invitation_token, recipient_user))
+
+    await db.commit()
+
+    responses = []
+    for shared_access, email, invitation_token, recipient_user in shared_items:
+        await db.refresh(shared_access)
+        responses.append(CollaborativeShareResponse(
+            id=str(shared_access.id),
+            shared_with_email=email,
+            permission=share_data.permission,
+            invitation_status=shared_access.invitation_status,
+            invitation_token=invitation_token if not recipient_user else None,
+            created_at=shared_access.created_at,
+        ))
+
+    # Log activity
+    await log_activity(
+        db, current_user.id, "bundle_shared_collaborative", str(bundle_id),
+        {"emails": share_data.emails, "permission": share_data.permission},
+        request,
+    )
+
+    # Send email notifications (fire-and-forget)
+    from ..services.email_service import email_service
+    for email in share_data.emails:
+        background_tasks.add_task(
+            email_service.send_share_notification,
+            to_email=email,
+            owner_email=current_user.email,
+            item_name=bundle.name,
+            item_type="bundle",
+            permission=share_data.permission,
+            message=share_data.message,
+        )
+
+    return responses
+
+
 # ============================================================================
 # Public Endpoints - For share bundle viewers (no auth required)
 # ============================================================================
 
 @router.get("/share/bundle/{token}/info", response_model=ShareBundlePublicInfo)
+@share_limiter.limit(RateLimitConfig.SHARE_PASSWORD_CHECK)
 async def get_public_bundle_info(
     token: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -669,9 +799,14 @@ async def get_public_bundle_info(
     if bundle.expires_at and bundle.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    # Check password
+    # Check IP whitelist
+    if not check_ip_whitelist(request, bundle.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Check password (accept from both header and query param, header takes precedence)
+    pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not password:
+        if not pw:
             # Return minimal info indicating password is required
             return ShareBundlePublicInfo(
                 name=bundle.name,
@@ -681,17 +816,21 @@ async def get_public_bundle_info(
                 share_type=bundle.share_type,
                 allow_preview=bundle.allow_preview,
                 allow_zip_download=bundle.allow_zip_download,
+                show_file_sizes=bundle.show_file_sizes,
                 requires_password=True,
                 files=[],
                 owner_name=owner.username,
+                watermark_text=bundle.watermark_text,
             )
-        if not pwd_context.verify(password, bundle.password_hash):
+        if not pwd_context.verify(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Increment view count
     bundle.view_count += 1
     bundle.last_accessed = datetime.utcnow()
     await db.commit()
+
+    background_tasks.add_task(log_share_access, request, "view", bundle_id=bundle.id)
 
     # First check how many ShareBundleFile records exist
     bundle_files_check = await db.execute(
@@ -703,20 +842,31 @@ async def get_public_bundle_info(
     for bf in bundle_file_records:
         logger.info(f"  - ShareBundleFile: file_id={bf.file_id}, order={bf.display_order}")
 
-    # Get files (join ShareBundleFile to Object)
+    # Get visible files (exclude deleted and ZK-encrypted files)
     files_result = await db.execute(
         select(Object, ShareBundleFile)
         .select_from(ShareBundleFile)
         .join(Object, ShareBundleFile.file_id == Object.id)
         .filter(
             ShareBundleFile.bundle_id == bundle.id,
-            Object.is_deleted == False  # Don't show deleted files
+            Object.is_deleted == False,
+            or_(Object.encryption_mode == None, Object.encryption_mode != 'client_zk')
         )
         .order_by(ShareBundleFile.display_order)
     )
     files_data = files_result.all()
 
-    logger.info(f"Bundle {bundle.id}: found {len(files_data)} active files after join (bundle claims {bundle.file_count})")
+    logger.info(f"Bundle {bundle.id}: found {len(files_data)} visible files after join (bundle claims {bundle.file_count})")
+
+    # Compute real stats from visible files
+    real_file_count = len(files_data)
+    real_total_size = sum(f.file_size for f, bf in files_data)
+
+    # Lazy write-on-read correction for stale stats
+    if bundle.file_count != real_file_count or bundle.total_size != real_total_size:
+        bundle.file_count = real_file_count
+        bundle.total_size = real_total_size
+        await db.commit()
 
     file_items = [
         ShareBundleFileItem(
@@ -734,22 +884,26 @@ async def get_public_bundle_info(
     return ShareBundlePublicInfo(
         name=bundle.name,
         description=bundle.description,
-        file_count=bundle.file_count,
-        total_size=bundle.total_size,
+        file_count=real_file_count,
+        total_size=real_total_size,
         share_type=bundle.share_type,
         allow_preview=bundle.allow_preview,
         allow_zip_download=bundle.allow_zip_download,
+        show_file_sizes=bundle.show_file_sizes,
         requires_password=False,
         files=file_items,
         owner_name=owner.username,
+        watermark_text=bundle.watermark_text,
     )
 
 
 @router.get("/share/bundle/{token}/file/{file_id}/stream")
+@limiter.limit(RateLimitConfig.SHARE_STREAM)
 async def stream_bundle_file(
     token: str,
     file_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -777,9 +931,14 @@ async def stream_bundle_file(
     if bundle.expires_at and bundle.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    # Verify password
+    # Check IP whitelist
+    if not check_ip_whitelist(request, bundle.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Verify password (accept from both header and query param, header takes precedence)
+    pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not password or not pwd_context.verify(password, bundle.password_hash):
+        if not pw or not pwd_context.verify(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Check preview allowed
@@ -804,6 +963,12 @@ async def stream_bundle_file(
 
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found or has been deleted")
+
+    # Block ZK-encrypted files from preview
+    if file_obj.encryption_mode == 'client_zk':
+        raise HTTPException(status_code=404, detail="This file uses zero-knowledge encryption and cannot be previewed from a shared bundle")
+
+    background_tasks.add_task(log_share_access, request, "stream", bundle_id=bundle.id, file_id=file_obj.id)
 
     # Decrypt file key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
@@ -905,16 +1070,148 @@ async def stream_bundle_file(
             return StreamingResponse(generator, status_code=200, headers=headers, media_type=mime_type)
 
 
+@router.get("/share/bundle/{token}/file/{file_id}/download")
+@share_limiter.limit(RateLimitConfig.SHARE_DOWNLOAD)
+async def download_bundle_file(
+    token: str,
+    file_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    password: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Download a single file from a share bundle (enforces share_type and max_downloads)"""
+    from ..services.encryption import encryption_service
+    from ..services.download_optimizer import download_optimizer
+    import os
+    import base64
+
+    # Get bundle and verify access
+    result = await db.execute(
+        select(ShareBundle, User)
+        .join(User, ShareBundle.user_id == User.id)
+        .filter(ShareBundle.share_token == token, ShareBundle.is_active == True)
+    )
+    data = result.first()
+
+    if not data:
+        raise HTTPException(status_code=404, detail="Share bundle not found")
+
+    bundle, owner = data
+
+    # Check expiration
+    if bundle.expires_at and bundle.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    # Check IP whitelist
+    if not check_ip_whitelist(request, bundle.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Verify password
+    pw = request.headers.get("X-Share-Password") or password
+    if bundle.password_hash:
+        if not pw or not pwd_context.verify(pw, bundle.password_hash):
+            raise HTTPException(status_code=401, detail="Password required")
+
+    # Enforce download permission
+    if bundle.share_type == 'view':
+        raise HTTPException(status_code=403, detail="Download not allowed - view only")
+
+    # Enforce download limit
+    if bundle.max_downloads and bundle.download_count >= bundle.max_downloads:
+        raise HTTPException(status_code=403, detail="Download limit reached")
+
+    # Verify file is in bundle
+    file_in_bundle = await db.execute(
+        select(ShareBundleFile).filter(
+            ShareBundleFile.bundle_id == bundle.id,
+            ShareBundleFile.file_id == file_id
+        )
+    )
+    if not file_in_bundle.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="File not in bundle")
+
+    # Get file (ensure it's not deleted)
+    file_result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.is_deleted == False)
+    )
+    file_obj = file_result.scalar_one_or_none()
+
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found or has been deleted")
+
+    # Block ZK-encrypted files
+    if file_obj.encryption_mode == 'client_zk':
+        raise HTTPException(status_code=404, detail="This file uses zero-knowledge encryption and cannot be downloaded from a shared bundle")
+
+    # Increment download count
+    bundle.download_count += 1
+    bundle.last_accessed = datetime.utcnow()
+    await db.commit()
+
+    background_tasks.add_task(log_share_access, request, "download_file", bundle_id=bundle.id, file_id=file_obj.id)
+
+    # Decrypt file key
+    file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+
+    mime_type = file_obj.mime_type or 'application/octet-stream'
+    filename = file_obj.file_name.replace('"', '\\"')
+    total_size = file_obj.file_size
+
+    headers = {
+        "Content-Type": mime_type,
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(total_size),
+    }
+
+    was_compressed = file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False)
+
+    # INLINE STORAGE
+    if file_obj.storage_type == "inline":
+        encrypted_data = base64.b64decode(file_obj.storage_key)
+        file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+
+        if was_compressed:
+            from ..utils.compression import compressor
+            file_data = compressor.decompress(file_data)
+
+        return Response(content=file_data, status_code=200, headers=headers)
+
+    # SINGLE FILE STORAGE
+    elif file_obj.storage_type == "single":
+        if not os.path.exists(file_obj.object_path):
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        generator = download_optimizer.stream_single_file_optimized(
+            file_path=file_obj.object_path,
+            file_key=file_key,
+            encryption_service=encryption_service,
+            start_byte=0,
+            end_byte=total_size - 1,
+            compressed=was_compressed
+        )
+        return StreamingResponse(generator, status_code=200, headers=headers, media_type=mime_type)
+
+    # CHUNKED STORAGE
+    else:
+        from .files import stream_chunked_range
+
+        generator = stream_chunked_range(file_obj, 0, total_size - 1, file_key, encryption_service)
+        return StreamingResponse(generator, status_code=200, headers=headers, media_type=mime_type)
+
+
 @router.get("/share/bundle/{token}/download")
+@share_limiter.limit(RateLimitConfig.SHARE_DOWNLOAD)
 async def download_bundle_as_zip(
     token: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Download all files in bundle as a ZIP file"""
     from ..services.encryption import encryption_service
-    import os
-    import base64
+    from ..utils.zip_builder import ZipFileEntry, build_zip_response
 
     # Get bundle
     result = await db.execute(
@@ -932,9 +1229,14 @@ async def download_bundle_as_zip(
     if bundle.expires_at and bundle.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    # Verify password
+    # Check IP whitelist
+    if not check_ip_whitelist(request, bundle.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Verify password (accept from both header and query param, header takes precedence)
+    pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not password or not pwd_context.verify(password, bundle.password_hash):
+        if not pw or not pwd_context.verify(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Check ZIP download allowed
@@ -949,14 +1251,15 @@ async def download_bundle_as_zip(
     if bundle.max_downloads and bundle.download_count >= bundle.max_downloads:
         raise HTTPException(status_code=403, detail="Download limit reached")
 
-    # Get all files in bundle (filter out deleted files)
+    # Get visible files in bundle (filter out deleted and ZK-encrypted files)
     files_result = await db.execute(
         select(Object, ShareBundleFile)
         .select_from(ShareBundleFile)
         .join(Object, ShareBundleFile.file_id == Object.id)
         .filter(
             ShareBundleFile.bundle_id == bundle.id,
-            Object.is_deleted == False
+            Object.is_deleted == False,
+            or_(Object.encryption_mode == None, Object.encryption_mode != 'client_zk')
         )
         .order_by(ShareBundleFile.display_order)
     )
@@ -965,74 +1268,38 @@ async def download_bundle_as_zip(
     if not files_data:
         raise HTTPException(status_code=404, detail="No files in bundle (all files may have been deleted)")
 
-    # Create ZIP in memory
-    zip_buffer = io.BytesIO()
+    # Build ZIP entries with folder structure preserved
+    entries = []
+    for file_obj, bundle_file in files_data:
+        zip_path = file_obj.file_name
+        if bundle_file.folder_path:
+            zip_path = f"{bundle_file.folder_path}{file_obj.file_name}"
+        entries.append(ZipFileEntry(file_obj, zip_path))
 
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for file_obj, bundle_file in files_data:
-            try:
-                # Decrypt file key
-                file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+    # Generate ZIP filename
+    safe_name = "".join(c for c in bundle.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    zip_filename = f"{safe_name}.zip"
 
-                # Get file content
-                if file_obj.storage_type == "inline":
-                    encrypted_data = base64.b64decode(file_obj.storage_key)
-                    file_content = encryption_service.decrypt_file(encrypted_data, file_key)
-                elif file_obj.storage_type == "single" and os.path.exists(file_obj.object_path):
-                    # Read and decrypt file
-                    with open(file_obj.object_path, 'rb') as f:
-                        encrypted_data = f.read()
-                    file_content = encryption_service.decrypt_file(encrypted_data, file_key)
-                else:
-                    # Skip files we can't read
-                    logger.warning(f"Skipping file {file_obj.id} - storage type {file_obj.storage_type}")
-                    continue
-
-                # Handle compression
-                if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
-                    from ..utils.compression import compressor
-                    file_content = compressor.decompress(file_content)
-
-                # Add to ZIP with folder structure preserved
-                zip_path = file_obj.file_name
-                if bundle_file.folder_path:
-                    zip_path = f"{bundle_file.folder_path}{file_obj.file_name}"
-                zip_file.writestr(zip_path, file_content)
-
-            except Exception as e:
-                logger.error(f"Error adding file {file_obj.id} to ZIP: {e}")
-                continue
-
-    # Get ZIP content as bytes for Content-Length
-    zip_bytes = zip_buffer.getvalue()
-    zip_size = len(zip_bytes)
-
-    if zip_size == 0:
-        raise HTTPException(status_code=500, detail="Failed to create ZIP - no files could be processed")
+    # Build ZIP (in-memory for <500MB, temp file for larger)
+    response = await build_zip_response(entries, encryption_service, zip_filename)
 
     # Increment download count only after ZIP is successfully created
     bundle.download_count += 1
     bundle.last_accessed = datetime.utcnow()
     await db.commit()
 
-    # Generate ZIP filename
-    safe_name = "".join(c for c in bundle.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    zip_filename = f"{safe_name}.zip"
+    background_tasks.add_task(log_share_access, request, "download_zip", bundle_id=bundle.id)
 
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{zip_filename}"',
-            "Content-Length": str(zip_size),
-        }
-    )
+    return response
 
 
 @router.get("/share/bundle/{token}/file/{file_id}/thumbnail")
+@limiter.limit(RateLimitConfig.SHARE_THUMBNAIL)
 async def get_bundle_file_thumbnail(
     token: str,
     file_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
     size: str = 'medium',
     password: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -1059,9 +1326,14 @@ async def get_bundle_file_thumbnail(
     if bundle.expires_at and bundle.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    # Verify password
+    # Check IP whitelist
+    if not check_ip_whitelist(request, bundle.allowed_ips):
+        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+
+    # Verify password (accept from both header and query param, header takes precedence)
+    pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not password or not pwd_context.verify(password, bundle.password_hash):
+        if not pw or not pwd_context.verify(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Check preview allowed
@@ -1090,6 +1362,8 @@ async def get_bundle_file_thumbnail(
     # Check if ZK encrypted (no thumbnails for ZK files in public shares)
     if file_obj.encryption_mode == 'client_zk':
         raise HTTPException(status_code=404, detail="Thumbnails not available for encrypted files")
+
+    background_tasks.add_task(log_share_access, request, "thumbnail", bundle_id=bundle.id, file_id=file_obj.id)
 
     # Validate size
     if size not in ['small', 'medium', 'large']:

@@ -20,6 +20,8 @@ import {
   Trash2,
   Shield,
   CreditCard,
+  Link2,
+  Activity,
 } from 'lucide-react';
 import type { SidebarProps, MenuItem as MenuItemType } from './types';
 import { formatBytes } from '../../utils/helpers';
@@ -128,6 +130,18 @@ const Sidebar: React.FC<SidebarProps> = ({
       label: 'Shared with me',
       icon: Users,
       description: 'Files shared by others',
+    },
+    {
+      id: 'my-share-links',
+      label: 'My Share Links',
+      icon: Link2,
+      description: 'Manage your share links',
+    },
+    {
+      id: 'share-analytics',
+      label: 'Share Analytics',
+      icon: Activity,
+      description: 'Share access analytics',
     },
     {
       id: 'trash',

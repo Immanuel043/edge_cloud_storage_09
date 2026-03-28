@@ -360,7 +360,7 @@ const ShareBundleViewer: React.FC = () => {
     setDownloadError('');
     try {
       const url = new URL(
-        `${API_URL}/api/v1/share/bundle/${token}/file/${file.id}/stream`
+        `${API_URL}/api/v1/share/bundle/${token}/file/${file.id}/download`
       );
       const dlHeaders: Record<string, string> = {};
       if (password) {
@@ -482,7 +482,7 @@ const ShareBundleViewer: React.FC = () => {
             <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-purple-100 to-pink-100">
               <h2 className="font-semibold text-gray-900 mb-1">{bundleInfo.name}</h2>
               <p className="text-sm text-gray-600">
-                {bundleInfo.file_count} files • {formatBytes(bundleInfo.total_size || 0)}
+                {bundleInfo.file_count} files{bundleInfo.show_file_sizes !== false && ` • ${formatBytes(bundleInfo.total_size || 0)}`}
               </p>
               {bundleInfo.owner_name && (
                 <p className="text-xs text-gray-500 mt-1">
@@ -554,7 +554,9 @@ const ShareBundleViewer: React.FC = () => {
               {getFileIcon(previewFile)}
               <div>
                 <h3 className="font-semibold text-gray-900">{previewFile.name}</h3>
-                <p className="text-sm text-gray-500">{formatBytes(previewFile.size)}</p>
+                {bundleInfo?.show_file_sizes !== false && (
+                  <p className="text-sm text-gray-500">{formatBytes(previewFile.size)}</p>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -577,7 +579,39 @@ const ShareBundleViewer: React.FC = () => {
           </div>
 
           {/* Modal Content */}
-          <div className="p-4 overflow-auto max-h-[calc(90vh-80px)]">
+          <div className="p-4 overflow-auto max-h-[calc(90vh-80px)] relative">
+            {bundleInfo?.watermark_text && (
+              <div
+                className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none"
+                aria-hidden="true"
+              >
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    backgroundImage: `repeating-linear-gradient(
+                      -45deg,
+                      transparent,
+                      transparent 80px,
+                      rgba(0,0,0,0.03) 80px,
+                      rgba(0,0,0,0.03) 81px
+                    )`,
+                  }}
+                />
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="absolute whitespace-nowrap text-gray-400/20 font-bold text-2xl"
+                    style={{
+                      top: `${(i % 4) * 30 + 5}%`,
+                      left: `${Math.floor(i / 4) * 35 - 10}%`,
+                      transform: 'rotate(-35deg)',
+                    }}
+                  >
+                    {bundleInfo.watermark_text}
+                  </div>
+                ))}
+              </div>
+            )}
             {isVideoFile(previewFile) ? (
               <video
                 ref={videoRef}
@@ -674,8 +708,7 @@ const ShareBundleViewer: React.FC = () => {
                   {bundleInfo?.name || 'Shared Bundle'}
                 </h1>
                 <p className="text-sm text-gray-500">
-                  {bundleInfo?.file_count} files •{' '}
-                  {formatBytes(bundleInfo?.total_size || 0)}
+                  {bundleInfo?.file_count} files{bundleInfo?.show_file_sizes !== false && ` • ${formatBytes(bundleInfo?.total_size || 0)}`}
                 </p>
               </div>
             </div>
@@ -768,10 +801,12 @@ const ShareBundleViewer: React.FC = () => {
                 {bundleInfo?.share_type === 'download' ? 'download' : 'view'}
               </p>
             </div>
-            <div className="text-right">
-              <p className="text-3xl font-bold">{formatBytes(bundleInfo?.total_size || 0)}</p>
-              <p className="text-white/80 text-sm">Total size</p>
-            </div>
+            {bundleInfo?.show_file_sizes !== false && (
+              <div className="text-right">
+                <p className="text-3xl font-bold">{formatBytes(bundleInfo?.total_size || 0)}</p>
+                <p className="text-white/80 text-sm">Total size</p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -876,7 +911,9 @@ const ShareBundleViewer: React.FC = () => {
                               >
                                 {file.name}
                               </p>
-                              <p className="text-xs text-gray-500 mt-1">{formatBytes(file.size)}</p>
+                              {bundleInfo?.show_file_sizes !== false && (
+                                <p className="text-xs text-gray-500 mt-1">{formatBytes(file.size)}</p>
+                              )}
                               {/* Action buttons on hover */}
                               <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                 {bundleInfo?.allow_preview && (
@@ -964,7 +1001,9 @@ const ShareBundleViewer: React.FC = () => {
                           >
                             {file.name}
                           </p>
-                          <p className="text-xs text-gray-500 mt-1">{formatBytes(file.size)}</p>
+                          {bundleInfo?.show_file_sizes !== false && (
+                            <p className="text-xs text-gray-500 mt-1">{formatBytes(file.size)}</p>
+                          )}
                           {/* Action buttons on hover */}
                           <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
                             {bundleInfo?.allow_preview && (
@@ -1033,12 +1072,14 @@ const ShareBundleViewer: React.FC = () => {
 
                           <div className="flex-1 min-w-0">
                             <p className="font-medium text-gray-900 truncate">{file.name}</p>
-                            <p className="text-sm text-gray-500">
-                              {file.relativePath && (
-                                <span className="text-gray-400">{file.relativePath}/</span>
-                              )}
-                              {formatBytes(file.size)}
-                            </p>
+                            {(file.relativePath || bundleInfo?.show_file_sizes !== false) && (
+                              <p className="text-sm text-gray-500">
+                                {file.relativePath && (
+                                  <span className="text-gray-400">{file.relativePath}/</span>
+                                )}
+                                {bundleInfo?.show_file_sizes !== false && formatBytes(file.size)}
+                              </p>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-2">
@@ -1079,7 +1120,9 @@ const ShareBundleViewer: React.FC = () => {
 
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-900 truncate">{file.name}</p>
-                    <p className="text-sm text-gray-500">{formatBytes(file.size)}</p>
+                    {bundleInfo?.show_file_sizes !== false && (
+                      <p className="text-sm text-gray-500">{formatBytes(file.size)}</p>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2">

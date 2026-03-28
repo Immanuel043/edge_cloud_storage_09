@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Users, Loader, AlertCircle } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Users, Loader, AlertCircle, Check, X, Mail, FileIcon, FolderIcon } from 'lucide-react';
 import { useSharedWithMe } from '../../hooks/useSharedWithMe';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
@@ -33,7 +33,11 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
   onVersionHistory,
   darkMode,
 }) => {
-  const { sharedFiles, loading, error, refresh, removeSharedAccess } = useSharedWithMe();
+  const {
+    sharedFiles, pendingInvitations, loading, error, refresh,
+    removeSharedAccess, acceptInvitation, declineInvitation,
+  } = useSharedWithMe();
+  const [processingTokens, setProcessingTokens] = useState<Set<string>>(new Set());
 
   // Custom delete handler for shared files - removes access, not the original file
   const handleRemoveSharedFile = async (fileId: string): Promise<void> => {
@@ -48,6 +52,36 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
         // TODO: Replace alert() with toast notification
         alert('Failed to remove from Shared with me');
       }
+    }
+  };
+
+  const handleAccept = async (token: string) => {
+    setProcessingTokens((prev) => new Set(prev).add(token));
+    try {
+      await acceptInvitation(token);
+    } catch (err: unknown) {
+      console.error('Failed to accept invitation:', getErrorMessage(err));
+    } finally {
+      setProcessingTokens((prev) => {
+        const next = new Set(prev);
+        next.delete(token);
+        return next;
+      });
+    }
+  };
+
+  const handleDecline = async (token: string) => {
+    setProcessingTokens((prev) => new Set(prev).add(token));
+    try {
+      await declineInvitation(token);
+    } catch (err: unknown) {
+      console.error('Failed to decline invitation:', getErrorMessage(err));
+    } finally {
+      setProcessingTokens((prev) => {
+        const next = new Set(prev);
+        next.delete(token);
+        return next;
+      });
     }
   };
 
@@ -111,7 +145,7 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
     );
   }
 
-  if (transformedFiles.length === 0 && transformedFolders.length === 0) {
+  if (transformedFiles.length === 0 && transformedFolders.length === 0 && pendingInvitations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <div className={`p-6 rounded-2xl mb-4 ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
@@ -150,6 +184,70 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Pending Invitations */}
+      {pendingInvitations.length > 0 && (
+        <div className={`rounded-lg border p-4 ${
+          darkMode ? 'bg-yellow-900/20 border-yellow-700/50' : 'bg-yellow-50 border-yellow-200'
+        }`}>
+          <div className="flex items-center gap-2 mb-3">
+            <Mail className={darkMode ? 'text-yellow-400' : 'text-yellow-600'} size={18} />
+            <h3 className={`font-medium ${darkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>
+              Pending Invitations ({pendingInvitations.length})
+            </h3>
+          </div>
+          <div className="space-y-2">
+            {pendingInvitations.map((inv) => {
+              const isProcessing = processingTokens.has(inv.invitation_token);
+              return (
+                <div key={inv.id} className={`flex items-center justify-between p-3 rounded-lg ${
+                  darkMode ? 'bg-gray-800' : 'bg-white'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    {inv.item_type === 'folder' ? (
+                      <FolderIcon className={darkMode ? 'text-blue-400' : 'text-blue-500'} size={20} />
+                    ) : (
+                      <FileIcon className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
+                    )}
+                    <div>
+                      <p className={`font-medium text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {inv.item_name}
+                      </p>
+                      <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                        From {inv.owner_email} &middot; {inv.permission} access
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleAccept(inv.invitation_token)}
+                      disabled={isProcessing}
+                      className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+                        darkMode
+                          ? 'bg-green-600 hover:bg-green-700 text-white disabled:opacity-50'
+                          : 'bg-green-500 hover:bg-green-600 text-white disabled:opacity-50'
+                      }`}
+                    >
+                      <Check size={14} /> Accept
+                    </button>
+                    <button
+                      onClick={() => handleDecline(inv.invitation_token)}
+                      disabled={isProcessing}
+                      className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+                        darkMode
+                          ? 'bg-gray-600 hover:bg-gray-700 text-gray-200 disabled:opacity-50'
+                          : 'bg-gray-200 hover:bg-gray-300 text-gray-700 disabled:opacity-50'
+                      }`}
+                    >
+                      <X size={14} /> Decline
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Files */}
       {viewMode === 'grid' ? (

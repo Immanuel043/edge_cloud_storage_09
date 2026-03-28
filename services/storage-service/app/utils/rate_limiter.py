@@ -84,6 +84,13 @@ class RateLimitConfig:
     SHARE_CREATE = "50/hour;200/day"
     SHARE_ACCESS = "1000/hour;10000/day"
 
+    # Public share endpoints (unauthenticated, token-based)
+    SHARE_PASSWORD_CHECK = "5/minute"       # Tight — brute-force target
+    SHARE_STREAM = "60/minute"              # Permissive — browsers use range requests
+    SHARE_DOWNLOAD = "10/minute"            # Moderate — heavy operation
+    SHARE_THUMBNAIL = "30/minute"           # Moderate — grid loads multiple
+    SHARE_ZK_CHUNK = "30/minute"            # Moderate — chunked ZK downloads
+
     # ML operations (resource-intensive)
     ML_PREDICTION = "100/hour;500/day"
     ML_ANALYSIS = "50/hour;200/day"
@@ -97,6 +104,21 @@ class RateLimitConfig:
     # OAuth endpoints
     OAUTH_LOGIN = "10/minute;50/hour"
     OAUTH_CALLBACK = "20/minute;100/hour"
+
+
+def get_share_key(request: Request) -> str:
+    """Rate limit key combining IP + share token for per-share-per-IP limits"""
+    ip = get_remote_address(request)
+    token = request.path_params.get("token") or request.path_params.get("share_token", "")
+    return f"{ip}:{token}"
+
+
+# Share-specific limiter keyed by IP + token
+share_limiter = Limiter(
+    key_func=get_share_key,
+    storage_uri=settings.REDIS_URL,
+    headers_enabled=False
+)
 
 
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
@@ -193,6 +215,41 @@ async def should_bypass_rate_limit(request: Request) -> bool:
     return False
 
 
+def check_ip_whitelist(request: Request, allowed_ips: list | None) -> bool:
+    """
+    Check if the request IP is allowed by the share's IP whitelist.
+
+    Args:
+        request: FastAPI request object
+        allowed_ips: List of allowed IPs/CIDRs, or None/empty for unrestricted
+
+    Returns:
+        True if allowed, False if blocked
+    """
+    if not allowed_ips:
+        return True
+
+    import ipaddress
+    client_ip = get_remote_address(request)
+    try:
+        client_addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+
+    for entry in allowed_ips:
+        try:
+            if '/' in entry:
+                if client_addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            else:
+                if client_addr == ipaddress.ip_address(entry):
+                    return True
+        except ValueError:
+            continue
+
+    return False
+
+
 # Export commonly used limiters
 __all__ = [
     'limiter',
@@ -200,5 +257,6 @@ __all__ = [
     'RateLimitConfig',
     'rate_limit_exceeded_handler',
     'create_custom_rate_limiter',
-    'should_bypass_rate_limit'
+    'should_bypass_rate_limit',
+    'check_ip_whitelist',
 ]

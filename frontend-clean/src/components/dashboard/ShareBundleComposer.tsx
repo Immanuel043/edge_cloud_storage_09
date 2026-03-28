@@ -36,6 +36,8 @@ interface ShareBundleRequest {
   max_downloads: number | null;
   allow_preview: boolean;
   allow_zip_download: boolean;
+  show_file_sizes: boolean;
+  watermark_text: string | null;
 }
 
 interface ShareBundleError {
@@ -59,6 +61,8 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
   const [maxDownloads, setMaxDownloads] = useState<number | null>(null);
   const [allowPreview, setAllowPreview] = useState<boolean>(true);
   const [allowZipDownload, setAllowZipDownload] = useState<boolean>(true);
+  const [showFileSizes, setShowFileSizes] = useState<boolean>(true);
+  const [watermarkText, setWatermarkText] = useState<string>('');
   const [isCreating, setIsCreating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [shareResult, setShareResult] = useState<ShareBundleResult | null>(null);
@@ -72,9 +76,10 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
   // Total item count
   const totalItems = selectedFiles.length + selectedFolders.length;
 
-  // Check for ZK-encrypted files that may not be shareable via bundles
-  const zkFiles = selectedFiles.filter(f => f.is_encrypted || f.encrypted_file_key);
+  // Check for ZK-encrypted files that cannot be shared via bundles
+  const zkFiles = selectedFiles.filter(f => f.is_encrypted || f.encrypted_file_key || f.encryption_mode === 'client_zk');
   const hasZKFiles = zkFiles.length > 0;
+  const allFilesAreZK = zkFiles.length === selectedFiles.length && selectedFolders.length === 0;
 
   // Generate default bundle name
   const defaultBundleName = useMemo(() => {
@@ -118,7 +123,9 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
         password: password || null,
         max_downloads: maxDownloads,
         allow_preview: allowPreview,
-        allow_zip_download: allowZipDownload
+        allow_zip_download: allowZipDownload,
+        show_file_sizes: showFileSizes,
+        watermark_text: watermarkText.trim() || null
       };
 
       const response = await fetch(`${API_URL}/api/v1/share-bundles`, {
@@ -231,6 +238,19 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* ZK files excluded warning */}
+            {shareResult.excluded_zk_count != null && shareResult.excluded_zk_count > 0 && (
+              <div className={`p-3 rounded-lg border ${
+                darkMode
+                  ? 'bg-yellow-900/20 border-yellow-700/40'
+                  : 'bg-yellow-50 border-yellow-200'
+              }`}>
+                <p className={`text-sm ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
+                  {shareResult.excluded_zk_count} ZK-encrypted file{shareResult.excluded_zk_count > 1 ? 's were' : ' was'} excluded from this bundle.
+                </p>
+              </div>
+            )}
 
             {/* Bundle Info */}
             <div className={`p-4 rounded-xl ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'}`}>
@@ -348,8 +368,10 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
               <div className="flex items-start gap-2">
                 <AlertCircle size={16} className="text-yellow-500 flex-shrink-0 mt-0.5" />
                 <p className={`text-xs ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
-                  {zkFiles.length} ZK-encrypted file{zkFiles.length > 1 ? 's' : ''} selected.
-                  Recipients will need to download and decrypt locally.
+                  {allFilesAreZK
+                    ? 'All selected files use ZK encryption and cannot be shared via bundles.'
+                    : `${zkFiles.length} ZK-encrypted file${zkFiles.length > 1 ? 's' : ''} will be excluded from the bundle. Only non-ZK files will be shared.`
+                  }
                 </p>
               </div>
             </div>
@@ -530,6 +552,34 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
                   Allow ZIP download (all files)
                 </span>
               </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showFileSizes}
+                  onChange={(e) => setShowFileSizes(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-purple-500 focus:ring-purple-500"
+                />
+                <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Show file sizes to viewers
+                </span>
+              </label>
+              <div>
+                <label className={`block text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Watermark text (overlaid on previews):
+                </label>
+                <input
+                  type="text"
+                  value={watermarkText}
+                  onChange={(e) => setWatermarkText(e.target.value)}
+                  placeholder="e.g. Confidential"
+                  maxLength={100}
+                  className={`w-full px-3 py-1.5 rounded-lg border text-sm ${
+                    darkMode
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              </div>
               <div className="flex items-center gap-3">
                 <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   Max downloads:
@@ -575,7 +625,7 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
             </button>
             <button
               onClick={handleCreateBundle}
-              disabled={isCreating || (selectedFiles.length === 0 && selectedFolders.length === 0)}
+              disabled={isCreating || (selectedFiles.length === 0 && selectedFolders.length === 0) || allFilesAreZK}
               className="flex-1 py-3 px-4 bg-purple-500 text-white rounded-xl font-medium hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               type="button"
             >

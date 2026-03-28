@@ -338,6 +338,189 @@ class StorageService {
     return await response.json();
   }
 
+  async getPendingInvitations(): Promise<unknown[]> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/invitations/pending`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to fetch pending invitations');
+    }
+
+    return await response.json();
+  }
+
+  async acceptInvitation(invitationToken: string): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/invitations/${invitationToken}/accept`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to accept invitation');
+    }
+
+    return await response.json();
+  }
+
+  async declineInvitation(invitationToken: string): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/invitations/${invitationToken}/decline`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to decline invitation');
+    }
+
+    return await response.json();
+  }
+
+  // ==================== SHARE LINK MANAGEMENT ====================
+
+  async getShareLinks(activeOnly: boolean = false, limit: number = 50, offset: number = 0): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const params = new URLSearchParams({
+      active_only: String(activeOnly),
+      limit: String(limit),
+      offset: String(offset),
+    });
+
+    const response = await fetch(`${API_URL}/api/v1/share-links?${params}`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to fetch share links');
+    }
+
+    return await response.json();
+  }
+
+  async getShareLinkDetail(linkId: string): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to fetch share link detail');
+    }
+
+    return await response.json();
+  }
+
+  async updateShareLink(linkId: string, data: Record<string, unknown>): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to update share link');
+    }
+
+    return await response.json();
+  }
+
+  async revokeShareLink(linkId: string): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to revoke share link');
+    }
+
+    return await response.json();
+  }
+
+  async regenerateShareLink(linkId: string): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}/regenerate`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(error || 'Failed to regenerate share link');
+    }
+
+    return await response.json();
+  }
+
+  // ==================== SHARE ANALYTICS ====================
+
+  async getShareAnalyticsSummary(): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-analytics/summary`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) throw new Error('Failed to fetch share analytics summary');
+    return await response.json();
+  }
+
+  async getShareAnalyticsTrends(days: number = 30): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-analytics/trends?days=${days}`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) throw new Error('Failed to fetch share analytics trends');
+    return await response.json();
+  }
+
+  async getShareAnalyticsTop(sortBy: string = 'views', limit: number = 10): Promise<unknown> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/share-analytics/top?sort_by=${sortBy}&limit=${limit}`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) throw new Error('Failed to fetch top shares');
+    return await response.json();
+  }
+
   // ==================== TRASH ====================
 
   async getTrash(): Promise<unknown[]> {

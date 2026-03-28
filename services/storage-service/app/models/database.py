@@ -208,6 +208,9 @@ class ShareLink(Base):
     view_count = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     allow_preview = Column(Boolean, default=True)
+    notify_on_access = Column(Boolean, default=False)
+    allowed_ips = Column(JSON, nullable=True)  # List of allowed IPs/CIDRs, null = no restriction
+    watermark_text = Column(String(255), nullable=True)  # Overlay watermark on previews
     created_at = Column(DateTime, default=datetime.utcnow)
     last_accessed = Column(DateTime, nullable=True)
 
@@ -252,6 +255,9 @@ class ShareBundle(Base):
     # Bundle-specific settings
     allow_zip_download = Column(Boolean, default=True)  # Download all as ZIP
     show_file_sizes = Column(Boolean, default=True)
+    notify_on_access = Column(Boolean, default=False)
+    allowed_ips = Column(JSON, nullable=True)  # List of allowed IPs/CIDRs, null = no restriction
+    watermark_text = Column(String(255), nullable=True)  # Overlay watermark on previews
 
     # Statistics (cached for performance)
     total_size = Column(BigInteger, default=0)
@@ -310,6 +316,7 @@ class SharedAccess(Base):
     shared_with_user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)  # NULL if not registered
     file_id = Column(UUID(as_uuid=True), ForeignKey('objects.id', ondelete='CASCADE'), nullable=True)
     folder_id = Column(UUID(as_uuid=True), ForeignKey('folders.id', ondelete='CASCADE'), nullable=True)
+    bundle_id = Column(UUID(as_uuid=True), ForeignKey('share_bundles.id', ondelete='CASCADE'), nullable=True)
     permission = Column(String(20), default='view')  # view, download, edit
     invitation_status = Column(String(20), default='pending')  # pending, accepted, declined
     invitation_token = Column(String(64), unique=True, nullable=True, index=True)
@@ -324,6 +331,27 @@ class SharedAccess(Base):
         Index('idx_shared_owner', 'owner_id'),
         Index('idx_shared_file', 'file_id'),
         Index('idx_shared_folder', 'folder_id'),
+        Index('idx_shared_bundle', 'bundle_id'),
+    )
+
+
+class ShareAccessLog(Base):
+    """Audit trail for share link and bundle access events"""
+    __tablename__ = 'share_access_logs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_link_id = Column(UUID(as_uuid=True), ForeignKey('share_links.id', ondelete='SET NULL'), nullable=True)
+    bundle_id = Column(UUID(as_uuid=True), ForeignKey('share_bundles.id', ondelete='SET NULL'), nullable=True)
+    access_type = Column(String(30), nullable=False)  # view, download, download_file, download_zip, stream, thumbnail
+    ip_address = Column(String(45), nullable=True)  # IPv4/IPv6
+    user_agent = Column(Text, nullable=True)
+    file_id = Column(UUID(as_uuid=True), nullable=True)  # Specific file accessed (for per-file events)
+    accessed_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index('idx_access_log_share_link', 'share_link_id'),
+        Index('idx_access_log_bundle', 'bundle_id'),
+        Index('idx_access_log_accessed_at', 'accessed_at'),
     )
 
 

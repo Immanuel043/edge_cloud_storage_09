@@ -286,9 +286,10 @@ except Exception as e:
 # Add rate limiting
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from .utils.rate_limiter import limiter, rate_limit_exceeded_handler as custom_rate_limit_handler
+from .utils.rate_limiter import limiter, share_limiter, rate_limit_exceeded_handler as custom_rate_limit_handler
 
 app.state.limiter = limiter
+app.state.share_limiter = share_limiter
 app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
 
 # Add HTTPS redirect if enabled
