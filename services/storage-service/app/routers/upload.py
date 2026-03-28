@@ -23,7 +23,6 @@ from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
 from ..config import settings
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
-from aiokafka import AIOKafkaProducer
 import aiofiles
 from ..utils.cache import cached
 from ..monitoring.metrics import (
@@ -46,6 +45,7 @@ from ..services.video_ingestion_service import video_ingestion_service
 from ..services.bandwidth_throttle import bandwidth_throttle_service
 from ..services.rust_dataplane_client import get_rust_client
 from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session, update_upload_session_atomic, REDIS_TTL
+from ..services.kafka_client import get_kafka_producer
 import logging
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
@@ -55,9 +55,6 @@ logger = logging.getLogger(__name__)
 _rust_client_initialized = False
 _rust_client_available = False
 
-# Global resources
-kafka_producer = None
-kafka_lock = asyncio.Lock()
 executor = ThreadPoolExecutor(max_workers=min(os.cpu_count() + 1, 32))  # CPU-bound encryption work
 
 # Optimized buffer sizes
@@ -129,41 +126,6 @@ def should_compress(filename: str, size: int) -> bool:
         return True
     
     return False
-
-async def get_kafka_producer():
-    """Get or create Kafka producer with connection management"""
-    global kafka_producer
-    
-    if not hasattr(settings, 'KAFKA_BROKERS'):
-        return None
-    
-    async with kafka_lock:
-        if kafka_producer is None:
-            try:
-                kafka_producer = AIOKafkaProducer(
-                    bootstrap_servers=settings.KAFKA_BROKERS,
-                    # Optimization: Only JSON encode if it's not already bytes
-                    value_serializer=lambda v: v if isinstance(v, (bytes, bytearray)) else json.dumps(v).encode(),
-
-                    # zstd compression (requires cramjam package)
-                    compression_type='zstd',
-
-                    # 100MB max request matches large-scale needs
-                    max_request_size=104857600,
-
-                    # Match 64MB upload chunk size
-                    max_batch_size=67108864,
-
-                    # Helps zstd find patterns across chunks
-                    linger_ms=100,
-                )
-                await kafka_producer.start()
-                logger.info("Kafka producer initialized with ZSTD compression")
-            except Exception as e:
-                logger.warning(f"Kafka unavailable: {e}")
-                return None
-
-    return kafka_producer
 
 async def get_user_storage_info_fast(user_id: str, db: AsyncSession, redis_client):
     """Lightweight storage check with Redis caching"""
@@ -723,6 +685,7 @@ async def upload_direct(
                 mime_type=session.get("mime_type") or mimetypes.guess_type(session["name"])[0],
                 file_name=session["name"],
                 redis_client=redis_client,
+                content_hash=file_hash,
             )
         )
 

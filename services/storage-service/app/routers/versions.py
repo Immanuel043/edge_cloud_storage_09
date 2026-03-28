@@ -116,6 +116,9 @@ async def restore_file_version(
     )
     db.add(current_version)
 
+    # Capture old hash BEFORE mutation for preview invalidation
+    old_content_hash = file_obj.content_hash
+
     # Restore file to the selected version
     file_obj.content_hash = version_to_restore.content_hash
     file_obj.file_size = version_to_restore.file_size
@@ -136,6 +139,13 @@ async def restore_file_version(
         comment=f"Restored from v{version_number}",
     )
     db.add(restored_version)
+
+    # Invalidate stale previews BEFORE commit
+    if old_content_hash and old_content_hash != version_to_restore.content_hash:
+        from ..services.preview_storage import invalidate_preview
+        from ..database import get_redis
+        redis_client = await get_redis()
+        await invalidate_preview(file_id, old_content_hash, redis_client, db)
 
     await db.commit()
     await db.refresh(file_obj)

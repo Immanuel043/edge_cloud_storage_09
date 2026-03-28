@@ -408,7 +408,8 @@ class VideoIngestionService:
                 try:
                     if result['optimized_path'] and os.path.exists(result['optimized_path']):
                         await video_transcoder._generate_thumbnails_for_transcoded(
-                            file_id, result['optimized_path']
+                            file_id, result['optimized_path'],
+                            source_hash=getattr(file_obj, 'content_hash', None),
                         )
                 except Exception as e:
                     logger.warning(f"Thumbnail generation failed for {file_id}: {e}")

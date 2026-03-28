@@ -255,7 +255,8 @@ class VideoTranscoder:
             storage_type=file_obj.storage_type,
             chunk_info=copy.deepcopy(file_obj.chunk_info),
             file_metadata=copy.deepcopy(file_obj.file_metadata),
-            object_path=file_obj.object_path
+            object_path=file_obj.object_path,
+            content_hash=getattr(file_obj, 'content_hash', None),
         )
 
     async def _run_ffprobe_async(self, probe_path: str, label: str) -> Optional[Dict]:
@@ -936,7 +937,7 @@ class VideoTranscoder:
                 )
 
                 # Remux without re-encoding
-                await self._remux_without_transcode(temp_source, target_path, file_id)
+                await self._remux_without_transcode(temp_source, target_path, file_id, source_hash=snapshot.content_hash)
                 logger.info(f"⚡ Compatible MP4 ready via remux for {snapshot.file_name}")
                 return
 
@@ -1019,7 +1020,7 @@ class VideoTranscoder:
                     status_code=500
                 )
 
-            await self._run_ffmpeg(temp_source, target_path, policy, file_id)
+            await self._run_ffmpeg(temp_source, target_path, policy, file_id, source_hash=snapshot.content_hash)
             logger.info(f"🎬 Compatible MP4 ready for file {snapshot.file_name}")
 
         finally:
@@ -1116,7 +1117,7 @@ class VideoTranscoder:
             )
 
     async def _run_ffmpeg(self, source_path: str, target_path: str,
-                         policy: TranscodePolicy, file_id: str):
+                         policy: TranscodePolicy, file_id: str, source_hash: str = None):
         """Execute ffmpeg transcode with async subprocess and progress tracking."""
         import time
 
@@ -1196,7 +1197,7 @@ class VideoTranscoder:
             logger.info(f"🎬 Transcoding successful, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block transcoding completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path))
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash))
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg timeout after 1 hour for {source_path}")
@@ -1248,7 +1249,7 @@ class VideoTranscoder:
                 status_code=500
             )
 
-    async def _remux_without_transcode(self, source_path: str, target_path: str, file_id: str):
+    async def _remux_without_transcode(self, source_path: str, target_path: str, file_id: str, source_hash: str = None):
         """
         Fast container remux without re-encoding (2-5 seconds for 400MB).
 
@@ -1323,7 +1324,7 @@ class VideoTranscoder:
             logger.info(f"⚡ Remux successful in {elapsed:.1f}s, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block remux completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path))
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash))
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg remux timeout after 5 minutes for {source_path}")
@@ -1474,7 +1475,7 @@ class VideoTranscoder:
             logger.info(f"🚰 Streaming transcode successful, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block transcoding completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path))
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=snapshot.content_hash))
 
         except asyncio.TimeoutError:
             logger.error(f"Streaming transcode timeout after 1 hour for {snapshot.file_name}")
@@ -1496,21 +1497,26 @@ class VideoTranscoder:
             if process and process.returncode is None:
                 process.kill()
                 await process.wait()
-    async def _generate_thumbnails_for_transcoded(self, file_id: str, transcoded_path: str):
+    async def _generate_thumbnails_for_transcoded(self, file_id: str, transcoded_path: str, source_hash: str = None):
         """
-        Auto-generate thumbnails from transcoded MP4 and cache in Redis.
+        Auto-generate thumbnails from transcoded MP4 and cache in Redis + disk.
 
         This ensures thumbnails are ready immediately when users view the file,
         avoiding authentication issues and improving UX.
         """
         try:
             from .preview_generator import preview_generator
+            from .preview_storage import (
+                save_preview_to_disk, should_persist_preview, preview_cache_ttl,
+            )
             from ..database import get_redis
 
-            logger.info(f"📸 Auto-generating thumbnails for transcoded video {file_id}")
+            logger.info(f"Auto-generating thumbnails for transcoded video {file_id}")
+            redis = await get_redis()
+            ttl = preview_cache_ttl('video/mp4')
+            sizes_cached = 0
 
-            # Generate thumbnails for both sizes
-            for size in ['small', 'large']:
+            for size in ['small', 'medium', 'large']:
                 try:
                     preview_bytes, content_type = await preview_generator.generate_preview(
                         file_path=transcoded_path,
@@ -1519,20 +1525,25 @@ class VideoTranscoder:
                         file_name=f"{file_id}.mp4"
                     )
 
-                    # Cache in Redis (7 days TTL for videos)
-                    redis = await get_redis()
-                    cache_key = f"preview:{file_id}:{size}"
-                    await redis.setex(cache_key, 604800, preview_bytes)
+                    # Freshness guard: skip if content changed since transcoding started
+                    if source_hash:
+                        fresh = await should_persist_preview(file_id, source_hash, redis)
+                        if not fresh:
+                            logger.info(f"Skipping stale thumbnail write for {file_id}:{size}")
+                            continue
 
-                    logger.info(f"✅ Auto-generated {size} thumbnail for {file_id} ({len(preview_bytes)} bytes)")
+                    cache_key = f"preview:{file_id}:{size}"
+                    await redis.setex(cache_key, ttl, preview_bytes)
+                    if source_hash:
+                        save_preview_to_disk(file_id, size, preview_bytes, source_hash)
+                    sizes_cached += 1
 
                 except Exception as e:
                     logger.warning(f"Failed to generate {size} thumbnail for {file_id}: {e}")
 
-            logger.info(f"📸 Thumbnail auto-generation complete for {file_id}")
+            logger.info(f"Thumbnail auto-generation complete for {file_id} ({sizes_cached}/3 sizes)")
 
         except Exception as e:
-            # Don't fail transcoding if thumbnail generation fails
             logger.warning(f"Thumbnail auto-generation failed for {file_id}: {e}")
 
 

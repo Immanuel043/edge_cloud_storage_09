@@ -227,49 +227,81 @@ class PreviewWorker:
                         # No user_id available, skip notification
                         return
 
-                    # Download file for preview (can take time - that's OK, we're in background!)
-                    logger.info(f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)")
+                    # Check for transcoded/optimized MP4 first (avoids re-downloading raw CAS)
+                    temp_file_path = None
+                    use_transcoded = False
 
-                    result = await preview_optimizer.download_partial_for_preview(
-                        file_obj=file_obj,
-                        encryption_service=encryption_service,
-                        background=True,
-                    )
+                    mime = (file_obj.mime_type or '').lower()
+                    ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+                    is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
 
-                    if result.status != 'ok':
-                        # Worker is the final stop — never re-queue from here
-                        error_msg = result.error or f"Download failed ({file_obj.file_size / 1024 / 1024:.0f}MB)"
-                        logger.warning(f"❌ {error_msg}: {file_id} ({file_obj.file_name})")
-                        # Size-limit failures are deterministic — mark non-retryable
-                        await self._set_status(file_id, 'failed', error_msg, retryable=False)
-                        await self._publish_notification(file_id, str(file_obj.user_id), 'failed', error_msg)
-                        return
+                    if is_video:
+                        # Check optimized_path (from video ingestion pipeline)
+                        if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+                            logger.info(f"Using optimized MP4 for preview: {file_obj.file_name} -> {file_obj.optimized_path}")
+                            temp_file_path = file_obj.optimized_path
+                            use_transcoded = True
+                        else:
+                            # Check transcoder cache
+                            from app.services.video_transcoder import video_transcoder
+                            transcoded_path = os.path.join(video_transcoder.OUTPUT_DIR, f"{file_id}.mp4")
+                            if os.path.exists(transcoded_path):
+                                logger.info(f"Using transcoded MP4 for preview: {file_obj.file_name}")
+                                temp_file_path = transcoded_path
+                                use_transcoded = True
 
-                    temp_file_path = result.temp_file_path
+                    if not use_transcoded:
+                        # Download file for preview (can take time - that's OK, we're in background!)
+                        logger.info(f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)")
+
+                        result = await preview_optimizer.download_partial_for_preview(
+                            file_obj=file_obj,
+                            encryption_service=encryption_service,
+                            background=True,
+                        )
+
+                        if result.status != 'ok':
+                            # Worker is the final stop — never re-queue from here
+                            error_msg = result.error or f"Download failed ({file_obj.file_size / 1024 / 1024:.0f}MB)"
+                            logger.warning(f"❌ {error_msg}: {file_id} ({file_obj.file_name})")
+                            # Size-limit failures are deterministic — mark non-retryable
+                            await self._set_status(file_id, 'failed', error_msg, retryable=False)
+                            await self._publish_notification(file_id, str(file_obj.user_id), 'failed', error_msg)
+                            return
+
+                        temp_file_path = result.temp_file_path
                     try:
                         # Generate previews for all sizes with per-size tracking
                         sizes_cached = 0
                         for size in PREVIEW_SIZES:
                             try:
-                                await self._generate_and_cache_preview(
+                                persisted = await self._generate_and_cache_preview(
                                     file_obj, temp_file_path, size
                                 )
-                                sizes_cached += 1
+                                if persisted:
+                                    sizes_cached += 1
                             except Exception as e:
-                                logger.warning(f"   ⚠️ Failed to generate {size} preview: {e}")
+                                logger.warning(f"Failed to generate {size} preview: {e}")
 
                         if sizes_cached > 0:
                             await self._set_status(file_id, 'ready')
                             await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
-                            logger.info(f"✅ Preview ready for {file_obj.file_name} ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)")
+                            # Update DB preview columns
+                            try:
+                                file_obj.preview_generated_at = datetime.utcnow()
+                                file_obj.preview_content_hash = file_obj.content_hash
+                                await db.commit()
+                            except Exception:
+                                logger.warning(f"Failed to update preview columns for {file_id}")
+                            logger.info(f"Preview ready for {file_obj.file_name} ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)")
                         else:
                             await self._set_status(file_id, 'failed', 'All preview sizes failed to generate')
                             await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'All preview sizes failed')
                             logger.warning(f"❌ All preview sizes failed for {file_obj.file_name}")
 
                     finally:
-                        # Cleanup temp file
-                        if temp_file_path and os.path.exists(temp_file_path):
+                        # Cleanup temp file (but never delete transcoded/optimized files)
+                        if temp_file_path and not use_transcoded and os.path.exists(temp_file_path):
                             try:
                                 os.remove(temp_file_path)
                             except Exception as e:
@@ -295,8 +327,12 @@ class PreviewWorker:
                 except Exception:
                     pass
 
-    async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str):
-        """Generate preview and cache in Redis. Raises on failure (caller handles per-size tracking)."""
+    async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str) -> bool:
+        """Generate preview and cache in Redis + disk. Returns True if persisted."""
+        from app.services.preview_storage import (
+            save_preview_to_disk, should_persist_preview, preview_cache_ttl,
+        )
+
         preview_bytes, content_type = await preview_generator.generate_preview(
             file_path=temp_file_path,
             mime_type=file_obj.mime_type,
@@ -304,10 +340,21 @@ class PreviewWorker:
             file_name=file_obj.file_name
         )
 
-        # Cache in Redis
+        source_hash = getattr(file_obj, 'content_hash', None)
+        if source_hash:
+            fresh = await should_persist_preview(str(file_obj.id), source_hash, self.redis)
+            if not fresh:
+                logger.info(f"Skipping stale preview write for {file_obj.id}:{size}")
+                return False
+
+        # Cache in Redis + disk
         cache_key = f"preview:{file_obj.id}:{size}"
-        await self.redis.setex(cache_key, PREVIEW_CACHE_TTL, preview_bytes)
-        logger.info(f"   📦 Cached preview {size} for {file_obj.id}")
+        ttl = preview_cache_ttl(file_obj.mime_type)
+        await self.redis.setex(cache_key, ttl, preview_bytes)
+        if source_hash:
+            save_preview_to_disk(str(file_obj.id), size, preview_bytes, source_hash)
+        logger.info(f"Cached preview {size} for {file_obj.id}")
+        return True
 
     async def _set_status(self, file_id: str, status: str, error: str = None, retryable: Optional[bool] = None):
         """Update preview status in Redis, preserving retry_count across transitions."""

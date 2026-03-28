@@ -64,14 +64,25 @@ class VersioningService:
             comment=comment
         )
         
+        # Capture old hash BEFORE mutation for preview invalidation
+        old_content_hash = current_file.content_hash
+
         # Update main file record
         current_file.current_version = new_version_number
         current_file.version_count = new_version_number
         current_file.file_size = len(new_content)
         current_file.content_hash = content_hash
         current_file.last_accessed = datetime.utcnow()
-        
+
         db.add(version)
+
+        # Invalidate stale previews BEFORE commit
+        if old_content_hash and old_content_hash != content_hash:
+            from .preview_storage import invalidate_preview
+            from ..database import get_redis
+            redis_client = await get_redis()
+            await invalidate_preview(str(file_id), old_content_hash, redis_client, db)
+
         await db.commit()
         
         return version
@@ -158,9 +169,12 @@ class VersioningService:
         # Archive current version
         await self._archive_current_version(db, current_file)
         
+        # Capture old hash BEFORE mutation for preview invalidation
+        old_content_hash = current_file.content_hash
+
         # Restore the selected version
         new_version_number = current_file.current_version + 1
-        
+
         # Create new version entry (restore is a new version)
         restored_version = FileVersion(
             file_id=file_id,
@@ -172,14 +186,22 @@ class VersioningService:
             created_by=user_id,
             comment=f"Restored from version {version_number}"
         )
-        
+
         # Update main file
         current_file.current_version = new_version_number
         current_file.version_count = new_version_number
         current_file.file_size = version.file_size
         current_file.content_hash = version.content_hash
-        
+
         db.add(restored_version)
+
+        # Invalidate stale previews BEFORE commit
+        if old_content_hash and old_content_hash != version.content_hash:
+            from .preview_storage import invalidate_preview
+            from ..database import get_redis
+            redis_client = await get_redis()
+            await invalidate_preview(str(file_id), old_content_hash, redis_client, db)
+
         await db.commit()
         
         return current_file

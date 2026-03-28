@@ -1113,6 +1113,37 @@ async def get_bundle_file_thumbnail(
     except Exception:
         pass  # Redis unavailable, fall through to generation
 
+    # Disk fallback: check disk before downloading/regenerating
+    try:
+        from ..services.preview_storage import (
+            load_preview_from_disk, get_disk_content_hash, delete_previews_from_disk,
+            preview_cache_ttl,
+        )
+        disk_bytes = load_preview_from_disk(str(file_id), size)
+        if disk_bytes:
+            disk_hash = get_disk_content_hash(str(file_id))
+            current_hash = getattr(file_obj, 'content_hash', None)
+            if disk_hash and current_hash and disk_hash == current_hash:
+                # Re-populate Redis and serve
+                try:
+                    ttl = preview_cache_ttl(file_obj.mime_type)
+                    await redis.setex(cache_key, ttl, disk_bytes)
+                except Exception:
+                    pass
+                return Response(
+                    content=disk_bytes,
+                    media_type='image/jpeg',
+                    headers={
+                        "Cache-Control": "public, max-age=86400",
+                        "X-Preview-Status": "cached"
+                    }
+                )
+            else:
+                if disk_hash and current_hash and disk_hash != current_hash:
+                    delete_previews_from_disk(str(file_id))
+    except Exception:
+        pass  # Disk check failure is non-fatal
+
     temp_file_path = None
     try:
         # Download file content for preview generation
@@ -1134,11 +1165,24 @@ async def get_bundle_file_thumbnail(
         )
 
         if preview_bytes:
+            # Write-through: persist to Redis and disk for future requests
+            try:
+                from ..services.preview_storage import (
+                    save_preview_to_disk, preview_cache_ttl,
+                )
+                ttl = preview_cache_ttl(file_obj.mime_type)
+                await redis.setex(cache_key, ttl, preview_bytes)
+                source_hash = getattr(file_obj, 'content_hash', None)
+                if source_hash:
+                    save_preview_to_disk(str(file_id), size, preview_bytes, source_hash)
+            except Exception:
+                pass  # Non-fatal: preview is still served even if persistence fails
+
             return Response(
                 content=preview_bytes,
                 media_type=content_type or "image/jpeg",
                 headers={
-                    "Cache-Control": "public, max-age=86400",  # 1 day cache
+                    "Cache-Control": "public, max-age=86400",  # 1 day HTTP cache
                     "X-Preview-Status": "generated"
                 }
             )

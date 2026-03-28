@@ -22,6 +22,7 @@ from ..models.database import User, Object, ActivityLog, Favorite, FileNameSugge
 from ..models.schemas import FileResponse
 from ..database import get_redis
 from ..config import settings
+from ..services.kafka_client import get_kafka_producer
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..utils.resolved_file_view import ResolvedFileView
 from pydantic import BaseModel
@@ -1185,7 +1186,7 @@ async def get_file_preview(
                 }
             )
 
-    logger.info(f"❌ Preview cache MISS for {file_id} (size: {size}) - generating...")
+    logger.info(f"Preview cache MISS for {file_id} (size: {size}) - checking disk...")
 
     result = await db.execute(
         select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
@@ -1194,6 +1195,35 @@ async def get_file_preview(
 
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Disk fallback: check disk before regenerating
+    from ..services.preview_storage import (
+        load_preview_from_disk, get_disk_content_hash, delete_previews_from_disk,
+        preview_cache_ttl as _preview_cache_ttl,
+    )
+    disk_bytes = load_preview_from_disk(file_id, size)
+    if disk_bytes:
+        disk_hash = get_disk_content_hash(file_id)
+        current_hash = getattr(file_obj, 'content_hash', None)
+        if disk_hash and current_hash and disk_hash == current_hash:
+            # Valid disk preview — re-populate Redis and serve
+            ttl = _preview_cache_ttl(file_obj.mime_type)
+            await redis.setex(cache_key, ttl, disk_bytes)
+            logger.info(f"Preview DISK HIT for {file_id} (size: {size}), re-cached to Redis")
+            return Response(
+                content=disk_bytes,
+                media_type='image/jpeg',
+                headers={
+                    "Cache-Control": f"public, max-age={ttl}",
+                    "X-Cache": "DISK",
+                    "X-Preview-Status": "cached"
+                }
+            )
+        else:
+            # Stale disk preview — delete and fall through to generation
+            if disk_hash and current_hash and disk_hash != current_hash:
+                logger.info(f"Stale disk preview for {file_id}, deleting")
+                delete_previews_from_disk(file_id)
 
     # Note: ZK files are now in a separate service (ZK Private Vault)
     # Normal Storage service only handles server-side encrypted files
@@ -1232,17 +1262,10 @@ async def get_file_preview(
 
         async def _queue_preview_to_kafka(carry_retry_count: int = 0):
             """Send preview request to Kafka worker. Returns True on success."""
-            from aiokafka import AIOKafkaProducer
-            from ..config import settings
-
-            if not hasattr(settings, 'KAFKA_BROKERS'):
+            producer = await get_kafka_producer()
+            if producer is None:
                 return False
 
-            producer = AIOKafkaProducer(
-                bootstrap_servers=settings.KAFKA_BROKERS,
-                value_serializer=lambda v: json.dumps(v).encode()
-            )
-            await producer.start()
             try:
                 await producer.send_and_wait(
                     'preview-processing',
@@ -1264,8 +1287,9 @@ async def get_file_preview(
                     new_status['retry_count'] = carry_retry_count
                 await redis.setex(status_key, 3600, json.dumps(new_status))
                 return True
-            finally:
-                await producer.stop()
+            except Exception as e:
+                logger.warning(f"Failed to queue preview to Kafka: {e}")
+                return False
 
         def _return_202(status_val='processing', message=None):
             return JSONResponse(
@@ -1303,7 +1327,29 @@ async def get_file_preview(
                                 "X-Preview-Status": "cached"
                             }
                         )
-                    logger.warning(f"Preview status=ready but cache miss for {file_id}:{size}, re-queuing")
+                    # Disk fallback before re-queuing
+                    disk_bytes = load_preview_from_disk(file_id, size)
+                    if disk_bytes:
+                        disk_hash = get_disk_content_hash(file_id)
+                        current_hash = getattr(file_obj, 'content_hash', None)
+                        if disk_hash and current_hash and disk_hash == current_hash:
+                            ttl = _preview_cache_ttl(file_obj.mime_type)
+                            await redis.setex(cache_key, ttl, disk_bytes)
+                            logger.info(f"Preview DISK HIT (post-ready) for {file_id} (size: {size})")
+                            return Response(
+                                content=disk_bytes,
+                                media_type='image/jpeg',
+                                headers={
+                                    "Cache-Control": f"public, max-age={ttl}",
+                                    "X-Cache": "DISK",
+                                    "X-Preview-Status": "cached"
+                                }
+                            )
+                        else:
+                            if disk_hash and current_hash and disk_hash != current_hash:
+                                delete_previews_from_disk(file_id)
+
+                    logger.warning(f"Preview status=ready but cache+disk miss for {file_id}:{size}, re-queuing")
                     try:
                         await _queue_preview_to_kafka()
                     except Exception as e:
@@ -1456,8 +1502,12 @@ async def get_file_preview(
                 reason=str(exc)
             )
 
-        cache_ttl = 604800  # 7 days for video
+        from ..services.preview_storage import save_preview_to_disk, preview_cache_ttl
+        cache_ttl = preview_cache_ttl(file_obj.mime_type)
         await redis.setex(cache_key, cache_ttl, preview_bytes)
+        source_hash = getattr(file_obj, 'content_hash', None)
+        if source_hash:
+            save_preview_to_disk(file_id, size, preview_bytes, source_hash)
         logger.info(f"Cached transcoded preview for {file_id} (size: {size})")
 
         return Response(
@@ -1494,7 +1544,7 @@ async def get_preview_status(
 
     redis = await get_redis()
 
-    # First check if preview is already cached (ready)
+    # First check if preview is already cached in Redis (ready)
     for size in ['small', 'medium', 'large']:
         cache_key = f"preview:{file_id}:{size}"
         if await redis.exists(cache_key):
@@ -1502,6 +1552,16 @@ async def get_preview_status(
                 'status': 'ready',
                 'file_id': file_id,
                 'message': 'Preview is ready'
+            }
+
+    # Check disk (Redis may have evicted but disk still has it)
+    from ..services.preview_storage import load_preview_from_disk
+    for size in ['small', 'medium', 'large']:
+        if load_preview_from_disk(file_id, size) is not None:
+            return {
+                'status': 'ready',
+                'file_id': file_id,
+                'message': 'Preview is ready (on disk)'
             }
 
     # Check status key
@@ -1795,6 +1855,13 @@ async def delete_file(
         file_obj.deleted_at = datetime.utcnow()
         file_name = file_obj.file_name
 
+        # Invalidate previews before commit
+        from ..services.preview_storage import invalidate_preview
+        old_hash = file_obj.content_hash
+        if old_hash:
+            redis_client = await get_redis()
+            await invalidate_preview(file_id, old_hash, redis_client, db)
+
         # Log activity
         activity = ActivityLog(
             user_id=current_user.id,
@@ -2025,6 +2092,12 @@ async def permanent_delete(
             except Exception as e:
                 print(f"Failed to delete optimized file: {e}")
 
+        # Invalidate preview assets (Redis + disk)
+        from ..services.preview_storage import invalidate_preview
+        old_hash = file_obj.content_hash
+        if old_hash:
+            await invalidate_preview(file_id, old_hash, redis_client)
+
         # Update user storage
         if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
@@ -2182,6 +2255,15 @@ async def empty_trash(
                         os.remove(file_obj.optimized_path)
                     except Exception as e:
                         print(f"Failed to delete optimized file: {e}")
+
+                # Invalidate preview assets
+                from ..services.preview_storage import invalidate_preview as _invalidate_preview
+                old_hash = file_obj.content_hash
+                if old_hash:
+                    try:
+                        await _invalidate_preview(str(file_obj.id), old_hash, redis_client)
+                    except Exception:
+                        pass
 
                 freed_space += file_obj.file_size
                 deleted_count += 1

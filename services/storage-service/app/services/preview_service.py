@@ -82,12 +82,15 @@ class PreviewService:
         mime_type: Optional[str],
         file_name: str,
         redis_client,
+        content_hash: Optional[str] = None,
     ) -> None:
         """
         Generate all 3 preview sizes from plaintext data (pre-encryption).
 
         Fire-and-forget, non-fatal. Errors are logged but never raised.
         """
+        from .preview_storage import save_preview_to_disk, should_persist_preview
+
         try:
             if not _is_previewable(mime_type, file_name):
                 return
@@ -121,8 +124,20 @@ class PreviewService:
                             size=size_name,
                             file_name=file_name,
                         )
+
+                        # Freshness guard (allow_missing_row=True since Object row may not exist yet)
+                        if content_hash:
+                            fresh = await should_persist_preview(
+                                file_id, content_hash, redis_client, allow_missing_row=True,
+                            )
+                            if not fresh:
+                                logger.info(f"Skipping stale upload-time preview for {file_id}:{size_name}")
+                                continue
+
                         cache_key = f"preview:{file_id}:{size_name}"
                         await redis_client.setex(cache_key, ttl, preview_bytes)
+                        if content_hash:
+                            save_preview_to_disk(file_id, size_name, preview_bytes, content_hash)
                         cached_count += 1
                     except Exception as exc:
                         logger.warning(
@@ -317,7 +332,10 @@ class PreviewService:
                 temp_file_path = result.temp_file_path
 
             # Generate all 3 sizes
+            from .preview_storage import save_preview_to_disk, should_persist_preview
+
             ttl = _cache_ttl(file_obj.mime_type)
+            source_hash = getattr(file_obj, 'content_hash', None)
             results: Dict[str, Tuple[bytes, str]] = {}
 
             for size_name in ('small', 'medium', 'large'):
@@ -328,8 +346,18 @@ class PreviewService:
                         size=size_name,
                         file_name=file_obj.file_name,
                     )
+
+                    # Freshness guard
+                    if source_hash:
+                        fresh = await should_persist_preview(file_id, source_hash, redis_client)
+                        if not fresh:
+                            logger.info(f"Skipping stale on-demand preview for {file_id}:{size_name}")
+                            continue
+
                     cache_key = f"preview:{file_id}:{size_name}"
                     await redis_client.setex(cache_key, ttl, preview_bytes)
+                    if source_hash:
+                        save_preview_to_disk(file_id, size_name, preview_bytes, source_hash)
                     results[size_name] = (preview_bytes, content_type)
                 except Exception as exc:
                     logger.warning(

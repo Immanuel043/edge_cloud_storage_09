@@ -120,6 +120,10 @@ class Object(Base):
     optimized_size = Column(BigInteger, nullable=True)  # Size of optimized version in bytes
     video_processed_at = Column(DateTime, nullable=True)  # Timestamp when processing completed
 
+    # Preview persistence (disk is source of truth; these columns are populated lazily)
+    preview_generated_at = Column(DateTime, nullable=True)  # When preview was last generated
+    preview_content_hash = Column(String(64), nullable=True)  # Source content hash at generation time
+
     # Performance indexes
     __table_args__ = (
         Index('idx_user_storage_type', 'user_id', 'storage_type'),
