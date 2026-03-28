@@ -74,7 +74,7 @@ def _needs_head_tail(file_obj, is_partial: bool) -> bool:
     return mime in TAIL_HEAVY_VIDEO_MIME_PREFIXES
 
 
-def _has_moov(data: bytes) -> tuple[bool, Optional[int]]:
+def _has_moov(data: bytes) -> tuple[bool, Optional[int], Optional[int]]:
     """
     Scan for moov or moof atom in byte stream.
 
@@ -85,10 +85,10 @@ def _has_moov(data: bytes) -> tuple[bool, Optional[int]]:
 
     For fragmented MP4 (fMP4), we accept 'moof' (movie fragment) as well as 'moov'.
 
-    Returns: (found: bool, offset: Optional[int])
+    Returns: (found: bool, offset: Optional[int], box_size: Optional[int])
     """
     if len(data) < 8:
-        return False, None
+        return False, None, None
 
     # Search for 'moov' or 'moof' signatures
     for signature_name, signature in [('moov', b'moov'), ('moof', b'moof')]:
@@ -110,13 +110,13 @@ def _has_moov(data: bytes) -> tuple[bool, Optional[int]]:
                     # Validate box size is reasonable (not too small, not larger than remaining data)
                     if 8 <= box_size <= len(data) - (pos - 4):
                         logger.info(f"✓ {signature_name} atom found at offset {pos - 4}, size: {box_size} bytes")
-                        return True, pos - 4
+                        return True, pos - 4, box_size
                 except struct.error:
                     pass
 
             offset = pos + 1
 
-    return False, None
+    return False, None, None
 
 
 def _is_fragmented_mp4(data: bytes) -> bool:
@@ -177,6 +177,48 @@ def _decrypt_cas_block(encrypted_data: bytes, block_hash: str, user_id: str) -> 
     return decrypted_block
 
 
+async def _read_and_decrypt_cas_block(
+    stored_block: dict,
+    block_hash: str,
+    user_id: str,
+    is_convergent: bool,
+) -> bytes:
+    """Read and decrypt a single CAS block from disk.
+
+    Shared by _fetch_from_cas and _fetch_cas_probe to avoid duplicate
+    decrypt/decompress implementations.
+
+    Returns decrypted (and decompressed if zstd) block bytes.
+    Raises FileNotFoundError if block file is missing.
+    """
+    from ..utils.executors import run_in_heavy_pool
+
+    block_path = stored_block['path']
+    try:
+        async with aiofiles.open(block_path, 'rb') as f:
+            encrypted_data = await f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Block file missing at {block_path}")
+
+    if is_convergent:
+        was_compressed = stored_block.get('was_compressed', False)
+        # Try Rust data plane for fast PBKDF2 decryption
+        try:
+            from ..services.rust_dataplane_client import get_rust_client
+            rust_client = get_rust_client()
+            return await rust_client.convergent_decrypt(
+                encrypted_data, block_hash, user_id,
+                was_compressed=was_compressed,
+            )
+        except Exception:
+            # Fallback: Python PBKDF2 (runs in heavy thread pool)
+            return await run_in_heavy_pool(
+                _decrypt_cas_block, encrypted_data, block_hash, user_id
+            )
+    else:
+        raise ValueError("Non-convergent CAS blocks require encryption_service")
+
+
 async def _fetch_from_cas(
     chunk_info: dict,
     file_obj,
@@ -194,8 +236,6 @@ async def _fetch_from_cas(
     Returns:
         Total bytes written.
     """
-    from ..utils.executors import run_in_heavy_pool
-
     blocks = chunk_info['blocks']
     stored_blocks = chunk_info['stored_blocks']
     is_convergent = chunk_info.get('convergent_encryption', False)
@@ -222,30 +262,9 @@ async def _fetch_from_cas(
             if not stored_block:
                 raise ValueError(f"Block {block_hash[:8]} not found in stored_blocks")
 
-            block_path = stored_block['path']
-            try:
-                async with aiofiles.open(block_path, 'rb') as f:
-                    encrypted_data = await f.read()
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Block file missing at {block_path}")
-
-            if is_convergent:
-                was_compressed = stored_block.get('was_compressed', False)
-                # Try Rust data plane for fast PBKDF2 decryption
-                try:
-                    from ..services.rust_dataplane_client import get_rust_client
-                    rust_client = get_rust_client()
-                    decrypted_block = await rust_client.convergent_decrypt(
-                        encrypted_data, block_hash, user_id,
-                        was_compressed=was_compressed,
-                    )
-                except Exception:
-                    # Fallback: Python PBKDF2 (runs in heavy thread pool)
-                    decrypted_block = await run_in_heavy_pool(
-                        _decrypt_cas_block, encrypted_data, block_hash, user_id
-                    )
-            else:
-                raise ValueError("Non-convergent CAS blocks require encryption_service")
+            decrypted_block = await _read_and_decrypt_cas_block(
+                stored_block, block_hash, user_id, is_convergent
+            )
 
             slice_start = max(0, start_byte - current_pos)
             slice_end = min(block_size, end_byte - current_pos + 1)
@@ -259,6 +278,127 @@ async def _fetch_from_cas(
 
     logger.info(f"✓ CAS fetch complete: {total_written / 1024 / 1024:.1f}MB written")
     return total_written
+
+
+# ---------------------------------------------------------------------------
+# CAS probe-then-fetch helpers
+# ---------------------------------------------------------------------------
+
+def _select_cas_probe_blocks(
+    blocks: list,
+    head_bytes_target: int = 64 * MB,
+    tail_bytes_target: int = 64 * MB,
+) -> list:
+    """Select sparse block indices for moov/fMP4 probing.
+
+    Targets ~64MB head + ~12-24MB middle + ~64MB tail (matching
+    video_transcoder.py:486,507 probe sizes).  Block counts are derived
+    from cumulative byte sizes, so behaviour is stable across 2-8MB CAS
+    blocks.
+    """
+    n = len(blocks)
+
+    # Head: accumulate blocks until we reach head_bytes_target
+    head_indices: list[int] = []
+    head_total = 0
+    for i in range(n):
+        head_indices.append(i)
+        head_total += blocks[i]['size']
+        if head_total >= head_bytes_target:
+            break
+
+    # Middle: 3 blocks around centre (for fMP4 moof/mfhd detection)
+    middle_indices: list[int] = []
+    if n >= 9:
+        mid = n // 2
+        middle_indices = [max(0, mid - 1), mid, min(n - 1, mid + 1)]
+
+    # Tail: accumulate blocks from end until we reach tail_bytes_target
+    tail_indices: list[int] = []
+    tail_total = 0
+    for i in range(n - 1, -1, -1):
+        tail_indices.append(i)
+        tail_total += blocks[i]['size']
+        if tail_total >= tail_bytes_target:
+            break
+    tail_indices.reverse()
+
+    return sorted(set(head_indices + middle_indices + tail_indices))
+
+
+async def _fetch_cas_probe(
+    chunk_info: dict,
+    file_obj,
+    probe_indices: list,
+) -> tuple:
+    """Fetch specific CAS blocks for sparse moov probing.
+
+    Returns:
+        (probe_buffer, offset_map) where offset_map is a list of
+        (probe_buf_start, probe_buf_end, real_file_offset) tuples that
+        allow translating a byte offset found in the probe buffer back to
+        the real file offset.
+
+    Raises ValueError if any block's decrypted size does not match its
+    declared size (offset map would be invalid).
+    Raises FileNotFoundError if a block file is missing on disk.
+    """
+    blocks = chunk_info['blocks']
+    stored_blocks = chunk_info['stored_blocks']
+    is_convergent = chunk_info.get('convergent_encryption', False)
+    user_id = str(file_obj.user_id)
+    block_map = {b['hash']: b for b in stored_blocks}
+
+    # Pre-compute cumulative file offsets for each block
+    file_offsets: list[int] = []
+    cum = 0
+    for b in blocks:
+        file_offsets.append(cum)
+        cum += b['size']
+
+    probe_parts: list[bytes] = []
+    offset_map: list[tuple[int, int, int]] = []
+    probe_pos = 0
+
+    for idx in probe_indices:
+        block = blocks[idx]
+        stored = block_map.get(block['hash'])
+        if not stored:
+            logger.warning(f"CAS probe: block {idx} hash {block['hash'][:8]} not in stored_blocks, skipping")
+            continue
+
+        decrypted = await _read_and_decrypt_cas_block(
+            stored, block['hash'], user_id, is_convergent
+        )
+
+        # Strict size validation — offset map depends on declared sizes
+        if len(decrypted) != block['size']:
+            raise ValueError(
+                f"CAS block {idx} size mismatch: declared={block['size']}, "
+                f"actual={len(decrypted)} — aborting probe (offset map invalid)"
+            )
+
+        probe_parts.append(decrypted)
+        offset_map.append((probe_pos, probe_pos + len(decrypted), file_offsets[idx]))
+        probe_pos += len(decrypted)
+        await asyncio.sleep(0)  # Yield between blocks
+
+    return b''.join(probe_parts), offset_map
+
+
+def _probe_offset_to_file_offset(
+    probe_offset: int,
+    offset_map: list,
+) -> Optional[int]:
+    """Map a probe-buffer byte offset to the real file byte offset.
+
+    Returns the real file offset, or None if probe_offset falls in a gap
+    between downloaded blocks.
+    """
+    for probe_start, probe_end, file_start in offset_map:
+        if probe_start <= probe_offset < probe_end:
+            return file_start + (probe_offset - probe_start)
+    return None
 
 
 async def _fetch_contiguous_range(
@@ -664,27 +804,126 @@ class PreviewOptimizer:
 
                 # Content-addressed storage (from dedup): use CAS block reconstruction
                 if "blocks" in chunk_info and "stored_blocks" in chunk_info:
-                    fetch_end = file_obj.file_size - 1
-                    if _needs_head_tail(file_obj, is_partial):
-                        file_size_mb = file_obj.file_size / MB
-                        effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
-                        if file_size_mb > effective_limit:
-                            logger.info(
-                                f"CAS file {file_size_mb:.1f}MB > {effective_limit}MB - "
-                                f"{'failed' if background else 'deferring to background'}"
-                            )
-                            os.unlink(temp_file_path)
-                            status = 'failed' if background else 'deferred'
-                            return PreviewDownloadResult(
-                                status=status,
-                                error=f"CAS video {file_size_mb:.0f}MB exceeds {effective_limit}MB limit",
-                            )
-                    elif is_partial:
-                        fetch_end = min(max_size - 1, fetch_end)
+                    blocks_list = chunk_info['blocks']
 
-                    await _fetch_from_cas(chunk_info, file_obj, 0, fetch_end, temp_file_path)
-                    is_complete = (fetch_end >= file_obj.file_size - 1)
-                    return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=is_complete)
+                    if _needs_head_tail(file_obj, is_partial):
+                        # === CAS PROBE-THEN-FETCH (supports any file size) ===
+                        file_size_mb = file_obj.file_size / MB
+
+                        logger.info(
+                            f"CAS probe-then-fetch: {file_obj.file_name} "
+                            f"({file_size_mb:.1f}MB, {len(blocks_list)} blocks)"
+                        )
+
+                        # Phase 1: Sparse probe (~64MB head + middle + ~64MB tail)
+                        probe_data = b''
+                        offset_map = []
+                        try:
+                            probe_indices = _select_cas_probe_blocks(blocks_list)
+                            probe_data, offset_map = await _fetch_cas_probe(
+                                chunk_info, file_obj, probe_indices
+                            )
+                            logger.info(
+                                f"CAS probe complete: {len(probe_data)/MB:.1f}MB "
+                                f"from {len(probe_indices)} blocks"
+                            )
+                        except (ValueError, FileNotFoundError) as exc:
+                            # Expected probe failures: block size mismatch or missing files
+                            logger.warning(f"CAS probe failed ({type(exc).__name__}): {exc}")
+                        # All other exceptions propagate up (coding bugs, etc.)
+
+                        # Phase 2: Detect format and locate moov
+                        is_fragmented = _is_fragmented_mp4(probe_data) if probe_data else False
+                        has_moov, moov_probe_offset, moov_box_size = (
+                            _has_moov(probe_data) if probe_data else (False, None, None)
+                        )
+
+                        # Phase 3: Route based on detection
+                        MOOV_EARLY_THRESHOLD = 64 * MB
+
+                        if has_moov and not is_fragmented and moov_probe_offset is not None:
+                            real_moov_offset = _probe_offset_to_file_offset(
+                                moov_probe_offset, offset_map
+                            )
+
+                            if real_moov_offset is not None and real_moov_offset <= MOOV_EARLY_THRESHOLD:
+                                # PARTIAL FETCH: moov at start — NO SIZE LIMIT
+                                moov_end = real_moov_offset + (moov_box_size or 10 * MB)
+                                guard = 2 * MB
+                                fetch_end = min(moov_end + guard, file_obj.file_size - 1)
+
+                                logger.info(
+                                    f"CAS partial fetch: moov at {real_moov_offset/MB:.1f}MB, "
+                                    f"box_size={moov_box_size}, "
+                                    f"fetching [0...{fetch_end/MB:.1f}MB] of {file_size_mb:.1f}MB"
+                                )
+
+                                del probe_data
+                                await _fetch_from_cas(
+                                    chunk_info, file_obj, 0, fetch_end, temp_file_path
+                                )
+                                return PreviewDownloadResult(
+                                    status='ok',
+                                    temp_file_path=temp_file_path,
+                                    is_complete=False,
+                                )
+
+                        # FULL DOWNLOAD FALLBACK
+                        reason = (
+                            "probe failed" if not offset_map
+                            else "fragmented MP4" if is_fragmented
+                            else "moov not found in probe" if not has_moov
+                            else "moov beyond 64MB threshold"
+                        )
+                        del probe_data
+
+                        # Sync path: defer to Kafka background worker
+                        if not background and file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
+                            os.unlink(temp_file_path)
+                            return PreviewDownloadResult(
+                                status='deferred',
+                                error=f"CAS video {file_size_mb:.0f}MB ({reason}) — deferred to background",
+                            )
+
+                        # Background path: full download — NO SIZE LIMIT
+                        # _fetch_from_cas streams block-by-block (~16-20MB peak memory)
+                        # Temp file cleaned up at preview_worker.py:302-308
+                        logger.info(
+                            f"CAS full download ({reason}): streaming "
+                            f"{file_size_mb:.1f}MB to disk"
+                        )
+                        await _fetch_from_cas(
+                            chunk_info, file_obj, 0, file_obj.file_size - 1, temp_file_path
+                        )
+                        return PreviewDownloadResult(
+                            status='ok',
+                            temp_file_path=temp_file_path,
+                            is_complete=True,
+                        )
+
+                    elif is_partial:
+                        # Non-video or small video: partial download up to max_size
+                        fetch_end = min(max_size - 1, file_obj.file_size - 1)
+                        await _fetch_from_cas(
+                            chunk_info, file_obj, 0, fetch_end, temp_file_path
+                        )
+                        is_complete = (fetch_end >= file_obj.file_size - 1)
+                        return PreviewDownloadResult(
+                            status='ok',
+                            temp_file_path=temp_file_path,
+                            is_complete=is_complete,
+                        )
+
+                    else:
+                        # Full download requested
+                        await _fetch_from_cas(
+                            chunk_info, file_obj, 0, file_obj.file_size - 1, temp_file_path
+                        )
+                        return PreviewDownloadResult(
+                            status='ok',
+                            temp_file_path=temp_file_path,
+                            is_complete=True,
+                        )
 
                 if _needs_head_tail(file_obj, is_partial):
                     # ==================================================================
@@ -774,7 +1013,7 @@ class PreviewOptimizer:
                             probe_data = await f.read()
 
                         is_fragmented = _is_fragmented_mp4(probe_data)
-                        has_moov, moov_offset = _has_moov(probe_data)
+                        has_moov, moov_offset, _moov_size = _has_moov(probe_data)
 
                         if not has_moov:
                             logger.warning(

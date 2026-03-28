@@ -1144,6 +1144,101 @@ async def get_bundle_file_thumbnail(
     except Exception:
         pass  # Disk check failure is non-fatal
 
+    # --- Status-aware preview handling (mirrors files.py:1306-1401) ---
+    import json as _json
+
+    async def _queue_share_preview_to_kafka(_file_id, _file_obj, _redis, _status_key) -> bool:
+        """Queue preview to Kafka. Sets status ONLY on success."""
+        try:
+            from ..services.kafka_client import get_kafka_producer
+            producer = await get_kafka_producer()
+            if not producer:
+                return False
+            await producer.send_and_wait(
+                'preview-processing',
+                _json.dumps({
+                    'file_id': str(_file_id),
+                    'upload_id': str((_file_obj.chunk_info or {}).get('upload_id', _file_id)) if _file_obj.chunk_info else str(_file_id),
+                    'timestamp': datetime.utcnow().isoformat(),
+                }).encode('utf-8')
+            )
+            # Status set AFTER successful publish
+            await _redis.setex(_status_key, 3600, _json.dumps({
+                'status': 'queued',
+                'queued_at': datetime.utcnow().isoformat(),
+            }))
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to queue preview for share: {e}")
+            return False
+
+    def _return_share_placeholder(mime_type=None):
+        """Return a minimal 1x1 transparent PNG as placeholder."""
+        # 1x1 transparent PNG (67 bytes)
+        png_data = (
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+            b'\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+            b'\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01'
+            b'\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+        )
+        return Response(
+            content=png_data,
+            media_type='image/png',
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Preview-Status": "processing",
+            }
+        )
+
+    try:
+        status_key = f"preview:status:{file_id}"
+        status_raw = await redis.get(status_key)
+
+        if status_raw:
+            try:
+                status_info = _json.loads(
+                    status_raw if isinstance(status_raw, str) else status_raw.decode()
+                )
+                status = status_info.get('status')
+
+                if status in ('queued', 'processing'):
+                    return _return_share_placeholder(file_obj.mime_type)
+
+                elif status == 'ready':
+                    # Cache + disk already checked above; if we're here, both missed
+                    # Re-queue to regenerate
+                    queued = await _queue_share_preview_to_kafka(
+                        file_id, file_obj, redis, status_key
+                    )
+                    if queued:
+                        return _return_share_placeholder(file_obj.mime_type)
+                    # Fall through to try generation
+
+                elif status == 'failed':
+                    retry_count = status_info.get('retry_count', 0)
+                    is_retryable = status_info.get('retryable', True)
+
+                    if is_retryable and retry_count < 3:
+                        queued = await _queue_share_preview_to_kafka(
+                            file_id, file_obj, redis, status_key
+                        )
+                        if queued:
+                            return _return_share_placeholder(file_obj.mime_type)
+                    else:
+                        # Terminal failure
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Preview generation failed"
+                        )
+            except (_json.JSONDecodeError, ValueError):
+                pass  # Malformed status — try generation
+            except HTTPException:
+                raise
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Redis error — fall through to generation
+
     temp_file_path = None
     try:
         # Download file content for preview generation
@@ -1152,7 +1247,19 @@ async def get_bundle_file_thumbnail(
             encryption_service=encryption_service
         )
 
-        if result.status != 'ok':
+        if result.status == 'deferred':
+            # Queue to Kafka, return placeholder
+            queued = await _queue_share_preview_to_kafka(
+                file_id, file_obj, redis, status_key
+            )
+            if queued:
+                return _return_share_placeholder(file_obj.mime_type)
+            # Kafka unavailable — fall through to 404
+            raise HTTPException(
+                status_code=404,
+                detail="Could not generate thumbnail (deferred, Kafka unavailable)"
+            )
+        elif result.status != 'ok':
             raise HTTPException(status_code=404, detail="Could not download file for thumbnail")
         temp_file_path = result.temp_file_path
 
