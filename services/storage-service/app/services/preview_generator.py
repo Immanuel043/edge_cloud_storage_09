@@ -268,10 +268,11 @@ class PreviewGenerator:
                 ]
 
                 # Run ffmpeg with timeout
+                # 30s needed for 8K AV1 software decoding (~7s per frame on ARM64)
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    timeout=10,  # Reduced from 30s to 10s
+                    timeout=30,
                     check=False
                 )
 
@@ -290,7 +291,7 @@ class PreviewGenerator:
 
                     logger.debug(f"First attempt failed, trying start of video: {stderr_text}")
                     cmd[2] = '0.5'  # Try at 0.5 seconds instead
-                    result = subprocess.run(cmd, capture_output=True, timeout=10, check=False)
+                    result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
 
                 # If still failed, try without seeking
                 if result.returncode != 0 or not os.path.exists(output_path):
@@ -307,7 +308,7 @@ class PreviewGenerator:
                         '-loglevel', 'error',
                         output_path
                     ]
-                    result = subprocess.run(cmd, capture_output=True, timeout=10, check=False)
+                    result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
 
                     # Check if third attempt succeeded
                     if result.returncode != 0 or not os.path.exists(output_path):
