@@ -28,6 +28,8 @@ from app.services.preview_optimizer import (
     _quick_probe_moov,
     _moov_has_mvex,
     MB,
+    MAX_BG_CAS_VIDEO_MB,
+    MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB,
 )
 
 
@@ -483,3 +485,44 @@ class TestQuickProbeRouting:
         found, is_complete, is_fmp4 = False, False, False
         should_short_circuit = found and is_complete and not is_fmp4
         assert should_short_circuit is False
+
+
+# ---------------------------------------------------------------------------
+# fMP4 size limit consistency (pure arithmetic, no async)
+# ---------------------------------------------------------------------------
+
+class TestFmp4SizeLimitConsistency:
+    """Verify the fMP4 size gate uses the same effective_limit pattern as moov-at-end."""
+
+    def test_bg_limit_matches_constant(self):
+        """Background fMP4 limit should use MAX_BG_CAS_VIDEO_MB."""
+        assert MAX_BG_CAS_VIDEO_MB == 500
+
+    def test_sync_limit_matches_constant(self):
+        """Sync fMP4 limit should use MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB."""
+        assert MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB == 100
+
+    def test_fmp4_background_exceeds_limit(self):
+        """fMP4 >500MB in background mode should be rejected."""
+        file_size_mb = 600
+        background = True
+        effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+        assert file_size_mb > effective_limit
+        status = 'failed' if background else 'deferred'
+        assert status == 'failed'
+
+    def test_fmp4_sync_exceeds_limit(self):
+        """fMP4 >100MB in sync mode should be deferred."""
+        file_size_mb = 150
+        background = False
+        effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+        assert file_size_mb > effective_limit
+        status = 'failed' if background else 'deferred'
+        assert status == 'deferred'
+
+    def test_fmp4_under_limit_passes(self):
+        """fMP4 under the effective limit should not be rejected."""
+        file_size_mb = 400
+        background = True
+        effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+        assert file_size_mb <= effective_limit

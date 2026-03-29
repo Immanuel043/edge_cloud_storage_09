@@ -321,7 +321,7 @@ async def _listen_preview_notifications():
                             asyncio.run_coroutine_threadsafe(
                                 manager.send_to_user(user_id, payload), loop
                             )
-                            logger.info(f"Pushed preview_ready to user {user_id} for file {data.get('file_id')}")
+                            logger.info(f"Pushed preview notification (status={data.get('status')}) to user {user_id} for file {data.get('file_id')}")
 
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Invalid notification message: {e}")

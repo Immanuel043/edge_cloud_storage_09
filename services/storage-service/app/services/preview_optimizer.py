@@ -1264,16 +1264,18 @@ class PreviewOptimizer:
                         if is_fragmented:
                             # Fragmented MP4: Cannot use partial downloads
                             file_size_mb = file_obj.file_size / 1024 / 1024
+                            effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
 
-                            if file_size_mb > 500:
+                            if file_size_mb > effective_limit:
                                 logger.info(
-                                    f"Large fMP4 file ({file_size_mb:.1f}MB > 500MB hard limit)"
+                                    f"Large fMP4 file ({file_size_mb:.1f}MB > {effective_limit}MB limit)"
                                 )
                                 os.unlink(probe_file_path)
                                 os.unlink(temp_file_path)
+                                status = 'failed' if background else 'deferred'
                                 return PreviewDownloadResult(
-                                    status='failed',
-                                    error=f"Fragmented MP4 {file_size_mb:.0f}MB exceeds 500MB hard limit",
+                                    status=status,
+                                    error=f"Fragmented MP4 {file_size_mb:.0f}MB exceeds {effective_limit}MB limit",
                                 )
 
                             # Download full file contiguously

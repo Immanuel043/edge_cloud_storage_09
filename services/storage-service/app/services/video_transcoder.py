@@ -9,6 +9,7 @@ import subprocess
 import copy
 import json
 import re
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
@@ -937,7 +938,7 @@ class VideoTranscoder:
                 )
 
                 # Remux without re-encoding
-                await self._remux_without_transcode(temp_source, target_path, file_id, source_hash=snapshot.content_hash)
+                await self._remux_without_transcode(temp_source, target_path, file_id, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id))
                 logger.info(f"⚡ Compatible MP4 ready via remux for {snapshot.file_name}")
                 return
 
@@ -1002,6 +1003,8 @@ class VideoTranscoder:
                     if v_codec == 'h264' and a_codec in ('aac', 'unknown', 'none'):
                         logger.info(f"⚡ Video already H.264+AAC - using fast remux instead of re-encoding")
                         await self._remux_with_faststart(temp_source, target_path, file_id)
+                        asyncio.create_task(self._generate_thumbnails_for_transcoded(
+                            file_id, target_path, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id)))
                         logger.info(f"🎬 Compatible MP4 ready via remux for {snapshot.file_name}")
                         return
 
@@ -1020,7 +1023,7 @@ class VideoTranscoder:
                     status_code=500
                 )
 
-            await self._run_ffmpeg(temp_source, target_path, policy, file_id, source_hash=snapshot.content_hash)
+            await self._run_ffmpeg(temp_source, target_path, policy, file_id, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id))
             logger.info(f"🎬 Compatible MP4 ready for file {snapshot.file_name}")
 
         finally:
@@ -1117,7 +1120,7 @@ class VideoTranscoder:
             )
 
     async def _run_ffmpeg(self, source_path: str, target_path: str,
-                         policy: TranscodePolicy, file_id: str, source_hash: str = None):
+                         policy: TranscodePolicy, file_id: str, source_hash: str = None, user_id: str = None):
         """Execute ffmpeg transcode with async subprocess and progress tracking."""
         import time
 
@@ -1197,7 +1200,7 @@ class VideoTranscoder:
             logger.info(f"🎬 Transcoding successful, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block transcoding completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash))
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash, user_id=user_id))
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg timeout after 1 hour for {source_path}")
@@ -1249,7 +1252,7 @@ class VideoTranscoder:
                 status_code=500
             )
 
-    async def _remux_without_transcode(self, source_path: str, target_path: str, file_id: str, source_hash: str = None):
+    async def _remux_without_transcode(self, source_path: str, target_path: str, file_id: str, source_hash: str = None, user_id: str = None):
         """
         Fast container remux without re-encoding (2-5 seconds for 400MB).
 
@@ -1324,7 +1327,7 @@ class VideoTranscoder:
             logger.info(f"⚡ Remux successful in {elapsed:.1f}s, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block remux completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash))
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash, user_id=user_id))
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg remux timeout after 5 minutes for {source_path}")
@@ -1475,7 +1478,7 @@ class VideoTranscoder:
             logger.info(f"🚰 Streaming transcode successful, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block transcoding completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=snapshot.content_hash))
+            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id)))
 
         except asyncio.TimeoutError:
             logger.error(f"Streaming transcode timeout after 1 hour for {snapshot.file_name}")
@@ -1497,12 +1500,16 @@ class VideoTranscoder:
             if process and process.returncode is None:
                 process.kill()
                 await process.wait()
-    async def _generate_thumbnails_for_transcoded(self, file_id: str, transcoded_path: str, source_hash: str = None):
+    async def _generate_thumbnails_for_transcoded(self, file_id: str, transcoded_path: str, source_hash: str = None, user_id: str = None) -> int:
         """
         Auto-generate thumbnails from transcoded MP4 and cache in Redis + disk.
 
         This ensures thumbnails are ready immediately when users view the file,
         avoiding authentication issues and improving UX.
+
+        If user_id is provided and thumbnails are generated, also updates
+        preview:status to 'ready' and publishes a websocket notification.
+        Returns the number of sizes successfully cached.
         """
         try:
             from .preview_generator import preview_generator
@@ -1543,8 +1550,28 @@ class VideoTranscoder:
 
             logger.info(f"Thumbnail auto-generation complete for {file_id} ({sizes_cached}/3 sizes)")
 
+            # Update preview status and notify frontend
+            if sizes_cached > 0 and user_id:
+                try:
+                    status_data = json.dumps({
+                        'status': 'ready',
+                        'updated_at': datetime.utcnow().isoformat(),
+                    })
+                    await redis.setex(f"preview:status:{file_id}", 3600, status_data)
+                    await redis.publish('preview_notifications', json.dumps({
+                        'file_id': file_id,
+                        'user_id': user_id,
+                        'status': 'ready',
+                    }))
+                    logger.info(f"Preview status set to ready via optimization pipeline for {file_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to update preview status for {file_id}: {e}")
+
+            return sizes_cached
+
         except Exception as e:
             logger.warning(f"Thumbnail auto-generation failed for {file_id}: {e}")
+            return 0
 
 
 video_transcoder = VideoTranscoder()
