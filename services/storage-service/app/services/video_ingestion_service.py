@@ -337,6 +337,21 @@ class VideoIngestionService:
                             # Already has faststart, no optimization needed
                             result['action'] = 'skipped'
 
+                        # Generate thumbnails from temp file when no optimized_path
+                        # (skip or faststart-failed cases — temp_path is deleted in finally)
+                        if not result.get('optimized_path'):
+                            try:
+                                sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
+                                    file_id, temp_path,
+                                    source_hash=getattr(file_obj, 'content_hash', None),
+                                    user_id=str(file_obj.user_id),
+                                )
+                                if sizes_cached > 0:
+                                    file_obj.preview_generated_at = datetime.utcnow()
+                                    file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                            except Exception as e:
+                                logger.warning(f"Thumbnail generation from temp file failed for {file_id}: {e}")
+
                     finally:
                         # Cleanup temp file
                         if os.path.exists(temp_path):
