@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 _SYNTHETIC_FTYP = b'\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp41'
 _HEAD_PROBE_CHUNKS = 2  # 64MB — covers head-moov MP4s and all non-MP4 formats
 _TAIL_PROBE_CHUNKS = 2  # 64MB — covers moov atoms up to ~64MB (hours of video)
+_THUMBNAIL_PROBE_BYTES = 64 * 1024 * 1024  # 64MB partial download for thumbnail generation
+
+
+def _check_disk_space_simple(required_bytes: int, path: str = '/tmp') -> bool:
+    """Check if sufficient disk space is available (1GB headroom)."""
+    import shutil
+    try:
+        usage = shutil.disk_usage(path)
+        return usage.free >= (required_bytes + 1024 * 1024 * 1024)
+    except OSError:
+        return True  # Can't check → proceed optimistically
 
 
 def _find_moov_atom(data: bytes) -> Optional[Tuple[int, int]]:
@@ -499,6 +510,7 @@ class VideoTranscoder:
                     )
                     head_result = await self._run_ffprobe_async(probe_path, resolved_obj.file_name)
                     if head_result:
+                        head_result['moov_at_end'] = False
                         return head_result
 
                     ext = os.path.splitext(resolved_obj.file_name or '')[1].lower()
@@ -543,6 +555,8 @@ class VideoTranscoder:
                             os.remove(synth_path)
                         except OSError:
                             pass
+                    if tail_result:
+                        tail_result['moov_at_end'] = True
                     return tail_result
 
                 if not chunk_paths:
@@ -575,6 +589,7 @@ class VideoTranscoder:
 
                 head_result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
                 if head_result:
+                    head_result['moov_at_end'] = False
                     logger.info(
                         f"🔍 Probed {file_obj.file_name}: "
                         f"{head_result['codec_name']}/{head_result['audio_codec']} "
@@ -652,6 +667,7 @@ class VideoTranscoder:
                 if tail_result:
                     # Zero out bitrate — meaningless from synthetic file
                     tail_result['bitrate'] = 0
+                    tail_result['moov_at_end'] = True
                     logger.info(
                         f"🔍 Tail-probed {file_obj.file_name}: "
                         f"{tail_result['codec_name']}/{tail_result['audio_codec']} "
@@ -676,6 +692,7 @@ class VideoTranscoder:
 
             result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
             if result:
+                result['moov_at_end'] = False
                 logger.info(
                     f"🔍 Probed {file_obj.file_name}: "
                     f"{result['codec_name']}/{result['audio_codec']} "
@@ -697,6 +714,76 @@ class VideoTranscoder:
                         os.remove(path)
                     except Exception:
                         pass
+
+    async def _build_thumbnail_probe_file(
+        self, file_obj, encryption_service, probe_data: dict, output_path: str
+    ) -> bool:
+        """Build a partial file (~64MB) suitable for ffmpeg thumbnail extraction.
+
+        Only handles chunked/CAS storage with moov-at-front. Returns False for
+        unsupported cases (single storage, inline, moov-at-end) — caller falls
+        back to full download.
+        """
+        try:
+            if file_obj.storage_type not in ('chunked', 'content_addressed'):
+                return False
+            if probe_data.get('moov_at_end', True):
+                return False
+            if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
+                return False
+
+            chunk_info = file_obj.chunk_info
+            file_size = file_obj.file_size or 0
+            fetch_bytes = min(_THUMBNAIL_PROBE_BYTES, file_size)
+            if fetch_bytes <= 0:
+                return False
+
+            # CAS storage: use byte-range fetch
+            if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+                written = await _fetch_from_cas(
+                    chunk_info, file_obj, 0, fetch_bytes - 1, output_path
+                )
+                if written > 1024:
+                    logger.info(
+                        f"Built thumbnail probe file ({written} bytes) from CAS "
+                        f"for {file_obj.file_name}"
+                    )
+                    return True
+                return False
+
+            # Traditional chunked storage: decrypt first 2 chunks via Rust
+            chunk_paths = chunk_info.get('paths', {})
+            if not chunk_paths:
+                return False
+
+            file_key = encryption_service.decrypt_key(file_obj.encryption_key)
+            was_compressed = False
+            if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict):
+                was_compressed = file_obj.file_metadata.get("compressed", False)
+            elif file_obj.chunk_info and isinstance(file_obj.chunk_info, dict):
+                was_compressed = file_obj.chunk_info.get("compressed", False)
+
+            total_chunks = len(chunk_paths)
+            head_count = min(_HEAD_PROBE_CHUNKS, total_chunks)
+
+            total_bytes = await self._build_probe_file_with_rust(
+                chunk_paths, file_key, list(range(head_count)),
+                was_compressed, output_path, encryption_service,
+            )
+
+            if total_bytes > 1024:
+                logger.info(
+                    f"Built thumbnail probe file ({total_bytes} bytes) from "
+                    f"{head_count} chunks for {file_obj.file_name}"
+                )
+                return True
+            return False
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to build thumbnail probe file for {file_obj.file_name}: {e}"
+            )
+            return False
 
     async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
         """Return path to compatible MP4 stream, or None if not needed."""
@@ -931,6 +1018,11 @@ class VideoTranscoder:
             if decision == 'remux':
                 logger.info(f"⚡ Using fast remux path for {snapshot.file_name}")
 
+                if not _check_disk_space_simple(snapshot.file_size or 0):
+                    raise VideoTranscodeError(
+                        "Insufficient disk space for reactive remux", status_code=503
+                    )
+
                 # Download full file to temp
                 temp_source = await preview_optimizer.download_full_file_for_transcode(
                     file_obj=snapshot,
@@ -980,6 +1072,11 @@ class VideoTranscoder:
                     # Fall through to temp file approach
 
             # Default path: Download full file to temp, then transcode
+            if not _check_disk_space_simple(snapshot.file_size or 0):
+                raise VideoTranscodeError(
+                    "Insufficient disk space for reactive transcode", status_code=503
+                )
+
             temp_source = await preview_optimizer.download_full_file_for_transcode(
                 file_obj=snapshot,
                 encryption_service=encryption_service

@@ -22,12 +22,23 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 from datetime import datetime
 from typing import Optional, Dict, Any
 
 from aiokafka import AIOKafkaProducer
 
 logger = logging.getLogger(__name__)
+
+
+def _check_disk_space(required_bytes: int, path: str = '/tmp') -> bool:
+    """Check if sufficient disk space is available for a temp file download."""
+    try:
+        usage = shutil.disk_usage(path)
+        headroom = 1 * 1024 * 1024 * 1024  # 1GB headroom
+        return usage.free >= (required_bytes + headroom)
+    except OSError:
+        return True  # Can't check → proceed optimistically
 
 
 class VideoIngestionService:
@@ -309,58 +320,90 @@ class VideoIngestionService:
                 target_path = os.path.join(self.OPTIMIZED_DIR, f"{file_id}.mp4")
 
                 if decision == 'skip':
-                    # Already compatible - just apply faststart if needed
                     result['action'] = 'skipped'
+                    moov_at_end = probe_data.get('moov_at_end', False) if probe_data else False
 
-                    # Check if faststart is needed
-                    temp_path = await preview_optimizer.download_full_file_for_transcode(
-                        file_obj, encryption_service, db=db_session
-                    )
-                    try:
-                        moov_info = await video_optimizer.detect_moov_location(temp_path)
-
-                        if moov_info.get('needs_faststart', False):
-                            # Apply faststart without re-encoding
-                            success, optimized_path = await video_optimizer.apply_faststart(
-                                temp_path, target_path
+                    if not moov_at_end and file_obj.storage_type in ('chunked', 'content_addressed'):
+                        # ---- OPTIMIZED PATH: moov-at-front + chunked/CAS ----
+                        # Lightweight partial download (~64MB) for thumbnails only.
+                        # No faststart needed (moov already at front).
+                        partial_path = f"/tmp/skip_thumb_{file_id}.partial"
+                        try:
+                            built = await video_transcoder._build_thumbnail_probe_file(
+                                file_obj, encryption_service, probe_data, partial_path,
                             )
-
-                            if success:
-                                result['action'] = 'faststart'
-                                result['optimized_path'] = optimized_path
-                                result['optimized_size'] = os.path.getsize(optimized_path)
+                            if built:
+                                try:
+                                    sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
+                                        file_id, partial_path,
+                                        source_hash=getattr(file_obj, 'content_hash', None),
+                                        user_id=str(file_obj.user_id),
+                                    )
+                                    if sizes_cached > 0:
+                                        file_obj.preview_generated_at = datetime.utcnow()
+                                        file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                                except Exception as e:
+                                    logger.warning(f"Thumbnail generation from partial failed for {file_id}: {e}")
                             else:
-                                # Faststart failed, but file is still playable
-                                logger.warning(f"Faststart failed for {file_obj.file_name}, using original")
-                                result['action'] = 'skipped'
+                                logger.warning(f"Could not build partial probe for {file_id}, thumbnails deferred")
+                        finally:
+                            if os.path.exists(partial_path):
+                                os.remove(partial_path)
+
+                    else:
+                        # ---- FULL PATH: moov-at-end OR non-chunked storage ----
+                        # Full download required for faststart (moov-at-end) or decryption (single).
+                        if not _check_disk_space(file_obj.file_size or 0):
+                            logger.error(f"Insufficient disk for skip-path of {file_obj.file_name}")
+                            # Don't fail the whole job — just skip faststart + thumbnails
                         else:
-                            # Already has faststart, no optimization needed
-                            result['action'] = 'skipped'
-
-                        # Generate thumbnails from temp file when no optimized_path
-                        # (skip or faststart-failed cases — temp_path is deleted in finally)
-                        if not result.get('optimized_path'):
+                            temp_path = await preview_optimizer.download_full_file_for_transcode(
+                                file_obj, encryption_service, db=db_session
+                            )
                             try:
-                                sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
-                                    file_id, temp_path,
-                                    source_hash=getattr(file_obj, 'content_hash', None),
-                                    user_id=str(file_obj.user_id),
-                                )
-                                if sizes_cached > 0:
-                                    file_obj.preview_generated_at = datetime.utcnow()
-                                    file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
-                            except Exception as e:
-                                logger.warning(f"Thumbnail generation from temp file failed for {file_id}: {e}")
+                                # Apply faststart if moov at end (uses probe flag, not buggy detect_moov)
+                                if moov_at_end:
+                                    try:
+                                        success, optimized_path = await video_optimizer.apply_faststart(
+                                            temp_path, target_path
+                                        )
+                                        if success:
+                                            result['action'] = 'faststart'
+                                            result['optimized_path'] = optimized_path
+                                            result['optimized_size'] = os.path.getsize(optimized_path)
+                                    except Exception as e:
+                                        logger.warning(f"Faststart failed for {file_obj.file_name}: {e}")
 
-                    finally:
-                        # Cleanup temp file
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
+                                # Generate thumbnails from best available path
+                                thumb_path = result.get('optimized_path') or temp_path
+                                if os.path.exists(thumb_path):
+                                    try:
+                                        sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
+                                            file_id, thumb_path,
+                                            source_hash=getattr(file_obj, 'content_hash', None),
+                                            user_id=str(file_obj.user_id),
+                                        )
+                                        if sizes_cached > 0:
+                                            file_obj.preview_generated_at = datetime.utcnow()
+                                            file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                                    except Exception as e:
+                                        logger.warning(f"Thumbnail generation failed for {file_id}: {e}")
+                            finally:
+                                if os.path.exists(temp_path):
+                                    os.remove(temp_path)
 
                 elif decision == 'remux':
                     # Fast container remux (H.264+AAC in wrong container)
                     file_obj.video_processing_progress = 20
                     await db_session.commit()
+
+                    if not _check_disk_space(file_obj.file_size or 0):
+                        result['action'] = 'failed'
+                        result['error'] = f"Insufficient disk space for remux ({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
+                        file_obj.video_processing_status = 'failed'
+                        file_obj.video_processing_error = result['error']
+                        await db_session.commit()
+                        return result
 
                     temp_path = await preview_optimizer.download_full_file_for_transcode(
                         file_obj, encryption_service, db=db_session
@@ -380,6 +423,14 @@ class VideoIngestionService:
                     # Full re-encoding needed
                     file_obj.video_processing_progress = 20
                     await db_session.commit()
+
+                    if not _check_disk_space(file_obj.file_size or 0):
+                        result['action'] = 'failed'
+                        result['error'] = f"Insufficient disk space for transcode ({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
+                        file_obj.video_processing_status = 'failed'
+                        file_obj.video_processing_error = result['error']
+                        await db_session.commit()
+                        return result
 
                     # Select policy based on file size
                     file_size_mb = file_obj.file_size / (1024 * 1024)
