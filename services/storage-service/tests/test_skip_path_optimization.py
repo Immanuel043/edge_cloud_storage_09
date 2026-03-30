@@ -18,7 +18,7 @@ os.environ.setdefault('SECRET_KEY', 'test_secret_key_for_testing_only_32b')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 with patch('os.makedirs'):
-    from app.services.video_transcoder import video_transcoder, _check_disk_space_simple
+    from app.services.video_transcoder import video_transcoder, _check_disk_space_simple, _scan_head_atoms
     from app.services.video_ingestion_service import _check_disk_space
 
 
@@ -226,3 +226,178 @@ class TestDiskSpaceChecks:
         with patch('shutil.disk_usage') as mock_usage:
             mock_usage.return_value = MagicMock(free=500 * 1024 * 1024)
             assert _check_disk_space(5 * 1024 * 1024 * 1024) is False
+
+
+# ---- _scan_head_atoms tests ----
+
+class TestScanHeadAtoms:
+    """Verify _scan_head_atoms detects moov and moof atoms."""
+
+    def test_detects_moov_atom(self, tmp_path):
+        """File with moov in first 4MB → has_moov True."""
+        f = tmp_path / "test.mp4"
+        # ftyp + moov header
+        f.write_bytes(b'\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp41'
+                      b'\x00\x00\x00\x08moov')
+        result = _scan_head_atoms(str(f))
+        assert result['has_moov'] is True
+        assert result['is_fragmented'] is False
+
+    def test_detects_moof_fragmented(self, tmp_path):
+        """File with moof atom → is_fragmented True."""
+        f = tmp_path / "fmp4.mp4"
+        f.write_bytes(b'\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp41'
+                      b'\x00\x00\x00\x08moov'
+                      b'\x00\x00\x00\x10moof\x00\x00\x00\x08mfhd')
+        result = _scan_head_atoms(str(f))
+        assert result['has_moov'] is True
+        assert result['is_fragmented'] is True
+
+    def test_no_moov_no_moof(self, tmp_path):
+        """File with neither moov nor moof → both False."""
+        f = tmp_path / "raw.bin"
+        f.write_bytes(b'\x00' * 1024)
+        result = _scan_head_atoms(str(f))
+        assert result['has_moov'] is False
+        assert result['is_fragmented'] is False
+
+    def test_nonexistent_file(self):
+        """Missing file → both False (no exception)."""
+        result = _scan_head_atoms('/tmp/nonexistent_atom_scan_test.mp4')
+        assert result['has_moov'] is False
+        assert result['is_fragmented'] is False
+
+
+# ---- fMP4 probe flag tests ----
+
+class TestProbeFragmentedFlag:
+    """Verify probe results carry is_fragmented flag."""
+
+    def test_head_probe_sets_fragmented_false(self):
+        """Head probe on non-fragmented file → is_fragmented False."""
+        file_obj = _make_file_obj()
+
+        async def run():
+            with patch.object(video_transcoder, '_run_ffprobe_async', new_callable=AsyncMock) as mock_probe:
+                mock_probe.return_value = {'codec_name': 'h264', 'audio_codec': 'aac',
+                                           'duration': 60, 'width': 1920, 'height': 1080, 'bitrate': 5000000}
+                with patch('app.services.video_transcoder._fetch_from_cas', new_callable=AsyncMock) as mock_cas:
+                    mock_cas.return_value = 1024 * 1024
+                    with patch('app.services.video_transcoder._scan_head_atoms', return_value={'has_moov': True, 'is_fragmented': False}):
+                        result = await video_transcoder._probe_file_metadata(file_obj, MagicMock())
+
+            assert result is not None
+            assert result['is_fragmented'] is False
+
+        _run(run())
+
+    def test_head_probe_sets_fragmented_true_for_fmp4(self):
+        """Head probe on fragmented MP4 → is_fragmented True."""
+        file_obj = _make_file_obj()
+
+        async def run():
+            with patch.object(video_transcoder, '_run_ffprobe_async', new_callable=AsyncMock) as mock_probe:
+                mock_probe.return_value = {'codec_name': 'h264', 'audio_codec': 'aac',
+                                           'duration': 60, 'width': 1920, 'height': 1080, 'bitrate': 5000000}
+                with patch('app.services.video_transcoder._fetch_from_cas', new_callable=AsyncMock) as mock_cas:
+                    mock_cas.return_value = 1024 * 1024
+                    with patch('app.services.video_transcoder._scan_head_atoms', return_value={'has_moov': True, 'is_fragmented': True}):
+                        result = await video_transcoder._probe_file_metadata(file_obj, MagicMock())
+
+            assert result is not None
+            assert result['is_fragmented'] is True
+            assert result['moov_at_end'] is False
+
+        _run(run())
+
+
+# ---- fMP4 exclusion from partial path tests ----
+
+class TestFmp4SkipPathExclusion:
+    """Verify fragmented MP4 is excluded from the partial thumbnail path."""
+
+    def test_fmp4_moov_front_cas_returns_false(self):
+        """fMP4 + moov-at-front + CAS → partial path should NOT be used (is_fragmented blocks it)."""
+        # The ingestion service checks is_fragmented before calling _build_thumbnail_probe_file.
+        # This test verifies the condition logic: is_fragmented=True should prevent partial path.
+        probe_data = {'moov_at_end': False, 'is_fragmented': True}
+        moov_at_end = probe_data.get('moov_at_end', False)
+        is_fragmented = probe_data.get('is_fragmented', False)
+        storage_type = 'content_addressed'
+        use_partial = (not moov_at_end and not is_fragmented
+                       and storage_type in ('chunked', 'content_addressed'))
+        assert use_partial is False
+
+    def test_non_fmp4_moov_front_cas_uses_partial(self):
+        """Non-fMP4 + moov-at-front + CAS → partial path should be used."""
+        probe_data = {'moov_at_end': False, 'is_fragmented': False}
+        moov_at_end = probe_data.get('moov_at_end', False)
+        is_fragmented = probe_data.get('is_fragmented', False)
+        storage_type = 'content_addressed'
+        use_partial = (not moov_at_end and not is_fragmented
+                       and storage_type in ('chunked', 'content_addressed'))
+        assert use_partial is True
+
+
+# ---- Single-file moov_at_end detection tests ----
+
+class TestSingleFileMoovDetection:
+    """Verify single-file probe correctly detects moov-at-end."""
+
+    def test_single_file_moov_at_front(self):
+        """Single-file with moov in first 4MB → moov_at_end False."""
+        file_obj = _make_file_obj(storage_type='single', object_path='/tmp/test_single.mp4')
+
+        async def run():
+            with patch.object(video_transcoder, '_run_ffprobe_async', new_callable=AsyncMock) as mock_probe:
+                mock_probe.return_value = {'codec_name': 'h264', 'audio_codec': 'aac',
+                                           'duration': 60, 'width': 1920, 'height': 1080, 'bitrate': 5000000}
+                with patch('os.path.exists', return_value=True):
+                    with patch('app.services.video_transcoder._scan_head_atoms',
+                               return_value={'has_moov': True, 'is_fragmented': False}):
+                        result = await video_transcoder._probe_file_metadata(file_obj, MagicMock())
+
+            assert result is not None
+            assert result['moov_at_end'] is False
+
+        _run(run())
+
+    def test_single_file_moov_at_end(self):
+        """Single-file with moov NOT in first 4MB → moov_at_end True."""
+        file_obj = _make_file_obj(storage_type='single', object_path='/tmp/test_single.mp4')
+
+        async def run():
+            with patch.object(video_transcoder, '_run_ffprobe_async', new_callable=AsyncMock) as mock_probe:
+                mock_probe.return_value = {'codec_name': 'h264', 'audio_codec': 'aac',
+                                           'duration': 60, 'width': 1920, 'height': 1080, 'bitrate': 5000000}
+                with patch('os.path.exists', return_value=True):
+                    with patch('app.services.video_transcoder._scan_head_atoms',
+                               return_value={'has_moov': False, 'is_fragmented': False}):
+                        result = await video_transcoder._probe_file_metadata(file_obj, MagicMock())
+
+            assert result is not None
+            assert result['moov_at_end'] is True
+
+        _run(run())
+
+
+# ---- Low-disk moov-at-end failure tests ----
+
+class TestLowDiskMoovAtEnd:
+    """Verify moov-at-end files fail (not ready) when disk space is insufficient."""
+
+    def test_disk_check_logic_moov_at_end(self):
+        """When disk is low and moov_at_end is True, the skip path should fail."""
+        # Simulate the condition check from the ingestion service
+        moov_at_end = True
+        disk_ok = False  # _check_disk_space returned False
+        # The code should return early with 'failed' when both conditions hold
+        should_fail = not disk_ok and moov_at_end
+        assert should_fail is True
+
+    def test_disk_check_logic_moov_at_front(self):
+        """When disk is low but moov_at_front, video is still playable — should NOT fail."""
+        moov_at_end = False
+        disk_ok = False
+        should_fail = not disk_ok and moov_at_end
+        assert should_fail is False

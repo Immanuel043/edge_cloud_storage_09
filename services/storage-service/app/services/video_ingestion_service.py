@@ -322,11 +322,14 @@ class VideoIngestionService:
                 if decision == 'skip':
                     result['action'] = 'skipped'
                     moov_at_end = probe_data.get('moov_at_end', False) if probe_data else False
+                    is_fragmented = probe_data.get('is_fragmented', False) if probe_data else False
 
-                    if not moov_at_end and file_obj.storage_type in ('chunked', 'content_addressed'):
-                        # ---- OPTIMIZED PATH: moov-at-front + chunked/CAS ----
+                    if (not moov_at_end and not is_fragmented
+                            and file_obj.storage_type in ('chunked', 'content_addressed')):
+                        # ---- OPTIMIZED PATH: moov-at-front + non-fMP4 + chunked/CAS ----
                         # Lightweight partial download (~64MB) for thumbnails only.
                         # No faststart needed (moov already at front).
+                        # fMP4 excluded: fragmented MP4 needs all moof boxes for frame extraction.
                         partial_path = f"/tmp/skip_thumb_{file_id}.partial"
                         try:
                             built = await video_transcoder._build_thumbnail_probe_file(
@@ -351,11 +354,26 @@ class VideoIngestionService:
                                 os.remove(partial_path)
 
                     else:
-                        # ---- FULL PATH: moov-at-end OR non-chunked storage ----
+                        # ---- FULL PATH: moov-at-end, fMP4, OR non-chunked storage ----
                         # Full download required for faststart (moov-at-end) or decryption (single).
                         if not _check_disk_space(file_obj.file_size or 0):
                             logger.error(f"Insufficient disk for skip-path of {file_obj.file_name}")
-                            # Don't fail the whole job — just skip faststart + thumbnails
+                            if moov_at_end:
+                                # Moov-at-end REQUIRES faststart for acceptable playback.
+                                # Reactive path returns None for skip, so without faststart
+                                # the user would have to buffer the entire file. Fail so the
+                                # job can be retried when disk space is available.
+                                result['action'] = 'failed'
+                                result['error'] = (
+                                    f"Insufficient disk space for required faststart "
+                                    f"({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
+                                )
+                                file_obj.video_processing_status = 'failed'
+                                file_obj.video_processing_error = result['error']
+                                await db_session.commit()
+                                return result
+                            # moov-at-front / fMP4 / single: video is still playable
+                            # from the original file, just skip thumbnails.
                         else:
                             temp_path = await preview_optimizer.download_full_file_for_transcode(
                                 file_obj, encryption_service, db=db_session

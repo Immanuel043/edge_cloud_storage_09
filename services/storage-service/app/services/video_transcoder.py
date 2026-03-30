@@ -51,6 +51,24 @@ def _find_moov_atom(data: bytes) -> Optional[Tuple[int, int]]:
         search_start = idx + 4
 
 
+def _scan_head_atoms(file_path: str, scan_bytes: int = 4 * 1024 * 1024) -> dict:
+    """Scan first portion of a file for key MP4 box types.
+
+    Returns {'has_moov': bool, 'is_fragmented': bool}.
+    Reading only the first 4MB is enough to detect ftyp + moov header + moof
+    since these boxes appear early in the container.
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            data = f.read(scan_bytes)
+        return {
+            'has_moov': b'moov' in data,
+            'is_fragmented': b'moof' in data or b'mfhd' in data,
+        }
+    except Exception:
+        return {'has_moov': False, 'is_fragmented': False}
+
+
 class VideoTranscodeError(Exception):
     """Base exception for video transcoder issues."""
 
@@ -510,7 +528,9 @@ class VideoTranscoder:
                     )
                     head_result = await self._run_ffprobe_async(probe_path, resolved_obj.file_name)
                     if head_result:
+                        atoms = _scan_head_atoms(probe_path)
                         head_result['moov_at_end'] = False
+                        head_result['is_fragmented'] = atoms['is_fragmented']
                         return head_result
 
                     ext = os.path.splitext(resolved_obj.file_name or '')[1].lower()
@@ -589,7 +609,9 @@ class VideoTranscoder:
 
                 head_result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
                 if head_result:
+                    atoms = _scan_head_atoms(probe_path)
                     head_result['moov_at_end'] = False
+                    head_result['is_fragmented'] = atoms['is_fragmented']
                     logger.info(
                         f"🔍 Probed {file_obj.file_name}: "
                         f"{head_result['codec_name']}/{head_result['audio_codec']} "
@@ -692,11 +714,17 @@ class VideoTranscoder:
 
             result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
             if result:
-                result['moov_at_end'] = False
+                atoms = _scan_head_atoms(probe_path)
+                # Single-file probe reads the full file — if moov is NOT in
+                # the first 4MB, the file is moov-at-end and needs faststart.
+                result['moov_at_end'] = not atoms['has_moov']
+                result['is_fragmented'] = atoms['is_fragmented']
                 logger.info(
                     f"🔍 Probed {file_obj.file_name}: "
                     f"{result['codec_name']}/{result['audio_codec']} "
                     f"{result.get('width')}x{result.get('height')}"
+                    f"{' [moov-at-end]' if result['moov_at_end'] else ''}"
+                    f"{' [fragmented]' if result['is_fragmented'] else ''}"
                 )
             return result
 
