@@ -13,6 +13,8 @@ import os
 import shutil
 from typing import Optional
 
+from ..utils.executors import run_in_heavy_pool
+
 logger = logging.getLogger(__name__)
 
 # Base directory for preview storage (inside shared volume)
@@ -110,6 +112,28 @@ def delete_previews_from_disk(file_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Async wrappers (use these from request handlers / async code)
+# ---------------------------------------------------------------------------
+
+async def async_save_preview_to_disk(
+    file_id: str, size: str, preview_bytes: bytes, content_hash: str
+) -> None:
+    await run_in_heavy_pool(save_preview_to_disk, file_id, size, preview_bytes, content_hash)
+
+
+async def async_load_preview_from_disk(file_id: str, size: str) -> Optional[bytes]:
+    return await run_in_heavy_pool(load_preview_from_disk, file_id, size)
+
+
+async def async_get_disk_content_hash(file_id: str) -> Optional[str]:
+    return await run_in_heavy_pool(get_disk_content_hash, file_id)
+
+
+async def async_delete_previews_from_disk(file_id: str) -> None:
+    await run_in_heavy_pool(delete_previews_from_disk, file_id)
+
+
+# ---------------------------------------------------------------------------
 # Async invalidation (call BEFORE db.commit)
 # ---------------------------------------------------------------------------
 
@@ -146,8 +170,8 @@ async def invalidate_preview(
     await redis.delete(f"preview:status:{file_id}")
     await redis.delete(f"preview:notified:{file_id}")
 
-    # 4. Disk cleanup
-    delete_previews_from_disk(file_id)
+    # 4. Disk cleanup (offloaded to thread pool)
+    await async_delete_previews_from_disk(file_id)
 
     # 5. Null out DB preview columns if a session was provided
     if db_session is not None:

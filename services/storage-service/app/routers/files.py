@@ -682,17 +682,19 @@ async def download_file(
             file_id_str = str(file_id)
             
             # Check if proactively optimized version exists
-            if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
+            if file_obj.optimized_path and await asyncio.to_thread(os.path.exists, file_obj.optimized_path):
                 # Optimized version ready - return 200
-                headers = {**base_headers, "Content-Length": str(os.path.getsize(file_obj.optimized_path))}
+                opt_size = await asyncio.to_thread(os.path.getsize, file_obj.optimized_path)
+                headers = {**base_headers, "Content-Length": str(opt_size)}
                 headers["X-Video-Transcoded"] = "true"
                 return Response(status_code=200, headers=headers)
-            
+
             # Check if transcoded version is cached
             if video_transcoder.is_cached(file_id_str):
                 target_path = video_transcoder._target_path(file_obj)
-                if os.path.exists(target_path):
-                    headers = {**base_headers, "Content-Length": str(os.path.getsize(target_path))}
+                if await asyncio.to_thread(os.path.exists, target_path):
+                    tc_size = await asyncio.to_thread(os.path.getsize, target_path)
+                    headers = {**base_headers, "Content-Length": str(tc_size)}
                     headers["X-Video-Transcoded"] = "true"
                     return Response(status_code=200, headers=headers)
             
@@ -1198,12 +1200,13 @@ async def get_file_preview(
 
     # Disk fallback: check disk before regenerating
     from ..services.preview_storage import (
-        load_preview_from_disk, get_disk_content_hash, delete_previews_from_disk,
+        async_load_preview_from_disk, async_get_disk_content_hash,
+        async_delete_previews_from_disk, async_save_preview_to_disk,
         preview_cache_ttl as _preview_cache_ttl,
     )
-    disk_bytes = load_preview_from_disk(file_id, size)
+    disk_bytes = await async_load_preview_from_disk(file_id, size)
     if disk_bytes:
-        disk_hash = get_disk_content_hash(file_id)
+        disk_hash = await async_get_disk_content_hash(file_id)
         current_hash = getattr(file_obj, 'content_hash', None)
         if disk_hash and current_hash and disk_hash == current_hash:
             # Valid disk preview — re-populate Redis and serve
@@ -1223,7 +1226,7 @@ async def get_file_preview(
             # Stale disk preview — delete and fall through to generation
             if disk_hash and current_hash and disk_hash != current_hash:
                 logger.info(f"Stale disk preview for {file_id}, deleting")
-                delete_previews_from_disk(file_id)
+                await async_delete_previews_from_disk(file_id)
 
     # Note: ZK files are now in a separate service (ZK Private Vault)
     # Normal Storage service only handles server-side encrypted files
@@ -1334,9 +1337,9 @@ async def get_file_preview(
                             }
                         )
                     # Disk fallback before re-queuing
-                    disk_bytes = load_preview_from_disk(file_id, size)
+                    disk_bytes = await async_load_preview_from_disk(file_id, size)
                     if disk_bytes:
-                        disk_hash = get_disk_content_hash(file_id)
+                        disk_hash = await async_get_disk_content_hash(file_id)
                         current_hash = getattr(file_obj, 'content_hash', None)
                         if disk_hash and current_hash and disk_hash == current_hash:
                             ttl = _preview_cache_ttl(file_obj.mime_type)
@@ -1353,7 +1356,7 @@ async def get_file_preview(
                             )
                         else:
                             if disk_hash and current_hash and disk_hash != current_hash:
-                                delete_previews_from_disk(file_id)
+                                await async_delete_previews_from_disk(file_id)
 
                     if _optimization_active():
                         logger.info(f"Optimization pipeline active for {file_id}, waiting for thumbnails")
@@ -1516,12 +1519,12 @@ async def get_file_preview(
                 reason=str(exc)
             )
 
-        from ..services.preview_storage import save_preview_to_disk, preview_cache_ttl
+        from ..services.preview_storage import async_save_preview_to_disk, preview_cache_ttl
         cache_ttl = preview_cache_ttl(file_obj.mime_type)
         await redis.setex(cache_key, cache_ttl, preview_bytes)
         source_hash = getattr(file_obj, 'content_hash', None)
         if source_hash:
-            save_preview_to_disk(file_id, size, preview_bytes, source_hash)
+            await async_save_preview_to_disk(file_id, size, preview_bytes, source_hash)
         logger.info(f"Cached transcoded preview for {file_id} (size: {size})")
 
         return Response(
@@ -1569,9 +1572,9 @@ async def get_preview_status(
             }
 
     # Check disk (Redis may have evicted but disk still has it)
-    from ..services.preview_storage import load_preview_from_disk
+    from ..services.preview_storage import async_load_preview_from_disk as _async_load_disk
     for size in ['small', 'medium', 'large']:
-        if load_preview_from_disk(file_id, size) is not None:
+        if await _async_load_disk(file_id, size) is not None:
             return {
                 'status': 'ready',
                 'file_id': file_id,

@@ -261,12 +261,24 @@ class PreviewWorker:
                         )
 
                         if result.status != 'ok':
-                            # Worker is the final stop — never re-queue from here
                             error_msg = result.error or f"Download failed ({file_obj.file_size / 1024 / 1024:.0f}MB)"
                             logger.warning(f"❌ {error_msg}: {file_id} ({file_obj.file_name})")
-                            # Size-limit failures are deterministic — mark non-retryable
-                            await self._set_status(file_id, 'failed', error_msg, retryable=False)
-                            await self._publish_notification(file_id, str(file_obj.user_id), 'failed', error_msg)
+
+                            # If optimization pipeline is active, it will generate thumbnails —
+                            # suppress WS notification to avoid false "failed" flash in frontend
+                            optimization_active = (
+                                hasattr(file_obj, 'video_processing_status')
+                                and file_obj.video_processing_status in ('queued', 'processing')
+                            )
+                            if optimization_active:
+                                await self._set_status(file_id, 'failed', error_msg, retryable=True)
+                                logger.info(
+                                    f"Optimization pipeline active for {file_obj.file_name}, "
+                                    f"set failed+retryable (no WS push)"
+                                )
+                            else:
+                                await self._set_status(file_id, 'failed', error_msg, retryable=False)
+                                await self._publish_notification(file_id, str(file_obj.user_id), 'failed', error_msg)
                             return
 
                         temp_file_path = result.temp_file_path

@@ -16,11 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_
 from typing import List, Optional
 from datetime import datetime, timedelta
+import asyncio
 import secrets
 import logging
 
 from ..dependencies import get_db, get_current_user, log_activity
-from ..services.auth import pwd_context
+from ..services.auth import auth_service, pwd_context
 from ..utils.rate_limiter import limiter, share_limiter, RateLimitConfig, check_ip_whitelist
 from ..utils.access_logger import log_share_access
 from ..models.database import User, Object, ShareBundle, ShareBundleFile, Folder, SharedAccess
@@ -209,7 +210,7 @@ async def create_share_bundle(
     # Hash password if provided
     password_hash = None
     if bundle_data.password:
-        password_hash = pwd_context.hash(bundle_data.password)
+        password_hash = await auth_service.async_get_password_hash(bundle_data.password)
 
     # Create share bundle
     bundle = ShareBundle(
@@ -462,7 +463,7 @@ async def update_share_bundle(
         if update_data.password == "":
             bundle.password_hash = None  # Remove password
         else:
-            bundle.password_hash = pwd_context.hash(update_data.password)
+            bundle.password_hash = await auth_service.async_get_password_hash(update_data.password)
     if update_data.max_downloads is not None:
         bundle.max_downloads = update_data.max_downloads
     if update_data.allow_preview is not None:
@@ -822,7 +823,7 @@ async def get_public_bundle_info(
                 owner_name=owner.username,
                 watermark_text=bundle.watermark_text,
             )
-        if not pwd_context.verify(pw, bundle.password_hash):
+        if not await auth_service.async_verify_password(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Increment view count
@@ -938,7 +939,7 @@ async def stream_bundle_file(
     # Verify password (accept from both header and query param, header takes precedence)
     pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not pw or not pwd_context.verify(pw, bundle.password_hash):
+        if not pw or not await auth_service.async_verify_password(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Check preview allowed
@@ -1028,7 +1029,7 @@ async def stream_bundle_file(
 
     # SINGLE FILE STORAGE
     elif file_obj.storage_type == "single":
-        if not os.path.exists(file_obj.object_path):
+        if not await asyncio.to_thread(os.path.exists, file_obj.object_path):
             raise HTTPException(status_code=404, detail="File not found on disk")
 
         if parsed_range:
@@ -1110,7 +1111,7 @@ async def download_bundle_file(
     # Verify password
     pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not pw or not pwd_context.verify(pw, bundle.password_hash):
+        if not pw or not await auth_service.async_verify_password(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Enforce download permission
@@ -1236,7 +1237,7 @@ async def download_bundle_as_zip(
     # Verify password (accept from both header and query param, header takes precedence)
     pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not pw or not pwd_context.verify(pw, bundle.password_hash):
+        if not pw or not await auth_service.async_verify_password(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Check ZIP download allowed
@@ -1333,7 +1334,7 @@ async def get_bundle_file_thumbnail(
     # Verify password (accept from both header and query param, header takes precedence)
     pw = request.headers.get("X-Share-Password") or password
     if bundle.password_hash:
-        if not pw or not pwd_context.verify(pw, bundle.password_hash):
+        if not pw or not await auth_service.async_verify_password(pw, bundle.password_hash):
             raise HTTPException(status_code=401, detail="Password required")
 
     # Check preview allowed
@@ -1390,12 +1391,13 @@ async def get_bundle_file_thumbnail(
     # Disk fallback: check disk before downloading/regenerating
     try:
         from ..services.preview_storage import (
-            load_preview_from_disk, get_disk_content_hash, delete_previews_from_disk,
+            async_load_preview_from_disk, async_get_disk_content_hash,
+            async_delete_previews_from_disk, async_save_preview_to_disk,
             preview_cache_ttl,
         )
-        disk_bytes = load_preview_from_disk(str(file_id), size)
+        disk_bytes = await async_load_preview_from_disk(str(file_id), size)
         if disk_bytes:
-            disk_hash = get_disk_content_hash(str(file_id))
+            disk_hash = await async_get_disk_content_hash(str(file_id))
             current_hash = getattr(file_obj, 'content_hash', None)
             if disk_hash and current_hash and disk_hash == current_hash:
                 # Re-populate Redis and serve
@@ -1414,7 +1416,7 @@ async def get_bundle_file_thumbnail(
                 )
             else:
                 if disk_hash and current_hash and disk_hash != current_hash:
-                    delete_previews_from_disk(str(file_id))
+                    await async_delete_previews_from_disk(str(file_id))
     except Exception:
         pass  # Disk check failure is non-fatal
 
@@ -1561,13 +1563,13 @@ async def get_bundle_file_thumbnail(
             # Write-through: persist to Redis and disk for future requests
             try:
                 from ..services.preview_storage import (
-                    save_preview_to_disk, preview_cache_ttl,
+                    async_save_preview_to_disk as _async_save, preview_cache_ttl,
                 )
                 ttl = preview_cache_ttl(file_obj.mime_type)
                 await redis.setex(cache_key, ttl, preview_bytes)
                 source_hash = getattr(file_obj, 'content_hash', None)
                 if source_hash:
-                    save_preview_to_disk(str(file_id), size, preview_bytes, source_hash)
+                    await _async_save(str(file_id), size, preview_bytes, source_hash)
             except Exception:
                 pass  # Non-fatal: preview is still served even if persistence fails
 

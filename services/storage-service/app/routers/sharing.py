@@ -15,7 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from ..dependencies import get_db, get_current_user, log_activity
-from ..services.auth import pwd_context
+from ..services.auth import auth_service, pwd_context
 from ..utils.rate_limiter import limiter, share_limiter, RateLimitConfig, check_ip_whitelist
 from ..utils.access_logger import log_share_access
 from ..models.database import User, Object, Folder, ShareLink, SharedAccess, ShareAccessLog, ShareBundle
@@ -79,7 +79,7 @@ async def create_folder_share_link(
     # Hash password if provided
     password_hash = None
     if share_data.password:
-        password_hash = pwd_context.hash(share_data.password)
+        password_hash = await auth_service.async_get_password_hash(share_data.password)
 
     # Create share link in database
     share_link = ShareLink(
@@ -555,7 +555,7 @@ async def get_share_info(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Increment view count
@@ -619,7 +619,7 @@ async def get_shared_folder_contents(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     background_tasks.add_task(log_share_access, request, "view", share_link_id=share_link.id)
@@ -702,7 +702,7 @@ async def download_shared_folder_file(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Enforce download permission
@@ -826,7 +826,7 @@ async def download_shared_folder_as_zip(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check download permission
@@ -936,7 +936,7 @@ async def stream_shared_file(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     background_tasks.add_task(log_share_access, request, "stream", share_link_id=share_link.id, file_id=file_obj.id)
@@ -1213,7 +1213,7 @@ async def update_share_link(
         if update_data.password == '':
             link.password_hash = None
         else:
-            link.password_hash = pwd_context.hash(update_data.password)
+            link.password_hash = await auth_service.async_get_password_hash(update_data.password)
 
     if update_data.expires_hours is not None:
         if update_data.expires_hours == 0:

@@ -178,7 +178,7 @@ async def create_share_link(
     # Hash password if provided
     password_hash = None
     if share_data.password:
-        password_hash = pwd_context.hash(share_data.password)
+        password_hash = await auth_service.async_get_password_hash(share_data.password)
 
     # Create share link in database
     share_link = ShareLink(
@@ -342,7 +342,7 @@ async def download_share_chunk(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check download limit
@@ -425,7 +425,7 @@ async def download_shared(
     if share_link.password_hash:
         if not pw:
             raise HTTPException(status_code=401, detail="Password required")
-        if not pwd_context.verify(pw, share_link.password_hash):
+        if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check download limit

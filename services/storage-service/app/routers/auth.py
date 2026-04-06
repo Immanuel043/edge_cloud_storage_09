@@ -102,7 +102,8 @@ async def login(
     result = await db.execute(select(User).filter(User.email == email))
     user = result.scalar_one_or_none()
 
-    if not user or not auth_service.verify_password(password, user.password_hash):
+    password_valid = await auth_service.async_verify_password(password, user.password_hash) if user else False
+    if not user or not password_valid:
         # Audit: login failure (best-effort)
         try:
             await audit_logging_service.log_event(
@@ -422,7 +423,7 @@ async def register_complete(
         .where(User.id == user.id)
         .values(
             username=username,
-            password_hash=auth_service.get_password_hash(password),
+            password_hash=await auth_service.async_get_password_hash(password),
             is_active=True,
         )
     )

@@ -89,7 +89,7 @@ class PreviewService:
 
         Fire-and-forget, non-fatal. Errors are logged but never raised.
         """
-        from .preview_storage import save_preview_to_disk, should_persist_preview
+        from .preview_storage import async_save_preview_to_disk, should_persist_preview
 
         try:
             if not _is_previewable(mime_type, file_name):
@@ -137,7 +137,7 @@ class PreviewService:
                         cache_key = f"preview:{file_id}:{size_name}"
                         await redis_client.setex(cache_key, ttl, preview_bytes)
                         if content_hash:
-                            save_preview_to_disk(file_id, size_name, preview_bytes, content_hash)
+                            await async_save_preview_to_disk(file_id, size_name, preview_bytes, content_hash)
                         cached_count += 1
                     except Exception as exc:
                         logger.warning(
@@ -332,7 +332,7 @@ class PreviewService:
                 temp_file_path = result.temp_file_path
 
             # Generate all 3 sizes
-            from .preview_storage import save_preview_to_disk, should_persist_preview
+            from .preview_storage import async_save_preview_to_disk, should_persist_preview
 
             ttl = _cache_ttl(file_obj.mime_type)
             source_hash = getattr(file_obj, 'content_hash', None)
@@ -357,7 +357,7 @@ class PreviewService:
                     cache_key = f"preview:{file_id}:{size_name}"
                     await redis_client.setex(cache_key, ttl, preview_bytes)
                     if source_hash:
-                        save_preview_to_disk(file_id, size_name, preview_bytes, source_hash)
+                        await async_save_preview_to_disk(file_id, size_name, preview_bytes, source_hash)
                     results[size_name] = (preview_bytes, content_type)
                 except Exception as exc:
                     logger.warning(

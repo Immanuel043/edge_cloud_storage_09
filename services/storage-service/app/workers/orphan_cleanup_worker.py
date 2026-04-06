@@ -97,10 +97,10 @@ class OrphanCleanupWorker:
                     # Delete chunk files from disk
                     chunk_paths = session_data.get("chunk_paths", {})
                     for idx, path in chunk_paths.items():
-                        if path and os.path.exists(path):
+                        if path and await asyncio.to_thread(os.path.exists, path):
                             try:
-                                file_size = os.path.getsize(path)
-                                os.remove(path)
+                                file_size = await asyncio.to_thread(os.path.getsize, path)
+                                await asyncio.to_thread(os.remove, path)
                                 chunks_deleted += 1
                                 bytes_freed += file_size
                             except OSError as e:
@@ -108,10 +108,10 @@ class OrphanCleanupWorker:
 
                     # Also clean up single/inline storage paths
                     storage_path = session_data.get("storage_path")
-                    if storage_path and os.path.exists(storage_path):
+                    if storage_path and await asyncio.to_thread(os.path.exists, storage_path):
                         try:
-                            file_size = os.path.getsize(storage_path)
-                            os.remove(storage_path)
+                            file_size = await asyncio.to_thread(os.path.getsize, storage_path)
+                            await asyncio.to_thread(os.remove, storage_path)
                             chunks_deleted += 1
                             bytes_freed += file_size
                         except OSError as e:
