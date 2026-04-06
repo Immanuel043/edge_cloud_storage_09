@@ -1464,6 +1464,12 @@ async def get_bundle_file_thumbnail(
             }
         )
 
+    def _optimization_active() -> bool:
+        return (
+            hasattr(file_obj, 'video_processing_status')
+            and file_obj.video_processing_status in ('queued', 'processing')
+        )
+
     try:
         status_key = f"preview:status:{file_id}"
         status_raw = await redis.get(status_key)
@@ -1480,6 +1486,8 @@ async def get_bundle_file_thumbnail(
 
                 elif status == 'ready':
                     # Cache + disk already checked above; if we're here, both missed
+                    if _optimization_active():
+                        return _return_share_placeholder(file_obj.mime_type)
                     # Re-queue to regenerate
                     queued = await _queue_share_preview_to_kafka(
                         file_id, file_obj, redis, status_key
@@ -1493,6 +1501,8 @@ async def get_bundle_file_thumbnail(
                     is_retryable = status_info.get('retryable', True)
 
                     if is_retryable and retry_count < 3:
+                        if _optimization_active():
+                            return _return_share_placeholder(file_obj.mime_type)
                         queued = await _queue_share_preview_to_kafka(
                             file_id, file_obj, redis, status_key
                         )
@@ -1522,6 +1532,8 @@ async def get_bundle_file_thumbnail(
         )
 
         if result.status == 'deferred':
+            if _optimization_active():
+                return _return_share_placeholder(file_obj.mime_type)
             # Queue to Kafka, return placeholder
             queued = await _queue_share_preview_to_kafka(
                 file_id, file_obj, redis, status_key

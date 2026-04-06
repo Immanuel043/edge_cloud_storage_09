@@ -284,20 +284,55 @@ class PreviewWorker:
                                 logger.warning(f"Failed to generate {size} preview: {e}")
 
                         if sizes_cached > 0:
-                            await self._set_status(file_id, 'ready')
-                            await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
-                            # Update DB preview columns
-                            try:
-                                file_obj.preview_generated_at = datetime.utcnow()
-                                file_obj.preview_content_hash = file_obj.content_hash
-                                await db.commit()
-                            except Exception:
-                                logger.warning(f"Failed to update preview columns for {file_id}")
-                            logger.info(f"Preview ready for {file_obj.file_name} ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)")
+                            # Verify ALL 3 sizes are actually in Redis
+                            all_present = True
+                            for check_size in PREVIEW_SIZES:
+                                if not await self.redis.exists(f"preview:{file_obj.id}:{check_size}"):
+                                    all_present = False
+                                    break
+
+                            if all_present:
+                                await self._set_status(file_id, 'ready')
+                                # Atomic single-notify: only first pipeline to SET NX publishes
+                                should_notify = await self.redis.set(
+                                    f"preview:notified:{file_id}", "1", nx=True, ex=3600
+                                )
+                                if should_notify:
+                                    await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
+                                # Update DB preview columns
+                                try:
+                                    file_obj.preview_generated_at = datetime.utcnow()
+                                    file_obj.preview_content_hash = file_obj.content_hash
+                                    await db.commit()
+                                except Exception:
+                                    logger.warning(f"Failed to update preview columns for {file_id}")
+                                logger.info(
+                                    f"Preview ready for {file_obj.file_name} "
+                                    f"({sizes_cached}/{len(PREVIEW_SIZES)} sizes, notified={bool(should_notify)})"
+                                )
+                            else:
+                                # Partial: some sizes cached but not all confirmed in Redis.
+                                # Monotonic guard: don't downgrade if already ready.
+                                if not await self._is_already_ready(file_id):
+                                    await self._set_status(
+                                        file_id, 'failed',
+                                        f'Partial preview generation ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)',
+                                        retryable=True,
+                                    )
+                                    logger.warning(
+                                        f"Only {sizes_cached}/{len(PREVIEW_SIZES)} sizes confirmed in cache "
+                                        f"for {file_obj.file_name}, set failed+retryable (no WS push)"
+                                    )
+                                else:
+                                    logger.info(f"Preview already ready for {file_obj.file_name}, skipping partial downgrade")
                         else:
-                            await self._set_status(file_id, 'failed', 'All preview sizes failed to generate')
-                            await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'All preview sizes failed')
-                            logger.warning(f"❌ All preview sizes failed for {file_obj.file_name}")
+                            # Total failure (0/3). Monotonic guard: don't downgrade if already ready.
+                            if not await self._is_already_ready(file_id):
+                                await self._set_status(file_id, 'failed', 'All preview sizes failed to generate')
+                                await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'All preview sizes failed')
+                                logger.warning(f"All preview sizes failed for {file_obj.file_name}")
+                            else:
+                                logger.info(f"Preview already ready for {file_obj.file_name}, skipping failure downgrade")
 
                     finally:
                         # Cleanup temp file (but never delete transcoded/optimized files)
@@ -308,13 +343,17 @@ class PreviewWorker:
                                 logger.warning(f"Failed to cleanup temp file: {e}")
 
             except Exception as e:
-                logger.error(f"❌ Preview generation failed for {file_id}: {e}")
-                await self._set_status(file_id, 'failed', str(e)[:200])
-                try:
-                    if file_obj:
-                        await self._publish_notification(file_id, str(file_obj.user_id), 'failed', str(e)[:200])
-                except Exception:
-                    pass
+                logger.error(f"Preview generation failed for {file_id}: {e}")
+                # Monotonic guard: don't downgrade ready
+                if not await self._is_already_ready(file_id):
+                    await self._set_status(file_id, 'failed', str(e)[:200])
+                    try:
+                        if file_obj:
+                            await self._publish_notification(file_id, str(file_obj.user_id), 'failed', str(e)[:200])
+                    except Exception:
+                        pass
+                else:
+                    logger.info(f"Preview already ready for {file_id}, skipping exception downgrade")
             finally:
                 # Release chunk hold so dedup cleanup can proceed
                 if chunk_hold_id and upload_id:
@@ -326,6 +365,23 @@ class PreviewWorker:
                     await self.redis.delete(lock_key)
                 except Exception:
                     pass
+
+    async def _is_already_ready(self, file_id: str) -> bool:
+        """Check if preview is already marked ready (monotonic-status guard).
+
+        Prevents a late failure from downgrading a ready established by
+        another pipeline (e.g. the optimization pipeline)."""
+        status_raw = await self.redis.get(f"preview:status:{file_id}")
+        if status_raw:
+            try:
+                info = json.loads(
+                    status_raw if isinstance(status_raw, str) else status_raw.decode()
+                )
+                if info.get('status') == 'ready':
+                    return True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return False
 
     async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str) -> bool:
         """Generate preview and cache in Redis + disk. Returns True if persisted."""

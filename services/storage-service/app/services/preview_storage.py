@@ -142,8 +142,9 @@ async def invalidate_preview(
     for size in ("small", "medium", "large"):
         await redis.delete(f"preview:{file_id}:{size}")
 
-    # 3. Delete status key
+    # 3. Delete status key and notification guard
     await redis.delete(f"preview:status:{file_id}")
+    await redis.delete(f"preview:notified:{file_id}")
 
     # 4. Disk cleanup
     delete_previews_from_disk(file_id)

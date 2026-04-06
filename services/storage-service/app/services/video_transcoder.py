@@ -1650,6 +1650,13 @@ class VideoTranscoder:
 
             for size in ['small', 'medium', 'large']:
                 try:
+                    # Skip if preview_worker already cached this size
+                    cache_key = f"preview:{file_id}:{size}"
+                    if await redis.exists(cache_key):
+                        sizes_cached += 1
+                        logger.info(f"Thumbnail {size} already cached for {file_id}, skipping")
+                        continue
+
                     preview_bytes, content_type = await preview_generator.generate_preview(
                         file_path=transcoded_path,
                         mime_type='video/mp4',
@@ -1664,7 +1671,6 @@ class VideoTranscoder:
                             logger.info(f"Skipping stale thumbnail write for {file_id}:{size}")
                             continue
 
-                    cache_key = f"preview:{file_id}:{size}"
                     await redis.setex(cache_key, ttl, preview_bytes)
                     if source_hash:
                         save_preview_to_disk(file_id, size, preview_bytes, source_hash)
@@ -1677,20 +1683,63 @@ class VideoTranscoder:
 
             # Update preview status and notify frontend
             if sizes_cached > 0 and user_id:
-                try:
-                    status_data = json.dumps({
-                        'status': 'ready',
-                        'updated_at': datetime.utcnow().isoformat(),
-                    })
-                    await redis.setex(f"preview:status:{file_id}", 3600, status_data)
-                    await redis.publish('preview_notifications', json.dumps({
-                        'file_id': file_id,
-                        'user_id': user_id,
-                        'status': 'ready',
-                    }))
-                    logger.info(f"Preview status set to ready via optimization pipeline for {file_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to update preview status for {file_id}: {e}")
+                # Verify ALL 3 sizes are in Redis before publishing ready
+                all_present = True
+                for check_size in ['small', 'medium', 'large']:
+                    if not await redis.exists(f"preview:{file_id}:{check_size}"):
+                        all_present = False
+                        break
+
+                if all_present:
+                    try:
+                        status_data = json.dumps({
+                            'status': 'ready',
+                            'updated_at': datetime.utcnow().isoformat(),
+                        })
+                        await redis.setex(f"preview:status:{file_id}", 3600, status_data)
+                        # Atomic single-notify
+                        should_notify = await redis.set(
+                            f"preview:notified:{file_id}", "1", nx=True, ex=3600
+                        )
+                        if should_notify:
+                            await redis.publish('preview_notifications', json.dumps({
+                                'file_id': file_id,
+                                'user_id': user_id,
+                                'status': 'ready',
+                            }))
+                        logger.info(
+                            f"Preview ready via optimization pipeline for {file_id} "
+                            f"(notified={bool(should_notify)})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update preview status for {file_id}: {e}")
+                else:
+                    # Partial success — monotonic guard: don't downgrade if already ready
+                    already_ready = False
+                    prev_raw = await redis.get(f"preview:status:{file_id}")
+                    if prev_raw:
+                        try:
+                            prev = json.loads(prev_raw if isinstance(prev_raw, str) else prev_raw.decode())
+                            already_ready = prev.get('status') == 'ready'
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    if not already_ready:
+                        try:
+                            status_data = json.dumps({
+                                'status': 'failed',
+                                'error': f'Partial preview generation ({sizes_cached}/3 sizes)',
+                                'retryable': True,
+                                'updated_at': datetime.utcnow().isoformat(),
+                            })
+                            await redis.setex(f"preview:status:{file_id}", 3600, status_data)
+                            logger.warning(
+                                f"Only {sizes_cached}/3 sizes confirmed in cache for {file_id}, "
+                                f"set failed+retryable (no WS push)"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to set partial status for {file_id}: {e}")
+                    else:
+                        logger.info(f"Preview already ready for {file_id}, skipping partial downgrade")
 
             return sizes_cached
 

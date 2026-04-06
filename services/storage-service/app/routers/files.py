@@ -1303,6 +1303,12 @@ async def get_file_preview(
                 headers={'Retry-After': '5'}
             )
 
+        def _optimization_active() -> bool:
+            return (
+                hasattr(file_obj, 'video_processing_status')
+                and file_obj.video_processing_status in ('queued', 'processing')
+            )
+
         if status_data:
             try:
                 if isinstance(status_data, bytes):
@@ -1349,6 +1355,9 @@ async def get_file_preview(
                             if disk_hash and current_hash and disk_hash != current_hash:
                                 delete_previews_from_disk(file_id)
 
+                    if _optimization_active():
+                        logger.info(f"Optimization pipeline active for {file_id}, waiting for thumbnails")
+                        return _return_202('processing', 'Video optimization in progress, thumbnails pending')
                     logger.warning(f"Preview status=ready but cache+disk miss for {file_id}:{size}, re-queuing")
                     try:
                         await _queue_preview_to_kafka()
@@ -1362,6 +1371,8 @@ async def get_file_preview(
                     error_msg = status_info.get('error', 'Preview generation failed')
 
                     if is_retryable and retry_count < 3:
+                        if _optimization_active():
+                            return _return_202('processing', 'Video optimization in progress, thumbnails pending')
                         logger.info(f"Re-queuing failed preview for {file_id} (retry {retry_count + 1}/3)")
                         try:
                             await _queue_preview_to_kafka(carry_retry_count=retry_count)
@@ -1390,10 +1401,13 @@ async def get_file_preview(
                 return _return_202('processing', 'Preview is being processed')
 
         else:
+            if _optimization_active():
+                logger.info(f"Optimization pipeline active for {file_id}, returning 202")
+                return _return_202('processing', 'Video optimization in progress, thumbnails pending')
             try:
                 queued = await _queue_preview_to_kafka()
                 if queued:
-                    logger.info(f"🎬 Queued existing large video for background preview: {file_obj.file_name}")
+                    logger.info(f"Queued existing large video for background preview: {file_obj.file_name}")
                     return _return_202('queued', 'Preview is being generated in background')
             except Exception as e:
                 logger.warning(f"Failed to queue large video for background preview: {e}")
