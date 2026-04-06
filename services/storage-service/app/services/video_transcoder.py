@@ -446,8 +446,7 @@ class VideoTranscoder:
     @staticmethod
     async def _rust_bulk_decrypt(chunk_paths, file_key, chunk_indices, was_compressed):
         """Call Rust /bulk-decrypt for a set of chunk indices. Returns bytes or None."""
-        from ..config import Settings
-        settings = Settings()
+        from ..config import settings
         if not getattr(settings, "RUST_DATAPLANE_ENABLED", False):
             return None
         try:
@@ -528,7 +527,7 @@ class VideoTranscoder:
                     )
                     head_result = await self._run_ffprobe_async(probe_path, resolved_obj.file_name)
                     if head_result:
-                        atoms = _scan_head_atoms(probe_path)
+                        atoms = await asyncio.to_thread(_scan_head_atoms, probe_path)
                         head_result['moov_at_end'] = False
                         head_result['is_fragmented'] = atoms['is_fragmented']
                         return head_result
@@ -554,7 +553,7 @@ class VideoTranscoder:
                             os.remove(tail_probe_file)
                         except OSError:
                             pass
-                    moov = _find_moov_atom(bytes(tail_bytes))
+                    moov = await asyncio.to_thread(_find_moov_atom, bytes(tail_bytes))
                     if not moov:
                         return None
                     moov_offset, moov_size = moov
@@ -609,7 +608,7 @@ class VideoTranscoder:
 
                 head_result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
                 if head_result:
-                    atoms = _scan_head_atoms(probe_path)
+                    atoms = await asyncio.to_thread(_scan_head_atoms, probe_path)
                     head_result['moov_at_end'] = False
                     head_result['is_fragmented'] = atoms['is_fragmented']
                     logger.info(
@@ -656,8 +655,8 @@ class VideoTranscoder:
                     f"({len(tail_bytes)} bytes) for {file_obj.file_name}"
                 )
 
-                # Search for moov atom in tail bytes
-                moov = _find_moov_atom(bytes(tail_bytes))
+                # Search for moov atom in tail bytes (offload to avoid blocking event loop)
+                moov = await asyncio.to_thread(_find_moov_atom, bytes(tail_bytes))
                 if not moov:
                     logger.warning(
                         f"❌ No moov atom found in tail of {file_obj.file_name}"
@@ -714,7 +713,7 @@ class VideoTranscoder:
 
             result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
             if result:
-                atoms = _scan_head_atoms(probe_path)
+                atoms = await asyncio.to_thread(_scan_head_atoms, probe_path)
                 # Single-file probe reads the full file — if moov is NOT in
                 # the first 4MB, the file is moov-at-end and needs faststart.
                 result['moov_at_end'] = not atoms['has_moov']

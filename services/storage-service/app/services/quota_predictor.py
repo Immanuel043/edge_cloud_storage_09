@@ -56,10 +56,11 @@ class QuotaPredictorService:
 
         try:
             from prophet import Prophet
+            Prophet()  # Verify CmdStan backend is installed, not just the Python package
             models['prophet'] = True
             logger.info("Prophet library available")
-        except ImportError:
-            logger.warning("Prophet not available, will use fallback methods")
+        except (ImportError, AttributeError, Exception) as e:
+            logger.warning(f"Prophet not available (will use fallback methods): {e}")
 
         try:
             from sklearn.linear_model import LinearRegression
