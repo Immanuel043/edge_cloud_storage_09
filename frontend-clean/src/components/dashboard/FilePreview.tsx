@@ -260,6 +260,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     setLoading(true);
     setFatalError(null);
     setPreviewWarning(null);
+    setPreviewUrl('');
 
     const setPreviewFailure = (message: string, { fatal = false }: { fatal?: boolean } = {}): void => {
       if (fatal || !isVideoFile) {
@@ -361,6 +362,12 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
         setLoading(false);
         return;
       }
+    }
+
+    // Normal PDFs should load the original document inline, not the thumbnail API.
+    if (isPdfFile) {
+      setLoading(false);
+      return;
     }
 
     try {
@@ -620,7 +627,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
               {/* Only render iframe when we have a valid URL - avoids empty src warning */}
               {(previewUrl || !isZKEncrypted) && (
                 <iframe
-                  src={previewUrl || `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
+                  src={isZKEncrypted ? previewUrl : `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
                   className="w-full h-full rounded-lg"
                   style={{ minHeight: '70vh' }}
                   title={file.name}
