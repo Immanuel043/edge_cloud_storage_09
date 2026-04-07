@@ -5,10 +5,12 @@ This client bypasses httpx to enable file descriptor passing via SCM_RIGHTS
 for secure encryption key transfer to the Rust data plane service.
 """
 
+import os
 import socket
 import json
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Optional
 import logging
 import uuid
@@ -16,6 +18,14 @@ import uuid
 from ..utils.memfd_helper import MemfdHelper
 
 logger = logging.getLogger(__name__)
+
+# Dedicated thread pool for Rust socket I/O, isolated from the default asyncio executor.
+# Prevents Rust chunk processing (1-9s per call) from starving preview generation,
+# session updates, and other to_thread() callers that share the default pool.
+_RUST_IO_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv('RUST_IO_POOL_SIZE', '6')),
+    thread_name_prefix="rust-io",
+)
 
 
 class RustSocketClient:
@@ -95,12 +105,37 @@ class RustSocketClient:
         if len(file_key) != 32:
             raise ValueError(f"file_key must be 32 bytes, got {len(file_key)}")
 
-        # Offload all blocking socket I/O to a thread to keep the event loop free
-        return await asyncio.to_thread(
+        # Offload blocking socket I/O to the dedicated Rust I/O pool (not the default
+        # executor) so concurrent chunk uploads don't starve other asyncio.to_thread callers.
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _RUST_IO_EXECUTOR,
             self._process_non_zk_sync,
             chunk_data, file_key, file_id, chunk_index,
             compress, filename, file_size, target_path,
         )
+
+    async def warmup(self) -> bool:
+        """Send a tiny dummy chunk to prime Rust code paths (memfd, SCM_RIGHTS, crypto).
+
+        Exercises the full processing pipeline with minimal data so subsequent
+        real chunks don't pay the cold-start penalty. Strictly non-fatal.
+        """
+        try:
+            dummy_key = os.urandom(32)
+            dummy_data = b'\x00' * 1024  # 1KB
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                _RUST_IO_EXECUTOR,
+                self._process_non_zk_sync,
+                dummy_data, dummy_key, "__warmup__", 0,
+                False, None, None, "/dev/null",
+            )
+            logger.info("Rust data plane warmup complete")
+            return True
+        except Exception as e:
+            logger.debug(f"Rust warmup skipped: {e}")
+            return False
 
     def _process_non_zk_sync(
         self,
@@ -322,7 +357,8 @@ class RustSocketClient:
         Raises:
             ConnectionError: If health check fails
         """
-        return await asyncio.to_thread(self._health_check_sync)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_RUST_IO_EXECUTOR, self._health_check_sync)
 
     def _health_check_sync(self) -> Dict[str, Any]:
         """Synchronous blocking health check — runs in a worker thread."""

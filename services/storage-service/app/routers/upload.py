@@ -295,6 +295,21 @@ async def init_upload(
         str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
     )
 
+    # Fire-and-forget warmup to reduce Rust data plane cold-start penalty.
+    # By the time the client sends the first chunk (~100-500ms), the warmup
+    # will have primed memfd, SCM_RIGHTS, crypto, and socket paths.
+    # check_rust_availability() is lazy-init (runs health check once), so call it
+    # here to ensure _rust_client_available is set before the warmup guard.
+    if storage_strategy == "chunked":
+        await check_rust_availability()
+    if storage_strategy == "chunked" and _rust_client_available:
+        try:
+            from ..services.rust_socket_client import get_rust_socket_client
+            client = get_rust_socket_client(settings.RUST_DATAPLANE_SOCKET)
+            asyncio.create_task(client.warmup())
+        except Exception:
+            pass  # Non-fatal
+
     return UploadInitResponse(
         upload_id=upload_id,
         storage_strategy=storage_strategy,

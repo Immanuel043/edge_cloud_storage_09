@@ -392,6 +392,17 @@ class VideoIngestionService:
                                     except Exception as e:
                                         logger.warning(f"Faststart failed for {file_obj.file_name}: {e}")
 
+                                # If faststart produced a separate optimized file, delete the
+                                # source temp file now — thumbnails use optimized_path.
+                                # Saves ~1.7GB of temp disk during thumbnail generation.
+                                if result.get('optimized_path') and temp_path != result['optimized_path']:
+                                    if os.path.exists(temp_path):
+                                        os.remove(temp_path)
+                                        logger.info(
+                                            f"Early cleanup of temp source "
+                                            f"({file_obj.file_size / (1024**3):.1f}GB) before thumbnail gen"
+                                        )
+
                                 # Generate thumbnails from best available path
                                 thumb_path = result.get('optimized_path') or temp_path
                                 if os.path.exists(thumb_path):

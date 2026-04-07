@@ -116,6 +116,30 @@ class RustDataPlaneClient:
             logger.error(f"Health check failed: {e}")
             raise
 
+    async def warmup(self) -> bool:
+        """Prime the Rust data plane by sending a tiny chunk through the httpx path.
+
+        Exercises connection setup, routing, and crypto initialization with minimal data
+        so subsequent real chunks don't pay the cold-start penalty. Strictly non-fatal.
+        """
+        try:
+            response = await self.client.post(
+                "/upload",
+                content=b'\x00' * 1024,
+                headers={
+                    "x-mode": "non-zk",
+                    "x-file-id": "__warmup__",
+                    "x-chunk-index": "0",
+                    "x-should-compress": "false",
+                    "x-target-path": "/dev/null",
+                },
+            )
+            logger.info(f"Rust data plane warmup via httpx: {response.status_code}")
+            return response.status_code < 400
+        except Exception as e:
+            logger.debug(f"Rust data plane warmup skipped: {e}")
+            return False
+
     async def process_non_zk_chunk(
         self,
         chunk_data: bytes,

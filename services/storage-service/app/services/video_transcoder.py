@@ -1660,7 +1660,8 @@ class VideoTranscoder:
                         file_path=transcoded_path,
                         mime_type='video/mp4',
                         size=size,
-                        file_name=f"{file_id}.mp4"
+                        file_name=f"{file_id}.mp4",
+                        allow_slow_decode=True,
                     )
 
                     # Freshness guard: skip if content changed since transcoding started

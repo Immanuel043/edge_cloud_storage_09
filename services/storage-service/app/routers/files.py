@@ -1294,16 +1294,29 @@ async def get_file_preview(
                 logger.warning(f"Failed to queue preview to Kafka: {e}")
                 return False
 
-        def _return_202(status_val='processing', message=None):
+        def _estimate_preview_wait(file_size_bytes: int, opt_active: bool) -> int:
+            """Estimate seconds until preview is ready based on file size and pipeline state."""
+            size_mb = file_size_bytes / (1024 * 1024)
+            if opt_active:
+                # Optimization pipeline: download + faststart/transcode + thumbnail gen
+                return min(max(15, int(size_mb / 90) + 15), 300)
+            # Direct preview (small/medium videos without optimization)
+            return min(max(5, int(size_mb / 50)), 60)
+
+        def _return_202(status_val='processing', message=None, estimated_wait=None):
+            wait = estimated_wait or _estimate_preview_wait(
+                file_obj.file_size or 0, _optimization_active()
+            )
             return JSONResponse(
                 status_code=202,
                 content={
                     'status': status_val,
-                    'message': message or f'Preview is being generated in background ({status_val})',
-                    'retry_after': 5,
-                    'file_id': file_id
+                    'message': message or f'Preview is being generated ({status_val})',
+                    'retry_after': wait,
+                    'estimated_wait_seconds': wait,
+                    'file_id': file_id,
                 },
-                headers={'Retry-After': '5'}
+                headers={'Retry-After': str(wait)}
             )
 
         def _optimization_active() -> bool:
@@ -1319,7 +1332,7 @@ async def get_file_preview(
                 status_info = json.loads(status_data)
                 status = status_info.get('status')
 
-                if status in ['queued', 'processing']:
+                if status in ['queued', 'processing', 'deferred']:
                     logger.info(f"🎬 Preview {status} for large video {file_id}, returning 202")
                     return _return_202(status)
 

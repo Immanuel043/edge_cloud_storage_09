@@ -264,14 +264,15 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
         // Handle 202 Accepted - preview is being generated
         if (response.status === 202) {
           if (mounted) {
-            // When WebSocket is connected, push is primary; poll infrequently as safety net
-            // When disconnected, poll more aggressively
             const wsConnected = websocketService.isConnected;
-            const pollInterval = wsConnected ? 10000 : 5000;
             const maxRetries = 60;
 
             try {
-              const data = (await response.json()) as { retry_after?: number; status?: string };
+              const data = (await response.json()) as {
+                retry_after?: number;
+                estimated_wait_seconds?: number;
+                status?: string;
+              };
 
               // Backend may send 202 with status=failed body
               if (data.status === 'failed') {
@@ -281,7 +282,20 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
                 return;
               }
 
-              const retryAfter = wsConnected ? pollInterval : (data.retry_after || 5) * 1000;
+              // Use backend-provided estimate for adaptive polling (backward-compatible)
+              const estimatedWait = data.estimated_wait_seconds || data.retry_after || 5;
+              const isFirstPoll = !processingStartRef.current;
+
+              let retryAfter: number;
+              if (wsConnected) {
+                // WS push is primary; poll at estimated wait as safety net
+                retryAfter = Math.max(estimatedWait * 1000, 10000);
+              } else {
+                // No WS: start at 50% of estimate (min 5s), then backoff
+                retryAfter = isFirstPoll
+                  ? Math.max(estimatedWait * 500, 5000)
+                  : Math.min((retryCount + 1) * 5000, estimatedWait * 1000);
+              }
 
               abortCountRef.current = 0;
               if (!processingStartRef.current) {
@@ -312,6 +326,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
               setLoading(false);
               setError(false);
             } catch {
+              // JSON parse failed — use safe defaults
               abortCountRef.current = 0;
               if (!processingStartRef.current) {
                 processingStartRef.current = Date.now();
@@ -325,6 +340,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
                 return;
               }
 
+              const fallbackInterval = websocketService.isConnected ? 10000 : 5000;
               setIsProcessing(true);
               if (retryCount < maxRetries) {
                 clearRetryTimer();
@@ -332,7 +348,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
                   if (mounted) {
                     setRetryCount((prev) => prev + 1);
                   }
-                }, pollInterval);
+                }, fallbackInterval);
               } else {
                 setIsProcessing(false);
               }

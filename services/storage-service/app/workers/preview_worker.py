@@ -250,6 +250,41 @@ class PreviewWorker:
                                 temp_file_path = transcoded_path
                                 use_transcoded = True
 
+                    # If optimization pipeline is running and no optimized file is ready yet,
+                    # defer entirely — the pipeline's _generate_thumbnails_for_transcoded()
+                    # will handle it once the optimized MP4 exists. This avoids:
+                    # (a) doomed ffmpeg attempts on slow codecs (AV1/HEVC 4K+)
+                    # (b) redundant multi-GB downloads that cause memory pressure
+                    if is_video and not use_transcoded:
+                        optimization_active = (
+                            hasattr(file_obj, 'video_processing_status')
+                            and file_obj.video_processing_status in ('queued', 'processing')
+                        )
+                        if optimization_active:
+                            await self._set_status(file_id, 'deferred',
+                                'Waiting for video optimization pipeline', retryable=True)
+                            logger.info(
+                                f"Deferring preview for {file_obj.file_name} — "
+                                f"optimization pipeline active, will generate thumbnails on completion"
+                            )
+                            return
+
+                    # Memory pressure guard: don't download >500MB files when memory is high
+                    if not use_transcoded and file_obj.file_size and file_obj.file_size > 500 * 1024 * 1024:
+                        try:
+                            import psutil
+                            mem = psutil.virtual_memory()
+                            if mem.percent > 80:
+                                await self._set_status(file_id, 'deferred',
+                                    'Memory pressure, deferring preview', retryable=True)
+                                logger.warning(
+                                    f"Memory at {mem.percent}%, deferring preview for "
+                                    f"{file_obj.file_name} ({file_obj.file_size / (1024**2):.0f}MB)"
+                                )
+                                return
+                        except ImportError:
+                            pass  # psutil not available, skip check
+
                     if not use_transcoded:
                         # Download file for preview (can take time - that's OK, we're in background!)
                         logger.info(f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)")

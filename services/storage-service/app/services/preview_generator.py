@@ -45,6 +45,17 @@ except ImportError:
     logger.warning("python-docx not installed - DOCX previews disabled")
 
 
+# Codecs that are extremely slow to software-decode at high resolutions.
+# For these codecs at 4K+, direct ffmpeg frame extraction can exceed 30s.
+SLOW_DECODE_CODECS = {'av1', 'hevc', 'h265', 'vp9'}
+SLOW_DECODE_4K_WIDTH = 3840  # 4K horizontal resolution threshold
+
+
+class SlowCodecError(Exception):
+    """Raised when video codec + resolution is too slow for direct preview extraction."""
+    pass
+
+
 class PreviewGenerator:
     """Generate previews for various file types"""
 
@@ -71,10 +82,16 @@ class PreviewGenerator:
         file_path: str,
         mime_type: str,
         size: str = 'medium',
-        file_name: str = ''
+        file_name: str = '',
+        allow_slow_decode: bool = False,
     ) -> Tuple[bytes, str]:
         """
         Generate preview for any file type
+
+        Args:
+            allow_slow_decode: If True, attempt single-frame extraction even for
+                slow codecs (AV1/HEVC) at 4K+, using extended timeout. Set this
+                when the file is already local (e.g. optimization pipeline).
 
         Returns: (preview_bytes, content_type)
         """
@@ -101,7 +118,9 @@ class PreviewGenerator:
             # Video files
             elif ext in self.VIDEO_TYPES or safe_mime_type.startswith('video/'):
                 if HAS_VIDEO_SUPPORT:
-                    return await self._generate_video_preview(file_path, size_tuple)
+                    return await self._generate_video_preview(
+                        file_path, size_tuple, allow_slow_decode=allow_slow_decode,
+                    )
                 else:
                     return self._generate_placeholder_preview('VIDEO', size_tuple)
 
@@ -130,6 +149,8 @@ class PreviewGenerator:
             else:
                 return self._generate_placeholder_preview('FILE', size_tuple)
 
+        except SlowCodecError:
+            raise  # Let caller decide whether to defer or retry
         except Exception as e:
             logger.error(f"Preview generation failed for {file_name}: {e}", exc_info=True)
             return self._generate_placeholder_preview('ERROR', size_tuple)
@@ -202,15 +223,41 @@ class PreviewGenerator:
         thumbnail_bytes = await asyncio.to_thread(_render_pdf)
         return thumbnail_bytes, 'image/jpeg'
 
+    async def _probe_video_codec(self, file_path: str) -> Optional[dict]:
+        """Quick ffprobe to get codec_name and resolution. 5s timeout."""
+        def _probe():
+            import subprocess as _sp
+            import json as _json
+            cmd = [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_name,width,height',
+                '-of', 'json', file_path
+            ]
+            r = _sp.run(cmd, capture_output=True, timeout=5, check=False)
+            if r.returncode == 0:
+                data = _json.loads(r.stdout)
+                streams = data.get('streams', [])
+                if streams:
+                    return streams[0]
+            return None
+        try:
+            return await asyncio.to_thread(_probe)
+        except Exception:
+            return None
+
     async def _generate_video_preview(
         self,
         file_path: str,
-        size: Tuple[int, int]
+        size: Tuple[int, int],
+        allow_slow_decode: bool = False,
     ) -> Tuple[bytes, str]:
         """
         Extract thumbnail from video (frame at 10% duration)
 
-        Uses ffmpeg if available (much faster), falls back to OpenCV
+        Uses ffmpeg if available (much faster), falls back to OpenCV.
+        For slow-decode codecs (AV1, HEVC, VP9) at 4K+, raises SlowCodecError
+        to let the caller defer to the optimization pipeline — unless
+        allow_slow_decode is True (optimization pipeline already has file local).
         """
         # Log file info for debugging
         try:
@@ -219,12 +266,40 @@ class PreviewGenerator:
         except Exception as e:
             logger.warning(f"Could not get file size: {e}")
 
+        # Probe codec to decide timeout / skip strategy
+        probe = await self._probe_video_codec(file_path)
+        codec = (probe.get('codec_name', '') if probe else '').lower()
+        width = int(probe.get('width', 0) if probe else 0)
+
+        if codec in SLOW_DECODE_CODECS and width >= SLOW_DECODE_4K_WIDTH:
+            if not allow_slow_decode:
+                raise SlowCodecError(
+                    f"{codec.upper()} at {width}px — software decode too slow for direct preview, "
+                    f"deferring to optimization pipeline"
+                )
+            # allow_slow_decode=True: file is local (optimization pipeline),
+            # single-frame extraction is feasible with extended timeout
+            logger.info(
+                f"Slow codec {codec.upper()} at {width}px — "
+                f"allow_slow_decode=True, attempting with 120s timeout"
+            )
+
+        # Increase timeout for slow codecs
+        if codec in SLOW_DECODE_CODECS and width >= SLOW_DECODE_4K_WIDTH:
+            ffmpeg_timeout = 120  # 4K+ slow codec with local file
+        elif codec in SLOW_DECODE_CODECS:
+            ffmpeg_timeout = 90   # sub-4K slow codec
+        else:
+            ffmpeg_timeout = 30
+
         # Try ffmpeg first (10-50x faster than OpenCV)
         if HAS_FFMPEG:
             try:
-                result = await self._generate_video_preview_ffmpeg(file_path, size)
+                result = await self._generate_video_preview_ffmpeg(file_path, size, timeout=ffmpeg_timeout)
                 logger.info(f"✅ FFmpeg video preview generated successfully")
                 return result
+            except SlowCodecError:
+                raise  # Don't catch SlowCodecError in the ffmpeg fallback
             except Exception as e:
                 logger.warning(f"ffmpeg preview failed, falling back to OpenCV: {e}")
 
@@ -235,13 +310,15 @@ class PreviewGenerator:
     async def _generate_video_preview_ffmpeg(
         self,
         file_path: str,
-        size: Tuple[int, int]
+        size: Tuple[int, int],
+        timeout: int = 30,
     ) -> Tuple[bytes, str]:
         """
         Fast video frame extraction using ffmpeg
 
         Uses -ss before -i to enable input seeking (much faster)
-        Extracts frame without decoding entire video
+        Extracts frame without decoding entire video.
+        Timeout is configurable — 30s default, 90s for slow codecs (HEVC/VP9 < 4K).
         """
 
         def _extract_frame_ffmpeg():
@@ -267,12 +344,10 @@ class PreviewGenerator:
                     output_path
                 ]
 
-                # Run ffmpeg with timeout
-                # 30s needed for 8K AV1 software decoding (~7s per frame on ARM64)
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    timeout=30,
+                    timeout=timeout,
                     check=False
                 )
 
@@ -291,7 +366,7 @@ class PreviewGenerator:
 
                     logger.debug(f"First attempt failed, trying start of video: {stderr_text}")
                     cmd[2] = '0.5'  # Try at 0.5 seconds instead
-                    result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
+                    result = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
 
                 # If still failed, try without seeking
                 if result.returncode != 0 or not os.path.exists(output_path):
@@ -308,7 +383,7 @@ class PreviewGenerator:
                         '-loglevel', 'error',
                         output_path
                     ]
-                    result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
+                    result = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
 
                     # Check if third attempt succeeded
                     if result.returncode != 0 or not os.path.exists(output_path):
