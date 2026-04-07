@@ -154,6 +154,8 @@ class SharedItemResponse(BaseModel):
     file_id: Optional[str] = None
     folder_id: Optional[str] = None
     bundle_id: Optional[str] = None
+    mime_type: Optional[str] = None
+    file_size: Optional[int] = None
 
 
 class PendingInvitationResponse(BaseModel):

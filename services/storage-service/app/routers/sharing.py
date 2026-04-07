@@ -386,6 +386,8 @@ async def get_shared_with_me(
             file_id=str(file_obj.id) if file_obj else None,
             folder_id=str(folder_obj.id) if folder_obj else None,
             bundle_id=str(bundle_obj.id) if bundle_obj else None,
+            mime_type=file_obj.mime_type if file_obj else None,
+            file_size=file_obj.file_size if file_obj else None,
         ))
 
     return {"items": shared_items, "total": total, "limit": limit, "offset": offset}

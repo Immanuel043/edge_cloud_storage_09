@@ -15,6 +15,8 @@ interface SharedItem {
   shared_at: string;
   owner_email: string;
   permission: string;
+  mime_type?: string;
+  file_size?: number;
 }
 
 /**
@@ -92,7 +94,8 @@ const SharedWithMeView: React.FC<SharedWithMeViewProps> = ({
       .map((item) => ({
         id: item.file_id as string,
         name: item.item_name,
-        size: 0, // TODO: Shared items API doesn't return file size; fetch from file metadata endpoint
+        size: item.file_size || 0,
+        ...(item.mime_type ? { mime_type: item.mime_type } : {}),
         created_at: item.shared_at,
         last_accessed: item.shared_at,
         is_favorite: false,
