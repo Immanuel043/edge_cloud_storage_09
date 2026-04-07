@@ -121,21 +121,32 @@ class RustSocketClient:
         Exercises the full processing pipeline with minimal data so subsequent
         real chunks don't pay the cold-start penalty. Strictly non-fatal.
         """
+        import tempfile
+        tmp_path = None
         try:
             dummy_key = os.urandom(32)
             dummy_data = b'\x00' * 1024  # 1KB
+            # Use a real temp file — /dev/null causes Permission denied in some containers
+            fd, tmp_path = tempfile.mkstemp(prefix="rust_warmup_", dir="/tmp")
+            os.close(fd)
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 _RUST_IO_EXECUTOR,
                 self._process_non_zk_sync,
                 dummy_data, dummy_key, "__warmup__", 0,
-                False, None, None, "/dev/null",
+                False, None, None, tmp_path,
             )
             logger.info("Rust data plane warmup complete")
             return True
         except Exception as e:
-            logger.debug(f"Rust warmup skipped: {e}")
+            logger.warning(f"Rust warmup failed: {e}")
             return False
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def _process_non_zk_sync(
         self,
