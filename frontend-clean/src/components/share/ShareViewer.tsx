@@ -348,7 +348,7 @@ const ShareViewer: React.FC = () => {
           <div className="bg-white rounded-xl shadow-lg p-8">
             <div className="flex items-center gap-4 mb-6">
               <div className="p-4 rounded-xl bg-gray-100">
-                {getFileIcon(shareInfo.mime_type || shareInfo.item_name, 48)}
+                {getFileIcon(shareInfo.item_name, 48)}
               </div>
               <div className="flex-1">
                 <h2 className="text-2xl font-bold text-gray-900 mb-1">
@@ -504,7 +504,7 @@ const ShareViewer: React.FC = () => {
                   className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
                 >
                   <div className="flex items-center gap-3">
-                    {getFileIcon(file.mime_type || file.name, 32)}
+                    {getFileIcon(file.name, 32)}
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-900 truncate">{file.name}</p>
                       <p className="text-sm text-gray-500">{formatBytes(file.size)}</p>

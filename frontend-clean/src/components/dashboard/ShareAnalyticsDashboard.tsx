@@ -5,6 +5,7 @@ import {
   FolderIcon, Package,
 } from 'lucide-react';
 import { storageService } from '../../services/storageService';
+import { getFileIcon } from '../../utils/helpers';
 
 interface AnalyticsSummary {
   total_shares: number;
@@ -99,11 +100,11 @@ const ShareAnalyticsDashboard: React.FC<ShareAnalyticsDashboardProps> = ({ darkM
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   };
 
-  const itemIcon = (type: string) => {
+  const itemIcon = (type: string, name?: string) => {
     switch (type) {
       case 'folder': return <FolderIcon size={16} className="text-blue-500" />;
       case 'bundle': return <Package size={16} className="text-purple-500" />;
-      default: return <FileIcon size={16} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />;
+      default: return name ? getFileIcon(name, 16) : <FileIcon size={16} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />;
     }
   };
 
@@ -191,7 +192,7 @@ const ShareAnalyticsDashboard: React.FC<ShareAnalyticsDashboardProps> = ({ darkM
             <div className={`rounded-xl p-4 ${darkMode ? 'bg-green-900/20 border border-green-800/30' : 'bg-green-50 border border-green-200'}`}>
               <p className={`text-xs font-medium mb-1 ${darkMode ? 'text-green-400' : 'text-green-600'}`}>Most Viewed</p>
               <div className="flex items-center gap-2">
-                {itemIcon(summary.most_viewed_share.type)}
+                {itemIcon(summary.most_viewed_share.type, summary.most_viewed_share.name)}
                 <p className={`font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {summary.most_viewed_share.name}
                 </p>
@@ -205,7 +206,7 @@ const ShareAnalyticsDashboard: React.FC<ShareAnalyticsDashboardProps> = ({ darkM
             <div className={`rounded-xl p-4 ${darkMode ? 'bg-purple-900/20 border border-purple-800/30' : 'bg-purple-50 border border-purple-200'}`}>
               <p className={`text-xs font-medium mb-1 ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>Most Downloaded</p>
               <div className="flex items-center gap-2">
-                {itemIcon(summary.most_downloaded_share.type)}
+                {itemIcon(summary.most_downloaded_share.type, summary.most_downloaded_share.name)}
                 <p className={`font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {summary.most_downloaded_share.name}
                 </p>
@@ -313,7 +314,7 @@ const ShareAnalyticsDashboard: React.FC<ShareAnalyticsDashboardProps> = ({ darkM
                   <span className={`text-xs font-mono w-5 text-right ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                     {idx + 1}
                   </span>
-                  {itemIcon(item.item_type)}
+                  {itemIcon(item.item_type, item.name)}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className={`text-sm font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>

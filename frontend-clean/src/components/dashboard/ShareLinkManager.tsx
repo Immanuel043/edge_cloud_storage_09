@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Link2, Loader, AlertCircle, Copy, Check, RefreshCw, Trash2,
-  Eye, Download, Edit, Lock, Clock, FileIcon, FolderIcon, Settings,
+  Eye, Download, Edit, Lock, Clock, FolderIcon, Settings,
   XCircle, CheckCircle, Bell, Shield,
 } from 'lucide-react';
 import { storageService } from '../../services/storageService';
+import { getFileIcon } from '../../utils/helpers';
 
 interface ShareLinkItem {
   id: string;
@@ -231,7 +232,7 @@ const ShareLinkManager: React.FC<ShareLinkManagerProps> = ({ darkMode }) => {
                     {link.item_type === 'folder' ? (
                       <FolderIcon className={darkMode ? 'text-blue-400 mt-0.5' : 'text-blue-500 mt-0.5'} size={20} />
                     ) : (
-                      <FileIcon className={darkMode ? 'text-gray-400 mt-0.5' : 'text-gray-500 mt-0.5'} size={20} />
+                      <span className="mt-0.5">{getFileIcon(link.item_name, 20)}</span>
                     )}
                     <div className="min-w-0">
                       <p className={`font-medium text-sm truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>

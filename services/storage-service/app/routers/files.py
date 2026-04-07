@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request,Header, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select,text
+from sqlalchemy import select, text, or_
 from typing import List, Optional
 import os
 import json
@@ -1206,6 +1206,23 @@ async def get_file_preview(
         select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
+
+    # If not owned, check if shared with this user
+    if not file_obj:
+        from ..models.database import SharedAccess
+        shared_result = await db.execute(
+            select(Object)
+            .join(SharedAccess, SharedAccess.file_id == Object.id)
+            .filter(
+                Object.id == file_id,
+                or_(
+                    SharedAccess.shared_with_email == current_user.email,
+                    SharedAccess.shared_with_user_id == current_user.id,
+                ),
+                SharedAccess.invitation_status == 'accepted',
+            )
+        )
+        file_obj = shared_result.scalar_one_or_none()
 
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
