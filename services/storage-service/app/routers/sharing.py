@@ -11,8 +11,20 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
 import logging
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    """Build a Content-Disposition header value safe for non-ASCII filenames (RFC 5987)."""
+    ascii_safe = filename.encode('ascii', errors='replace').decode('ascii').replace('"', '\\"')
+    try:
+        filename.encode('latin-1')
+        return f'{disposition}; filename="{ascii_safe}"'
+    except UnicodeEncodeError:
+        encoded = quote(filename, safe='')
+        return f"{disposition}; filename=\"{ascii_safe}\"; filename*=UTF-8''{encoded}"
 
 from ..dependencies import get_db, get_current_user, log_activity
 from ..services.auth import auth_service, pwd_context
@@ -746,7 +758,7 @@ async def download_shared_folder_file(
 
     headers = {
         "Content-Type": mime_type,
-        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Disposition": _content_disposition("attachment", filename),
         "Content-Length": str(total_size),
     }
 
@@ -983,7 +995,7 @@ async def stream_shared_file(
     base_headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": display_mime_type,
-        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Disposition": _content_disposition("inline", filename),
         "Cache-Control": "public, max-age=3600",
     }
 
@@ -1004,7 +1016,7 @@ async def stream_shared_file(
                 headers = {
                     **base_headers,
                     "Content-Type": "video/mp4",
-                    "Content-Disposition": f'inline; filename="{filename.rsplit(".", 1)[0]}.mp4"',
+                    "Content-Disposition": _content_disposition("inline", f'{filename.rsplit(".", 1)[0]}.mp4'),
                     "Content-Length": str(end - start + 1),
                     "X-Video-Transcoded": "true",
                 }

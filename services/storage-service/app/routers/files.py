@@ -9,8 +9,20 @@ import os
 import json
 import logging
 from datetime import datetime
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    """Build a Content-Disposition header value safe for non-ASCII filenames (RFC 5987)."""
+    ascii_safe = filename.encode('ascii', errors='replace').decode('ascii').replace('"', '\\"')
+    try:
+        filename.encode('latin-1')
+        return f'{disposition}; filename="{ascii_safe}"'
+    except UnicodeEncodeError:
+        encoded = quote(filename, safe='')
+        return f"{disposition}; filename=\"{ascii_safe}\"; filename*=UTF-8''{encoded}"
 from ..dependencies import get_db, log_activity, get_current_user
 from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType
 from ..services.storage import storage_service
@@ -665,7 +677,7 @@ async def download_file(
     base_headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": display_mime_type,
-        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "Content-Disposition": _content_disposition(disposition, filename),
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "ETag": f'"{file_obj.content_hash[:16]}"' if file_obj.content_hash else None,
     }
@@ -838,7 +850,7 @@ async def download_file(
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Type": "video/mp4",
-            "Content-Disposition": f'inline; filename="{filename.rsplit(".", 1)[0]}.mp4"',
+            "Content-Disposition": _content_disposition("inline", f'{filename.rsplit(".", 1)[0]}.mp4'),
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Video-Transcoded": "true",
             "Content-Length": str(end - start + 1)
