@@ -190,6 +190,7 @@ class VideoTranscoder:
         self._locks: Dict[str, asyncio.Lock] = {}
         self._inflight: Dict[str, asyncio.Task] = {}
         self._progress: Dict[str, dict] = {}  # Track transcoding progress
+        self._last_stderr: Dict[str, str] = {}  # Captured stderr from progress parser (Fix 21)
 
         # Global concurrency control
         max_concurrent = int(os.getenv("MAX_CONCURRENT_TRANSCODES", "2"))
@@ -971,11 +972,18 @@ class VideoTranscoder:
         return 0.0
 
     async def _parse_ffmpeg_progress(self, stderr_reader, file_id: str, total_duration: float = 0):
-        """Parse ffmpeg -progress output and update self._progress dict."""
+        """Parse ffmpeg -progress output and update self._progress dict.
+
+        Also captures the last 50 stderr lines into self._last_stderr so that
+        error handlers can retrieve them after this coroutine drains the
+        stream (Fix 21 — stderr consumption bug).
+        """
         import time
+        from collections import deque
 
         last_update = 0
         buffer = ""
+        recent_lines: deque = deque(maxlen=50)
 
         try:
             while True:
@@ -983,7 +991,14 @@ class VideoTranscoder:
                 if not chunk:
                     break
 
-                buffer += chunk.decode('utf-8', errors='ignore')
+                text = chunk.decode('utf-8', errors='ignore')
+                buffer += text
+
+                # Capture recent lines for error reporting
+                for line in text.split('\n'):
+                    stripped = line.strip()
+                    if stripped:
+                        recent_lines.append(stripped)
 
                 # Rate limit: Update progress every 2 seconds
                 now = time.time()
@@ -1018,6 +1033,8 @@ class VideoTranscoder:
 
         except Exception as e:
             logger.warning(f"Progress parsing error for {file_id}: {e}")
+        finally:
+            self._last_stderr[file_id] = '\n'.join(recent_lines)
 
     def get_progress(self, file_id: str) -> Optional[dict]:
         """Get current transcoding progress for a file."""
@@ -1296,10 +1313,12 @@ class VideoTranscoder:
             await parse_task
 
             if returncode != 0:
-                stderr = await process.stderr.read()
+                # stderr was already consumed by _parse_ffmpeg_progress;
+                # retrieve the captured tail instead (Fix 21).
+                stderr_text = self._last_stderr.pop(file_id, "")
                 logger.error(
                     f"ffmpeg failed for {source_path}: returncode={returncode}, "
-                    f"stderr={stderr.decode('utf-8', errors='ignore')[:500]}"
+                    f"stderr={stderr_text[:500]}"
                 )
                 # Clean up failed output
                 if os.path.exists(target_path):
@@ -1584,9 +1603,11 @@ class VideoTranscoder:
             await parse_task
 
             if returncode != 0:
-                stderr = await process.stderr.read()
+                # stderr was already consumed by _parse_ffmpeg_progress;
+                # retrieve the captured tail instead (Fix 21).
+                stderr_text = self._last_stderr.pop(file_id, "")
                 raise VideoTranscodeError(
-                    f"Streaming transcode failed: {stderr.decode('utf-8', errors='ignore')[:500]}",
+                    f"Streaming transcode failed: {stderr_text[:500]}",
                     status_code=500
                 )
 

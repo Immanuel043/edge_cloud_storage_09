@@ -490,9 +490,11 @@ async def stream_chunked_range(
                 # Standard file-key encryption
                 decrypted_block = encryption_service.decrypt_data(encrypted_data, file_key)
 
-            # Safety net: detect if block is still zstd-compressed after decrypt
+            # Safety net: detect zstd-compressed data after decrypt regardless
+            # of was_compressed flag — the flag can be wrong for pre-existing
+            # CAS blocks (Fix 21).
             _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
-            if (was_compressed and len(decrypted_block) >= 4
+            if (len(decrypted_block) >= 4
                     and decrypted_block[:4] == _ZSTD_MAGIC
                     and len(decrypted_block) != block_size):
                 logger.warning(

@@ -11,7 +11,7 @@ use crate::storage::atomic_writer::{AtomicWriter, WriteOptions};
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Response for a successful /dedup-chunk request.
 #[derive(Debug, Serialize)]
@@ -221,8 +221,20 @@ pub fn process_dedup_decrypt(
     let mut plaintext = convergent::convergent_decrypt(encrypted_data, &req.block_hash, &req.user_id)
         .map_err(|e| ErrorResponse::internal_error(format!("Convergent decrypt: {}", e)))?;
 
-    // 2. Optional zstd decompression
-    if req.was_compressed {
+    // 2. Zstd decompression — auto-detect via magic bytes as safety net.
+    //    The was_compressed flag in stored_blocks metadata can be wrong for
+    //    pre-existing CAS blocks (see Fix 21). Always check for zstd magic
+    //    (0x28B52FFD) after decryption to avoid silent data corruption.
+    const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+    let looks_compressed = plaintext.len() >= 4 && plaintext[..4] == ZSTD_MAGIC;
+
+    if looks_compressed && !req.was_compressed {
+        warn!(
+            "Block has zstd magic but was_compressed=false — auto-decompressing (Fix 21 safety net)"
+        );
+    }
+
+    if req.was_compressed || looks_compressed {
         let compressor = ZstdCompressor::new(3)
             .map_err(|e| ErrorResponse::internal_error(format!("Decompressor init: {}", e)))?;
         plaintext = compressor.decompress(&plaintext)
@@ -232,6 +244,7 @@ pub fn process_dedup_decrypt(
     info!(
         plaintext_size = plaintext.len(),
         was_compressed = req.was_compressed,
+        auto_detected = looks_compressed && !req.was_compressed,
         "Dedup block decrypted"
     );
 

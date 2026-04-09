@@ -502,14 +502,21 @@ class EnhancedDeduplicationService:
                     should_compress=True,
                 )
                 if result.get("success"):
+                    compressed = result.get('was_compressed', False)
                     logger.debug(
                         "Block %s stored via Rust (%d bytes, compressed=%s)",
                         block_hash[:12], result.get("encrypted_size", 0),
-                        result.get("was_compressed", False),
+                        compressed,
                     )
+                    # Persist compression flag as sidecar marker (Fix 21)
+                    if compressed:
+                        try:
+                            open(cas_path + ".zst", "wb").close()
+                        except OSError:
+                            pass
                     return {
                         'success': True,
-                        'was_compressed': result.get('was_compressed', False),
+                        'was_compressed': compressed,
                         'encrypted_size': result.get('encrypted_size', 0),
                     }
             except Exception as exc:
@@ -586,11 +593,24 @@ class EnhancedDeduplicationService:
                     )
                     for r in resp.get("results", []):
                         if r.get("success"):
+                            compressed = r.get("was_compressed", False)
                             results[r["block_hash"]] = {
                                 "success": True,
-                                "was_compressed": r.get("was_compressed", False),
+                                "was_compressed": compressed,
                                 "encrypted_size": r.get("encrypted_size", 0),
                             }
+                            # Persist compression flag as sidecar marker for
+                            # future uploads that reuse this CAS block (Fix 21).
+                            if compressed:
+                                cas_p = next(
+                                    (b["cas_path"] for b in batch if b["block_hash"] == r["block_hash"]),
+                                    None,
+                                )
+                                if cas_p:
+                                    try:
+                                        open(cas_p + ".zst", "wb").close()
+                                    except OSError:
+                                        pass
                 except Exception as exc:
                     logger.warning("Batch dedup call failed, will retry individually: %s", exc)
 
@@ -806,6 +826,16 @@ class EnhancedDeduplicationService:
                         encrypted_size = os.path.getsize(cp)
                     except OSError:
                         encrypted_size = None
+
+                # Determine compression flag.  For newly-stored blocks the
+                # batch/single result is authoritative.  For pre-existing
+                # blocks (res == {}) check the sidecar .zst marker written
+                # during the original store (Fix 21).
+                if res:
+                    was_compressed = res.get('was_compressed', False)
+                else:
+                    was_compressed = os.path.exists(cp + '.zst')
+
                 stored_blocks.append({
                     'hash': blk['hash'],
                     'path': cp,
@@ -813,7 +843,7 @@ class EnhancedDeduplicationService:
                     'plaintext_size': blk['size'],
                     'encrypted_size': encrypted_size,
                     'offset': blk['offset'],
-                    'was_compressed': res.get('was_compressed', False),
+                    'was_compressed': was_compressed,
                 })
             
             # Update existing object if provided, otherwise create new
