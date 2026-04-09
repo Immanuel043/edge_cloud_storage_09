@@ -26,7 +26,28 @@ class AuthService:
             user_id = payload.get("sub")
             if not user_id:
                 return None
-            
+
+            # Reject typed tokens (download, registration, password_reset)
+            if payload.get("type") is not None:
+                return None
+
+            # Check blocklist
+            jti = payload.get("jti")
+            if jti and await self.is_token_blocklisted(jti):
+                return None
+
+            # Check password reset invalidation
+            from ..database import redis_client
+            if redis_client:
+                try:
+                    pwd_reset_at = await redis_client.get(f"pwd_reset_at:{user_id}")
+                    if pwd_reset_at:
+                        iat = payload.get("iat", 0)
+                        if int(pwd_reset_at) > iat:
+                            return None
+                except Exception:
+                    pass
+
             # Get user from database
             result = await db.execute(
                 select(User).filter(User.id == user_id)
@@ -61,7 +82,7 @@ class AuthService:
         else:
             expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
-        to_encode.update({"exp": expire, "jti": str(uuid.uuid4())})
+        to_encode.update({"exp": expire, "jti": str(uuid.uuid4()), "iat": int(datetime.utcnow().timestamp())})
         encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return encoded_jwt
 

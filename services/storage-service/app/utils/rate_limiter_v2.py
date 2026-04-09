@@ -146,6 +146,7 @@ def create_rate_limiter(**kwargs) -> RateLimiter:
 # Pre-configured rate limiters for common use cases
 auth_login_limiter = lambda: create_rate_limiter(**RateLimitConfig.AUTH_LOGIN)
 auth_register_limiter = lambda: create_rate_limiter(**RateLimitConfig.AUTH_REGISTER)
+auth_password_reset_limiter = lambda: create_rate_limiter(**RateLimitConfig.AUTH_PASSWORD_RESET)
 file_upload_limiter = lambda: create_rate_limiter(**RateLimitConfig.FILE_UPLOAD)
 file_download_limiter = lambda: create_rate_limiter(**RateLimitConfig.FILE_DOWNLOAD)
 api_read_limiter = lambda: create_rate_limiter(**RateLimitConfig.API_READ)
@@ -159,6 +160,7 @@ __all__ = [
     'rate_limit_callback',
     'auth_login_limiter',
     'auth_register_limiter',
+    'auth_password_reset_limiter',
     'file_upload_limiter',
     'file_download_limiter',
     'api_read_limiter',

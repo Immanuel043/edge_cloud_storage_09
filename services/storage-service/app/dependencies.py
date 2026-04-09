@@ -52,12 +52,29 @@ async def get_current_user(
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
+        # S1: Reject typed tokens (download, registration, password_reset)
+        token_type = payload.get("type")
+        if token_type is not None:
+            raise HTTPException(status_code=401, detail="Invalid token type")
         # Check token blocklist (logout revocation)
         jti = payload.get("jti")
         if jti:
             from .services.auth import auth_service
             if await auth_service.is_token_blocklisted(jti):
                 raise HTTPException(status_code=401, detail="Token has been revoked")
+        # Check password reset invalidation
+        from .database import redis_client
+        if redis_client:
+            try:
+                pwd_reset_at = await redis_client.get(f"pwd_reset_at:{user_id}")
+                if pwd_reset_at:
+                    iat = payload.get("iat", 0)
+                    if int(pwd_reset_at) > iat:
+                        raise HTTPException(status_code=401, detail="Password was reset. Please log in again.")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
     except JWTError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 

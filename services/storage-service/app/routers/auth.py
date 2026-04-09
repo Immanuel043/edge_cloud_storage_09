@@ -14,10 +14,11 @@ from ..models.database import User, Folder
 from ..models.schemas import (
     Token, UserResponse, ThemeUpdate,
     RegisterInitRequest, RegisterVerifyRequest, RegisterCompleteRequest,
-    ResendCodeRequest, VerificationResponse
+    ResendCodeRequest, VerificationResponse,
+    ForgotPasswordRequest, ForgotPasswordVerifyRequest, ForgotPasswordResetRequest,
 )
 from ..config import settings
-from ..utils.rate_limiter_v2 import auth_login_limiter, auth_register_limiter
+from ..utils.rate_limiter_v2 import auth_login_limiter, auth_register_limiter, auth_password_reset_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -562,3 +563,274 @@ async def resend_verification_code(
         "message": "Verification code resent to your email",
         "email": email
     }
+
+
+# ========== PASSWORD RESET ENDPOINTS ==========
+
+@router.post("/forgot-password", dependencies=[Depends(auth_password_reset_limiter())])
+async def forgot_password(
+    request: Request,
+    payload: ForgotPasswordRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Initiate password reset flow.
+
+    Detects account type (normal, ZK, OAuth-only) and sends appropriate email.
+    Always returns a generic message to prevent email enumeration.
+    """
+    from ..services.internal_client import InternalServiceClient
+    from ..database import redis_client as _redis
+    from datetime import datetime, timezone
+
+    email = payload.email.lower().strip()
+
+    # Check resend cooldown
+    if _redis:
+        try:
+            cooldown_key = f"password_reset:resend:{email}"
+            last_sent = await _redis.get(cooldown_key)
+            if last_sent:
+                time_since = datetime.now(timezone.utc).timestamp() - float(last_sent)
+                if time_since < settings.RESEND_CODE_COOLDOWN_SECONDS:
+                    remaining = int(settings.RESEND_CODE_COOLDOWN_SECONDS - time_since)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Please wait {remaining} seconds before requesting again."
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Fail open on Redis errors
+
+    generic_response = {
+        "message": "If an account with this email exists, we've sent reset instructions."
+    }
+
+    # Look up normal user
+    result = await db.execute(
+        select(User).filter(
+            User.email == email,
+            User.email_verified == True,
+            User.is_active == True,
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if user:
+        if user.password_hash:
+            # Normal account with password — send reset code
+            code = verification_service.generate_verification_code()
+            await verification_service.store_verification_code(db, user, code)
+            await email_service.send_password_reset_code(email, code)
+        else:
+            # OAuth-only account (empty password_hash)
+            await email_service.send_oauth_login_instructions(email)
+    else:
+        # Check ZK service
+        internal_client = InternalServiceClient()
+        is_zk = await internal_client.check_email_exists_on_zk_service(email)
+        if is_zk:
+            await email_service.send_zk_recovery_instructions(email)
+
+    # Set resend cooldown
+    if _redis:
+        try:
+            await _redis.setex(
+                f"password_reset:resend:{email}",
+                settings.RESEND_CODE_COOLDOWN_SECONDS,
+                str(datetime.now(timezone.utc).timestamp()),
+            )
+        except Exception:
+            pass
+
+    # Audit log (best-effort)
+    try:
+        await audit_logging_service.log_event(
+            db, AuditEventType.PASSWORD_RESET,
+            user_id=user.id if user else None,
+            action="forgot_password_requested",
+            result="initiated",
+            severity=AuditSeverity.INFO,
+            request=request,
+            details={"email": email},
+        )
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+    return generic_response
+
+
+@router.post("/forgot-password/verify", dependencies=[Depends(auth_password_reset_limiter())])
+async def forgot_password_verify(
+    request: Request,
+    payload: ForgotPasswordVerifyRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Verify password reset code and return a short-lived reset token.
+
+    Does NOT use verification_service.verify_code (which sets email_verified=True).
+    Instead verifies code inline with password-reset semantics.
+    """
+    from sqlalchemy import update
+    from datetime import datetime, timezone
+
+    email = payload.email.lower().strip()
+    code = payload.code
+
+    # Look up verified, active, normal user
+    result = await db.execute(
+        select(User).filter(
+            User.email == email,
+            User.email_verified == True,
+            User.is_active == True,
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if not user or not user.password_hash:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+
+    # Check code exists
+    if not user.verification_code:
+        raise HTTPException(status_code=400, detail="No reset code found. Please request a new one.")
+
+    # Check expiry
+    if (
+        user.verification_code_expires_at
+        and user.verification_code_expires_at < datetime.now(timezone.utc)
+    ):
+        raise HTTPException(status_code=400, detail="Reset code has expired. Please request a new one.")
+
+    # Check max attempts
+    if user.verification_code_attempts >= settings.MAX_VERIFICATION_ATTEMPTS:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum attempts exceeded. Please request a new code."
+        )
+
+    # Verify code
+    if user.verification_code != code:
+        new_attempts = user.verification_code_attempts + 1
+        await db.execute(
+            update(User).where(User.id == user.id).values(
+                verification_code_attempts=new_attempts
+            )
+        )
+        await db.commit()
+        remaining = settings.MAX_VERIFICATION_ATTEMPTS - new_attempts
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid code. {remaining} attempts remaining."
+        )
+
+    # Code matches — clear code fields
+    await db.execute(
+        update(User).where(User.id == user.id).values(
+            verification_code=None,
+            verification_code_expires_at=None,
+            verification_code_attempts=0,
+        )
+    )
+    await db.commit()
+
+    # Generate short-lived reset token (10 minutes)
+    reset_token = auth_service.create_access_token(
+        {"sub": str(user.id), "email": email, "type": "password_reset"},
+        expires_delta=timedelta(minutes=10),
+    )
+
+    return {"reset_token": reset_token, "message": "Code verified successfully"}
+
+
+@router.post("/forgot-password/reset", dependencies=[Depends(auth_password_reset_limiter())])
+async def forgot_password_reset(
+    request: Request,
+    payload: ForgotPasswordResetRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reset password using verified reset token.
+
+    The reset token is single-use (jti is blocklisted after use).
+    All existing sessions are invalidated via pwd_reset_at Redis key.
+    """
+    from jose import jwt as jose_jwt, JWTError
+    from sqlalchemy import update
+    from ..database import redis_client as _redis
+    import time
+
+    email = payload.email.lower().strip()
+    reset_token = payload.reset_token
+
+    # Decode and validate reset token
+    try:
+        token_payload = jose_jwt.decode(
+            reset_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        if token_payload.get("type") != "password_reset":
+            raise HTTPException(status_code=400, detail="Invalid reset token")
+        if token_payload.get("email") != email:
+            raise HTTPException(status_code=400, detail="Email mismatch")
+
+        # S3: Check jti not already used
+        jti = token_payload.get("jti")
+        if jti and await auth_service.is_token_blocklisted(jti):
+            raise HTTPException(status_code=400, detail="Reset token already used")
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    # Look up user
+    result = await db.execute(
+        select(User).filter(
+            User.email == email,
+            User.email_verified == True,
+            User.is_active == True,
+        )
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=400, detail="User not found")
+
+    # Hash and update password
+    new_hash = await auth_service.async_get_password_hash(payload.new_password)
+    await db.execute(
+        update(User).where(User.id == user.id).values(password_hash=new_hash)
+    )
+    await db.commit()
+
+    # S3: Blocklist the reset token (single-use)
+    await auth_service.blocklist_token(reset_token)
+
+    # Invalidate all existing sessions
+    if _redis:
+        try:
+            await _redis.setex(
+                f"pwd_reset_at:{user.id}",
+                settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                str(int(time.time())),
+            )
+        except Exception:
+            pass
+
+    # Audit log
+    try:
+        await audit_logging_service.log_event(
+            db, AuditEventType.PASSWORD_RESET,
+            user_id=user.id,
+            action="password_reset_completed",
+            result="success",
+            severity=AuditSeverity.HIGH,
+            request=request,
+        )
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+    return {"message": "Password reset successfully. Please log in with your new password."}

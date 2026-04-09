@@ -60,6 +60,37 @@ class ResendCodeRequest(BaseModel):
     """Request to resend verification code"""
     email: EmailStr
 
+# Password Reset Schemas
+class ForgotPasswordRequest(BaseModel):
+    """Request to initiate password reset"""
+    email: EmailStr
+
+class ForgotPasswordVerifyRequest(BaseModel):
+    """Request to verify password reset code"""
+    email: EmailStr
+    code: str
+
+    @field_validator('code')
+    @classmethod
+    def validate_code(cls, v):
+        """Validate reset code format"""
+        if not v or len(v) != 6 or not v.isdigit():
+            raise ValueError('Code must be 6 digits')
+        return v
+
+class ForgotPasswordResetRequest(BaseModel):
+    """Request to set new password after verification"""
+    email: EmailStr
+    reset_token: str
+    new_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        return v
+
 class VerificationResponse(BaseModel):
     """Response after email verification"""
     verified: bool

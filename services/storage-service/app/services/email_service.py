@@ -99,6 +99,91 @@ class EmailService:
             )
             return False
 
+    async def send_password_reset_code(self, email: str, code: str) -> bool:
+        """Send password reset code email via Mailgun API."""
+        if not self.enabled:
+            logger.warning("Mailgun is disabled, skipping password reset email")
+            return False
+
+        if not self.api_key or not self.domain:
+            logger.error("Mailgun API key or domain not configured")
+            return False
+
+        try:
+            template = self.jinja_env.get_template("password_reset_email.html")
+            html_content = template.render(
+                code=code,
+                expiry_minutes=settings.VERIFICATION_CODE_EXPIRY_MINUTES,
+                app_name=settings.MAILGUN_FROM_NAME
+            )
+
+            data = {
+                "from": f"{self.from_name} <{self.from_email}>",
+                "to": [email],
+                "subject": f"Reset your password - {code}",
+                "html": html_content,
+                "text": f"Your password reset code is: {code}\n\nThis code will expire in {settings.VERIFICATION_CODE_EXPIRY_MINUTES} minutes.\n\nIf you didn't request this, please ignore this email."
+            }
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    self.api_url,
+                    auth=("api", self.api_key),
+                    data=data
+                )
+                if response.status_code == 200:
+                    logger.info(f"Password reset email sent successfully to {email}")
+                    return True
+                else:
+                    logger.error(f"Failed to send password reset email: {response.status_code}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error sending password reset email to {email}: {str(e)}", exc_info=True)
+            return False
+
+    async def send_zk_recovery_instructions(self, email: str) -> bool:
+        """Send ZK recovery phrase instructions email."""
+        if not self.enabled:
+            return False
+
+        try:
+            template = self.jinja_env.get_template("password_reset_zk_email.html")
+            html_content = template.render(app_name=settings.MAILGUN_FROM_NAME)
+        except Exception:
+            html_content = (
+                "<p>Your account uses Zero-Knowledge Encryption. "
+                "To reset your password, use your 24-word recovery phrase on the login page.</p>"
+            )
+
+        return await self.send_email(
+            to_email=email,
+            subject=f"Password reset instructions - {self.from_name}",
+            html_content=html_content,
+            text_content="Your account uses Zero-Knowledge Encryption. To reset your password, use your 24-word recovery phrase on the login page.",
+        )
+
+    async def send_oauth_login_instructions(self, email: str) -> bool:
+        """Send OAuth social login reminder email."""
+        if not self.enabled:
+            return False
+
+        try:
+            template = self.jinja_env.get_template("password_reset_oauth_email.html")
+            html_content = template.render(app_name=settings.MAILGUN_FROM_NAME)
+        except Exception:
+            html_content = (
+                "<p>Your account uses social login (Google or Microsoft). "
+                "Please use that method to sign in on the login page.</p>"
+            )
+
+        return await self.send_email(
+            to_email=email,
+            subject=f"Password reset instructions - {self.from_name}",
+            html_content=html_content,
+            text_content="Your account uses social login (Google or Microsoft). Please use that method to sign in on the login page.",
+        )
+
     async def send_email(
         self,
         to_email: str,

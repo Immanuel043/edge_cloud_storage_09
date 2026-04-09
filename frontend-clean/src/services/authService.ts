@@ -472,6 +472,79 @@ class AuthService {
     return await response.json();
   }
 
+  // ==================== Password Reset Flow ====================
+
+  /**
+   * Step 1: Request password reset - sends code or instructions based on account type
+   */
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: sanitizeInput(email) }),
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as ErrorResponse;
+      throw new Error(extractErrorMessage(error, 'Failed to send reset instructions'));
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Step 2: Verify reset code and get reset token
+   */
+  async forgotPasswordVerify(email: string, code: string): Promise<{ reset_token: string; message: string }> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/forgot-password/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: sanitizeInput(email), code }),
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as ErrorResponse;
+      throw new Error(extractErrorMessage(error, 'Invalid verification code'));
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Step 3: Reset password using verified reset token
+   */
+  async forgotPasswordReset(
+    email: string,
+    resetToken: string,
+    newPassword: string
+  ): Promise<{ message: string }> {
+    await rateLimiter.checkLimit();
+
+    const response = await fetch(`${API_URL}/api/v1/auth/forgot-password/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: sanitizeInput(email),
+        reset_token: resetToken,
+        new_password: newPassword,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as ErrorResponse;
+      throw new Error(extractErrorMessage(error, 'Failed to reset password'));
+    }
+
+    return await response.json();
+  }
+
   // ==================== OAuth Methods ====================
 
   /**

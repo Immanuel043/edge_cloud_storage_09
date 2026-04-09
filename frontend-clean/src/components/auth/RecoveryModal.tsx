@@ -45,11 +45,12 @@ const RecoveryModal: React.FC<RecoveryModalProps> = ({
   isOpen,
   onClose,
   onRecoveryComplete,
+  initialEmail,
 }) => {
   const { darkMode } = useTheme();
   const [step, setStep] = useState<RecoveryStep>(1);
   const [recoveryWords, setRecoveryWords] = useState<string[]>(Array(24).fill(''));
-  const [email, setEmail] = useState<string>('');
+  const [email, setEmail] = useState<string>(initialEmail || '');
   const [newPassword, setNewPassword] = useState<string>('');
   const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);

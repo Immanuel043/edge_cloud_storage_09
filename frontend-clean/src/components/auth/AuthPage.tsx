@@ -40,6 +40,7 @@ import { ZK_STORAGE } from '../../config/constants';
 import RecoveryPhraseSetup from './RecoveryPhraseSetup';
 import RecoveryPhraseConfirm from './RecoveryPhraseConfirm';
 import RecoveryModal from './RecoveryModal';
+import ForgotPasswordModal from './ForgotPasswordModal';
 import PasswordStrengthMeter from './PasswordStrengthMeter';
 import VerificationCodeInput from './VerificationCodeInput';
 import type {
@@ -287,6 +288,8 @@ const AuthPage: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [enableZK, setEnableZK] = useState<boolean>(false);
   const [showRecovery, setShowRecovery] = useState<boolean>(false);
+  const [showForgotPassword, setShowForgotPassword] = useState<boolean>(false);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState<string>('');
 
   // Email Verification State
   const [registrationStep, setRegistrationStep] = useState<RegistrationStep>('form');
@@ -1279,7 +1282,7 @@ const AuthPage: React.FC = () => {
                 {authMode === 'login' && (
                   <div className="mt-6 text-center">
                     <button
-                      onClick={() => setShowRecovery(true)}
+                      onClick={() => setShowForgotPassword(true)}
                       className={`text-sm transition-colors ${
                         darkMode
                           ? 'text-gray-500 hover:text-gray-300'
@@ -1844,8 +1847,22 @@ const AuthPage: React.FC = () => {
       {showRecovery && (
         <RecoveryModal
           isOpen={showRecovery}
-          onClose={() => setShowRecovery(false)}
+          onClose={() => { setShowRecovery(false); setForgotPasswordEmail(''); }}
           onRecoveryComplete={handleRecoveryComplete}
+          initialEmail={forgotPasswordEmail}
+        />
+      )}
+
+      {showForgotPassword && (
+        <ForgotPasswordModal
+          isOpen={showForgotPassword}
+          onClose={() => setShowForgotPassword(false)}
+          onSwitchToRecovery={(emailFromModal) => {
+            setShowForgotPassword(false);
+            setForgotPasswordEmail(emailFromModal);
+            setShowRecovery(true);
+          }}
+          onResetComplete={() => setShowForgotPassword(false)}
         />
       )}
     </div>

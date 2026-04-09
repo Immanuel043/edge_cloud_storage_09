@@ -75,6 +75,7 @@ export interface RecoveryModalProps {
   isOpen: boolean;
   onClose: () => void;
   onRecoveryComplete?: (data: RecoveryCompleteData) => void;
+  initialEmail?: string;
 }
 
 /**
