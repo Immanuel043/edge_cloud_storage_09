@@ -103,6 +103,9 @@ tmp/
 *.sublime-project
 *.sublime-workspace
 
+# Rust Build
+services/rust-data-plane/target/
+
 # Frontend Build
 frontend-clean/dist/
 frontend-clean/build/
