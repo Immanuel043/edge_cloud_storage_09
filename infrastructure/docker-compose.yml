@@ -64,7 +64,7 @@ services:
   # backend. Fixed in app/database.py by forcing statement_cache_size=0 on
   # the SQLAlchemy + asyncpg engine.
   pgbouncer:
-    image: edoburu/pgbouncer:1.22.1
+    image: edoburu/pgbouncer:1.22.1-p0
     container_name: edge-pgbouncer
     logging: *default-logging
     environment:
