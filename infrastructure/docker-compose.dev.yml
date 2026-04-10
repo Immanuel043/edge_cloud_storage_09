@@ -61,6 +61,11 @@ services:
         reservations:
           memory: 384M
 
+  # Snapshots are not useful on a laptop; skip in dev.
+  es-snapshot-runner:
+    profiles:
+      - production
+
   # Disable ClamAV in dev (heavy + slow startup)
   clamav:
     profiles:

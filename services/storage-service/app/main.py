@@ -49,23 +49,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Redis connection failed: {e}")
 
-    # Initialize FastAPILimiter for rate limiting
+    # Initialize FastAPILimiter for rate limiting.
+    # Uses the dedicated DB 2 client created by init_redis() so rate-limit
+    # counters live in an isolated keyspace (independent FLUSHDB, separate
+    # memory telemetry) away from sessions and upload state on DB 0.
     try:
         from fastapi_limiter import FastAPILimiter
-        from redis.asyncio import Redis as AsyncRedis
+        from .database import get_redis_ratelimit
         from .middleware.rate_limiter import RateLimiter
 
-        redis_client = await AsyncRedis.from_url(
-            settings.REDIS_URL,
-            encoding="utf-8",
-            decode_responses=True
-        )
-        await FastAPILimiter.init(redis_client)
-        print("FastAPILimiter initialized with Redis backend")
+        ratelimit_redis = await get_redis_ratelimit()
+        if ratelimit_redis is None:
+            raise RuntimeError("Rate-limit Redis client not initialized")
+        await FastAPILimiter.init(ratelimit_redis)
+        print("FastAPILimiter initialized with Redis backend (DB 2)")
 
-        # Initialize custom RateLimiter for billing endpoints
-        app.state.rate_limiter = RateLimiter(redis_client)
-        print("Custom RateLimiter initialized for billing endpoints")
+        # Initialize custom RateLimiter for billing endpoints on the same
+        # DB 2 keyspace — billing rate buckets share the ratelimit namespace.
+        app.state.rate_limiter = RateLimiter(ratelimit_redis)
+        print("Custom RateLimiter initialized for billing endpoints (DB 2)")
     except Exception as e:
         print(f"Failed to initialize FastAPILimiter: {e}")
 
@@ -295,6 +297,18 @@ app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
 # Add HTTPS redirect if enabled
 if settings.ENABLE_HTTPS:
     app.add_middleware(HTTPSRedirectMiddleware)
+
+# Global request timeout — wraps handler execution in asyncio.wait_for.
+# Added before CORS/security/performance so it sits innermost: all outer
+# middleware still run on the timeout response (including CORS header
+# injection), but handler wall-time is bounded. Per-prefix overrides live
+# inside the middleware module; see request_timeout.py.
+try:
+    from .middleware.request_timeout import RequestTimeoutMiddleware
+    app.add_middleware(RequestTimeoutMiddleware)
+    print("Request timeout middleware enabled")
+except Exception as e:
+    print(f"Failed to enable request timeout middleware: {e}")
 
 # Configure CORS
 cors_env = os.getenv("CORS_ORIGINS", "")

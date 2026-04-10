@@ -58,6 +58,22 @@ errors_total = Counter(
     ['error_type', 'endpoint']
 )
 
+# Virus scanner outcomes. `outcome` is one of clean|infected|bypassed.
+# `plan_tier` is free|paid so we can alert on paid-tier bypasses specifically.
+virus_scan_outcomes = Counter(
+    'storage_virus_scan_outcomes_total',
+    'Virus scan outcomes by result and plan tier',
+    ['outcome', 'plan_tier']
+)
+
+# How often paid-tier files got quarantined because ClamAV was unavailable.
+# Alert on any non-zero rate of this.
+virus_scan_quarantine_on_bypass = Counter(
+    'storage_virus_scan_quarantine_on_bypass_total',
+    'Paid-tier files quarantined because the virus scanner was unavailable',
+    ['plan_tier']
+)
+
 # URL Upload Metrics
 url_upload_initiated = Counter(
     'storage_url_upload_initiated_total',

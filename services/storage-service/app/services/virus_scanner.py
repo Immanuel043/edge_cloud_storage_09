@@ -17,22 +17,63 @@ logger = logging.getLogger(__name__)
 
 
 class VirusScanResult:
-    """Result of a virus scan"""
-    def __init__(self, is_infected: bool, virus_name: Optional[str] = None,
-                 scan_time: float = 0.0, error: Optional[str] = None):
+    """Result of a virus scan.
+
+    scan_status distinguishes three outcomes that callers need to treat
+    differently:
+      - "clean":    scanner ran to completion and returned OK.
+      - "infected": scanner ran to completion and returned FOUND.
+      - "bypassed": scanner never produced a definitive answer (circuit
+                    breaker open, network error, timeout, daemon error).
+                    The file has NOT been inspected. Callers must decide
+                    whether to fail-open (free tier) or fail-closed
+                    (paid tier → quarantine until rescanned).
+
+    Backwards compat: is_infected remains a simple boolean and is always
+    False for bypassed scans. Code that only checks is_infected still
+    compiles, but such code is now buggy — check scan_status.
+    """
+
+    STATUS_CLEAN = "clean"
+    STATUS_INFECTED = "infected"
+    STATUS_BYPASSED = "bypassed"
+
+    def __init__(
+        self,
+        is_infected: bool,
+        virus_name: Optional[str] = None,
+        scan_time: float = 0.0,
+        error: Optional[str] = None,
+        scan_status: Optional[str] = None,
+    ):
         self.is_infected = is_infected
         self.virus_name = virus_name
         self.scan_time = scan_time
         self.error = error
         self.scanned_at = datetime.utcnow()
+        # Derive scan_status from legacy args if the caller didn't supply one.
+        if scan_status is not None:
+            self.scan_status = scan_status
+        elif is_infected:
+            self.scan_status = self.STATUS_INFECTED
+        elif error is not None:
+            self.scan_status = self.STATUS_BYPASSED
+        else:
+            self.scan_status = self.STATUS_CLEAN
+
+    @property
+    def bypassed(self) -> bool:
+        """True when the scanner did not produce a definitive verdict."""
+        return self.scan_status == self.STATUS_BYPASSED
 
     def to_dict(self) -> Dict:
         return {
             'is_infected': self.is_infected,
+            'scan_status': self.scan_status,
             'virus_name': self.virus_name,
             'scan_time': self.scan_time,
             'scanned_at': self.scanned_at.isoformat(),
-            'error': self.error
+            'error': self.error,
         }
 
 

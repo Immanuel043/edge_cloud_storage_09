@@ -33,6 +33,7 @@ from app.services.preview_optimizer import preview_optimizer
 from app.services.encryption import encryption_service
 from app.database import async_session, get_redis, init_redis
 from app.models.database import Object
+from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,13 +81,16 @@ class PreviewWorker:
             self.redis = await get_redis()
             logger.info("✅ Redis connected")
 
-            # Create Kafka consumer
+            # Create Kafka consumer.
+            # Manual commit: commit only after each batch's tasks complete
+            # (success or DLQ). Under the previous auto-commit, a crash
+            # mid-ffmpeg-render silently dropped preview jobs.
             self.consumer = AIOKafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
                 auto_offset_reset='earliest',
-                enable_auto_commit=True,
+                enable_auto_commit=False,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 # Fetch multiple messages for LIFO sorting
                 max_poll_records=10,
@@ -94,6 +98,7 @@ class PreviewWorker:
             )
 
             await self.consumer.start()
+            await dlq_producer.start()
             logger.info("✅ Kafka consumer started")
 
             # Main processing loop
@@ -123,6 +128,9 @@ class PreviewWorker:
         if self.consumer:
             await self.consumer.stop()
             logger.info("   Kafka consumer stopped")
+
+        # Flush DLQ producer
+        await dlq_producer.stop()
 
         logger.info("✅ Cleanup complete")
 
@@ -154,22 +162,48 @@ class PreviewWorker:
 
                 logger.info(f"📦 Processing batch of {len(all_msgs)} preview requests (newest first)")
 
-                # Process messages
-                for msg in all_msgs:
-                    if not self.running:
-                        break
+                # Dispatch the batch concurrently, but AWAIT before
+                # committing. This gives at-least-once semantics (the
+                # offset never advances past an unfinished preview)
+                # while preserving batch-level parallelism bounded by
+                # the ``MAX_CONCURRENT_PREVIEWS`` semaphore.
+                tasks = [
+                    asyncio.create_task(self._process_preview_wrapped(msg))
+                    for msg in all_msgs
+                    if self.running
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
-                    task = asyncio.create_task(self._process_preview(msg.value))
-                    self.pending_tasks.append(task)
-
-                    # Remove completed tasks
-                    self.pending_tasks = [t for t in self.pending_tasks if not t.done()]
+                # Commit offsets for the whole batch. Individual message
+                # failures are already routed to the DLQ inside
+                # ``_process_preview_wrapped``, so commit is unconditional.
+                await self.consumer.commit()
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"❌ Processing loop error: {e}")
                 await asyncio.sleep(1)
+
+    async def _process_preview_wrapped(self, msg):
+        """Wrap per-message processing so exceptions route to DLQ.
+
+        ``asyncio.gather(return_exceptions=True)`` would otherwise bury
+        the exception in the task result with no durable record. By
+        catching here and publishing to the DLQ, we preserve the poison
+        pill for later inspection and let the caller commit the batch
+        offset regardless.
+        """
+        try:
+            await self._process_preview(msg.value)
+        except Exception as e:
+            logger.exception(
+                "preview_worker: failed to process offset %s", msg.offset
+            )
+            await dlq_producer.send_failed_message(
+                msg, error=e, worker="preview-worker"
+            )
 
     async def _process_preview(self, data: dict):
         """Process a single preview generation request"""

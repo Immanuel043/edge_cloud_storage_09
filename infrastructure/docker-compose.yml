@@ -42,6 +42,75 @@ services:
         reservations:
           memory: 1G
 
+  # PgBouncer — connection pooler in front of the main Postgres.
+  #
+  # Why: the storage-service app-side pool is configured for 50 base + 100
+  # overflow = 150 connections, which alone would consume 75% of Postgres'
+  # max_connections=200 before workers, billing, zk-service, or psql debug
+  # sessions are counted. Under transaction pooling PgBouncer multiplexes
+  # those 150 "client" connections onto just 25 real backend connections.
+  #
+  # Mode: pool_mode=transaction. Pre-requisites audited (2026-04-10):
+  #   - No SET LOCAL / SET SESSION
+  #   - No session-scoped pg_advisory_lock (only pg_advisory_xact_lock is safe)
+  #   - No LISTEN / NOTIFY
+  #   - No cross-statement PREPARE
+  # The one temp-table user (dedup_db_batch.py) was switched to ON COMMIT DROP
+  # so the table lifetime is explicitly bounded to a single transaction.
+  #
+  # asyncpg gotcha: asyncpg creates server-side prepared statements by
+  # default (statement_cache_size=100). These live on a specific backend
+  # and break when PgBouncer hands the next transaction to a different
+  # backend. Fixed in app/database.py by forcing statement_cache_size=0 on
+  # the SQLAlchemy + asyncpg engine.
+  pgbouncer:
+    image: edoburu/pgbouncer:1.22.1
+    container_name: edge-pgbouncer
+    logging: *default-logging
+    environment:
+      # Target Postgres (resolved via docker-compose service DNS).
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: edge_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: edge_cloud
+      # Pooling config. Transaction mode is the whole point — see header.
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: 25
+      MIN_POOL_SIZE: 5
+      RESERVE_POOL_SIZE: 5
+      MAX_CLIENT_CONN: 500
+      # scram-sha-256 matches Postgres 15's default password hashing.
+      AUTH_TYPE: scram-sha-256
+      # Close server conns idle for > 10 min so Postgres can reclaim them.
+      SERVER_IDLE_TIMEOUT: 600
+      # Disable DISCARD ALL between transactions — it's unnecessary under
+      # transaction pooling when the app doesn't set session state (which
+      # we've audited and confirmed).
+      SERVER_RESET_QUERY: ""
+      # Admin console (stats/pause/reconfig). Bound to the docker network
+      # only; not exposed to the host.
+      ADMIN_USERS: edge_admin
+    # ports removed: PgBouncer only accessible within Docker network.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # ``pgbouncer`` image ships with psql-style client. Hit the admin
+      # pseudo-db which always responds once the pooler is accepting
+      # connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U edge_admin -d edge_cloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
   # ZK PostgreSQL Database (SEPARATE from Storage Service)
   zk-postgres:
     image: postgres:15-alpine
@@ -115,10 +184,16 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms768m -Xmx768m"  # Increased heap for stability
+      # Heap sized for production. 768m was below the minimum for ES 8.x with
+      # non-trivial indices and caused cold-query latency. Dev override pins
+      # this to 256m for local laptops — see docker-compose.dev.yml.
+      - "ES_JAVA_OPTS=-Xms1536m -Xmx1536m"
+      # Reserve space for snapshots (mounted below). Registered as a repo by
+      # the es-snapshot-setup sidecar.
+      - "path.repo=/es-snapshots"
     # ports removed: ES only accessible within Docker network (no auth enabled)
-    # No volumes by default (non-persistent mode for development)
-    # For production with persistence, use docker-compose.persistent.yml override
+    volumes:
+      - elasticsearch_snapshots:/es-snapshots
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
       interval: 30s
@@ -129,9 +204,59 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G  # ES needs ~2x heap for native memory + overhead
+          memory: 4G  # 2x heap for native memory + Lucene off-heap + overhead
         reservations:
-          memory: 1G
+          memory: 2G
+
+  # Elasticsearch daily snapshot runner.
+  # Registers the `daily` snapshot repository at startup (idempotent) and then
+  # creates a snapshot every 24 hours. Snapshots live on the
+  # `elasticsearch_snapshots` volume — mount it to an off-host location
+  # (NFS, sshfs, object-storage fuse) in production for real durability.
+  es-snapshot-runner:
+    image: curlimages/curl:8.8.0
+    container_name: edge-es-snapshot-runner
+    logging: *default-logging
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    # Runs as a loop. Registers repo once, then snapshots every 24h.
+    # Snapshot names include a timestamp so they never collide.
+    # `wait_for_completion=false` keeps this container lightweight.
+    # NOTE: $$ escapes variable interpolation by docker-compose so the shell
+    # sees the literal $ signs at runtime.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        ES=http://elasticsearch:9200
+        REPO=daily
+        echo "[snapshot-runner] registering repo $$REPO"
+        until curl -fsS -XPUT "$$ES/_snapshot/$$REPO" \
+              -H 'Content-Type: application/json' \
+              -d '{"type":"fs","settings":{"location":"/es-snapshots","compress":true}}'; do
+          echo "[snapshot-runner] ES not ready, retrying in 10s"
+          sleep 10
+        done
+        echo
+        echo "[snapshot-runner] repo registered; entering daily loop"
+        while true; do
+          NAME="snap-$$(date -u +%Y%m%d-%H%M%S)"
+          echo "[snapshot-runner] creating snapshot $$NAME"
+          curl -fsS -XPUT "$$ES/_snapshot/$$REPO/$$NAME?wait_for_completion=false" \
+            -H 'Content-Type: application/json' \
+            -d '{"ignore_unavailable":true,"include_global_state":false}' || \
+            echo "[snapshot-runner] snapshot request failed, will retry tomorrow"
+          echo
+          sleep 86400
+        done
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 16M
 
   # ClamAV Antivirus Scanner
   clamav:
@@ -293,6 +418,8 @@ services:
 
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -537,6 +664,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
       storage-service:
@@ -692,6 +821,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
     volumes:
       - /tmp/chunks:/tmp/chunks
     healthcheck:
@@ -736,6 +867,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
       storage-service:
         condition: service_healthy
       rust-dataplane:
@@ -776,6 +909,8 @@ services:
       redis:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'es_indexing_worker' || exit 1"]
@@ -823,6 +958,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
     volumes:
       - storage_data:/app/storage
       - /tmp/embedding_temp:/tmp/embedding_temp
@@ -868,6 +1005,8 @@ services:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       storage-service:
         condition: service_healthy
@@ -962,6 +1101,8 @@ volumes:
   storage_data:
     driver: local
   dataplane-socket:
+    driver: local
+  elasticsearch_snapshots:
     driver: local
 
 # Networks

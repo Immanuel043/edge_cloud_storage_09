@@ -35,6 +35,13 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 
+  # Kafka consumer-lag exporter (danielqsj/kafka-exporter).
+  # Exposes kafka_consumergroup_lag{consumergroup,topic,partition} which
+  # the alert in ./alerts.yml uses to catch stuck workers early.
+  - job_name: 'kafka-exporter'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
   # Redis metrics (requires redis-exporter container - add when needed)
   # - job_name: 'redis'
   #   static_configs:

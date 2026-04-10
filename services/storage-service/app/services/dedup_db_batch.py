@@ -59,7 +59,14 @@ class BatchedDeduplicationWriter:
             f"for file {file_id}"
         )
 
-        # Create staging table once (persists across batches within transaction)
+        # Create staging table once, bounded to the current transaction.
+        #
+        # ``ON COMMIT DROP`` makes the lifetime explicit so this is safe under
+        # PgBouncer transaction-pool mode: the temp table lives exactly as
+        # long as the caller's transaction and is gone before a different
+        # backend could be handed this client on the next acquire. All batch
+        # loops below run inside the same transaction, so the staging table
+        # persists across them as expected.
         await db.execute(text("""
             CREATE TEMP TABLE IF NOT EXISTS chunk_staging (
                 block_hash VARCHAR(64),
@@ -67,7 +74,7 @@ class BatchedDeduplicationWriter:
                 block_size BIGINT,
                 block_offset BIGINT,
                 block_index INTEGER
-            )
+            ) ON COMMIT DROP
         """))
 
         for batch_idx in range(0, len(chunks), self.BATCH_SIZE):

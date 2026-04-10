@@ -199,6 +199,50 @@ groups:
           description: "Cache hit rate is {{ $value }}% (expected: >70%)"
 
       # =========================================
+      # Kafka Alerts
+      # =========================================
+      - alert: KafkaConsumerLagHigh
+        # Triggers if any consumer group has > 1000 un-consumed messages
+        # on any single topic/partition for 5 minutes. This is the
+        # earliest warning that a worker (preview, embedding, es-indexing,
+        # chunk-processor, file-analysis) has stalled or is undersized
+        # for current load. Metric is exposed by kafka-exporter.
+        expr: max by (consumergroup, topic) (kafka_consumergroup_lag) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka consumer lag > 1000 on {{ $labels.consumergroup }}/{{ $labels.topic }}"
+          description: "Consumer group {{ $labels.consumergroup }} has {{ $value }} messages behind on topic {{ $labels.topic }} (threshold: 1000 for 5m). Check worker health and partition count."
+
+      - alert: KafkaConsumerLagCritical
+        # Escalation: > 10k messages behind on any partition for 10 minutes.
+        # At this point user-visible features (previews, search indexing)
+        # are degraded and a worker is almost certainly down or flapping.
+        expr: max by (consumergroup, topic) (kafka_consumergroup_lag) > 10000
+        for: 10m
+        labels:
+          severity: critical
+          component: kafka
+        annotations:
+          summary: "Kafka consumer lag CRITICAL on {{ $labels.consumergroup }}/{{ $labels.topic }}"
+          description: "Consumer group {{ $labels.consumergroup }} is {{ $value }} messages behind on topic {{ $labels.topic }}. Worker is likely down — page on-call."
+
+      - alert: KafkaDLQBacklogGrowing
+        # DLQ topics should be near-empty in steady state. Any sustained
+        # growth is a signal that real messages are failing — investigate
+        # before the root cause compounds.
+        expr: sum by (topic) (rate(kafka_topic_partition_current_offset{topic=~".+\\.dlq"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka DLQ backlog growing on {{ $labels.topic }}"
+          description: "Messages are accumulating in {{ $labels.topic }} — a worker is rejecting real messages, not just poison pills. Inspect the DLQ payloads."
+
+      # =========================================
       # Security Alerts
       # =========================================
       - alert: RateLimitExceeded

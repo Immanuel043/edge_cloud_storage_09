@@ -32,6 +32,7 @@ from app.services.embedding_service import embedding_service
 from app.database import async_session, get_redis, init_redis
 from app.models.database import Object, FileEmbedding
 from app.config import settings
+from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,19 +91,24 @@ class EmbeddingWorker:
                 logger.error("Failed to load embedding model")
                 return
 
-            # Create Kafka consumer
+            # Create Kafka consumer.
+            # Manual commit: we commit offsets only after a batch has been
+            # fully processed OR its messages have been published to the
+            # DLQ. Under the previous auto-commit setting, a worker crash
+            # mid-batch silently dropped the in-flight embeddings.
             self.consumer = AIOKafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
                 auto_offset_reset='earliest',
-                enable_auto_commit=True,
+                enable_auto_commit=False,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 max_poll_records=MAX_BATCH_SIZE,
                 fetch_max_wait_ms=1000
             )
 
             await self.consumer.start()
+            await dlq_producer.start()
             logger.info("Kafka consumer started")
 
             # Main processing loop
@@ -132,6 +138,9 @@ class EmbeddingWorker:
         if self.consumer:
             await self.consumer.stop()
             logger.info("   Kafka consumer stopped")
+
+        # Flush DLQ producer
+        await dlq_producer.stop()
 
         logger.info("Cleanup complete")
 
@@ -166,8 +175,23 @@ class EmbeddingWorker:
 
                 logger.info(f"Processing batch of {len(all_msgs)} embedding requests (newest first)")
 
-                # Process batch
-                await self._process_batch([m.value for m in all_msgs])
+                # Process batch. On unrecoverable batch failure, route each
+                # message to the DLQ and still commit so the partition
+                # advances past the poison pill.
+                try:
+                    await self._process_batch([m.value for m in all_msgs])
+                except Exception as batch_err:
+                    logger.exception("embedding_worker: batch processing failed")
+                    for failed_msg in all_msgs:
+                        await dlq_producer.send_failed_message(
+                            failed_msg,
+                            error=batch_err,
+                            worker="embedding-worker",
+                        )
+
+                # Commit offsets for the batch — success or DLQ, the
+                # partition always advances.
+                await self.consumer.commit()
 
             except asyncio.CancelledError:
                 break

@@ -36,6 +36,7 @@ from app.services.video_ingestion_service import video_ingestion_service
 from app.services.encryption import encryption_service
 from app.database import async_session, get_redis, init_redis
 from app.models.database import Object, User
+from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,13 +92,16 @@ class VideoProcessingWorker:
             self.redis = await get_redis()
             logger.info("Redis connected")
 
-            # Create Kafka consumer
+            # Create Kafka consumer.
+            # Manual commit: we only advance the offset after the batch's
+            # tasks complete (success or DLQ). The auto-commit behaviour
+            # previously lost in-flight transcodes on worker crash.
             self.consumer = AIOKafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
                 auto_offset_reset='earliest',
-                enable_auto_commit=True,
+                enable_auto_commit=False,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 # Fetch multiple messages for LIFO sorting
                 max_poll_records=10,
@@ -105,6 +109,7 @@ class VideoProcessingWorker:
             )
 
             await self.consumer.start()
+            await dlq_producer.start()
             logger.info("Kafka consumer started")
 
             # Main processing loop
@@ -142,6 +147,9 @@ class VideoProcessingWorker:
             await self.consumer.stop()
             logger.info("   Kafka consumer stopped")
 
+        # Flush DLQ producer
+        await dlq_producer.stop()
+
         logger.info(f"Cleanup complete. Processed: {self.processed_count}, Failed: {self.failed_count}")
 
     async def _process_loop(self):
@@ -175,22 +183,38 @@ class VideoProcessingWorker:
 
                 logger.info(f"Processing batch of {len(all_msgs)} video requests")
 
-                # Process messages
-                for msg in all_msgs:
-                    if not self.running:
-                        break
+                # Dispatch the batch concurrently and AWAIT before
+                # committing. Parallelism inside the batch is still
+                # bounded by the ``MAX_CONCURRENT_TRANSCODES`` semaphore.
+                tasks = [
+                    asyncio.create_task(self._process_video_wrapped(msg))
+                    for msg in all_msgs
+                    if self.running
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
-                    task = asyncio.create_task(self._process_video(msg.value))
-                    self.pending_tasks.append(task)
-
-                    # Remove completed tasks
-                    self.pending_tasks = [t for t in self.pending_tasks if not t.done()]
+                # Commit offsets for the whole batch — DLQ handles the
+                # failure path, so commit is unconditional.
+                await self.consumer.commit()
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Processing loop error: {e}")
                 await asyncio.sleep(1)
+
+    async def _process_video_wrapped(self, msg):
+        """Wrap per-message transcode so exceptions route to DLQ."""
+        try:
+            await self._process_video(msg.value)
+        except Exception as e:
+            logger.exception(
+                "video_processing_worker: failed offset %s", msg.offset
+            )
+            await dlq_producer.send_failed_message(
+                msg, error=e, worker="video-processing-worker"
+            )
 
     def _parse_timestamp(self, timestamp_str: str) -> float:
         """Parse ISO timestamp to float for sorting"""

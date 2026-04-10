@@ -1438,6 +1438,17 @@ async def run_security_scans(
             return
 
         # ============ VIRUS SCANNING ============
+        #
+        # Three outcomes, each handled differently:
+        #   clean    → allow, log.
+        #   infected → quarantine, alert.
+        #   bypassed → scanner gave no verdict (unavailable / circuit open /
+        #              timeout / daemon error). For FREE tiers we log and
+        #              allow (legacy behavior). For PAID tiers we treat an
+        #              un-verdicted file as untrusted and quarantine it
+        #              until a successful rescan — "fail closed". A future
+        #              rescan worker should promote bypassed files back to
+        #              clean once ClamAV recovers.
         try:
             # Skip virus scanning if disabled in config
             if not settings.VIRUS_SCANNING_ENABLED:
@@ -1445,43 +1456,110 @@ async def run_security_scans(
             else:
                 virus_scanner = get_virus_scanner()
 
-                # Check if ClamAV is available
-                if await virus_scanner.ping():
-                    scan_result = await virus_scanner.scan_bytes(file_data)
-
-                    # Log virus scan result
-                    await audit_service.log_virus_scan(
-                        file_id=file_id,
-                        user_id=user_id,
-                        is_infected=scan_result.is_infected,
-                        virus_name=scan_result.virus_name,
-                        scan_time=scan_result.scan_time,
-                        file_size=file_size,
-                        file_hash=file_obj.content_hash,
-                        error_message=scan_result.error,
-                        action_taken='blocked' if scan_result.is_infected else 'allowed'
+                # Determine the user's plan tier once so we can label metrics
+                # and branch on bypass behavior. Treat lookup failure as "free"
+                # (fail-open for plan lookup; fail-closed for scan bypass is
+                # already the conservative choice below).
+                plan_tier = "free"
+                try:
+                    from ..database import async_session as _async_session_plan
+                    from shared_billing import BillingService as _BillingService
+                    async with _async_session_plan() as _plan_db:
+                        _billing_svc = _BillingService(_plan_db, service_type="normal")
+                        _sub = await _billing_svc.get_user_subscription(
+                            user_id, include_plan=True
+                        )
+                        if _sub and _sub.plan:
+                            tier_name = (_sub.plan.tier_name or "").lower()
+                            price = float(_sub.plan.price_monthly or 0)
+                            if tier_name != "free" and price > 0:
+                                plan_tier = "paid"
+                except Exception as _plan_err:
+                    logger.warning(
+                        f"Plan lookup failed for {user_id}, assuming free tier: {_plan_err}"
                     )
 
-                    if scan_result.is_infected:
-                        logger.critical(f"🚨 VIRUS DETECTED: {scan_result.virus_name} in {file_name}")
+                # Run the scan. The scanner itself owns retries + circuit
+                # breaker; we just consume the verdict.
+                scan_result = await virus_scanner.scan_bytes(file_data)
 
-                        # Log suspicious activity
-                        await audit_service.log_action(
-                            action='security.virus_detected',
-                            user_id=user_id,
-                            resource_type='file',
-                            resource_id=file_id,
-                            resource_name=file_name,
-                            status='blocked',
-                            metadata={
-                                'virus_name': scan_result.virus_name,
-                                'file_size': file_size
-                            },
-                            is_suspicious=True,
-                            risk_level='critical'
+                # Record outcome metric for every path.
+                try:
+                    from ..monitoring.metrics import virus_scan_outcomes
+                    virus_scan_outcomes.labels(
+                        outcome=scan_result.scan_status,
+                        plan_tier=plan_tier,
+                    ).inc()
+                except Exception:
+                    pass  # metrics must never break the scan flow
+
+                # Map scan_status to audit action for the log entry.
+                if scan_result.is_infected:
+                    action_taken = 'blocked'
+                elif scan_result.bypassed and plan_tier == "paid":
+                    action_taken = 'quarantined_pending_rescan'
+                else:
+                    action_taken = 'allowed'
+
+                await audit_service.log_virus_scan(
+                    file_id=file_id,
+                    user_id=user_id,
+                    is_infected=scan_result.is_infected,
+                    virus_name=scan_result.virus_name,
+                    scan_time=scan_result.scan_time,
+                    file_size=file_size,
+                    file_hash=file_obj.content_hash,
+                    error_message=scan_result.error,
+                    action_taken=action_taken,
+                )
+
+                if scan_result.is_infected:
+                    logger.critical(f"🚨 VIRUS DETECTED: {scan_result.virus_name} in {file_name}")
+
+                    # Log suspicious activity
+                    await audit_service.log_action(
+                        action='security.virus_detected',
+                        user_id=user_id,
+                        resource_type='file',
+                        resource_id=file_id,
+                        resource_name=file_name,
+                        status='blocked',
+                        metadata={
+                            'virus_name': scan_result.virus_name,
+                            'file_size': file_size,
+                        },
+                        is_suspicious=True,
+                        risk_level='critical',
+                    )
+
+                    # Quarantine infected file - block downloads
+                    try:
+                        from ..database import async_session as _async_session
+                        from sqlalchemy import update as _update
+                        async with _async_session() as quarantine_db:
+                            await quarantine_db.execute(
+                                _update(Object)
+                                .where(Object.id == file_id)
+                                .values(
+                                    is_quarantined=True,
+                                    quarantined_at=datetime.utcnow(),
+                                    quarantine_reason=f"Virus detected: {scan_result.virus_name}",
+                                )
+                            )
+                            await quarantine_db.commit()
+                        logger.info(f"File {file_id} quarantined: {scan_result.virus_name}")
+                    except Exception as qe:
+                        logger.error(f"Failed to quarantine file {file_id}: {qe}")
+
+                elif scan_result.bypassed:
+                    # Scanner never produced a verdict. Free-tier: log and
+                    # allow. Paid-tier: fail closed by quarantining until a
+                    # rescan proves the file is clean.
+                    if plan_tier == "paid":
+                        logger.error(
+                            f"ClamAV unavailable for paid-tier upload ({file_name}); "
+                            f"quarantining pending rescan. reason={scan_result.error}"
                         )
-
-                        # Quarantine infected file - block downloads
                         try:
                             from ..database import async_session as _async_session
                             from sqlalchemy import update as _update
@@ -1492,17 +1570,47 @@ async def run_security_scans(
                                     .values(
                                         is_quarantined=True,
                                         quarantined_at=datetime.utcnow(),
-                                        quarantine_reason=f"Virus detected: {scan_result.virus_name}"
+                                        quarantine_reason=(
+                                            "Virus scanner unavailable at upload time; "
+                                            "pending rescan"
+                                        ),
                                     )
                                 )
                                 await quarantine_db.commit()
-                            logger.info(f"File {file_id} quarantined: {scan_result.virus_name}")
                         except Exception as qe:
-                            logger.error(f"Failed to quarantine file {file_id}: {qe}")
+                            logger.error(f"Failed to quarantine bypassed paid-tier file {file_id}: {qe}")
+
+                        try:
+                            from ..monitoring.metrics import virus_scan_quarantine_on_bypass
+                            virus_scan_quarantine_on_bypass.labels(plan_tier="paid").inc()
+                        except Exception:
+                            pass
+
+                        # Track as a suspicious operational event so SOC dashboards
+                        # see paid-tier bypasses.
+                        await audit_service.log_action(
+                            action='security.virus_scan_bypassed',
+                            user_id=user_id,
+                            resource_type='file',
+                            resource_id=file_id,
+                            resource_name=file_name,
+                            status='quarantined',
+                            metadata={
+                                'reason': scan_result.error or 'unknown',
+                                'plan_tier': plan_tier,
+                                'file_size': file_size,
+                            },
+                            is_suspicious=True,
+                            risk_level='high',
+                        )
                     else:
-                        logger.info(f"✅ Virus scan clean: {file_name} ({scan_result.scan_time:.2f}s)")
+                        logger.warning(
+                            f"ClamAV unavailable for free-tier upload ({file_name}); "
+                            f"allowing without scan. reason={scan_result.error}"
+                        )
+
                 else:
-                    logger.warning("ClamAV not available, skipping virus scan")
+                    logger.info(f"✅ Virus scan clean: {file_name} ({scan_result.scan_time:.2f}s)")
 
         except Exception as e:
             logger.error(f"Virus scan failed for {file_name}: {e}")

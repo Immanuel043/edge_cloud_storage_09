@@ -52,6 +52,25 @@ services:
     networks:
       - edge-network
 
+  # Kafka consumer-lag exporter.
+  # Scrapes Kafka directly and exposes per-consumer-group lag metrics
+  # (kafka_consumergroup_lag, kafka_consumergroup_lag_sum) that Prometheus
+  # picks up via the scrape config in ./monitoring/prometheus.yml.
+  # This is the missing observability wire identified in the 2026-04
+  # architecture review — without it, a stalled worker silently grows
+  # backlog forever.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: edge-kafka-exporter
+    command:
+      - '--kafka.server=kafka:9092'
+      - '--web.listen-address=:9308'
+    ports:
+      - "127.0.0.1:9308:9308"
+    restart: unless-stopped
+    networks:
+      - edge-network
+
 volumes:
   prometheus_data:
   grafana_data:

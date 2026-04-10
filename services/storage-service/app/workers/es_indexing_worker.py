@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from app.services.search_service import search_service
 from app.config import settings
+from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,11 +68,15 @@ class ESIndexingWorker:
             group_id=KAFKA_GROUP_ID,
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
             auto_offset_reset="earliest",
-            enable_auto_commit=True,
+            # Manual commit: we only advance the offset after a successful
+            # index OR after a DLQ publish. This stops the auto-commit race
+            # where a restart loses the in-flight message.
+            enable_auto_commit=False,
             max_poll_records=10,
         )
 
         await self.consumer.start()
+        await dlq_producer.start()
         logger.info("Kafka consumer started")
         logger.info("Waiting for indexing requests...")
 
@@ -79,11 +84,23 @@ class ESIndexingWorker:
             async for msg in self.consumer:
                 if not self.running:
                     break
-                await self._process_message(msg.value)
+                try:
+                    await self._process_message(msg.value)
+                    await self.consumer.commit()
+                except Exception as e:
+                    logger.exception(
+                        "es_indexing_worker: failed to process offset %s",
+                        msg.offset,
+                    )
+                    await dlq_producer.send_failed_message(
+                        msg, error=e, worker="es-indexing-worker"
+                    )
+                    await self.consumer.commit()
         except asyncio.CancelledError:
             pass
         finally:
             await self.consumer.stop()
+            await dlq_producer.stop()
             logger.info("ES Indexing Worker stopped")
 
     async def _process_message(self, data: dict):
