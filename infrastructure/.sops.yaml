@@ -1,0 +1,7 @@
+creation_rules:
+  - path_regex: secrets\.env$
+    age: >-
+      age1ng8d2lk9amuhxg4rw92crdp9z80vt2xkw7pr8l9hhaxl4eewdygsr2pvem
+  - path_regex: \.enc\.yaml$
+    age: >-
+      age1ng8d2lk9amuhxg4rw92crdp9z80vt2xkw7pr8l9hhaxl4eewdygsr2pvem

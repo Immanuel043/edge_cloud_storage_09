@@ -198,6 +198,12 @@ quota_prediction_confidence = Histogram(
     buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
 )
 
+quota_prediction_duration_ms = Histogram(
+    'storage_quota_prediction_duration_ms',
+    'Quota prediction computation duration in milliseconds',
+    buckets=(50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000)
+)
+
 quota_days_until_full = Gauge(
     'storage_quota_days_until_full',
     'Predicted days until storage quota is full',

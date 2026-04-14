@@ -13,6 +13,22 @@ class Settings:
     # App
     APP_NAME: str = "Edge Cloud Storage"
     VERSION: str = "1.0.0"
+
+    # Worker Mode: controls which components start in this process
+    # "all"    — API + all background workers (default, backward-compatible)
+    # "api"    — API server only, extractable workers run in storage-worker container
+    # "worker" — extractable workers only, no web server
+    WORKER_MODE: str = os.getenv("WORKER_MODE", "all")
+
+    @property
+    def is_api_mode(self) -> bool:
+        """True when this process should serve HTTP requests."""
+        return self.WORKER_MODE in ("all", "api")
+
+    @property
+    def is_worker_mode(self) -> bool:
+        """True when this process should run extractable background workers."""
+        return self.WORKER_MODE in ("all", "worker")
     
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")

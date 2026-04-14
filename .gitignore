@@ -30,8 +30,11 @@ wheels/
 .env.*.local
 *.local.json
 infrastructure/.env
+infrastructure/secrets.env
 services/**/.env
 services/**/.env.local
+# Encrypted secrets ARE safe to commit (SOPS + age encrypted)
+!infrastructure/secrets.enc.env
 .vscode/
 .idea/
 *.swp

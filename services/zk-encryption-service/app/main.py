@@ -349,25 +349,13 @@ async def root():
     }
 
 
-# ========== METRICS ENDPOINT (Prometheus) ==========
+# ========== METRICS (Prometheus) ==========
 
 if settings.ENABLE_METRICS:
-    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
-    from fastapi.responses import Response
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from prometheus_client import Counter
 
-    # Define metrics
-    request_count = Counter(
-        'zk_http_requests_total',
-        'Total HTTP requests',
-        ['method', 'endpoint', 'status']
-    )
-
-    request_duration = Histogram(
-        'zk_http_request_duration_seconds',
-        'HTTP request duration',
-        ['method', 'endpoint']
-    )
-
+    # Domain-specific counters (not covered by auto-instrumentator)
     zk_enrollments = Counter(
         'zk_enrollments_total',
         'Total ZK enrollments',
@@ -380,10 +368,15 @@ if settings.ENABLE_METRICS:
         ['method', 'success']
     )
 
-    @app.get("/metrics", tags=["Monitoring"])
-    async def metrics():
-        """Prometheus metrics endpoint"""
-        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    _instrumentator = Instrumentator(
+        should_group_status_codes=False,
+        should_ignore_untemplated=True,
+        should_instrument_requests_inprogress=True,
+        excluded_handlers=["/metrics", "/health"],
+        inprogress_name="zk_requests_inprogress",
+        inprogress_labels=True,
+    )
+    _instrumentator.instrument(app).expose(app, endpoint="/metrics")
 
 
 # ========== ROUTER REGISTRATION ==========

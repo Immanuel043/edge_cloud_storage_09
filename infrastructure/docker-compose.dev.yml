@@ -66,6 +66,15 @@ services:
     profiles:
       - production
 
+  # DB backups not needed on a laptop; skip in dev.
+  zk-postgres-backup:
+    profiles:
+      - production
+
+  postgres-backup:
+    profiles:
+      - production
+
   # Disable ClamAV in dev (heavy + slow startup)
   clamav:
     profiles:
@@ -126,6 +135,11 @@ services:
         reservations:
           memory: 512M
           cpus: '0.5'
+
+  # Skip separate worker in dev (storage-service runs WORKER_MODE=all)
+  storage-worker:
+    profiles:
+      - production
 
   zk-encryption-service:
     deploy:

@@ -86,109 +86,115 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Database connection failed: {e}")
 
-    # Start background services
-    try:
-        await background_dedup_service.start()
-        print("Background deduplication service started")
-    except Exception as e:
-        print(f"Failed to start dedup service: {e}")
+    print(f"WORKER_MODE={settings.WORKER_MODE} (api={settings.is_api_mode}, worker={settings.is_worker_mode})")
 
-    try:
-        await cold_storage_service.start()
-        print("Cold storage tiering service started")
-    except Exception as e:
-        print(f"Failed to start tiering service: {e}")
-
-    # Initialize Elasticsearch
-    if settings.ELASTICSEARCH_ENABLED:
+    # === API-coupled services (start in "all" and "api" modes) ===
+    if settings.is_api_mode:
+        # Start background services tightly coupled to the API lifecycle
         try:
-            await search_service.connect()
-            if search_service.connected:
-                print("Elasticsearch connection established")
-            else:
-                print("Elasticsearch disabled by configuration")
+            await background_dedup_service.start()
+            print("Background deduplication service started")
         except Exception as e:
-            print(f"WARNING: Elasticsearch connection failed: {e}")
-            print("WARNING: Search functionality will be unavailable")
-            # Don't re-raise - allow app to run without search
-    else:
-        print("Elasticsearch is disabled (ELASTICSEARCH_ENABLED=false)")
+            print(f"Failed to start dedup service: {e}")
 
-    # Start quota prediction worker (ML feature)
-    if settings.QUOTA_PREDICTION_ENABLED:
         try:
-            await quota_prediction_worker.start()
-            print("Quota prediction worker started")
+            await cold_storage_service.start()
+            print("Cold storage tiering service started")
         except Exception as e:
-            print(f"Failed to start quota prediction worker: {e}")
+            print(f"Failed to start tiering service: {e}")
 
-    # Start storage optimization worker (ML feature)
-    if settings.STORAGE_OPTIMIZATION_ENABLED:
-        try:
-            await storage_optimization_worker.start()
-            print("Storage optimization worker started")
-        except Exception as e:
-            print(f"Failed to start storage optimization worker: {e}")
-
-    # Start orphan cleanup worker (cleans expired upload sessions + orphan chunks)
-    try:
-        await orphan_cleanup_worker.start()
-        print("Orphan cleanup worker started")
-    except Exception as e:
-        print(f"Failed to start orphan cleanup worker: {e}")
-
-    # Start video processing worker (Kafka consumer for video optimization)
-    # Supervised: restarts on crash with backoff, up to 5 retries
-    async def _supervised_video_worker():
-        retries = 0
-        max_retries = 5
-        while retries < max_retries:
+        # Initialize Elasticsearch
+        if settings.ELASTICSEARCH_ENABLED:
             try:
-                await video_processing_worker.start()
-            except asyncio.CancelledError:
-                break
+                await search_service.connect()
+                if search_service.connected:
+                    print("Elasticsearch connection established")
+                else:
+                    print("Elasticsearch disabled by configuration")
             except Exception as e:
-                retries += 1
-                backoff = min(2 ** retries, 60)
-                print(f"Video processing worker crashed (attempt {retries}/{max_retries}): {e}. Restarting in {backoff}s...")
-                await asyncio.sleep(backoff)
-        if retries >= max_retries:
-            print("Video processing worker exceeded max retries, giving up")
+                print(f"WARNING: Elasticsearch connection failed: {e}")
+                print("WARNING: Search functionality will be unavailable")
+                # Don't re-raise - allow app to run without search
+        else:
+            print("Elasticsearch is disabled (ELASTICSEARCH_ENABLED=false)")
 
-    try:
-        asyncio.create_task(_supervised_video_worker())
-        print("Video processing worker started (supervised)")
-    except Exception as e:
-        print(f"Failed to start video processing worker: {e}")
+        # Start WebSocket preview notification listener (Redis Pub/Sub -> WS push)
+        try:
+            from .routers.websocket import _listen_preview_notifications
+            asyncio.create_task(_listen_preview_notifications())
+            print("Preview notification WebSocket listener started")
+        except Exception as e:
+            print(f"Failed to start preview notification listener: {e}")
 
-    # Start WebSocket preview notification listener (Redis Pub/Sub -> WS push)
-    try:
-        from .routers.websocket import _listen_preview_notifications
-        asyncio.create_task(_listen_preview_notifications())
-        print("Preview notification WebSocket listener started")
-    except Exception as e:
-        print(f"Failed to start preview notification listener: {e}")
+        # Event loop lag monitor -- early warning for event loop starvation
+        import logging as _logging
+        _lag_logger = _logging.getLogger("app.eventloop_monitor")
 
-    # Event loop lag monitor -- early warning for event loop starvation
-    import logging as _logging
-    _lag_logger = _logging.getLogger("app.eventloop_monitor")
+        async def _monitor_event_loop_lag():
+            loop = asyncio.get_event_loop()
+            while True:
+                t0 = loop.time()
+                await asyncio.sleep(0.5)
+                lag_ms = (loop.time() - t0 - 0.5) * 1000
+                if lag_ms > 500:
+                    _lag_logger.error(f"CRITICAL event loop lag: {lag_ms:.0f}ms")
+                elif lag_ms > 100:
+                    _lag_logger.warning(f"Event loop lag: {lag_ms:.0f}ms (threshold: 100ms)")
 
-    async def _monitor_event_loop_lag():
-        loop = asyncio.get_event_loop()
-        while True:
-            t0 = loop.time()
-            await asyncio.sleep(0.5)
-            lag_ms = (loop.time() - t0 - 0.5) * 1000
-            if lag_ms > 500:
-                _lag_logger.error(f"CRITICAL event loop lag: {lag_ms:.0f}ms")
-            elif lag_ms > 100:
-                _lag_logger.warning(f"Event loop lag: {lag_ms:.0f}ms (threshold: 100ms)")
+        try:
+            asyncio.create_task(_monitor_event_loop_lag())
+            print("Event loop lag monitor started (warn >100ms, error >500ms)")
+        except Exception as e:
+            print(f"Failed to start event loop monitor: {e}")
 
-    try:
-        asyncio.create_task(_monitor_event_loop_lag())
-        print("Event loop lag monitor started (warn >100ms, error >500ms)")
-    except Exception as e:
-        print(f"Failed to start event loop monitor: {e}")
+    # === Extractable workers (start in "all" and "worker" modes) ===
+    if settings.is_worker_mode:
+        # Start quota prediction worker (ML feature)
+        if settings.QUOTA_PREDICTION_ENABLED:
+            try:
+                await quota_prediction_worker.start()
+                print("Quota prediction worker started")
+            except Exception as e:
+                print(f"Failed to start quota prediction worker: {e}")
+
+        # Start storage optimization worker (ML feature)
+        if settings.STORAGE_OPTIMIZATION_ENABLED:
+            try:
+                await storage_optimization_worker.start()
+                print("Storage optimization worker started")
+            except Exception as e:
+                print(f"Failed to start storage optimization worker: {e}")
+
+        # Start orphan cleanup worker (cleans expired upload sessions + orphan chunks)
+        try:
+            await orphan_cleanup_worker.start()
+            print("Orphan cleanup worker started")
+        except Exception as e:
+            print(f"Failed to start orphan cleanup worker: {e}")
+
+        # Start video processing worker (Kafka consumer for video optimization)
+        # Supervised: restarts on crash with backoff, up to 5 retries
+        async def _supervised_video_worker():
+            retries = 0
+            max_retries = 5
+            while retries < max_retries:
+                try:
+                    await video_processing_worker.start()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    retries += 1
+                    backoff = min(2 ** retries, 60)
+                    print(f"Video processing worker crashed (attempt {retries}/{max_retries}): {e}. Restarting in {backoff}s...")
+                    await asyncio.sleep(backoff)
+            if retries >= max_retries:
+                print("Video processing worker exceeded max retries, giving up")
+
+        try:
+            asyncio.create_task(_supervised_video_worker())
+            print("Video processing worker started (supervised)")
+        except Exception as e:
+            print(f"Failed to start video processing worker: {e}")
 
     print("Application startup complete")
     yield
@@ -196,72 +202,76 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print("Shutting down Edge Storage Service...")
 
-    # Close FastAPILimiter
-    try:
-        from fastapi_limiter import FastAPILimiter
-        await FastAPILimiter.close()
-        print("FastAPILimiter closed")
-    except Exception as e:
-        print(f"Error closing FastAPILimiter: {e}")
-
-    # Stop background services
-    try:
-        await background_dedup_service.stop()
-        print("Background dedup service stopped")
-    except Exception as e:
-        print(f"Error stopping dedup service: {e}")
-
-    try:
-        await cold_storage_service.stop()
-        print("Cold storage service stopped")
-    except Exception as e:
-        print(f"Error stopping tiering service: {e}")
-
-    # Close Elasticsearch
-    try:
-        await search_service.close()
-        print("Elasticsearch connection closed")
-    except Exception as e:
-        print(f"Error closing Elasticsearch: {e}")
-
-    # Stop quota prediction worker
-    if settings.QUOTA_PREDICTION_ENABLED:
+    # === Stop API-coupled services ===
+    if settings.is_api_mode:
+        # Close FastAPILimiter
         try:
-            await quota_prediction_worker.stop()
-            print("Quota prediction worker stopped")
+            from fastapi_limiter import FastAPILimiter
+            await FastAPILimiter.close()
+            print("FastAPILimiter closed")
         except Exception as e:
-            print(f"Error stopping quota prediction worker: {e}")
+            print(f"Error closing FastAPILimiter: {e}")
 
-    # Stop storage optimization worker
-    if settings.STORAGE_OPTIMIZATION_ENABLED:
+        # Stop background services
         try:
-            await storage_optimization_worker.stop()
-            print("Storage optimization worker stopped")
+            await background_dedup_service.stop()
+            print("Background dedup service stopped")
         except Exception as e:
-            print(f"Error stopping storage optimization worker: {e}")
+            print(f"Error stopping dedup service: {e}")
 
-    # Stop orphan cleanup worker
-    try:
-        await orphan_cleanup_worker.stop()
-        print("Orphan cleanup worker stopped")
-    except Exception as e:
-        print(f"Error stopping orphan cleanup worker: {e}")
+        try:
+            await cold_storage_service.stop()
+            print("Cold storage service stopped")
+        except Exception as e:
+            print(f"Error stopping tiering service: {e}")
 
-    # Stop video processing worker
-    try:
-        await video_processing_worker.stop()
-        print("Video processing worker stopped")
-    except Exception as e:
-        print(f"Error stopping video processing worker: {e}")
+        # Close Elasticsearch
+        try:
+            await search_service.close()
+            print("Elasticsearch connection closed")
+        except Exception as e:
+            print(f"Error closing Elasticsearch: {e}")
 
-    # Stop Kafka producer (flush buffered messages before shutdown)
-    try:
-        from .routers.upload import kafka_producer as _kafka_producer
-        if _kafka_producer is not None:
-            await _kafka_producer.stop()
-            print("Kafka producer stopped")
-    except Exception as e:
-        print(f"Error stopping Kafka producer: {e}")
+        # Stop Kafka producer (flush buffered messages before shutdown)
+        try:
+            from .routers.upload import kafka_producer as _kafka_producer
+            if _kafka_producer is not None:
+                await _kafka_producer.stop()
+                print("Kafka producer stopped")
+        except Exception as e:
+            print(f"Error stopping Kafka producer: {e}")
+
+    # === Stop extractable workers ===
+    if settings.is_worker_mode:
+        # Stop quota prediction worker
+        if settings.QUOTA_PREDICTION_ENABLED:
+            try:
+                await quota_prediction_worker.stop()
+                print("Quota prediction worker stopped")
+            except Exception as e:
+                print(f"Error stopping quota prediction worker: {e}")
+
+        # Stop storage optimization worker
+        if settings.STORAGE_OPTIMIZATION_ENABLED:
+            try:
+                await storage_optimization_worker.stop()
+                print("Storage optimization worker stopped")
+            except Exception as e:
+                print(f"Error stopping storage optimization worker: {e}")
+
+        # Stop orphan cleanup worker
+        try:
+            await orphan_cleanup_worker.stop()
+            print("Orphan cleanup worker stopped")
+        except Exception as e:
+            print(f"Error stopping orphan cleanup worker: {e}")
+
+        # Stop video processing worker
+        try:
+            await video_processing_worker.stop()
+            print("Video processing worker stopped")
+        except Exception as e:
+            print(f"Error stopping video processing worker: {e}")
 
     await close_redis()
     await engine.dispose()
