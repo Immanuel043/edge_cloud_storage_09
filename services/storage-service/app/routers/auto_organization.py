@@ -17,6 +17,7 @@ from datetime import datetime
 import logging
 
 from ..dependencies import get_db, get_current_user
+from ..dependencies_plan import require_plan_feature
 from ..models.database import (
     User, Object, OrganizationCluster, OrganizationRule, OrganizationSession, FileClusterAssignment)
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 async def start_organization(
     http_request: Request,
     request: StartOrganizationRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_plan_feature("ai_features")),
     db: AsyncSession = Depends(get_db)
 ):
     """

@@ -40,6 +40,40 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # ---------------------------------------------------------------------------
+# Optional read-replica engine.
+# ---------------------------------------------------------------------------
+# When ``READ_DATABASE_URL`` is set (pointing at the postgres-replica service
+# or a pgbouncer in front of it), read-only endpoints can opt into offloading
+# via ``Depends(get_read_db)``. When it's blank — which is the default — we
+# fall through to the primary so existing behavior is unchanged.
+#
+# Smaller pool than the primary: reads are shorter-lived and bursty. All the
+# same PgBouncer-safety knobs (statement_cache_size=0) apply if the replica
+# is fronted by pgbouncer.
+read_engine = None
+if settings.READ_DATABASE_URL:
+    read_engine = create_async_engine(
+        settings.READ_DATABASE_URL,
+        echo=False,
+        pool_size=30,
+        max_overflow=50,
+        pool_pre_ping=True,
+        pool_timeout=30,
+        pool_recycle=3600,
+        connect_args={
+            "command_timeout": 30,
+            "statement_cache_size": 0,
+        },
+    )
+    ReadAsyncSessionLocal = sessionmaker(
+        read_engine, class_=AsyncSession, expire_on_commit=False
+    )
+else:
+    # Fall-through: reuse the primary's session factory. Callers of
+    # ``get_read_db`` get the same session they would from ``get_db``.
+    ReadAsyncSessionLocal = AsyncSessionLocal
+
+# ---------------------------------------------------------------------------
 # Redis logical-DB split
 # ---------------------------------------------------------------------------
 # The main Redis instance is partitioned by purpose via database indexes so
@@ -184,4 +218,18 @@ async def get_redis_ratelimit():
 async def get_db():
     """Dependency to get database session"""
     async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def get_read_db():
+    """Dependency to get a read-only DB session.
+
+    Uses the read replica (``read_engine``) when ``READ_DATABASE_URL`` is
+    configured, otherwise falls through to the primary. Write endpoints MUST
+    continue using ``get_db`` — the replica is read-only.
+
+    Drop-in replacement: swap ``Depends(get_db)`` → ``Depends(get_read_db)``
+    on an endpoint to offload it. Reverting is a single-line edit.
+    """
+    async with ReadAsyncSessionLocal() as session:
         yield session

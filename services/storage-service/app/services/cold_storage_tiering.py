@@ -201,16 +201,47 @@ class ColdStorageTieringService:
         # Ensure destination directory exists
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
+        # Cold-tier compression: opt-in only (see config.COLD_TIER_COMPRESSION_ENABLED).
+        # When enabled we write a `.zst` file and flag it in file_metadata so the
+        # download path can decompress. Currently OFF by default because Object
+        # download paths don't yet honor the flag — enabling without that wiring
+        # would silently truncate downloads.
+        compress_on_move = (
+            target_tier == 'cold'
+            and settings.COLD_TIER_COMPRESSION_ENABLED
+            and not (file_obj.file_metadata or {}).get('cold_compressed')
+        )
+
         try:
-            # Move file (use shutil.move for efficiency)
-            await asyncio.to_thread(shutil.move, source_path, dest_path)
+            if compress_on_move:
+                import zstandard as zstd  # lazy import — zstandard is already a
+                                           # transitive dep via CAS; failure here
+                                           # falls through to a plain move.
+                dest_path = dest_path + '.zst'
+                cctx = zstd.ZstdCompressor(level=settings.COLD_TIER_COMPRESSION_LEVEL)
+
+                def _compress_move():
+                    with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
+                        cctx.copy_stream(src, dst)
+                    os.remove(source_path)
+
+                await asyncio.to_thread(_compress_move)
+
+                meta = dict(file_obj.file_metadata or {})
+                meta['cold_compressed'] = True
+                meta['cold_compressed_at'] = datetime.utcnow().isoformat()
+                file_obj.file_metadata = meta
+            else:
+                # Plain move (use shutil.move for efficiency)
+                await asyncio.to_thread(shutil.move, source_path, dest_path)
 
             # Update database
             file_obj.storage_tier = target_tier
             file_obj.object_path = dest_path
 
             logger.info(f"Tiered file {file_obj.file_name} ({file_obj.id}) "
-                       f"from {source_tier} to {target_tier}")
+                       f"from {source_tier} to {target_tier}"
+                       f"{' (zstd)' if compress_on_move else ''}")
 
             return True
 

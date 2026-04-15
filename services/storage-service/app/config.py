@@ -43,6 +43,10 @@ class Settings:
 
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    # Optional read replica. Blank by default → read-only routes fall through
+    # to the primary (see database.get_read_db). Set this in prod to offload
+    # analytics / search / dashboard queries to the postgres-replica container.
+    READ_DATABASE_URL: str = os.getenv("READ_DATABASE_URL", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     
     # Storage Paths
@@ -57,6 +61,21 @@ class Settings:
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", 67108864))  # Default 64MB
     MAX_FILE_SIZE: int = int(os.getenv("MAX_FILE_SIZE", 21474836480))  # Default 20GB
     COMPRESSION_LEVEL: int = int(os.getenv("COMPRESSION_LEVEL", 3))
+
+    # Cold-tier compression: when a file ages from warm → cold, we can
+    # zstd-compress the on-disk payload to save footprint on the cheaper
+    # cold_storage_data volume. Off by default: the download path doesn't
+    # yet carry a decompression hook for Object.object_path reads, so
+    # enabling this today would silently truncate cold-tier downloads.
+    # Enable only after wiring decompression in the Object read path
+    # (files.py/download, sharing.py, share_bundles.py, versions.py …).
+    # File-level flag lives in Object.file_metadata["cold_compressed"].
+    COLD_TIER_COMPRESSION_ENABLED: bool = os.getenv(
+        "COLD_TIER_COMPRESSION_ENABLED", "false"
+    ).lower() == "true"
+    COLD_TIER_COMPRESSION_LEVEL: int = int(
+        os.getenv("COLD_TIER_COMPRESSION_LEVEL", 3)
+    )
     
     # Storage Thresholds
     INLINE_THRESHOLD: int = 1 * 1024 * 1024  # 1MB - store in Redis

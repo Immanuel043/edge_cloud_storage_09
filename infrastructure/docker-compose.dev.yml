@@ -13,6 +13,12 @@ services:
       -c work_mem=4MB
       -c maintenance_work_mem=32MB
       -c effective_cache_size=256MB
+      -c wal_level=replica
+      -c archive_mode=on
+      -c archive_command='test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f'
+      -c max_wal_senders=5
+      -c wal_keep_size=1GB
+      -c hot_standby=on
     deploy:
       resources:
         limits:
@@ -127,7 +133,17 @@ services:
   storage-service:
     mem_limit: 2g
     cpus: "2.0"
+    # Dev runs a single replica (8GB Mac can't fit two 2G API containers on top
+    # of postgres, kafka, ES, redis, etc.). Production keeps the compose
+    # default of 2 replicas behind nginx.
+    environment:
+      # Override prod's WORKER_MODE=api: in dev we skip the separate
+      # storage-worker service (see below) and let storage-service run the
+      # in-process timers again. This keeps the dev experience identical to
+      # pre-worker-split behavior.
+      WORKER_MODE: all
     deploy:
+      replicas: 1
       resources:
         limits:
           memory: 2G

@@ -19,6 +19,7 @@ import logging
 from uuid import UUID
 
 from ..dependencies import get_db, get_current_user
+from ..dependencies_plan import require_plan_feature
 from ..models.database import User, Object, Recommendation, UserInteraction
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..models.schemas import (
@@ -46,7 +47,7 @@ logger = logging.getLogger(__name__)
 @router.get("/", response_model=List[RecommendationResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_PREDICTION))])
 async def get_recommendations(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_plan_feature("ai_features")),
     db: AsyncSession = Depends(get_db),
     file_id: Optional[str] = Query(None, description="Context file ID"),
     algorithm: str = Query("hybrid", description="Algorithm (hybrid, content, collaborative, trending)"),
@@ -144,7 +145,7 @@ async def get_recommendations(
 @router.get("/similar/{file_id}", response_model=List[SimilarFileResponse])
 async def get_similar_files(
     file_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_plan_feature("ai_features")),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(10, ge=1, le=50),
     min_score: float = Query(0.3, ge=0.0, le=1.0)
@@ -453,7 +454,7 @@ async def get_recommendation_summary(
 @router.post("/batch-generate", response_model=BatchRecommendationResponse)
 async def batch_generate_recommendations(
     request: BatchRecommendationRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_plan_feature("ai_features")),
     db: AsyncSession = Depends(get_db)
 ):
     """

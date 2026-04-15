@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import logging
 
 from ..dependencies import get_db, get_current_user
+from ..dependencies_plan import require_plan_feature
 from ..models.database import User, QuotaPrediction, QuotaAlert, StorageUsageHistory
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
 from ..models.schemas import (
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 @router.get("/prediction", response_model=QuotaPredictionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_PREDICTION))])
 async def get_quota_prediction(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_plan_feature("ai_features")),
     db: AsyncSession = Depends(get_db),
     force_refresh: bool = Query(False, description="Force regenerate prediction")
 ):

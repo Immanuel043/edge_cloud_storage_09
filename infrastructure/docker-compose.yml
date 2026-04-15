@@ -10,10 +10,17 @@ services:
     image: postgres:15-alpine
     container_name: edge-postgres
     logging: *default-logging
-    environment:
-      POSTGRES_DB: edge_cloud
-      POSTGRES_USER: edge_admin
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # WAL archiving + streaming replication are always on.
+    # - wal_level=replica enables logical wal records needed by pg_basebackup /
+    #   a hot-standby replica. Cost: ~5% extra WAL volume.
+    # - archive_command ships each closed WAL segment to a dedicated volume
+    #   (postgres_wal_archive). Combined with the daily encrypted pg_dump
+    #   (postgres-backup sidecar), this drops our RPO from 24h → <5min.
+    # - hot_standby=on lets the optional postgres-replica service (profile:
+    #   replica) serve read-only queries. No effect on the primary itself.
+    # The replicator role is seeded by scripts/init-db.sql — it's created only
+    # if POSTGRES_REPLICATION_PASSWORD is set, so dev w/o the secret stays
+    # identical to before.
     command: >
       postgres
       -c max_connections=200
@@ -25,10 +32,33 @@ services:
       -c checkpoint_completion_target=0.9
       -c wal_buffers=16MB
       -c max_wal_size=2GB
+      -c wal_level=replica
+      -c archive_mode=on
+      -c archive_command='test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f'
+      -c max_wal_senders=5
+      -c wal_keep_size=1GB
+      -c hot_standby=on
+    environment:
+      POSTGRES_DB: edge_cloud
+      POSTGRES_USER: edge_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Presence of this var causes init-replication.sh to create the
+      # ``replicator`` role on first boot. Safe to leave blank when no
+      # replica is planned.
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-}
+      # Setting POSTGRES_HOST_AUTH_METHOD causes the postgres entrypoint to
+      # emit ``host replication all all scram-sha-256`` into pg_hba.conf at
+      # initdb time — otherwise replication over TCP would be refused.
+      # Only effective on first-boot (empty data dir). For an existing
+      # deployment, operators must manually append the replication line to
+      # pg_hba.conf — see docs/PITR_RUNBOOK.md.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
     # ports removed: Postgres only accessible within Docker network
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_wal_archive:/var/lib/postgresql/wal_archive
+      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/10-init.sql
+      - ../scripts/init-replication.sh:/docker-entrypoint-initdb.d/20-init-replication.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U edge_admin -d edge_cloud"]
       interval: 10s
@@ -110,6 +140,57 @@ services:
           memory: 256M
         reservations:
           memory: 64M
+
+  # Read replica for ``postgres``. Streaming, hot standby, read-only.
+  #
+  # Opt-in: gated behind ``profiles: [replica]`` — ``docker compose up`` does
+  # not start it by default. Enable with ``docker compose --profile replica up``.
+  #
+  # Bootstrap: on first boot the data volume is empty, so we run pg_basebackup
+  # against the primary to clone the current state + stream WAL. Requires
+  # POSTGRES_REPLICATION_PASSWORD to be set and the ``replicator`` role to
+  # exist on the primary (seeded by scripts/init-replication.sh at primary
+  # first-boot, or manually via docs/PITR_RUNBOOK.md for existing deployments).
+  # On subsequent boots we exec postgres directly on the existing data dir.
+  postgres-replica:
+    image: postgres:15-alpine
+    container_name: edge-postgres-replica
+    logging: *default-logging
+    profiles:
+      - replica
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: edge_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: edge_cloud
+      PGPASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-}
+    command: >
+      bash -c '
+        if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+          echo "[replica] empty data dir — bootstrapping via pg_basebackup from primary"
+          pg_basebackup -h postgres -U replicator -D /var/lib/postgresql/data -P -R -X stream -w
+          chown -R postgres:postgres /var/lib/postgresql/data
+          chmod 0700 /var/lib/postgresql/data
+        fi
+        exec gosu postgres postgres -c hot_standby=on
+      '
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edge_admin -d edge_cloud"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
 
   # ZK PostgreSQL Database (SEPARATE from Storage Service)
   zk-postgres:
@@ -481,11 +562,15 @@ services:
           memory: 512M
 
   # Storage Service (FastAPI) - THE MAIN FIX
+  # Multi-replica capable: container_name + host port binding intentionally
+  # removed so `deploy.replicas > 1` works. nginx load-balances via Docker DNS
+  # (see fastapi_upstream/ws_upstream in nginx.conf). Timers and background
+  # consumers live in the `storage-worker` service (scale=1) — this container
+  # runs in WORKER_MODE=api.
   storage-service:
     build:
       context: ../
       dockerfile: services/storage-service/Dockerfile
-    container_name: edge-storage-service
     logging: *default-logging
     env_file:
       - .env # Load environment variables from .env file
@@ -511,6 +596,8 @@ services:
       # clamav:
       #   condition: service_healthy  # Disabled for ARM Mac compatibility
     environment:
+      # API-only: background timers run in storage-worker (see `combined_worker`)
+      WORKER_MODE: api
       DB_HOST: postgres
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -595,10 +682,17 @@ services:
       MAX_CONCURRENT_TRANSCODES: "2"
       TRANSCODE_QUEUE_MAX_SIZE: "5"
 
-    ports:
-      - "127.0.0.1:8001:8000"
+    # NOTE: no host port binding — replicas would collide on 127.0.0.1:8001.
+    # Access storage-service through nginx (https://localhost) or `docker
+    # compose exec`. If you need direct local access for debugging, add a
+    # one-off `ports:` block in a docker-compose.override.yml (never here).
+    expose:
+      - "8000"
     volumes:
      - storage_data:/app/storage
+      # Cold tier on a separate volume so prod can back it with cheaper
+      # storage (see docker-compose volumes: cold_storage_data).
+     - cold_storage_data:/app/storage/cold
       # Add temp directory with size limit
      - /tmp/upload_temp:/tmp/upload_temp
       # Shared socket volume with rust-dataplane for full mode
@@ -608,6 +702,10 @@ services:
     cpus: "4.0"
     # CRITICAL: Add resource limits for Swarm (only used when using `docker stack deploy`)
     deploy:
+      # Default to 2 replicas. In dev we pin this back to 1 via
+      # docker-compose.dev.yml (8GB Mac can't fit two 8G API containers).
+      # Scale further in prod with `docker compose up -d --scale storage-service=N`.
+      replicas: 2
       resources:
         limits:
           memory: 8G              # Allow up to 8GB for 100 concurrent uploads
@@ -666,6 +764,9 @@ services:
         condition: service_healthy
     volumes:
       - storage_data:/app/storage
+      # Match storage-service's cold-tier volume so the worker reads/writes
+      # the same backing store during tier migrations.
+      - cold_storage_data:/app/storage/cold
       - dataplane-socket:/run/dataplane
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'combined_worker' || exit 1"]
@@ -1007,6 +1108,7 @@ services:
         condition: service_healthy
     volumes:
       - storage_data:/app/storage
+      - cold_storage_data:/app/storage/cold
       - /tmp/preview_temp:/tmp/preview_temp
       - dataplane-socket:/run/dataplane
     healthcheck:
@@ -1094,6 +1196,7 @@ services:
         condition: service_healthy
     volumes:
       - storage_data:/app/storage
+      - cold_storage_data:/app/storage/cold
       - /tmp/embedding_temp:/tmp/embedding_temp
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'embedding_worker' || exit 1"]
@@ -1144,6 +1247,7 @@ services:
         condition: service_healthy
     volumes:
       - storage_data:/app/storage
+      - cold_storage_data:/app/storage/cold
       - /tmp/file_analysis_temp:/tmp/file_analysis_temp
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'file_analysis_worker' || exit 1"]
@@ -1239,6 +1343,20 @@ volumes:
   zk_postgres_backups:
     driver: local
   postgres_backups:
+    driver: local
+  # WAL archive for PITR — receives closed WAL segments from the primary.
+  # See postgres.command (archive_command) and docs/PITR_RUNBOOK.md.
+  postgres_wal_archive:
+    driver: local
+  # Data dir for the optional postgres-replica service (profile: replica).
+  postgres_replica_data:
+    driver: local
+  # Cold-tier backing volume — mounted at /app/storage/cold on storage
+  # services. Split out from storage_data so operators can swap the backing
+  # device (slow HDD, S3 FUSE, NFS) via `driver_opts` or an external volume
+  # without touching the hot cache/warm path. Default local driver matches
+  # storage_data behavior for dev; repoint in prod for cost savings.
+  cold_storage_data:
     driver: local
 
 # Networks

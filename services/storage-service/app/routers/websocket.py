@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends
 from typing import Dict, Set, Optional
-import json, asyncio, time
+import json, asyncio, os, time
 from datetime import datetime, timedelta
 from collections import defaultdict
 import logging
@@ -11,6 +11,12 @@ from ..services.auth import auth_service
 from ..dependencies import get_current_user  # Add this import
 
 logger = logging.getLogger(__name__)
+
+# Stable identifier for this replica — surfaces in connection logs so ops can
+# tell which container handled a given WS during multi-replica debugging.
+# Docker sets HOSTNAME to the container ID; compose scale names (e.g.
+# `edge-cloud-storage-service-2`) also land here when scaling > 1.
+REPLICA_ID = os.getenv("HOSTNAME", "unknown")
 
 router = APIRouter(prefix="/api/v1")
 
@@ -127,7 +133,10 @@ class EnhancedConnectionManager:
             }
         })
         
-        logger.info(f"WebSocket connected for user: {user_id} (total: {self.total_connections})")
+        logger.info(
+            f"WebSocket connected for user: {user_id} "
+            f"(total: {self.total_connections}, replica: {REPLICA_ID})"
+        )
         return True
     
     def disconnect(self, websocket: WebSocket):

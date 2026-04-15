@@ -13,6 +13,7 @@ from app.dependencies import get_current_user, get_db
 from app.database import get_redis
 from app.config import settings
 from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from shared_billing import BillingService, SubscriptionNotFoundError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -365,8 +366,44 @@ async def smart_search(
         redis = await get_redis()
         embedding_service.set_redis(redis)
 
-        # Check if semantic search is enabled
+        # Check if semantic search is enabled (global flag)
         semantic_enabled = settings.SEMANTIC_SEARCH_ENABLED
+
+        # Plan-based soft-degrade: free users silently fall back to keyword-only
+        # search. No 402 here — the search bar keeps working, just without
+        # embedding-based ranking. Matches the UX principle that core features
+        # (find files) stay available even on the free tier; only the AI
+        # boost is gated.
+        if semantic_enabled:
+            try:
+                billing = BillingService(db, service_type="normal")
+                try:
+                    sub = await billing.get_user_subscription(
+                        current_user.id, include_plan=True
+                    )
+                except SubscriptionNotFoundError:
+                    sub = await billing.create_subscription(
+                        current_user.id, "normal_free"
+                    )
+                features = getattr(sub.plan, "features", None) or {}
+                if not features.get("ai_features"):
+                    semantic_enabled = False
+                    logger.debug(
+                        "smart_search semantic disabled for user=%s "
+                        "(plan=%s lacks ai_features)",
+                        current_user.id,
+                        getattr(sub.plan, "plan_code", "?"),
+                    )
+            except Exception as plan_exc:
+                # Never fail the search over a billing lookup hiccup — just
+                # fall through to keyword (conservative default).
+                logger.warning(
+                    "smart_search plan check failed for user=%s: %s — "
+                    "falling back to keyword",
+                    current_user.id,
+                    plan_exc,
+                )
+                semantic_enabled = False
 
         # Get pagination offset
         from_ = (request.page - 1) * request.size
