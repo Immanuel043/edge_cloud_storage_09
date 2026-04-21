@@ -225,10 +225,6 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, zkMode = false, files =
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter') void handleSearch();
-  };
-
   useEffect(() => {
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
@@ -259,6 +255,11 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, zkMode = false, files =
     });
   };
 
+  const submitSearch = (event: React.FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    void handleSearch();
+  };
+
   const modeButtonClass = (active: boolean): string =>
     cn(
       'flex flex-1 items-center justify-center gap-1 rounded-md px-3 py-1.5 text-caption transition-colors',
@@ -268,25 +269,29 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, zkMode = false, files =
     );
 
   return (
-    <div className="relative" ref={searchRef}>
+    <div className="relative w-full" ref={searchRef}>
       {/* Search input */}
       <div className="relative">
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-fg transition-colors focus-within:border-border-focus focus-within:shadow-focus">
-          <Search className="h-5 w-5 text-fg-subtle" />
+        <form
+          role="search"
+          onSubmit={submitSearch}
+          className="flex h-11 w-full items-center gap-2 rounded-lg border border-border bg-surface px-3 text-fg shadow-xs transition-[background-color,border-color,box-shadow] duration-fast focus-within:border-border-focus focus-within:shadow-focus"
+        >
+          <Search className="h-5 w-5 shrink-0 text-fg-subtle" />
           <input
             type="text"
             value={query}
             onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
             onFocus={handleSearchFocus}
             placeholder="Search files and folders..."
-            className="flex-1 bg-transparent text-body outline-none placeholder:text-fg-subtle"
+            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-body text-fg shadow-none outline-none placeholder:text-fg-subtle focus:border-0 focus:outline-none focus:ring-0 focus:shadow-none focus-visible:shadow-none"
           />
 
           {loading && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
 
           {query && (
             <button
+              type="button"
               onClick={clearSearch}
               className="rounded p-1 transition-colors hover:bg-surface-muted"
               aria-label="Clear search"
@@ -295,53 +300,59 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, zkMode = false, files =
             </button>
           )}
 
-          {zkMode ? (
-            <div
-              className="flex items-center gap-1 rounded bg-success px-1.5 py-1 text-white"
-              title="Zero-Knowledge Mode: Searching encrypted files locally"
-            >
-              <Lock className="h-4 w-4" />
-              <span className="hidden text-caption font-medium sm:inline">ZK</span>
-            </div>
-          ) : (
-            <button
-              onClick={() => setSmartSearchEnabled(!smartSearchEnabled)}
-              className={cn(
-                'flex items-center gap-1 rounded p-1.5 transition-colors',
-                smartSearchEnabled
-                  ? 'bg-accent text-white'
-                  : 'text-fg-muted hover:bg-surface-muted'
-              )}
-              title={
-                smartSearchEnabled
-                  ? 'AI smart search enabled (click to disable)'
-                  : 'Enable AI smart search'
-              }
-              disabled={smartSearchStatus === null || !smartSearchStatus.semantic_enabled}
-            >
-              <Sparkles className="h-4 w-4" />
-              {smartSearchEnabled && (
-                <span className="hidden text-caption font-medium sm:inline">AI</span>
-              )}
-            </button>
-          )}
+          <div className="ml-1 flex shrink-0 items-center gap-1 border-l border-border pl-2">
+            {zkMode ? (
+              <div
+                className="inline-flex h-8 items-center gap-1 rounded-md bg-success px-2 text-white"
+                title="Zero-Knowledge Mode: Searching encrypted files locally"
+              >
+                <Lock className="h-4 w-4" />
+                <span className="hidden text-caption font-medium sm:inline">ZK</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setSmartSearchEnabled(!smartSearchEnabled)}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1 rounded-md px-2 transition-colors focus-visible:outline-none focus-visible:shadow-focus',
+                  smartSearchEnabled
+                    ? 'bg-accent text-white'
+                    : 'text-fg-muted hover:bg-surface-muted'
+                )}
+                title={
+                  smartSearchEnabled
+                    ? 'AI smart search enabled (click to disable)'
+                    : 'Enable AI smart search'
+                }
+                aria-pressed={smartSearchEnabled}
+                disabled={smartSearchStatus === null || !smartSearchStatus.semantic_enabled}
+              >
+                <Sparkles className="h-4 w-4" />
+                {smartSearchEnabled && (
+                  <span className="hidden text-caption font-medium sm:inline">AI</span>
+                )}
+              </button>
+            )}
 
-          {!zkMode && (
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={cn(
-                'rounded p-1.5 transition-colors',
-                showFilters
-                  ? 'bg-primary text-white'
-                  : 'text-fg-muted hover:bg-surface-muted'
-              )}
-              title="Filters"
-              aria-label="Toggle filters"
-            >
-              <Filter className="h-4 w-4" />
-            </button>
-          )}
-        </div>
+            {!zkMode && (
+              <button
+                type="button"
+                onClick={() => setShowFilters(!showFilters)}
+                className={cn(
+                  'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:shadow-focus',
+                  showFilters
+                    ? 'bg-primary text-white'
+                    : 'text-fg-muted hover:bg-surface-muted'
+                )}
+                title="Filters"
+                aria-label="Toggle filters"
+                aria-pressed={showFilters}
+              >
+                <Filter className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </form>
 
         {/* Autocomplete */}
         {showSuggestions && suggestions.length > 0 && (

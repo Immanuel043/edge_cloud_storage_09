@@ -43,8 +43,7 @@ export const DashboardTopBar: React.FC<DashboardTopBarProps> = ({
   const toggledView = viewMode === 'grid' ? 'list' : 'grid';
   return (
     <TopBar
-      className="h-auto"
-      center={<div className="w-full">{search}</div>}
+      center={search}
       trailing={
         <>
           <IconButton

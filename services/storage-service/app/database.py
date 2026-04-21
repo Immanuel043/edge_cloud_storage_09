@@ -1,11 +1,21 @@
 # services/storage-service/app/database.py
 from urllib.parse import urlparse, urlunparse
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import sessionmaker
 import redis.asyncio as redis
 
 from .config import settings
+
+
+def _unique_prepared_statement_name() -> str:
+    """Generate a UUID-based prepared-statement name for SQLAlchemy's asyncpg dialect.
+
+    See the ``connect_args`` block below for the rationale.
+    """
+    return f"__asyncpg_{uuid4().hex}__"
+
 
 # Database Engine with connection pool for 100 concurrent uploads.
 #
@@ -15,14 +25,28 @@ from .config import settings
 # real Postgres backends (default_pool_size=25), so the app can keep
 # its existing concurrency without exhausting Postgres max_connections.
 #
-# asyncpg + PgBouncer transaction-pooling gotcha: asyncpg defaults to
-# ``statement_cache_size=100`` which creates *server-side* prepared
-# statements. Those statements are bound to a specific backend
-# connection — and transaction pooling hands a different backend to
-# the next transaction, so the cached statement either "already exists"
-# (collision) or "does not exist" (miss). Forcing ``statement_cache_size=0``
-# switches asyncpg to use unnamed prepared statements that are scoped
-# to a single protocol round-trip, which is safe under any pooling mode.
+# asyncpg + PgBouncer transaction-pooling has TWO independent caches
+# that must be disabled + name-randomized for correctness:
+#
+#  1. asyncpg's own ``statement_cache_size`` (default 100) — creates
+#     server-side prepared statements pinned to one backend. The next
+#     transaction may land on a different backend → "already exists" or
+#     "does not exist". Set to 0 to force unnamed prepares.
+#
+#  2. SQLAlchemy's asyncpg dialect *itself* calls ``connection.prepare()``
+#     with *named* statements (default name: ``__asyncpg_stmt_N__``, N
+#     enumerated numerically per connection). Even with asyncpg's cache
+#     off, these names COLLIDE across clients that get assigned the same
+#     PgBouncer backend because prepared statements persist on the server
+#     and our PgBouncer has SERVER_RESET_QUERY="" (no DEALLOCATE ALL).
+#     Fix: ``prepared_statement_cache_size=0`` to disable SQLAlchemy's
+#     reuse AND ``prepared_statement_name_func`` to emit UUID-suffixed
+#     names so two sessions on the same backend never clash.
+#
+# Both are SQLAlchemy-asyncpg dialect kwargs and travel through
+# ``connect_args``; the dialect pops them before passing the remainder
+# to ``asyncpg.connect()``. Reference: SQLAlchemy 2.x asyncpg dialect
+# docs §"Prepared Statement Name".
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
@@ -32,8 +56,10 @@ engine = create_async_engine(
     pool_timeout=30,       # Max seconds to wait for a connection from pool
     pool_recycle=3600,     # Recycle connections after 1 hour (prevent stale connections)
     connect_args={
-        "command_timeout": 30,   # Max seconds for any single query
-        "statement_cache_size": 0,  # Required for PgBouncer transaction pool mode
+        "command_timeout": 30,                          # Max seconds for any single query
+        "statement_cache_size": 0,                      # asyncpg internal cache off
+        "prepared_statement_cache_size": 0,             # SQLAlchemy dialect cache off
+        "prepared_statement_name_func": _unique_prepared_statement_name,
     }
 )
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -63,6 +89,8 @@ if settings.READ_DATABASE_URL:
         connect_args={
             "command_timeout": 30,
             "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+            "prepared_statement_name_func": _unique_prepared_statement_name,
         },
     )
     ReadAsyncSessionLocal = sessionmaker(

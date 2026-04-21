@@ -8,35 +8,41 @@
 // ==================== Networking ====================
 
 /**
- * Remove trailing slashes from URL
+ * Remove trailing slashes from URL.
+ *
+ * When the env var is explicitly an empty string (as it is in dev — see
+ * `frontend-clean/.env`) we return it as-is so call sites produce
+ * same-origin relative URLs like `/api/v1/...`. Those get proxied to
+ * nginx by the Vite dev server (see `vite.config.ts`), avoiding the
+ * browser-side self-signed-cert trust problem.
  */
 function normalizeUrl(url: string | undefined, defaultUrl: string): string {
-  const value = url?.replace(/\/+$/, '') || defaultUrl;
-  return value;
+  if (url === '') return '';
+  return url?.replace(/\/+$/, '') || defaultUrl;
 }
 
 /** Main API URL for the Normal Storage Service */
 export const API_URL: string = normalizeUrl(
   import.meta.env.VITE_API_URL,
-  'http://localhost:8001'
+  ''
 );
 
 /** WebSocket URL for real-time communication (Normal service) */
 export const WS_URL: string = normalizeUrl(
   import.meta.env.VITE_WS_URL,
-  'ws://localhost:8001'
+  ''
 );
 
 /** Zero-Knowledge Encryption Service URL */
 export const ZK_SERVICE_URL: string = normalizeUrl(
   import.meta.env.VITE_ZK_SERVICE_URL,
-  'http://localhost:8002'
+  ''
 );
 
 /** WebSocket URL for ZK service real-time communication */
 export const ZK_WS_URL: string = normalizeUrl(
   import.meta.env.VITE_ZK_WS_URL,
-  'ws://localhost:8002'
+  ''
 );
 
 // ==================== Size Constants ====================

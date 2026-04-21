@@ -88,11 +88,20 @@ services:
   # The one temp-table user (dedup_db_batch.py) was switched to ON COMMIT DROP
   # so the table lifetime is explicitly bounded to a single transaction.
   #
-  # asyncpg gotcha: asyncpg creates server-side prepared statements by
-  # default (statement_cache_size=100). These live on a specific backend
-  # and break when PgBouncer hands the next transaction to a different
-  # backend. Fixed in app/database.py by forcing statement_cache_size=0 on
-  # the SQLAlchemy + asyncpg engine.
+  # asyncpg gotcha: asyncpg and the SQLAlchemy asyncpg dialect BOTH create
+  # server-side named prepared statements (`__asyncpg_stmt_N__`). Under
+  # transaction pooling, the backend serving a client's prepare can be
+  # different from the one serving its execute — so naive transaction
+  # pooling breaks prepared statements outright.
+  #
+  # Fix: PgBouncer 1.21+ has built-in prepared-statement tracking. Set
+  # `max_prepared_statements > 0` and PgBouncer caches each prepare and
+  # automatically re-deploys it on whichever backend serves the next
+  # request for that client. App-side we STILL keep statement_cache_size=0
+  # + prepared_statement_cache_size=0 + prepared_statement_name_func=uuid
+  # in app/database.py so names are unique across clients (avoids cache
+  # thrash) and neither layer caches the prepared statement objects
+  # themselves across transactions.
   pgbouncer:
     image: edoburu/pgbouncer:1.22.1-p0
     container_name: edge-pgbouncer
@@ -114,10 +123,15 @@ services:
       AUTH_TYPE: scram-sha-256
       # Close server conns idle for > 10 min so Postgres can reclaim them.
       SERVER_IDLE_TIMEOUT: 600
-      # Disable DISCARD ALL between transactions — it's unnecessary under
-      # transaction pooling when the app doesn't set session state (which
-      # we've audited and confirmed).
-      SERVER_RESET_QUERY: ""
+      # PgBouncer 1.21+ transparently tracks prepared statements per client
+      # and re-deploys them onto whichever backend serves the next query
+      # — this is what makes asyncpg viable under transaction pooling.
+      # 500 slots per client is ample headroom; each slot is a few KB of
+      # pgbouncer memory.
+      MAX_PREPARED_STATEMENTS: 500
+      # With prepared-statement tracking enabled, DISCARD ALL would wipe
+      # the statements PgBouncer just tracked. Leave unset (default "")
+      # so the pooler does not interfere.
       # Admin console (stats/pause/reconfig). Bound to the docker network
       # only; not exposed to the host.
       ADMIN_USERS: edge_admin

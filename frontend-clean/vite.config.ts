@@ -58,8 +58,12 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': 'http://localhost:3001',
-      '/ws': { target: 'ws://localhost:3001', ws: true },
+      // Proxy API + WebSocket through the Vite dev server to nginx over
+      // HTTPS. `secure: false` tells the proxy (server-side) to skip
+      // self-signed cert validation so the browser never sees the cert —
+      // every client request stays same-origin http://localhost:3000.
+      '/api': { target: 'https://localhost', changeOrigin: true, secure: false },
+      '/ws': { target: 'wss://localhost', ws: true, changeOrigin: true, secure: false },
     },
     warmup: {
       clientFiles: [
