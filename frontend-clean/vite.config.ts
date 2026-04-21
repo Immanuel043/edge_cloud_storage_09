@@ -62,6 +62,7 @@ export default defineConfig({
       // HTTPS. `secure: false` tells the proxy (server-side) to skip
       // self-signed cert validation so the browser never sees the cert —
       // every client request stays same-origin http://localhost:3000.
+      '/api/v1/ws': { target: 'wss://localhost', ws: true, changeOrigin: true, secure: false },
       '/api': { target: 'https://localhost', changeOrigin: true, secure: false },
       '/ws': { target: 'wss://localhost', ws: true, changeOrigin: true, secure: false },
     },

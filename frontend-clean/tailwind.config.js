@@ -21,6 +21,7 @@ export default {
         surface: 'rgb(var(--surface) / <alpha-value>)',
         'surface-muted': 'rgb(var(--surface-muted) / <alpha-value>)',
         'surface-sunken': 'rgb(var(--surface-sunken) / <alpha-value>)',
+        'surface-elevated': 'rgb(var(--surface-elevated) / <alpha-value>)',
 
         fg: 'rgb(var(--fg) / <alpha-value>)',
         'fg-muted': 'rgb(var(--fg-muted) / <alpha-value>)',

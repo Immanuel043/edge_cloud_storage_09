@@ -22,10 +22,13 @@ export interface ApiConfig {
 }
 
 /**
- * Remove trailing slash from URL if present
+ * Remove trailing slash from URL. Preserve an explicit empty string (dev
+ * sets `VITE_STORAGE_API_URL=''` so calls are same-origin and go through
+ * the Vite proxy → nginx, avoiding the self-signed-cert trust problem).
  */
-function normalizeUrl(url: string): string {
-  return url.endsWith('/') ? url.slice(0, -1) : url;
+function normalizeUrl(url: string | undefined, defaultUrl: string): string {
+  if (url === '') return '';
+  return (url ?? defaultUrl).replace(/\/+$/, '');
 }
 
 /**
@@ -33,14 +36,10 @@ function normalizeUrl(url: string): string {
  */
 const API_CONFIG: ApiConfig = {
   // Normal Storage Service API
-  STORAGE_API: normalizeUrl(
-    import.meta.env.VITE_STORAGE_API_URL || 'http://localhost:8001'
-  ),
+  STORAGE_API: normalizeUrl(import.meta.env.VITE_STORAGE_API_URL, ''),
 
   // Zero-Knowledge Encryption Service API
-  ZK_API: normalizeUrl(
-    import.meta.env.VITE_ZK_API_URL || 'http://localhost:8002'
-  ),
+  ZK_API: normalizeUrl(import.meta.env.VITE_ZK_API_URL, ''),
 };
 
 export default API_CONFIG;

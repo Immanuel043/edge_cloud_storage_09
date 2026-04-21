@@ -135,7 +135,7 @@ const SharePage: React.FC = () => {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         if (!chunk) continue;
-        const url = new URL(`${API_URL}${chunk.url}`);
+        const url = new URL(`${API_URL}${chunk.url}`, window.location.origin);
         const chunkHeaders: Record<string, string> = {};
         if (password) {
           chunkHeaders['X-Share-Password'] = password;
@@ -185,7 +185,7 @@ const SharePage: React.FC = () => {
     setError('');
 
     try {
-      const url = new URL(`${API_URL}/api/v1/share/${token}`);
+      const url = new URL(`${API_URL}/api/v1/share/${token}`, window.location.origin);
       const headers: Record<string, string> = {};
       if (password) {
         headers['X-Share-Password'] = password;

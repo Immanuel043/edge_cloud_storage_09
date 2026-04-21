@@ -96,7 +96,7 @@ const ShareViewer: React.FC = () => {
     setError('');
 
     try {
-      const url = new URL(`${API_URL}/api/v1/share/${token}/info`);
+      const url = new URL(`${API_URL}/api/v1/share/${token}/info`, window.location.origin);
       const headers: Record<string, string> = {};
       if (pwd || password) {
         headers['X-Share-Password'] = pwd || password;
@@ -145,7 +145,7 @@ const ShareViewer: React.FC = () => {
 
   const loadFolderContents = async (pwd: string | null = null): Promise<void> => {
     try {
-      const url = new URL(`${API_URL}/api/v1/share/${token}/folder/contents`);
+      const url = new URL(`${API_URL}/api/v1/share/${token}/folder/contents`, window.location.origin);
       const folderHeaders: Record<string, string> = {};
       if (pwd || password) {
         folderHeaders['X-Share-Password'] = pwd || password;
@@ -174,7 +174,7 @@ const ShareViewer: React.FC = () => {
         ? `${API_URL}/api/v1/share/${token}/file/${fileId}/download`
         : `${API_URL}/api/v1/share/${token}`;
 
-      const url = new URL(downloadUrl);
+      const url = new URL(downloadUrl, window.location.origin);
       if (password) {
         url.searchParams.set('password', password);
       }

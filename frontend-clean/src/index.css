@@ -15,6 +15,7 @@
     --surface: 255 255 255;
     --surface-muted: 244 245 249;
     --surface-sunken: 239 241 246;
+    --surface-elevated: 255 255 255;
 
     /* Text */
     --fg: 15 23 42;
@@ -61,6 +62,7 @@
     --surface: 18 22 33;
     --surface-muted: 24 29 43;
     --surface-sunken: 14 17 26;
+    --surface-elevated: 28 34 51;
 
     --fg: 241 245 249;
     --fg-muted: 148 163 184;

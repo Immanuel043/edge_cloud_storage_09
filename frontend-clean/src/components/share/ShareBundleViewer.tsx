@@ -280,7 +280,7 @@ const ShareBundleViewer: React.FC = () => {
     setError('');
 
     try {
-      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/info`);
+      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/info`, window.location.origin);
       const headers: Record<string, string> = {};
       if (pwd || password) {
         headers['X-Share-Password'] = pwd || password;
@@ -398,7 +398,7 @@ const ShareBundleViewer: React.FC = () => {
     setDownloadError('');
 
     try {
-      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/download`);
+      const url = new URL(`${API_URL}/api/v1/share/bundle/${token}/download`, window.location.origin);
       const zipHeaders: Record<string, string> = {};
       if (password) {
         zipHeaders['X-Share-Password'] = password;
