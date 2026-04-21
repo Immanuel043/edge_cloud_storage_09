@@ -25,7 +25,6 @@ const RecoveryPhraseInput: React.FC<RecoveryPhraseInputProps> = ({
   onChange,
   onComplete,
   disabled = false,
-  darkMode = false,
   showWordNumbers = true,
   compact = false,
 }) => {
@@ -181,39 +180,25 @@ const RecoveryPhraseInput: React.FC<RecoveryPhraseInputProps> = ({
     }
   };
 
-  // Styles based on theme
   const baseInputClass =
-    'w-full px-2 py-1.5 text-sm rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500';
+    'w-full px-2 py-1.5 text-body-sm rounded border bg-surface text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40';
 
   const getInputClass = (word: string): string => {
     const isValid = isValidWord(word);
     const hasValue = word && word.trim().length > 0;
 
-    if (darkMode) {
-      if (hasValue && isValid) return `${baseInputClass} border-green-500 bg-gray-800 text-white`;
-      if (hasValue && !isValid) return `${baseInputClass} border-red-400 bg-gray-800 text-white`;
-      return `${baseInputClass} border-gray-600 bg-gray-800 text-white placeholder-gray-500`;
-    } else {
-      if (hasValue && isValid) return `${baseInputClass} border-green-500 bg-white text-gray-900`;
-      if (hasValue && !isValid) return `${baseInputClass} border-red-400 bg-white text-gray-900`;
-      return `${baseInputClass} border-gray-300 bg-white text-gray-900 placeholder-gray-400`;
-    }
+    if (hasValue && isValid) return `${baseInputClass} border-success`;
+    if (hasValue && !isValid) return `${baseInputClass} border-danger`;
+    return `${baseInputClass} border-border placeholder-fg-subtle`;
   };
 
-  const dropdownClass = darkMode
-    ? 'absolute z-20 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-32 overflow-y-auto'
-    : 'absolute z-20 w-full mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-32 overflow-y-auto';
+  const dropdownClass =
+    'absolute z-20 w-full mt-1 bg-surface-elevated border border-border rounded shadow-lg max-h-32 overflow-y-auto';
 
-  const getSuggestionClass = (isHighlighted: boolean): string => {
-    if (darkMode) {
-      return `w-full px-2 py-1 text-left text-sm cursor-pointer ${
-        isHighlighted ? 'bg-blue-600 text-white' : 'text-gray-200 hover:bg-gray-700'
-      }`;
-    }
-    return `w-full px-2 py-1 text-left text-sm cursor-pointer ${
-      isHighlighted ? 'bg-blue-100 text-blue-900' : 'text-gray-700 hover:bg-blue-50'
+  const getSuggestionClass = (isHighlighted: boolean): string =>
+    `w-full px-2 py-1 text-left text-body-sm cursor-pointer transition-colors ${
+      isHighlighted ? 'bg-primary text-white' : 'text-fg hover:bg-surface-muted'
     }`;
-  };
 
   // Grid configuration
   const gridCols = compact ? 'grid-cols-6' : 'grid-cols-4';
@@ -235,11 +220,7 @@ const RecoveryPhraseInput: React.FC<RecoveryPhraseInputProps> = ({
               <div key={index} className="relative pt-4">
                 {/* Word number label - positioned above input */}
                 {showWordNumbers && (
-                  <span
-                    className={`absolute top-0 left-1 text-xs font-medium ${
-                      darkMode ? 'text-gray-400' : 'text-gray-500'
-                    }`}
-                  >
+                  <span className="absolute top-0 left-1 text-caption font-medium text-fg-muted">
                     {index + 1}.
                   </span>
                 )}
@@ -287,9 +268,9 @@ const RecoveryPhraseInput: React.FC<RecoveryPhraseInputProps> = ({
                       id={isValid ? `word-${index}-valid` : `word-${index}-invalid`}
                     >
                       {isValid ? (
-                        <Check className="w-3.5 h-3.5 text-green-500" aria-label="Valid word" />
+                        <Check className="w-3.5 h-3.5 text-success" aria-label="Valid word" />
                       ) : (
-                        <AlertCircle className="w-3.5 h-3.5 text-red-400" aria-label="Invalid word" />
+                        <AlertCircle className="w-3.5 h-3.5 text-danger" aria-label="Invalid word" />
                       )}
                     </span>
                   )}
@@ -318,28 +299,25 @@ const RecoveryPhraseInput: React.FC<RecoveryPhraseInputProps> = ({
           })}
       </div>
 
-      {/* Progress indicator */}
-      <div className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+      <div className="mt-3 text-body-sm text-fg-muted">
         <div className="flex items-center justify-between">
           <span>{value.filter((w) => isValidWord(w)).length} of 24 words entered</span>
           {value.some((w) => w && !isValidWord(w)) && (
-            <span className="text-red-500 flex items-center gap-1">
+            <span className="flex items-center gap-1 text-danger">
               <AlertCircle className="w-3.5 h-3.5" />
               Some words are invalid
             </span>
           )}
         </div>
-        {/* Progress bar */}
-        <div className={`mt-1 h-1 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+        <div className="mt-1 h-1 rounded-full bg-surface-muted">
           <div
-            className="h-full bg-green-500 rounded-full transition-all duration-300"
+            className="h-full rounded-full bg-success transition-all duration-normal"
             style={{ width: `${(value.filter((w) => isValidWord(w)).length / 24) * 100}%` }}
           />
         </div>
       </div>
 
-      {/* Keyboard hint */}
-      <p className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+      <p className="mt-2 text-caption text-fg-subtle">
         Tip: Press Tab or Space to move to next word. Paste your full phrase to auto-fill all
         fields.
       </p>

@@ -1,17 +1,13 @@
 import React from 'react';
 import { Clock, Folder, Image, FileText, Video, Music, LayoutGrid } from 'lucide-react';
 import type { QuickFiltersProps, FilterOption } from './types';
+import { cn } from '@/lib/cn';
 
 /**
- * QuickFilters - Horizontal pill-style filter buttons for dashboard
- *
- * Filters:
- * - All: Show all files and folders
- * - Recent: Files from last 7 days only
- * - Folders: Show only folders
- * - Images/Documents/Videos/Audio: Filter by file type
+ * QuickFilters — horizontal pill filters displayed above the file grid.
+ * Active pill is tinted with the brand accent (ZK mode uses success green
+ * to signal client-side scope).
  */
-
 const FILTER_OPTIONS: FilterOption[] = [
   { value: 'all', label: 'All', icon: LayoutGrid },
   { value: 'recent', label: 'Recent', icon: Clock },
@@ -25,28 +21,10 @@ const FILTER_OPTIONS: FilterOption[] = [
 const QuickFilters: React.FC<QuickFiltersProps> = ({
   activeFilter = 'all',
   onFilterChange,
-  darkMode,
   isZK = false,
 }) => {
-  const getButtonClasses = (isActive: boolean): string => {
-    const baseClasses =
-      'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors';
-
-    if (isActive) {
-      // Active state - ZK uses green, non-ZK uses blue
-      return `${baseClasses} ${isZK ? 'bg-green-500 text-white' : 'bg-blue-500 text-white'}`;
-    }
-
-    // Inactive state
-    return `${baseClasses} ${
-      darkMode
-        ? 'bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white'
-        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900'
-    }`;
-  };
-
   return (
-    <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-gray-300">
+    <div className="flex items-center gap-2 overflow-x-auto pb-2">
       {FILTER_OPTIONS.map((option) => {
         const Icon = option.icon;
         const isActive = activeFilter === option.value;
@@ -54,8 +32,16 @@ const QuickFilters: React.FC<QuickFiltersProps> = ({
         return (
           <button
             key={option.value}
+            type="button"
             onClick={() => onFilterChange(option.value)}
-            className={getButtonClasses(isActive)}
+            className={cn(
+              'flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-body-sm font-medium transition-colors',
+              isActive
+                ? isZK
+                  ? 'bg-success text-white'
+                  : 'bg-primary text-white'
+                : 'bg-surface-muted text-fg-muted hover:bg-surface-elevated hover:text-fg'
+            )}
           >
             <Icon size={16} />
             <span>{option.label}</span>

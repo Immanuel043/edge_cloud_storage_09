@@ -34,39 +34,39 @@ import type { FileThumbnailProps, ThumbnailSize } from './types';
  */
 const getFileTypeIcon = (fileName: string | undefined, size: number = 48): React.ReactElement => {
   if (!fileName) {
-    return <File size={size} className="text-gray-400" />;
+    return <File size={size} className="text-fg-subtle" />;
   }
   const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
   const iconProps = { size };
 
   if ((IMAGE_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <FileImage {...iconProps} className="text-green-500" />;
+    return <FileImage {...iconProps} className="text-success" />;
   }
   if ((VIDEO_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <Film {...iconProps} className="text-purple-500" />;
+    return <Film {...iconProps} className="text-accent" />;
   }
   if ((EXCEL_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <Table {...iconProps} className="text-emerald-600" />;
+    return <Table {...iconProps} className="text-success" />;
   }
   if ((XML_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <FileCode {...iconProps} className="text-amber-500" />;
+    return <FileCode {...iconProps} className="text-warning" />;
   }
   if ((TEXT_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <FileText {...iconProps} className="text-gray-500" />;
+    return <FileText {...iconProps} className="text-fg-muted" />;
   }
   if ((DOCUMENT_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <FileText {...iconProps} className="text-blue-500" />;
+    return <FileText {...iconProps} className="text-primary" />;
   }
   if ((AUDIO_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <Music {...iconProps} className="text-pink-500" />;
+    return <Music {...iconProps} className="text-accent" />;
   }
   if ((ARCHIVE_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <Archive {...iconProps} className="text-yellow-500" />;
+    return <Archive {...iconProps} className="text-warning" />;
   }
   if ((CODE_EXTENSIONS as readonly string[]).includes(ext)) {
-    return <Code {...iconProps} className="text-orange-500" />;
+    return <Code {...iconProps} className="text-warning" />;
   }
-  return <File {...iconProps} className="text-gray-400" />;
+  return <File {...iconProps} className="text-fg-subtle" />;
 };
 
 /**
@@ -77,7 +77,6 @@ const getFileTypeIcon = (fileName: string | undefined, size: number = 48): React
 const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
   file,
   size = 'medium',
-  darkMode = false,
   className = '',
 }) => {
   const [thumbnailUrl, _setThumbnailUrl] = useState<string | null>(null);
@@ -502,7 +501,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
     return (
       <div
         ref={imgRef}
-        className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} animate-pulse`}
+        className={`${containerClass} bg-surface-muted animate-pulse`}
       >
         <div className="w-full h-full flex items-center justify-center">
           {getFileTypeIcon(fileName, iconSizes[size] / 2)}
@@ -516,7 +515,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
     return (
       <div
         ref={imgRef}
-        className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}
+        className={`${containerClass} bg-surface-muted relative`}
       >
         <img
           src={thumbnailUrl}
@@ -541,7 +540,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
   return (
     <div
       ref={imgRef}
-      className={`${containerClass} ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} relative`}
+      className={`${containerClass} bg-surface-muted relative`}
     >
       {getFileTypeIcon(fileName, iconSizes[size])}
 
@@ -549,7 +548,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
       {isProcessing && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 rounded-lg">
           <Loader2
-            className="text-blue-400 animate-spin"
+            className="text-primary animate-spin"
             size={size === 'small' ? 16 : size === 'medium' ? 24 : 32}
           />
           {size !== 'small' && (
@@ -568,7 +567,6 @@ const FileThumbnail = React.memo(FileThumbnailInner, (prevProps, nextProps) => {
     prevProps.file.id === nextProps.file.id &&
     prevProps.file.updated_at === nextProps.file.updated_at &&
     prevProps.size === nextProps.size &&
-    prevProps.darkMode === nextProps.darkMode &&
     prevProps.className === nextProps.className
   );
 });

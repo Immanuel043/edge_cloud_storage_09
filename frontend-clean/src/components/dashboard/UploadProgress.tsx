@@ -2,96 +2,97 @@ import React from 'react';
 import { CheckCircle, AlertCircle, Clock, Lock, Shield, RefreshCw } from 'lucide-react';
 import { formatDuration, formatBytes } from '../../utils/helpers';
 import type { UploadProgressProps, UploadItem } from './types';
+import { Badge, Button, Card, CardContent } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 /**
- * UploadProgress - Shows upload progress with ZK encryption support
+ * UploadProgress — stacked upload-progress rows shown above the file grid
+ * during active uploads. Each row reports chunk progress, elapsed time, ZK
+ * encryption state, and cancel/retry affordances.
  */
-const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, onRetry, darkMode }) => {
+const UploadProgress: React.FC<UploadProgressProps> = ({ uploads, onCancel, onRetry }) => {
   return (
-    <div className={`mb-6 p-4 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-      <h3 className={`text-lg font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-        Uploads
-      </h3>
-      {Object.entries(uploads).map(([id, upload]: [string, UploadItem]) => (
-        <div key={id} className="mb-3">
-          <div className="flex justify-between items-center mb-1">
-            <div className="flex items-center gap-2">
-              <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                {upload.name}
-              </span>
-              {upload.zkEnabled && (
-                <span
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                  title="Zero-Knowledge Encrypted - Encrypting on your device"
-                >
-                  <Lock className="w-3 h-3" />
-                  <span className="hidden sm:inline">Encrypting</span>
+    <Card variant="bordered" className="mb-6">
+      <CardContent className="p-4">
+        <h3 className="mb-3 text-h3 font-semibold text-fg">Uploads</h3>
+        {Object.entries(uploads).map(([id, upload]: [string, UploadItem]) => (
+          <div key={id} className="mb-3 last:mb-0">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-body-sm text-fg">{upload.name}</span>
+                {upload.zkEnabled && (
+                  <Badge variant="success" size="sm" className="flex items-center gap-1">
+                    <Lock className="h-3 w-3" />
+                    <span className="hidden sm:inline">Encrypting</span>
+                  </Badge>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {upload.elapsedTime !== undefined && (
+                  <div className="flex items-center gap-1 text-caption text-fg-muted">
+                    <Clock className="h-3 w-3" />
+                    {formatDuration(upload.elapsedTime)}
+                  </div>
+                )}
+                <span className="text-caption text-fg-muted">
+                  {upload.totalChunks != null && upload.totalChunks > 0
+                    ? `${upload.chunksUploaded ?? 0}/${upload.totalChunks} chunks`
+                    : `${formatBytes(upload.bytesUploaded)} / ${formatBytes(upload.totalBytes)}`}
                 </span>
-              )}
+                {upload.status === 'uploading' && (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    onClick={() => onCancel(id)}
+                    className="text-danger hover:text-danger/80"
+                  >
+                    Cancel
+                  </Button>
+                )}
+                {upload.status === 'complete' && (
+                  <CheckCircle className="h-4 w-4 text-success" />
+                )}
+                {upload.status === 'error' && (
+                  <AlertCircle className="h-4 w-4 text-danger" />
+                )}
+                {upload.status === 'error' && onRetry && upload.canRetry && (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    onClick={() => onRetry(id)}
+                    leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                  >
+                    Retry
+                  </Button>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              {upload.elapsedTime !== undefined && (
-                <div className="flex items-center gap-1 text-xs text-gray-500">
-                  <Clock size={12} />
-                  {formatDuration(upload.elapsedTime)}
-                </div>
-              )}
-              <span className="text-xs text-gray-500">
-                {upload.totalChunks != null && upload.totalChunks > 0
-                  ? `${upload.chunksUploaded ?? 0}/${upload.totalChunks} chunks`
-                  : `${formatBytes(upload.bytesUploaded)} / ${formatBytes(upload.totalBytes)}`}
-              </span>
-              {upload.status === 'uploading' && (
-                <button
-                  onClick={() => onCancel(id)}
-                  className="text-red-500 hover:text-red-600 text-xs font-medium"
-                  title="Cancel upload"
-                >
-                  Cancel
-                </button>
-              )}
-              {upload.status === 'complete' && (
-                <CheckCircle size={16} className="text-green-500" />
-              )}
-              {upload.status === 'error' && <AlertCircle size={16} className="text-red-500" />}
-              {upload.status === 'error' && onRetry && upload.canRetry && (
-                <button
-                  onClick={() => onRetry(id)}
-                  className="text-blue-500 hover:text-blue-600 flex items-center gap-1 text-xs"
-                  title="Retry upload"
-                >
-                  <RefreshCw size={14} />
-                  Retry
-                </button>
-              )}
+            <div className="h-2 w-full rounded-full bg-surface-muted">
+              <div
+                className={cn(
+                  'h-2 rounded-full transition-all duration-normal',
+                  upload.status === 'error'
+                    ? 'bg-danger'
+                    : upload.zkEnabled
+                      ? 'bg-gradient-to-r from-success to-accent'
+                      : 'bg-gradient-to-r from-primary to-accent'
+                )}
+                style={{ width: `${upload.progress}%` }}
+              />
             </div>
+            {upload.error && (
+              <p className="mt-1 text-caption text-danger">{upload.error}</p>
+            )}
+            {upload.zkEnabled && upload.status === 'uploading' && (
+              <p className="mt-1 flex items-center gap-1 text-caption text-success">
+                <Shield className="h-3 w-3" />
+                Client-side encryption active
+              </p>
+            )}
           </div>
-          <div
-            className={`w-full h-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}
-          >
-            <div
-              className={`h-2 rounded-full transition-all duration-300 ${
-                upload.status === 'error'
-                  ? 'bg-red-500'
-                  : upload.zkEnabled
-                    ? 'bg-gradient-to-r from-green-500 to-emerald-600'
-                    : 'bg-gradient-to-r from-blue-500 to-purple-600'
-              }`}
-              style={{ width: `${upload.progress}%` }}
-            />
-          </div>
-          {upload.error && (
-            <p className="text-xs text-red-500 mt-1">{upload.error}</p>
-          )}
-          {upload.zkEnabled && upload.status === 'uploading' && (
-            <p className="text-xs text-green-600 dark:text-green-400 mt-1 flex items-center gap-1">
-              <Shield size={10} />
-              Client-side encryption active
-            </p>
-          )}
-        </div>
-      ))}
-    </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 };
 

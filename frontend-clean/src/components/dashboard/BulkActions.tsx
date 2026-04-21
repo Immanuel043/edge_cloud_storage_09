@@ -1,9 +1,12 @@
 import React from 'react';
 import { Download, Trash2, X, Share2 } from 'lucide-react';
 import type { BulkActionsProps } from './types';
+import { Button, IconButton } from '@/components/ui';
 
 /**
- * BulkActions - Action buttons for selected files
+ * BulkActions — toolbar shown when one or more files are selected. Each
+ * handler stops propagation so clicks don't bubble to the grid background
+ * (which clears the selection).
  */
 const BulkActions: React.FC<BulkActionsProps> = ({
   selectedCount,
@@ -11,9 +14,7 @@ const BulkActions: React.FC<BulkActionsProps> = ({
   onDelete,
   onShare,
   onClear,
-  darkMode,
 }) => {
-  // Stop propagation to prevent parent container from clearing selection
   const handleClick = (
     e: React.MouseEvent<HTMLButtonElement>,
     callback: () => void
@@ -24,47 +25,49 @@ const BulkActions: React.FC<BulkActionsProps> = ({
 
   return (
     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-      <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-        {selectedCount} selected
-      </span>
-      <button
+      <span className="text-body-sm text-fg-subtle">{selectedCount} selected</span>
+      <Button
+        variant="primary"
+        size="sm"
         onClick={(e) => handleClick(e, onShare)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors font-medium text-sm"
+        leftIcon={<Share2 className="h-4 w-4" />}
         title="Share selected files"
       >
-        <Share2 size={16} />
         Share
-      </button>
-      <button
+      </Button>
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={(e) => handleClick(e, onDownload)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium text-sm"
+        leftIcon={<Download className="h-4 w-4" />}
         title="Download selected"
       >
-        <Download size={16} />
         Download
-      </button>
-      <button
+      </Button>
+      <Button
+        variant="destructive"
+        size="sm"
         onClick={(e) => {
           e.stopPropagation();
-          if (window.confirm(`Are you sure you want to delete ${selectedCount} selected file(s)?`)) {
+          if (
+            window.confirm(`Are you sure you want to delete ${selectedCount} selected file(s)?`)
+          ) {
             onDelete();
           }
         }}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium text-sm"
+        leftIcon={<Trash2 className="h-4 w-4" />}
         title="Delete selected"
       >
-        <Trash2 size={16} />
         Delete
-      </button>
-      <button
+      </Button>
+      <IconButton
+        variant="ghost"
+        size="sm"
+        aria-label="Clear selection"
         onClick={(e) => handleClick(e, onClear)}
-        className={`p-1.5 rounded-lg transition-colors ${
-          darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'
-        }`}
-        title="Clear selection"
       >
-        <X size={18} />
-      </button>
+        <X className="h-4 w-4" />
+      </IconButton>
     </div>
   );
 };

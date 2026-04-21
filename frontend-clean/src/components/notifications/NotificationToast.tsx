@@ -1,26 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 import { useNotification } from '../../contexts/NotificationContext';
-import type { NotificationItemProps } from './types';
+import type { NotificationItemProps, NotificationType } from './types';
+import { cn } from '@/lib/cn';
 
 /**
- * NotificationToast Component
- *
- * Displays a stack of toast notifications in the top-right corner.
- * Automatically renders based on NotificationContext state.
- *
- * Features:
- * - Auto-dismiss after duration
- * - Manual dismiss button
- * - Action button support
- * - Slide-in animation
- * - Color-coded by type
+ * NotificationToast — stack of toast notifications anchored bottom-left.
+ * Colour-coded by `NotificationType` via Signal semantic tokens so both
+ * light and dark themes pick up the palette automatically.
  */
 const NotificationToast: React.FC = () => {
   const { notifications, dismissNotification } = useNotification();
 
   return (
-    <div className="fixed bottom-4 left-4 z-50 flex flex-col gap-2 pointer-events-none">
+    <div className="pointer-events-none fixed bottom-4 left-4 z-50 flex flex-col gap-2">
       {notifications.map((notification) => (
         <NotificationItem
           key={notification.id}
@@ -32,101 +25,85 @@ const NotificationToast: React.FC = () => {
   );
 };
 
-/**
- * Individual notification item component
- *
- * Handles entrance/exit animations and displays notification content.
- */
+const toneMap: Record<
+  NotificationType,
+  { icon: React.ReactNode; border: string; iconColor: string }
+> = {
+  success: {
+    icon: <CheckCircle className="h-5 w-5" />,
+    border: 'border-l-success',
+    iconColor: 'text-success',
+  },
+  error: {
+    icon: <XCircle className="h-5 w-5" />,
+    border: 'border-l-danger',
+    iconColor: 'text-danger',
+  },
+  warning: {
+    icon: <AlertTriangle className="h-5 w-5" />,
+    border: 'border-l-warning',
+    iconColor: 'text-warning',
+  },
+  info: {
+    icon: <Info className="h-5 w-5" />,
+    border: 'border-l-primary',
+    iconColor: 'text-primary',
+  },
+};
+
 function NotificationItem({ notification, onDismiss }: NotificationItemProps): React.ReactElement {
   const [isVisible, setIsVisible] = useState<boolean>(false);
   const [isLeaving, setIsLeaving] = useState<boolean>(false);
 
   useEffect(() => {
-    // Trigger entrance animation
-    setTimeout(() => setIsVisible(true), 10);
+    const handle = setTimeout(() => setIsVisible(true), 10);
+    return () => clearTimeout(handle);
   }, []);
 
   const handleDismiss = (): void => {
     setIsLeaving(true);
     setTimeout(() => {
       onDismiss(notification.id);
-    }, 300); // Match animation duration
+    }, 300);
   };
 
-  /**
-   * Get icon component based on notification type
-   */
-  const getIcon = (): React.ReactElement => {
-    switch (notification.type) {
-      case 'success':
-        return <CheckCircle className="w-5 h-5 text-green-600" />;
-      case 'error':
-        return <XCircle className="w-5 h-5 text-red-600" />;
-      case 'warning':
-        return <AlertTriangle className="w-5 h-5 text-yellow-600" />;
-      case 'info':
-      default:
-        return <Info className="w-5 h-5 text-blue-600" />;
-    }
-  };
-
-  /**
-   * Get border color class based on notification type
-   */
-  const getBorderColor = (): string => {
-    switch (notification.type) {
-      case 'success':
-        return 'border-green-500';
-      case 'error':
-        return 'border-red-500';
-      case 'warning':
-        return 'border-yellow-500';
-      case 'info':
-      default:
-        return 'border-blue-500';
-    }
-  };
+  const tone = toneMap[notification.type];
 
   return (
     <div
-      className={`
-        pointer-events-auto
-        bg-white rounded-lg shadow-lg p-4
-        min-w-[320px] max-w-[400px]
-        border-l-4 ${getBorderColor()}
-        transform transition-all duration-300 ease-out
-        ${isVisible && !isLeaving ? 'translate-x-0 opacity-100' : '-translate-x-full opacity-0'}
-      `}
+      role="status"
+      className={cn(
+        'pointer-events-auto min-w-[320px] max-w-[400px] rounded-xl border border-border border-l-4 bg-surface-elevated p-4 shadow-lg',
+        'transform transition-all duration-[300ms] ease-out',
+        tone.border,
+        isVisible && !isLeaving ? 'translate-x-0 opacity-100' : '-translate-x-full opacity-0'
+      )}
     >
       <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div className="flex-shrink-0 mt-0.5">{getIcon()}</div>
+        <div className={cn('mt-0.5 flex-shrink-0', tone.iconColor)}>{tone.icon}</div>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-gray-900 leading-relaxed">{notification.message}</p>
+        <div className="min-w-0 flex-1">
+          <p className="text-body-sm leading-relaxed text-fg">{notification.message}</p>
 
-          {/* Action Button */}
           {notification.action && (
             <button
               onClick={() => {
                 notification.action?.onClick();
                 handleDismiss();
               }}
-              className="mt-2 text-sm font-medium text-blue-600 hover:text-blue-700"
+              className="mt-2 text-body-sm font-medium text-primary hover:text-primary/80"
             >
               {notification.action.label}
             </button>
           )}
         </div>
 
-        {/* Dismiss Button */}
         <button
           onClick={handleDismiss}
-          className="flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
+          className="flex-shrink-0 text-fg-subtle transition-colors hover:text-fg-muted"
           aria-label="Dismiss notification"
         >
-          <X className="w-4 h-4" />
+          <X className="h-4 w-4" />
         </button>
       </div>
     </div>

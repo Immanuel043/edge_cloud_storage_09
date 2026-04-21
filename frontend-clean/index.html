@@ -4,7 +4,26 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>Edge Cloud Storage</title>
+
+    <!--
+      Theme boot script — runs synchronously before React mounts so the first
+      paint is the correct theme. Prevents the flash-of-light that an
+      in-React useEffect would cause. Honors (in order): explicit user
+      preference from localStorage, OS `prefers-color-scheme`, default light.
+      See docs/DESIGN_TOKENS.md §7b.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var dark = stored === 'dark' || (stored == null && prefersDark);
+          if (dark) document.documentElement.classList.add('dark');
+        } catch (_) { /* storage blocked — fall through to light */ }
+      })();
+    </script>
     <!-- PDF.js for PDF thumbnail generation (ZK encryption) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script>

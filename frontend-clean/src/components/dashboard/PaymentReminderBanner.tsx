@@ -1,53 +1,43 @@
 import React, { useState, useEffect } from 'react';
-import { CreditCard, X, Calendar, AlertCircle } from 'lucide-react';
+import { CreditCard, Calendar, AlertCircle, X } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import type { PaymentReminderBannerProps, PaymentReminderData } from './types';
+import { IconButton } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
-type UrgencyLevel = 'red' | 'orange' | 'blue';
+type UrgencyLevel = 'danger' | 'warning' | 'primary';
 
-interface ColorScheme {
-  gradient: string;
+interface UrgencyScheme {
   border: string;
-  icon: string;
-  text: string;
-  subtext: string;
-  button: string;
+  bg: string;
+  accent: string;
 }
 
-const colors: Record<UrgencyLevel, ColorScheme> = {
-  red: {
-    gradient: 'from-red-50 to-pink-50',
-    border: 'border-red-200',
-    icon: 'bg-red-100 text-red-600',
-    text: 'text-red-900',
-    subtext: 'text-red-700',
-    button: 'bg-red-600 hover:bg-red-700 text-white',
+const urgencyMap: Record<UrgencyLevel, UrgencyScheme> = {
+  danger: {
+    border: 'border-danger/30',
+    bg: 'bg-danger/10',
+    accent: 'text-danger',
   },
-  orange: {
-    gradient: 'from-orange-50 to-yellow-50',
-    border: 'border-orange-200',
-    icon: 'bg-orange-100 text-orange-600',
-    text: 'text-orange-900',
-    subtext: 'text-orange-700',
-    button: 'bg-orange-600 hover:bg-orange-700 text-white',
+  warning: {
+    border: 'border-warning/30',
+    bg: 'bg-warning/10',
+    accent: 'text-warning',
   },
-  blue: {
-    gradient: 'from-blue-50 to-indigo-50',
-    border: 'border-blue-200',
-    icon: 'bg-blue-100 text-blue-600',
-    text: 'text-blue-900',
-    subtext: 'text-blue-700',
-    button: 'bg-blue-600 hover:bg-blue-700 text-white',
+  primary: {
+    border: 'border-primary/30',
+    bg: 'bg-primary/10',
+    accent: 'text-primary',
   },
 };
 
 /**
- * PaymentReminderBanner Component
- *
- * Shows upcoming payment reminder for subscription renewals.
+ * PaymentReminderBanner — tier-coloured reminder shown a few days before a
+ * paid subscription renews. Urgency rises (primary → warning → danger) as
+ * the due date nears; dismissal is persisted in localStorage for 24 hours.
  */
-const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode: _darkMode }) => {
+const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = () => {
   const { subscription, loading: subscriptionLoading } = useSubscription();
   const [paymentData, setPaymentData] = useState<PaymentReminderData | null>(null);
   const [isVisible, setIsVisible] = useState<boolean>(false);
@@ -55,13 +45,12 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
   const [hasFetched, setHasFetched] = useState<boolean>(false);
 
   useEffect(() => {
-    // Only fetch once if subscription is loaded and user is on a paid plan
     if (!subscriptionLoading && !hasFetched) {
       if (subscription) {
         const tierName = (subscription.plan as { tier_name?: string })?.tier_name;
         if (tierName && tierName !== 'free') {
           setHasFetched(true);
-          fetchUpcomingPayment();
+          void fetchUpcomingPayment();
         } else {
           setLoading(false);
         }
@@ -74,11 +63,9 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
   const wasDismissedToday = (): boolean => {
     const dismissal = localStorage.getItem('payment_reminder_dismissed');
     if (!dismissal) return false;
-
     const dismissedAt = parseInt(dismissal, 10);
     const now = Date.now();
     const oneDayMs = 24 * 60 * 60 * 1000;
-
     return now - dismissedAt < oneDayMs;
   };
 
@@ -87,22 +74,17 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
       const response = await fetch(`${API_URL}/api/v1/billing/upcoming-payment`, {
         credentials: 'include',
       });
-
-      // Handle 404 silently - means no upcoming payment or free plan
       if (response.status === 404) {
         setLoading(false);
         return;
       }
-
       if (response.ok) {
         const data = (await response.json()) as PaymentReminderData;
-
         if (!wasDismissedToday()) {
           setPaymentData(data);
           setIsVisible(true);
         }
       } else {
-        // Log other errors (non-404)
         console.error('Failed to fetch upcoming payment:', response.status, response.statusText);
       }
     } catch (error: unknown) {
@@ -121,71 +103,66 @@ const PaymentReminderBanner: React.FC<PaymentReminderBannerProps> = ({ darkMode:
     return null;
   }
 
-  const formatDate = (isoDate: string): string => {
-    return new Date(isoDate).toLocaleDateString('en-US', {
+  const formatDate = (isoDate: string): string =>
+    new Date(isoDate).toLocaleDateString('en-US', {
       month: 'long',
       day: 'numeric',
       year: 'numeric',
     });
+
+  const getUrgency = (days: number): UrgencyLevel => {
+    if (days <= 1) return 'danger';
+    if (days <= 3) return 'warning';
+    return 'primary';
   };
 
-  const getUrgencyColor = (days: number): UrgencyLevel => {
-    if (days <= 1) return 'red';
-    if (days <= 3) return 'orange';
-    return 'blue';
-  };
-
-  const urgency = getUrgencyColor(paymentData.days_until_payment);
-  const color = colors[urgency];
+  const urgency = getUrgency(paymentData.days_until_payment);
+  const scheme = urgencyMap[urgency];
 
   return (
-    <div className={`bg-gradient-to-r ${color.gradient} border ${color.border} rounded-lg p-4 mb-4`}>
+    <div className={cn('mb-4 rounded-xl border p-4', scheme.border, scheme.bg)}>
       <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div className={`p-2 ${color.icon} rounded-lg flex-shrink-0`}>
-          <CreditCard size={20} />
+        <div className={cn('flex-shrink-0 rounded-lg p-2', scheme.bg, scheme.accent)}>
+          <CreditCard className="h-5 w-5" />
         </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
-              <h3 className={`font-semibold ${color.text} flex items-center gap-2`}>
+              <h3 className="flex items-center gap-2 font-semibold text-fg">
                 {paymentData.days_until_payment <= 1 && (
-                  <AlertCircle size={16} className="flex-shrink-0" />
+                  <AlertCircle className={cn('h-4 w-4 flex-shrink-0', scheme.accent)} />
                 )}
-                Payment Reminder
+                Payment reminder
               </h3>
-              <p className={`text-sm ${color.subtext} mt-1`}>
-                Your <strong>{paymentData.plan_name}</strong> subscription (
+              <p className="mt-1 text-body-sm text-fg-muted">
+                Your <strong className="text-fg">{paymentData.plan_name}</strong> subscription (
                 {paymentData.billing_cycle.replace('_', ' ')}) will renew in{' '}
-                <strong>
+                <strong className="text-fg">
                   {paymentData.days_until_payment} day
                   {paymentData.days_until_payment !== 1 ? 's' : ''}
                 </strong>
                 .
               </p>
 
-              {/* Payment Details */}
-              <div className="mt-3 flex items-center gap-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <Calendar size={14} className={color.subtext} />
-                  <span className={color.text}>{formatDate(paymentData.payment_due_date)}</span>
+              <div className="mt-3 flex flex-wrap items-center gap-4 text-body-sm">
+                <div className="flex items-center gap-2 text-fg-muted">
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span className="text-fg">{formatDate(paymentData.payment_due_date)}</span>
                 </div>
-                <div className={`font-semibold ${color.text}`}>
+                <div className={cn('font-semibold', scheme.accent)}>
                   ₹{paymentData.amount_due.toFixed(2)}
                 </div>
               </div>
             </div>
 
-            {/* Dismiss Button */}
-            <button
+            <IconButton
+              variant="ghost"
+              size="sm"
               onClick={handleDismiss}
-              className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
               aria-label="Dismiss"
             >
-              <X size={18} />
-            </button>
+              <X className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
       </div>

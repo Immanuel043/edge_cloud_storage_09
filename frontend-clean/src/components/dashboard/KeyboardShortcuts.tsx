@@ -1,16 +1,12 @@
 import React from 'react';
-import { X } from 'lucide-react';
 import type { KeyboardShortcutsProps, KeyboardShortcut } from './types';
+import { Modal, ModalHeader, ModalBody } from '@/components/ui';
 
 /**
- * KeyboardShortcuts - Modal showing available keyboard shortcuts
+ * KeyboardShortcuts — modal listing global keyboard shortcuts. Shortcut set
+ * differs between Edge (full shortcuts) and ZK (base set) dashboards.
  */
-const KeyboardShortcuts: React.FC<KeyboardShortcutsProps> = ({
-  onClose,
-  darkMode,
-  isZK = false,
-}) => {
-  // Base shortcuts available in both dashboards
+const KeyboardShortcuts: React.FC<KeyboardShortcutsProps> = ({ onClose, isZK = false }) => {
   const baseShortcuts: KeyboardShortcut[] = [
     { keys: 'Ctrl+U', description: 'Upload files' },
     { keys: 'Ctrl+N', description: 'New folder' },
@@ -19,7 +15,6 @@ const KeyboardShortcuts: React.FC<KeyboardShortcutsProps> = ({
     { keys: 'Shift+?', description: 'Show keyboard shortcuts' },
   ];
 
-  // Additional shortcuts for non-ZK dashboard
   const nonZKShortcuts: KeyboardShortcut[] = [
     { keys: 'Ctrl+F', description: 'Focus search' },
     { keys: 'Delete', description: 'Delete selected files' },
@@ -29,7 +24,6 @@ const KeyboardShortcuts: React.FC<KeyboardShortcutsProps> = ({
     { keys: 'Ctrl+4', description: 'Go to Favorites' },
   ];
 
-  // Build shortcuts list based on mode
   const shortcuts: KeyboardShortcut[] = isZK
     ? baseShortcuts
     : [
@@ -40,38 +34,24 @@ const KeyboardShortcuts: React.FC<KeyboardShortcutsProps> = ({
       ];
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className={`p-6 rounded-lg max-w-md w-full ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-        <div className="flex justify-between items-center mb-4">
-          <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            Keyboard Shortcuts
-          </h3>
-          <button
-            onClick={onClose}
-            className={`p-1 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="space-y-2">
+    <Modal open onClose={onClose} size="sm">
+      <ModalHeader>Keyboard shortcuts</ModalHeader>
+      <ModalBody>
+        <div className="space-y-1">
           {shortcuts.map(({ keys, description }) => (
-            <div key={keys} className="flex justify-between items-center py-2">
-              <kbd
-                className={`px-2 py-1 rounded text-sm font-mono ${
-                  darkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-200 text-gray-700'
-                }`}
-              >
+            <div
+              key={keys}
+              className="flex items-center justify-between rounded-md py-2"
+            >
+              <kbd className="rounded-md border border-border bg-surface-muted px-2 py-1 font-mono text-body-sm text-fg">
                 {keys}
               </kbd>
-              <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                {description}
-              </span>
+              <span className="text-body-sm text-fg-muted">{description}</span>
             </div>
           ))}
         </div>
-      </div>
-    </div>
+      </ModalBody>
+    </Modal>
   );
 };
 

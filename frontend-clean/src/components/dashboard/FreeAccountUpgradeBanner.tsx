@@ -4,13 +4,16 @@ import { useNavigate } from 'react-router-dom';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useAuth } from '../../contexts/AuthContext';
 import type { FreeAccountUpgradeBannerProps } from './types';
+import { Badge, Button, IconButton } from '@/components/ui';
 
 /**
- * FreeAccountUpgradeBanner Component
- *
- * Displays an upgrade banner for free tier users.
+ * FreeAccountUpgradeBanner — upgrade nudge for free-tier users. Renders two
+ * variants:
+ *   - ZK users get the premium security-focused hero with gradient trim.
+ *   - Edge users get a compact upgrade card.
+ * Both dismiss permanently via localStorage.
  */
-const FreeAccountUpgradeBanner: React.FC<FreeAccountUpgradeBannerProps> = ({ darkMode }) => {
+const FreeAccountUpgradeBanner: React.FC<FreeAccountUpgradeBannerProps> = () => {
   const navigate = useNavigate();
   const { subscription, loading } = useSubscription();
   const { zkEnabled } = useAuth();
@@ -19,7 +22,6 @@ const FreeAccountUpgradeBanner: React.FC<FreeAccountUpgradeBannerProps> = ({ dar
   useEffect(() => {
     if (loading) return;
 
-    // Only show for free tier users
     const subRecord = subscription as Record<string, unknown> | null;
     const plan = subRecord?.plan as Record<string, unknown> | undefined;
 
@@ -48,109 +50,96 @@ const FreeAccountUpgradeBanner: React.FC<FreeAccountUpgradeBannerProps> = ({ dar
     return null;
   }
 
-  // ZK Premium Banner - Enhanced security-focused design
+  // ZK Premium hero — gradient trim preserved, tokens swapped
   if (zkEnabled) {
     return (
-      <div
-        className={`relative overflow-hidden bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 rounded-xl p-0.5 mb-4 shadow-lg ${
-          darkMode ? 'shadow-purple-900/50' : 'shadow-purple-500/30'
-        }`}
-      >
-        {/* Inner container with dark background */}
-        <div
-          className={`relative bg-gradient-to-br ${
-            darkMode
-              ? 'from-gray-900 via-gray-900 to-gray-800'
-              : 'from-white via-purple-50 to-indigo-50'
-          } rounded-lg p-5`}
-        >
-          {/* Sparkle effect overlay */}
-          <div className="absolute top-2 right-20 opacity-20">
-            <Sparkles className="text-purple-500" size={24} />
+      <div className="relative mb-4 overflow-hidden rounded-xl bg-gradient-to-br from-primary via-accent to-danger p-0.5 shadow-lg">
+        <div className="relative rounded-[10px] bg-surface-elevated p-5">
+          <div className="absolute right-20 top-2 opacity-20">
+            <Sparkles className="h-6 w-6 text-accent" />
           </div>
 
           <div className="flex items-start gap-4">
-            {/* Premium Icon with Glow */}
-            <div className="relative">
-              <div className="absolute inset-0 bg-gradient-to-br from-purple-600 to-pink-600 rounded-xl blur-md opacity-50"></div>
-              <div className="relative p-3 bg-gradient-to-br from-purple-600 to-pink-600 rounded-xl flex-shrink-0">
-                <Shield className="text-white" size={24} />
+            <div className="relative flex-shrink-0">
+              <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-accent to-danger opacity-50 blur-md" />
+              <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-danger text-white">
+                <Shield className="h-6 w-6" />
               </div>
             </div>
 
-            {/* Content */}
-            <div className="flex-1 min-w-0">
+            <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <h3 className={`font-bold text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      Unlock Zero-Knowledge Premium
+                  <div className="mb-2 flex items-center gap-2">
+                    <h3 className="text-h3 font-bold text-fg">
+                      Unlock zero-knowledge premium
                     </h3>
-                    <span className="px-2 py-0.5 text-xs font-bold bg-gradient-to-r from-yellow-400 to-orange-400 text-gray-900 rounded-full">
-                      EXCLUSIVE
-                    </span>
+                    <Badge variant="warning" size="sm">
+                      Exclusive
+                    </Badge>
                   </div>
 
-                  <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'} mb-4`}>
-                    Enterprise-grade encryption with military-level security. Your data, absolutely
-                    unreadable by anyone but you.
+                  <p className="mb-4 text-body-sm text-fg-muted">
+                    Enterprise-grade encryption with military-level security. Your data,
+                    absolutely unreadable by anyone but you.
                   </p>
 
-                  {/* Premium Benefits with Icons */}
-                  <div className={`space-y-2.5 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                  <div className="space-y-2.5 text-body-sm text-fg">
                     <div className="flex items-center gap-3">
-                      <div className="p-1.5 bg-purple-600/20 rounded-lg">
-                        <Lock className="text-purple-600 dark:text-purple-400" size={14} />
+                      <div className="rounded-lg bg-accent/15 p-1.5">
+                        <Lock className="h-3.5 w-3.5 text-accent" />
                       </div>
-                      <span className="font-medium">Up to 1TB Zero-Knowledge Encrypted Storage</span>
+                      <span className="font-medium">
+                        Up to 1TB zero-knowledge encrypted storage
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <div className="p-1.5 bg-indigo-600/20 rounded-lg">
-                        <Shield className="text-indigo-600 dark:text-indigo-400" size={14} />
+                      <div className="rounded-lg bg-primary/15 p-1.5">
+                        <Shield className="h-3.5 w-3.5 text-primary" />
                       </div>
-                      <span className="font-medium">Military-Grade E2E Encryption (AES-256-GCM)</span>
+                      <span className="font-medium">
+                        Military-grade E2E encryption (AES-256-GCM)
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <div className="p-1.5 bg-pink-600/20 rounded-lg">
-                        <Sparkles className="text-pink-600 dark:text-pink-400" size={14} />
+                      <div className="rounded-lg bg-danger/15 p-1.5">
+                        <Sparkles className="h-3.5 w-3.5 text-danger" />
                       </div>
-                      <span className="font-medium">Priority Support & Advanced Security Features</span>
+                      <span className="font-medium">
+                        Priority support &amp; advanced security features
+                      </span>
                     </div>
                   </div>
 
-                  {/* Pricing Badge */}
-                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-purple-600/10 to-pink-600/10 border border-purple-600/20 rounded-lg">
-                    <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Starting at
-                    </span>
-                    <span className="text-lg font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                  <div className="mt-4 inline-flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1">
+                    <span className="text-caption text-fg-muted">Starting at</span>
+                    <span className="bg-gradient-to-r from-accent to-danger bg-clip-text text-body-lg font-bold text-transparent">
                       ₹1,499/year
                     </span>
                   </div>
 
-                  {/* Action Button */}
                   <div className="mt-5">
-                    <button
+                    <Button
+                      variant="primary"
+                      size="md"
                       onClick={handleUpgrade}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white rounded-lg font-semibold text-sm transition-all shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50"
+                      leftIcon={<Shield className="h-4 w-4" />}
+                      rightIcon={<ArrowRight className="h-4 w-4" />}
                     >
-                      <Shield size={16} />
-                      Upgrade to Premium
-                      <ArrowRight size={16} />
-                    </button>
+                      Upgrade to premium
+                    </Button>
                   </div>
                 </div>
 
-                {/* Dismiss Button */}
-                <button
+                <IconButton
+                  variant="ghost"
+                  size="sm"
                   onClick={handleDismiss}
-                  className={`${
-                    darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'
-                  } transition-colors flex-shrink-0 mt-1`}
                   aria-label="Dismiss permanently"
+                  className="mt-1 flex-shrink-0"
                 >
-                  <X size={18} />
-                </button>
+                  <X className="h-4 w-4" />
+                </IconButton>
               </div>
             </div>
           </div>
@@ -159,71 +148,60 @@ const FreeAccountUpgradeBanner: React.FC<FreeAccountUpgradeBannerProps> = ({ dar
     );
   }
 
-  // Normal Storage Banner - Standard design
+  // Edge (normal storage) compact upgrade card
   return (
-    <div
-      className={`bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4 mb-4 ${
-        darkMode ? 'dark:from-purple-900/20 dark:to-blue-900/20 dark:border-purple-800' : ''
-      }`}
-    >
+    <div className="mb-4 rounded-lg border border-accent/30 bg-gradient-to-r from-accent/10 to-primary/10 p-4">
       <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div className="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-lg flex-shrink-0">
-          <Crown className="text-purple-600 dark:text-purple-400" size={20} />
+        <div className="flex-shrink-0 rounded-lg bg-accent/15 p-2 text-accent">
+          <Crown className="h-5 w-5" />
         </div>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
-              <h3
-                className={`font-semibold ${darkMode ? 'text-purple-300' : 'text-purple-900'} flex items-center gap-2`}
-              >
-                <TrendingUp size={16} />
-                Upgrade Your Storage
+              <h3 className="flex items-center gap-2 font-semibold text-fg">
+                <TrendingUp className="h-4 w-4" />
+                Upgrade your storage
               </h3>
-              <p className={`text-sm ${darkMode ? 'text-purple-400' : 'text-purple-700'} mt-1`}>
+              <p className="mt-1 text-body-sm text-fg-muted">
                 Unlock more storage, faster speeds, and premium features with our paid plans.
               </p>
 
-              {/* Benefits */}
-              <div
-                className={`mt-3 space-y-1 text-sm ${darkMode ? 'text-purple-300' : 'text-purple-800'}`}
-              >
+              <div className="mt-3 space-y-1 text-body-sm text-fg">
                 <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-purple-500"></div>
+                  <div className="h-1.5 w-1.5 rounded-full bg-accent" />
                   <span>Up to 5TB of storage</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-purple-500"></div>
-                  <span>Priority support & AI features</span>
+                  <div className="h-1.5 w-1.5 rounded-full bg-accent" />
+                  <span>Priority support &amp; AI features</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-purple-500"></div>
+                  <div className="h-1.5 w-1.5 rounded-full bg-accent" />
                   <span>Starting at just ₹899/year</span>
                 </div>
               </div>
 
-              {/* Action Button */}
               <div className="mt-4">
-                <button
+                <Button
+                  variant="primary"
+                  size="sm"
                   onClick={handleUpgrade}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-medium text-sm transition-colors"
+                  rightIcon={<ArrowRight className="h-4 w-4" />}
                 >
-                  View Plans
-                  <ArrowRight size={16} />
-                </button>
+                  View plans
+                </Button>
               </div>
             </div>
 
-            {/* Dismiss Button */}
-            <button
+            <IconButton
+              variant="ghost"
+              size="sm"
               onClick={handleDismiss}
-              className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
               aria-label="Dismiss permanently"
             >
-              <X size={18} />
-            </button>
+              <X className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
       </div>

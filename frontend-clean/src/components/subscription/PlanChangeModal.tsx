@@ -1,17 +1,34 @@
 import { useState, useEffect, useCallback, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, ArrowRight, HardDrive, Gauge, Check, AlertCircle, CreditCard } from 'lucide-react';
+import { ArrowRight, HardDrive, Gauge, Check, AlertCircle, CreditCard } from 'lucide-react';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useAuth } from '../../contexts/AuthContext';
 import subscriptionService from '../../services/subscriptionService';
-import type { PlanChangeModalProps, PaymentGatewayInfo, FeatureObject, PlanDisplay } from '../../types/subscription-components.types';
+import type {
+  PlanChangeModalProps,
+  PaymentGatewayInfo,
+  FeatureObject,
+  PlanDisplay,
+} from '../../types/subscription-components.types';
 import type { PreviewChangeResponse } from '../../services/subscriptionService';
 import type { PricingPlan } from '../../types/pricing.types';
 import { isPaymentGatewayInfo } from '../../types/subscription-components.types';
+import { cn } from '@/lib/cn';
+import {
+  Banner,
+  Button,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  Spinner,
+} from '@/components/ui';
 
 declare global {
   interface Window {
-    Razorpay: new (options: Record<string, unknown>) => { open: () => void; on: (event: string, handler: () => void) => void };
+    Razorpay: new (options: Record<string, unknown>) => {
+      open: () => void;
+      on: (event: string, handler: () => void) => void;
+    };
   }
 }
 
@@ -24,23 +41,21 @@ function loadRazorpaySDK(): Promise<void> {
     const script = document.createElement('script');
     script.src = 'https://checkout.razorpay.com/v1/checkout.js';
     script.onload = () => resolve();
-    script.onerror = () => { razorpayLoadPromise = null; reject(new Error('Failed to load Razorpay SDK')); };
+    script.onerror = () => {
+      razorpayLoadPromise = null;
+      reject(new Error('Failed to load Razorpay SDK'));
+    };
     document.head.appendChild(script);
   });
   return razorpayLoadPromise;
 }
 
 /**
- * PlanChangeModal
+ * PlanChangeModal — upgrade/downgrade confirmation.
  *
- * Confirmation modal for upgrading or downgrading subscription plans.
- *
- * Features:
- * - Shows before/after comparison
- * - Displays storage and bandwidth differences
- * - Shows pricing changes
- * - Handles Stripe redirect for paid plans
- * - Preview API call before confirmation
+ * Rebuilt on the `Modal` primitive for focus trap + ESC close. Preview API
+ * call, Stripe redirect, Razorpay SDK load, and dev_mode short-circuit are
+ * all preserved from the prior implementation.
  */
 export default function PlanChangeModal({
   isOpen,
@@ -49,7 +64,8 @@ export default function PlanChangeModal({
   initialBillingCycle,
 }: PlanChangeModalProps): ReactElement | null {
   const navigate = useNavigate();
-  const { subscription, upgrade, downgrade, previewChange, isUpgrade, refresh } = useSubscription();
+  const { subscription, upgrade, downgrade, previewChange, isUpgrade, refresh } =
+    useSubscription();
   const { user } = useAuth();
 
   const [preview, setPreview] = useState<PreviewChangeResponse | null>(null);
@@ -58,36 +74,35 @@ export default function PlanChangeModal({
   const [confirming, setConfirming] = useState<boolean>(false);
   const [paymentGateways, setPaymentGateways] = useState<PaymentGatewayInfo[]>([]);
   const [selectedGateway, setSelectedGateway] = useState<string>('');
-  const [selectedBillingCycle, setSelectedBillingCycle] = useState<'monthly' | 'six_months' | 'yearly'>(initialBillingCycle || 'monthly');
+  const [selectedBillingCycle, setSelectedBillingCycle] = useState<
+    'monthly' | 'six_months' | 'yearly'
+  >(initialBillingCycle || 'monthly');
   const [loadingGateways, setLoadingGateways] = useState<boolean>(false);
 
-  // Reset billing cycle when modal opens with a new initialBillingCycle
   useEffect(() => {
     if (isOpen && initialBillingCycle) {
       setSelectedBillingCycle(initialBillingCycle);
     }
   }, [isOpen, initialBillingCycle]);
 
-  // Load preview and payment gateways when modal opens
   useEffect(() => {
     if (isOpen && targetPlan) {
       void loadPreview();
       void loadPaymentGateways();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- loadPreview and loadPaymentGateways are stable useCallback refs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, targetPlan]);
 
   const loadPreview = useCallback(async (): Promise<void> => {
     if (!targetPlan) return;
-
     try {
       setLoading(true);
       setError(null);
       const data = await previewChange(targetPlan.plan_code);
       setPreview(data);
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      setError(error.message);
+      const e = err instanceof Error ? err : new Error(String(err));
+      setError(e.message);
     } finally {
       setLoading(false);
     }
@@ -97,9 +112,11 @@ export default function PlanChangeModal({
     try {
       setLoadingGateways(true);
       const data: unknown = await subscriptionService.getAvailablePaymentGateways();
-      
+
       if (Array.isArray(data)) {
-        const gateways = data.filter((item): item is PaymentGatewayInfo => isPaymentGatewayInfo(item));
+        const gateways = data.filter((item): item is PaymentGatewayInfo =>
+          isPaymentGatewayInfo(item)
+        );
         setPaymentGateways(gateways);
         const firstGateway = gateways[0];
         if (firstGateway) {
@@ -107,8 +124,8 @@ export default function PlanChangeModal({
         }
       }
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      console.error('Failed to load payment gateways:', error);
+      const e = err instanceof Error ? err : new Error(String(err));
+      console.error('Failed to load payment gateways:', e);
     } finally {
       setLoadingGateways(false);
     }
@@ -124,15 +141,16 @@ export default function PlanChangeModal({
       const isUpgrading = isUpgrade(targetPlan.plan_code);
       const planPrice = targetPlan.price_monthly ?? targetPlan.price_yearly ?? 0;
 
-      // Check if plan is paid
       if (isUpgrading && planPrice > 0) {
-        // Paid plan - use payment gateway (default to razorpay if none configured, e.g. DEV_MODE)
         const effectiveGateway = selectedGateway || 'razorpay';
 
         try {
-          // Find the gateway object to get the gateway type
-          const gateway = paymentGateways.find((g) => (g.id || g.name) === effectiveGateway);
-          const gatewayType = (gateway?.id || gateway?.name || effectiveGateway) as 'razorpay' | 'stripe';
+          const gateway = paymentGateways.find(
+            (g) => (g.id || g.name) === effectiveGateway
+          );
+          const gatewayType = (gateway?.id || gateway?.name || effectiveGateway) as
+            | 'razorpay'
+            | 'stripe';
 
           const paymentResult = await subscriptionService.createPayment(
             targetPlan.plan_code,
@@ -140,27 +158,29 @@ export default function PlanChangeModal({
             gatewayType
           );
 
-          // If free plan upgrade (or DEV_MODE), close modal and redirect
-          if (paymentResult.free_plan || (paymentResult as Record<string, unknown>).dev_mode) {
+          if (
+            paymentResult.free_plan ||
+            (paymentResult as Record<string, unknown>).dev_mode
+          ) {
             await refresh();
             onClose();
             setTimeout(() => navigate('/'), 500);
             return;
           }
 
-          // Stripe: redirect to hosted checkout page
           if (paymentResult.payment_url) {
             window.location.href = paymentResult.payment_url;
             return;
           }
 
-          // Razorpay: open checkout popup
           if (gatewayType === 'razorpay' && paymentResult.gateway_data) {
             const gd = paymentResult.gateway_data as Record<string, unknown>;
             try {
               await loadRazorpaySDK();
             } catch {
-              setError('Failed to load Razorpay SDK. Please check your connection and try again.');
+              setError(
+                'Failed to load Razorpay SDK. Please check your connection and try again.'
+              );
               setConfirming(false);
               return;
             }
@@ -170,8 +190,15 @@ export default function PlanChangeModal({
               currency: (gd.currency as string) || 'INR',
               order_id: gd.order_id,
               name: 'Edge Cloud Storage',
-              description: `${targetPlan.display_name} - ${selectedBillingCycle.replace('_', ' ')}`,
-              handler: async (response: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }) => {
+              description: `${targetPlan.display_name} - ${selectedBillingCycle.replace(
+                '_',
+                ' '
+              )}`,
+              handler: async (response: {
+                razorpay_payment_id: string;
+                razorpay_order_id: string;
+                razorpay_signature: string;
+              }) => {
                 try {
                   await subscriptionService.verifyPayment(
                     response.razorpay_payment_id,
@@ -202,38 +229,48 @@ export default function PlanChangeModal({
             return;
           }
         } catch (paymentErr: unknown) {
-          const error = paymentErr instanceof Error ? paymentErr : new Error(String(paymentErr));
-          setError(error.message);
+          const e =
+            paymentErr instanceof Error ? paymentErr : new Error(String(paymentErr));
+          setError(e.message);
           setConfirming(false);
           return;
         }
       } else {
-        // Free plan or downgrade - use direct upgrade/downgrade
         if (isUpgrading) {
           await upgrade(targetPlan.plan_code);
         } else {
           await downgrade(targetPlan.plan_code);
         }
         onClose();
-        // Redirect to dashboard after successful upgrade/downgrade
         setTimeout(() => {
           navigate('/');
         }, 500);
       }
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      setError(error.message);
+      const e = err instanceof Error ? err : new Error(String(err));
+      setError(e.message);
     } finally {
       setConfirming(false);
     }
-  }, [targetPlan, isUpgrade, selectedGateway, selectedBillingCycle, paymentGateways, upgrade, downgrade, onClose, navigate, refresh, user]);
+  }, [
+    targetPlan,
+    isUpgrade,
+    selectedGateway,
+    selectedBillingCycle,
+    paymentGateways,
+    upgrade,
+    downgrade,
+    onClose,
+    navigate,
+    refresh,
+    user,
+  ]);
 
   if (!isOpen || !targetPlan || !subscription) return null;
 
   const isUpgrading = isUpgrade(targetPlan.plan_code);
   const changeType = isUpgrading ? 'Upgrade' : 'Downgrade';
 
-  // Helper to get price display
   const getPriceDisplay = (plan: PricingPlan | PlanDisplay | null): string => {
     if (!plan) return 'Free';
     const planDisplay = plan as PlanDisplay;
@@ -247,7 +284,6 @@ export default function PlanChangeModal({
     return 'Free';
   };
 
-  // Helper to get plan name
   const getPlanName = (plan: PricingPlan | PlanDisplay | null): string => {
     if (!plan) return 'Unknown';
     const planDisplay = plan as PlanDisplay;
@@ -255,108 +291,111 @@ export default function PlanChangeModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
-      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h2 className="text-2xl font-bold text-gray-900">
-            {changeType} Plan
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-            aria-label="Close modal"
-          >
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      size="lg"
+      title={`${changeType} plan`}
+    >
+      <ModalBody className="max-h-[70vh] overflow-y-auto">
+        {loading ? (
+          <div className="text-center py-8">
+            <Spinner size="lg" className="mx-auto" />
+            <p className="text-body-sm text-fg-muted mt-4">Loading preview…</p>
+          </div>
+        ) : error ? (
+          <Banner variant="danger" title="Error">
+            {error}
+          </Banner>
+        ) : (
+          <>
+            {/* Plan comparison */}
+            <div className="rounded-lg bg-surface-muted p-6 mb-6">
+              <div className="grid grid-cols-3 gap-4 items-center">
+                <div className="text-center">
+                  <p className="text-body-sm text-fg-muted mb-2">Current plan</p>
+                  <p className="text-body font-semibold text-fg">
+                    {(subscription as { plan_name?: string }).plan_name ||
+                      subscription.plan_code}
+                  </p>
+                  <p className="text-body-sm text-fg-muted mt-1">
+                    {(subscription as { price_display?: string }).price_display || 'Free'}
+                  </p>
+                </div>
 
-        {/* Content */}
-        <div className="p-6">
-          {loading ? (
-            <div className="text-center py-8">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-              <p className="text-gray-600 mt-4">Loading preview...</p>
-            </div>
-          ) : error ? (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-red-900">Error</p>
-                  <p className="text-sm text-red-700 mt-1">{error}</p>
+                <div className="flex justify-center">
+                  <ArrowRight className="w-6 h-6 text-fg-subtle" />
+                </div>
+
+                <div className="text-center">
+                  <p className="text-body-sm text-fg-muted mb-2">New plan</p>
+                  <p className="text-body font-semibold text-primary">
+                    {getPlanName(targetPlan)}
+                  </p>
+                  <p className="text-body-sm text-fg-muted mt-1">
+                    {getPriceDisplay(targetPlan)}
+                  </p>
                 </div>
               </div>
             </div>
-          ) : (
-            <>
-              {/* Plan Comparison */}
-              <div className="bg-gray-50 rounded-lg p-6 mb-6">
-                <div className="grid grid-cols-3 gap-4 items-center">
-                  {/* Current Plan */}
-                  <div className="text-center">
-                    <p className="text-sm text-gray-600 mb-2">Current Plan</p>
-                    <p className="text-lg font-bold text-gray-900">
-                      {(subscription as { plan_name?: string }).plan_name || subscription.plan_code}
-                    </p>
-                    <p className="text-sm text-gray-600 mt-1">
-                      {(subscription as { price_display?: string }).price_display || 'Free'}
-                    </p>
-                  </div>
 
-                  {/* Arrow */}
-                  <div className="flex justify-center">
-                    <ArrowRight className="w-6 h-6 text-gray-400" />
-                  </div>
+            {/* Changes summary */}
+            <div className="space-y-3 mb-6">
+              <h3 className="font-semibold text-fg text-body">What's changing</h3>
 
-                  {/* New Plan */}
-                  <div className="text-center">
-                    <p className="text-sm text-gray-600 mb-2">New Plan</p>
-                    <p className="text-lg font-bold text-blue-600">{getPlanName(targetPlan)}</p>
-                    <p className="text-sm text-gray-600 mt-1">{getPriceDisplay(targetPlan)}</p>
-                  </div>
+              {/* Storage */}
+              <div className="flex items-start gap-3 p-4 bg-primary/5 border border-primary/20 rounded-lg">
+                <HardDrive className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-medium text-fg">Storage</p>
+                  <p className="text-body-sm text-fg-muted mt-1">
+                    {subscription.storage_quota_gb} GB → {targetPlan.storage_gb} GB
+                    <span
+                      className={cn(
+                        'ml-2 font-semibold',
+                        isUpgrading ? 'text-success' : 'text-warning'
+                      )}
+                    >
+                      ({isUpgrading ? '+' : ''}
+                      {Number(targetPlan.storage_gb) -
+                        Number(subscription.storage_quota_gb)}{' '}
+                      GB)
+                    </span>
+                  </p>
                 </div>
               </div>
 
-              {/* Changes Summary */}
-              <div className="space-y-4 mb-6">
-                <h3 className="font-semibold text-gray-900 text-lg">What's changing:</h3>
-
-                {/* Storage Change */}
-                <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-lg">
-                  <HardDrive className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <p className="font-medium text-gray-900">Storage</p>
-                    <p className="text-sm text-gray-600 mt-1">
-                      {subscription.storage_quota_gb} GB → {targetPlan.storage_gb} GB
-                      <span className={`ml-2 font-semibold ${isUpgrading ? 'text-green-600' : 'text-orange-600'}`}>
-                        ({isUpgrading ? '+' : ''}{Number(targetPlan.storage_gb) - Number(subscription.storage_quota_gb)} GB)
-                      </span>
-                    </p>
-                  </div>
+              {/* Bandwidth */}
+              <div className="flex items-start gap-3 p-4 bg-success/5 border border-success/20 rounded-lg">
+                <Gauge className="w-5 h-5 text-success shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-medium text-fg">Bandwidth</p>
+                  <p className="text-body-sm text-fg-muted mt-1">
+                    {subscription.bandwidth_quota_mbps} Mbps → {targetPlan.bandwidth_mbps}{' '}
+                    Mbps
+                    <span
+                      className={cn(
+                        'ml-2 font-semibold',
+                        isUpgrading ? 'text-success' : 'text-warning'
+                      )}
+                    >
+                      ({isUpgrading ? '+' : ''}
+                      {Number(targetPlan.bandwidth_mbps) -
+                        Number(subscription.bandwidth_quota_mbps)}{' '}
+                      Mbps)
+                    </span>
+                  </p>
                 </div>
+              </div>
 
-                {/* Bandwidth Change */}
-                <div className="flex items-start gap-3 p-4 bg-green-50 rounded-lg">
-                  <Gauge className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <p className="font-medium text-gray-900">Bandwidth</p>
-                    <p className="text-sm text-gray-600 mt-1">
-                      {subscription.bandwidth_quota_mbps} Mbps → {targetPlan.bandwidth_mbps} Mbps
-                      <span className={`ml-2 font-semibold ${isUpgrading ? 'text-green-600' : 'text-orange-600'}`}>
-                        ({isUpgrading ? '+' : ''}{Number(targetPlan.bandwidth_mbps) - Number(subscription.bandwidth_quota_mbps)} Mbps)
-                      </span>
-                    </p>
-                  </div>
-                </div>
-
-                {/* Features */}
-                {targetPlan.features && Array.isArray(targetPlan.features) && targetPlan.features.length > 0 && (
-                  <div className="p-4 bg-purple-50 rounded-lg">
-                    <p className="font-medium text-gray-900 mb-2">Features included:</p>
+              {/* Features */}
+              {targetPlan.features &&
+                Array.isArray(targetPlan.features) &&
+                targetPlan.features.length > 0 && (
+                  <div className="p-4 bg-accent/5 border border-accent/20 rounded-lg">
+                    <p className="font-medium text-fg mb-2">Features included</p>
                     <div className="space-y-1">
                       {targetPlan.features.map((feature, index) => {
-                        // Handle both string features and object features
                         let featureText: string;
                         let isAvailable = true;
 
@@ -364,7 +403,8 @@ export default function PlanChangeModal({
                           featureText = feature;
                         } else if (feature && typeof feature === 'object') {
                           const featureObj = feature as FeatureObject;
-                          featureText = featureObj.description || featureObj.name || 'Feature';
+                          featureText =
+                            featureObj.description || featureObj.name || 'Feature';
                           isAvailable = featureObj.available !== false;
                         } else {
                           featureText = 'Feature';
@@ -372,8 +412,18 @@ export default function PlanChangeModal({
 
                         return (
                           <div key={index} className="flex items-start gap-2">
-                            <Check className={`w-4 h-4 flex-shrink-0 mt-0.5 ${isAvailable ? 'text-purple-600' : 'text-gray-400'}`} />
-                            <span className={`text-sm ${isAvailable ? 'text-gray-700' : 'text-gray-400'}`}>
+                            <Check
+                              className={cn(
+                                'w-4 h-4 shrink-0 mt-0.5',
+                                isAvailable ? 'text-accent' : 'text-fg-subtle'
+                              )}
+                            />
+                            <span
+                              className={cn(
+                                'text-body-sm',
+                                isAvailable ? 'text-fg' : 'text-fg-subtle'
+                              )}
+                            >
                               {featureText}
                             </span>
                           </div>
@@ -382,163 +432,171 @@ export default function PlanChangeModal({
                     </div>
                   </div>
                 )}
-              </div>
+            </div>
 
-              {/* Payment Gateway Selection (for paid upgrades) */}
-              {isUpgrading && (targetPlan.price_monthly ?? 0) > 0 && (
-                <div className="bg-white border border-gray-200 rounded-lg p-4 mb-6">
-                  <h3 className="font-semibold text-gray-900 text-lg mb-4 flex items-center gap-2">
-                    <CreditCard className="w-5 h-5" />
-                    Payment Details
-                  </h3>
-                  
-                  {/* Billing Cycle Selection */}
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Billing Cycle
-                    </label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(['monthly', 'six_months', 'yearly'] as const).map((cycle) => {
-                        const priceKey = cycle === 'six_months' ? 'price_six_months' : `price_${cycle}`;
-                        const planRecord = targetPlan as unknown as Record<string, unknown>;
-                        const price = (planRecord[priceKey] as number | null | undefined) ?? 0;
-                        const monthlyPrice = (planRecord['price_monthly'] as number | null | undefined) ?? 0;
-                        const cycleLabel = cycle === 'monthly' ? 'Monthly' : cycle === 'six_months' ? '6 Months' : 'Yearly';
-                        const months = cycle === 'monthly' ? 1 : cycle === 'six_months' ? 6 : 12;
-                        const savings = monthlyPrice > 0 && months > 1
+            {/* Payment details — paid upgrades only */}
+            {isUpgrading && (targetPlan.price_monthly ?? 0) > 0 && (
+              <div className="rounded-lg border border-border bg-surface p-4 mb-6">
+                <h3 className="font-semibold text-fg text-body mb-4 flex items-center gap-2">
+                  <CreditCard className="w-5 h-5" />
+                  Payment details
+                </h3>
+
+                {/* Billing cycle */}
+                <div className="mb-4">
+                  <label className="block text-body-sm font-medium text-fg mb-2">
+                    Billing cycle
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['monthly', 'six_months', 'yearly'] as const).map((cycle) => {
+                      const priceKey =
+                        cycle === 'six_months' ? 'price_six_months' : `price_${cycle}`;
+                      const planRecord = targetPlan as unknown as Record<string, unknown>;
+                      const price =
+                        (planRecord[priceKey] as number | null | undefined) ?? 0;
+                      const monthlyPrice =
+                        (planRecord['price_monthly'] as number | null | undefined) ?? 0;
+                      const cycleLabel =
+                        cycle === 'monthly'
+                          ? 'Monthly'
+                          : cycle === 'six_months'
+                            ? '6 months'
+                            : 'Yearly';
+                      const months = cycle === 'monthly' ? 1 : cycle === 'six_months' ? 6 : 12;
+                      const savings =
+                        monthlyPrice > 0 && months > 1
                           ? Math.round((1 - price / (monthlyPrice * months)) * 100)
                           : 0;
+                      const active = selectedBillingCycle === cycle;
+                      return (
+                        <button
+                          key={cycle}
+                          type="button"
+                          onClick={() => setSelectedBillingCycle(cycle)}
+                          aria-pressed={active}
+                          className={cn(
+                            'rounded-lg border-2 px-4 py-3 text-left transition-colors',
+                            active
+                              ? 'border-primary bg-primary/5 text-primary'
+                              : 'border-border bg-surface text-fg hover:border-border-strong'
+                          )}
+                        >
+                          <div className="text-body-sm font-medium">{cycleLabel}</div>
+                          <div className="text-body font-bold mt-1">
+                            ₹{Math.round(price)}
+                          </div>
+                          {savings > 0 && (
+                            <div className="text-caption text-success font-medium mt-0.5">
+                              Save {savings}%
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Payment gateway */}
+                {loadingGateways ? (
+                  <div className="text-center py-4">
+                    <Spinner size="md" className="mx-auto" />
+                    <p className="text-body-sm text-fg-muted mt-2">
+                      Loading payment options…
+                    </p>
+                  </div>
+                ) : paymentGateways.length > 0 ? (
+                  <div>
+                    <label className="block text-body-sm font-medium text-fg mb-2">
+                      Payment method
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {paymentGateways.map((gateway) => {
+                        const gatewayId = gateway.id || gateway.name;
+                        const active = selectedGateway === gatewayId;
                         return (
                           <button
-                            key={cycle}
-                            onClick={() => setSelectedBillingCycle(cycle)}
-                            className={`px-4 py-3 rounded-lg border-2 transition-colors ${
-                              selectedBillingCycle === cycle
-                                ? 'border-blue-600 bg-blue-50 text-blue-900'
-                                : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
-                            }`}
-                          >
-                            <div className="text-sm font-medium">{cycleLabel}</div>
-                            <div className="text-base font-bold mt-1">₹{Math.round(price)}</div>
-                            {savings > 0 && (
-                              <div className="text-xs text-green-600 font-medium mt-0.5">Save {savings}%</div>
+                            key={gatewayId}
+                            type="button"
+                            onClick={() => setSelectedGateway(gatewayId)}
+                            aria-pressed={active}
+                            className={cn(
+                              'rounded-lg border-2 px-4 py-3 text-left transition-colors',
+                              active
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border bg-surface hover:border-border-strong'
                             )}
+                          >
+                            <div className="font-medium text-fg">{gateway.name}</div>
+                            {gateway.supported_methods &&
+                              Array.isArray(gateway.supported_methods) &&
+                              gateway.supported_methods.length > 0 && (
+                                <div className="text-caption text-fg-muted mt-1">
+                                  {gateway.supported_methods.map(String).join(', ')}
+                                </div>
+                              )}
                           </button>
                         );
                       })}
                     </div>
                   </div>
-
-                  {/* Payment Gateway Selection */}
-                  {loadingGateways ? (
-                    <div className="text-center py-4">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto"></div>
-                      <p className="text-sm text-gray-600 mt-2">Loading payment options...</p>
-                    </div>
-                  ) : paymentGateways.length > 0 ? (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Payment Method
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {paymentGateways.map((gateway) => {
-                          const gatewayId = gateway.id || gateway.name;
-                          return (
-                            <button
-                              key={gatewayId}
-                              onClick={() => setSelectedGateway(gatewayId)}
-                              className={`px-4 py-3 rounded-lg border-2 transition-colors text-left ${
-                                selectedGateway === gatewayId
-                                  ? 'border-blue-600 bg-blue-50'
-                                  : 'border-gray-200 bg-white hover:border-gray-300'
-                              }`}
-                            >
-                              <div className="font-medium text-gray-900">{gateway.name}</div>
-                              {gateway.supported_methods && Array.isArray(gateway.supported_methods) && gateway.supported_methods.length > 0 && (
-                                <div className="text-xs text-gray-600 mt-1">
-                                  {gateway.supported_methods.map(String).join(', ')}
-                                </div>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-gray-600">
-                      No payment gateways available. Please contact support.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Pricing Info */}
-              {preview && (preview as unknown as { prorated_charge?: number }).prorated_charge !== undefined && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-                  <p className="text-sm font-medium text-yellow-900">Prorated Charge</p>
-                  <p className="text-sm text-yellow-700 mt-1">
-                    You'll be charged ₹{((preview as unknown as { prorated_charge: number }).prorated_charge).toFixed(2)} today for the remainder of this billing period.
-                  </p>
-                </div>
-              )}
-
-              {/* Downgrade Warning */}
-              {!isUpgrading && (
-                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-6">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-orange-900">Important</p>
-                      <p className="text-sm text-orange-700 mt-1">
-                        If your current storage usage exceeds the new plan's limit, you won't be able to upload new files until you free up space.
-                      </p>
-                    </div>
+                ) : (
+                  <div className="text-body-sm text-fg-muted">
+                    No payment gateways available. Please contact support.
                   </div>
-                </div>
+                )}
+              </div>
+            )}
+
+            {/* Prorated charge */}
+            {preview &&
+              (preview as unknown as { prorated_charge?: number }).prorated_charge !==
+                undefined && (
+                <Banner variant="warning" title="Prorated charge" className="mb-6">
+                  You'll be charged ₹
+                  {(
+                    preview as unknown as { prorated_charge: number }
+                  ).prorated_charge.toFixed(2)}{' '}
+                  today for the remainder of this billing period.
+                </Banner>
               )}
 
-              {/* Effective Date */}
-              <div className="bg-gray-50 rounded-lg p-4 mb-6">
-                <p className="text-sm text-gray-600">
-                  <span className="font-medium text-gray-900">Effective:</span> Immediately after confirmation
-                </p>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
-          <button
-            onClick={onClose}
-            disabled={confirming}
-            className="px-6 py-2 rounded-lg font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => void handleConfirm()}
-            disabled={confirming || loading || !!error}
-            className={`
-              px-6 py-2 rounded-lg font-medium text-white transition-colors
-              disabled:opacity-50 disabled:cursor-not-allowed
-              ${isUpgrading
-                ? 'bg-blue-600 hover:bg-blue-700'
-                : 'bg-orange-600 hover:bg-orange-700'
-              }
-            `}
-          >
-            {confirming ? (
-              <span className="flex items-center gap-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Processing...
-              </span>
-            ) : (
-              `Confirm ${changeType}`
+            {/* Downgrade warning */}
+            {!isUpgrading && (
+              <Banner
+                variant="warning"
+                icon={<AlertCircle />}
+                title="Important"
+                className="mb-6"
+              >
+                If your current storage usage exceeds the new plan's limit, you won't be
+                able to upload new files until you free up space.
+              </Banner>
             )}
-          </button>
-        </div>
-      </div>
-    </div>
+
+            {/* Effective date */}
+            <div className="rounded-lg bg-surface-muted p-4">
+              <p className="text-body-sm text-fg-muted">
+                <span className="font-medium text-fg">Effective:</span> Immediately after
+                confirmation
+              </p>
+            </div>
+          </>
+        )}
+      </ModalBody>
+
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose} disabled={confirming}>
+          Cancel
+        </Button>
+        <Button
+          variant={isUpgrading ? 'primary' : 'destructive'}
+          onClick={() => void handleConfirm()}
+          disabled={loading || !!error}
+          loading={confirming}
+        >
+          {confirming ? 'Processing…' : `Confirm ${changeType.toLowerCase()}`}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }

@@ -8,6 +8,7 @@ import { zkStorageService } from '../../services/zkStorageService';
 import { isZKSessionUnlocked } from '../../services/zkEncryptionService';
 import type { FilePreviewProps, ZKDecryptProgress, TranscodeProgressResponse } from './types';
 import { getErrorMessage } from './types';
+import { Modal, ModalHeader, ModalBody, IconButton, Button, buttonVariants, iconButtonVariants, Badge, Spinner, Progress } from '@/components/ui';
 
 const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) => {
   const { isAuthenticated } = useAuth();
@@ -463,254 +464,213 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     setFatalError(`${errorMessage}. ${errorHint}`);
   };
 
-  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>): void => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
+  /** Shared ZK badge — rendered in multiple content branches. */
+  const zkBadge = isZKEncrypted ? (
+    <Badge variant="success" size="md" className="mx-auto mb-4">
+      <Shield className="h-3.5 w-3.5" />
+      Zero-Knowledge Encrypted
+    </Badge>
+  ) : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={handleBackdropClick}
+    <Modal
+      open={true}
+      onClose={onClose}
+      hideCloseButton
+      className="!max-w-6xl"
     >
-      <div className={`w-full max-w-6xl rounded-2xl shadow-2xl ${darkMode ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-800">
-          <div>
-            <h2 className="text-lg font-semibold">{file.name}</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400">{file.mime_type || 'Unknown type'}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {!isVideoFile && (
-              <>
-                <button
-                  onClick={handleZoomOut}
-                  className={`p-2 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
-                  title="Zoom out"
-                  type="button"
-                >
-                  <ZoomOut size={20} />
-                </button>
-                <span className={`px-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  {Math.round(zoom * 100)}%
-                </span>
-                <button
-                  onClick={handleZoomIn}
-                  className={`p-2 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
-                  title="Zoom in"
-                  type="button"
-                >
-                  <ZoomIn size={20} />
-                </button>
-                <button
-                  onClick={handleRotate}
-                  className={`p-2 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
-                  title="Rotate"
-                  type="button"
-                >
-                  <RotateCw size={20} />
-                </button>
-              </>
-            )}
-            {isVideoFile && (
-              <a
-                href={downloadLink}
-                download={file.name}
-                className={`p-2 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
-                title="Download video"
-              >
-                <Download size={20} />
-              </a>
-            )}
-            <button
-              onClick={onClose}
-              className={`p-2 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
-              title="Close"
-              type="button"
-            >
-              <X size={20} />
-            </button>
-          </div>
+      {/* Custom header with toolbar */}
+      <ModalHeader>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-h3 text-fg truncate">{file.name}</h2>
+          <p className="mt-0.5 text-body-sm text-fg-muted">{file.mime_type || 'Unknown type'}</p>
         </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-auto flex items-center justify-center p-4 min-h-[60vh]">
-          {/* ZK Decryption Progress */}
-          {zkDecryptProgress && (
-            <div className={`flex flex-col items-center text-center gap-4 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-              <div className={`p-4 rounded-full ${darkMode ? 'bg-green-900/30' : 'bg-green-50'}`}>
-                <Loader size={32} className="animate-spin text-green-500" />
-              </div>
-              <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
-                <Shield size={16} />
-                <span className="text-sm font-medium">Decrypting encrypted file...</span>
-              </div>
-              <p className="text-sm">
-                {zkDecryptProgress.stage === 'downloading' && `Downloading chunk ${zkDecryptProgress.chunk}/${zkDecryptProgress.totalChunks}...`}
-                {zkDecryptProgress.stage === 'decrypting' && `Decrypting chunk ${zkDecryptProgress.chunk}/${zkDecryptProgress.totalChunks}...`}
-                {zkDecryptProgress.stage === 'complete' && 'Preparing preview...'}
-              </p>
-              <div className="w-48 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-green-500 transition-all duration-300"
-                  style={{ width: `${zkDecryptProgress.progress || 0}%` }}
-                />
-              </div>
-            </div>
+        <div className="flex items-center gap-1">
+          {!isVideoFile && (
+            <>
+              <IconButton variant="ghost" size="sm" onClick={handleZoomOut} aria-label="Zoom out" title="Zoom out">
+                <ZoomOut />
+              </IconButton>
+              <span className="min-w-[3rem] text-center text-body-sm text-fg-muted">
+                {Math.round(zoom * 100)}%
+              </span>
+              <IconButton variant="ghost" size="sm" onClick={handleZoomIn} aria-label="Zoom in" title="Zoom in">
+                <ZoomIn />
+              </IconButton>
+              <IconButton variant="ghost" size="sm" onClick={handleRotate} aria-label="Rotate" title="Rotate">
+                <RotateCw />
+              </IconButton>
+            </>
           )}
-          {/* ZK Session Locked */}
-          {!zkDecryptProgress && zkSessionLocked && fatalError ? (
-            <div className={`flex flex-col items-center text-center gap-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              <div className={`p-4 rounded-full ${darkMode ? 'bg-amber-900/30' : 'bg-amber-50'}`}>
-                <Lock size={32} className="text-amber-500" />
-              </div>
-              <p className="mb-2">{fatalError}</p>
-              <p className="text-sm">Unlock your session from the sidebar to view this file.</p>
-            </div>
-          ) : !zkDecryptProgress && loading && !isPdfFile ? (
-            <div className={darkMode ? 'text-white' : 'text-gray-900'}>Loading preview...</div>
-          ) : !zkDecryptProgress && fatalError ? (
-            <div className={`flex flex-col items-center text-center gap-6 p-8 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              <div className={`p-4 rounded-full ${darkMode ? 'bg-amber-900/30' : 'bg-amber-50'}`}>
-                <Loader size={32} className="text-amber-500" />
-              </div>
-              <div>
-                <h3 className={`text-lg font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {fatalError.includes('still processing') ? 'Video Still Processing' : 'Playback Issue'}
-                </h3>
-                <p className="text-sm max-w-md">{fatalError}</p>
-              </div>
-              {isVideoFile && (
-                <div className="flex flex-col sm:flex-row items-center gap-3">
-                  <button
-                    onClick={() => {
-                      setFatalError(null);
-                      setStreamReady(false);
-                      setPreviewWarning('Checking video status...');
-                    }}
-                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
-                      darkMode
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                        : 'bg-blue-500 hover:bg-blue-600 text-white'
-                    }`}
-                  >
-                    <RotateCw size={18} />
-                    Try Again
-                  </button>
-                  <a
-                    href={downloadLink}
-                    download={file.name}
-                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
-                      darkMode
-                        ? 'bg-gray-700 hover:bg-gray-600 text-white'
-                        : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
-                    }`}
-                  >
-                    <Download size={18} />
-                    Download Original
-                  </a>
-                </div>
-              )}
-              {!isVideoFile && (
-                <p className="text-sm mt-2">Preview may not be available for this file type</p>
-              )}
-            </div>
-          ) : isPdfFile ? (
-            <div className="w-full h-full min-h-[70vh]">
-              {isZKEncrypted && (
-                <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 mx-auto w-fit ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
-                  <Shield size={16} />
-                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
-                </div>
-              )}
-              {/* Only render iframe when we have a valid URL - avoids empty src warning */}
-              {(previewUrl || !isZKEncrypted) && (
-                <iframe
-                  src={isZKEncrypted ? previewUrl : `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
-                  className="w-full h-full rounded-lg"
-                  style={{ minHeight: '70vh' }}
-                  title={file.name}
-                />
-              )}
-              {isZKEncrypted && !previewUrl && (
-                <div className="flex items-center justify-center h-full min-h-[70vh]">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                </div>
-              )}
-            </div>
-          ) : isExcelFile ? (
-            <div className={`flex flex-col items-center justify-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-emerald-500/10' : 'bg-emerald-50'}`}>
-                <Table size={64} className="text-emerald-600" />
-              </div>
-              <div>
-                <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  Excel/Spreadsheet File
-                </h3>
-                <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Browser preview is not available for spreadsheet files.<br />
-                  Download the file to view it in Excel or Google Sheets.
-                </p>
-              </div>
-              <a
-                href={downloadLink}
-                download={file.name}
-                className={`inline-flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-colors ${
-                  darkMode
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                    : 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                }`}
-              >
-                <Download size={20} />
-                Download Spreadsheet
-              </a>
-            </div>
-          ) : isXmlFile || isTextFile ? (
-            <div className="w-full h-full min-h-[70vh]">
-              {isZKEncrypted && (
-                <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 mx-auto w-fit ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
-                  <Shield size={16} />
-                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
-                </div>
-              )}
-              {/* Only render iframe when we have a valid URL - avoids empty src warning */}
-              {(previewUrl || !isZKEncrypted) && (
-                <iframe
-                  src={previewUrl || `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
-                  className={`w-full h-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
-                  style={{ minHeight: '70vh' }}
-                  title={file.name}
-                />
-              )}
-              {isZKEncrypted && !previewUrl && (
-                <div className="flex items-center justify-center h-full min-h-[70vh]">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                </div>
-              )}
-            </div>
-          ) : isVideoFile && isZKEncrypted ? (
-            // ZK-encrypted video - use SecureVideoPlayer with client-side decryption
-            <div className="flex w-full max-w-4xl flex-col items-center">
-              {/* ZK Encryption Badge */}
-              <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
-                <Shield size={16} />
-                <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
-              </div>
+          {isVideoFile && (
+            <a
+              href={downloadLink}
+              download={file.name}
+              title="Download video"
+              aria-label="Download video"
+              className={iconButtonVariants({ variant: 'ghost', size: 'sm' })}
+            >
+              <Download className="h-4 w-4" />
+            </a>
+          )}
+          <IconButton variant="ghost" size="sm" onClick={onClose} aria-label="Close preview" title="Close">
+            <X />
+          </IconButton>
+        </div>
+      </ModalHeader>
 
-              <SecureVideoPlayer
-                fileId={file.id}
-                metadata={file}
-                darkMode={darkMode}
-                onClose={onClose}
-                className="w-full"
-              />
+      {/* Content */}
+      <ModalBody className="flex items-center justify-center min-h-[60vh]">
+        {/* ZK Decryption Progress */}
+        {zkDecryptProgress && (
+          <div className="flex flex-col items-center text-center gap-4 text-fg-muted">
+            <div className="rounded-full bg-success/10 p-4">
+              <Spinner size="lg" className="text-success" />
             </div>
-          ) : isVideoFile ? (
-            // Regular video - use server-side streaming
-            streamReady ? (
-              <div className="flex w-full max-w-4xl flex-col items-center">
-                <div className="relative w-full">
+            <Badge variant="success" size="md">
+              <Shield className="h-3.5 w-3.5" />
+              Decrypting encrypted file…
+            </Badge>
+            <p className="text-body-sm">
+              {zkDecryptProgress.stage === 'downloading' && `Downloading chunk ${zkDecryptProgress.chunk}/${zkDecryptProgress.totalChunks}…`}
+              {zkDecryptProgress.stage === 'decrypting' && `Decrypting chunk ${zkDecryptProgress.chunk}/${zkDecryptProgress.totalChunks}…`}
+              {zkDecryptProgress.stage === 'complete' && 'Preparing preview…'}
+            </p>
+            <Progress
+              className="w-48"
+              size="sm"
+              tone="primary"
+              value={zkDecryptProgress.progress || 0}
+              label="Decryption progress"
+            />
+          </div>
+        )}
+        {/* ZK Session Locked */}
+        {!zkDecryptProgress && zkSessionLocked && fatalError ? (
+          <div className="flex flex-col items-center text-center gap-4 text-fg-muted">
+            <div className="rounded-full bg-warning/10 p-4">
+              <Lock className="h-8 w-8 text-warning" />
+            </div>
+            <p className="mb-2">{fatalError}</p>
+            <p className="text-body-sm">Unlock your session from the sidebar to view this file.</p>
+          </div>
+        ) : !zkDecryptProgress && loading && !isPdfFile ? (
+          <div className="flex items-center gap-3 text-fg">
+            <Spinner size="md" />
+            <span>Loading preview…</span>
+          </div>
+        ) : !zkDecryptProgress && fatalError ? (
+          <div className="flex flex-col items-center text-center gap-6 p-8 text-fg-muted">
+            <div className="rounded-full bg-warning/10 p-4">
+              <Loader className="h-8 w-8 text-warning" />
+            </div>
+            <div>
+              <h3 className="text-h3 text-fg mb-2">
+                {fatalError.includes('still processing') ? 'Video Still Processing' : 'Playback Issue'}
+              </h3>
+              <p className="text-body-sm max-w-md">{fatalError}</p>
+            </div>
+            {isVideoFile && (
+              <div className="flex flex-col sm:flex-row items-center gap-3">
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setFatalError(null);
+                    setStreamReady(false);
+                    setPreviewWarning('Checking video status...');
+                  }}
+                >
+                  <RotateCw className="h-4 w-4" />
+                  Try Again
+                </Button>
+                <a
+                  href={downloadLink}
+                  download={file.name}
+                  className={buttonVariants({ variant: 'secondary' })}
+                >
+                  <Download className="h-4 w-4" />
+                  Download Original
+                </a>
+              </div>
+            )}
+            {!isVideoFile && (
+              <p className="text-body-sm mt-2">Preview may not be available for this file type</p>
+            )}
+          </div>
+        ) : isPdfFile ? (
+          <div className="w-full h-full min-h-[70vh]">
+            {zkBadge}
+            {/* Only render iframe when we have a valid URL — avoids empty src warning */}
+            {(previewUrl || !isZKEncrypted) && (
+              <iframe
+                src={isZKEncrypted ? previewUrl : `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
+                className="w-full h-full rounded-lg"
+                style={{ minHeight: '70vh' }}
+                title={file.name}
+              />
+            )}
+            {isZKEncrypted && !previewUrl && (
+              <div className="flex items-center justify-center h-full min-h-[70vh]">
+                <Spinner size="lg" />
+              </div>
+            )}
+          </div>
+        ) : isExcelFile ? (
+          <div className="flex flex-col items-center justify-center text-center gap-6 p-8 text-fg-muted">
+            <div className="rounded-2xl bg-success/10 p-6">
+              <Table className="h-16 w-16 text-success" />
+            </div>
+            <div>
+              <h3 className="text-h3 text-fg mb-2">Excel/Spreadsheet File</h3>
+              <p className="text-body-sm mb-4">
+                Browser preview is not available for spreadsheet files.<br />
+                Download the file to view it in Excel or Google Sheets.
+              </p>
+            </div>
+            <a
+              href={downloadLink}
+              download={file.name}
+              className={buttonVariants({ variant: 'primary' })}
+            >
+              <Download className="h-4 w-4" />
+              Download Spreadsheet
+            </a>
+          </div>
+        ) : isXmlFile || isTextFile ? (
+          <div className="w-full h-full min-h-[70vh]">
+            {zkBadge}
+            {/* Only render iframe when we have a valid URL — avoids empty src warning */}
+            {(previewUrl || !isZKEncrypted) && (
+              <iframe
+                src={previewUrl || `${API_URL}/api/v1/files/${file.id}/download?inline=true`}
+                className="w-full h-full rounded-lg border border-border bg-surface"
+                style={{ minHeight: '70vh' }}
+                title={file.name}
+              />
+            )}
+            {isZKEncrypted && !previewUrl && (
+              <div className="flex items-center justify-center h-full min-h-[70vh]">
+                <Spinner size="lg" />
+              </div>
+            )}
+          </div>
+        ) : isVideoFile && isZKEncrypted ? (
+          // ZK-encrypted video — SecureVideoPlayer handles client-side decryption
+          <div className="flex w-full max-w-4xl flex-col items-center">
+            {zkBadge}
+            <SecureVideoPlayer
+              fileId={file.id}
+              metadata={file}
+              darkMode={darkMode}
+              onClose={onClose}
+              className="w-full"
+            />
+          </div>
+        ) : isVideoFile ? (
+          // Regular video — server-side streaming
+          streamReady ? (
+            <div className="flex w-full max-w-4xl flex-col items-center">
+              <div className="relative w-full">
                 <video
                   key={`${file.id}-stream`}
                   controls
@@ -721,103 +681,80 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                   src={streamUrl}
                   onError={handleVideoError}
                 />
-                </div>
-                {previewWarning && (
-                  <p className={`mt-4 text-sm ${darkMode ? 'text-amber-300' : 'text-amber-600'}`}>
-                    {previewWarning}
-                  </p>
-                )}
               </div>
-            ) : (
-              <div className={`flex flex-col items-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-                <div className={`p-6 rounded-2xl ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
-                  <div className="h-16 w-16 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
-                </div>
-                <div>
-                  <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    Converting Video for Browser Playback
-                  </h3>
-                  <p className={`text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    {previewWarning || 'Preparing a browser-compatible stream...'}
-                  </p>
-                  <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                    This may take a few minutes for large or high-resolution videos.
-                    <br />
-                    Playback will start automatically once ready.
-                  </p>
-                </div>
-                <div className={`w-full max-w-xs border-t pt-4 ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-                  <p className={`text-xs mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                    Can't wait? Download the original file to play locally:
-                  </p>
-                  <a
-                    href={downloadLink}
-                    download={file.name}
-                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
-                      darkMode
-                        ? 'bg-gray-700 hover:bg-gray-600 text-white'
-                        : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
-                    }`}
-                  >
-                    <Download size={18} />
-                    Download Original
-                  </a>
-                </div>
-              </div>
-            )
-          ) : isAudioFile ? (
-            // Audio file - use HTML5 audio player
-            <div className={`flex flex-col items-center justify-center text-center gap-6 p-8 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-              {isZKEncrypted && (
-                <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
-                  <Shield size={16} />
-                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
-                </div>
+              {previewWarning && (
+                <p className="mt-4 text-body-sm text-warning">{previewWarning}</p>
               )}
-              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-pink-500/10' : 'bg-pink-50'}`}>
-                <Music size={64} className="text-pink-500" />
-              </div>
-              <div>
-                <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {file.name}
-                </h3>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  {file.mime_type || 'Audio file'}
-                </p>
-              </div>
-              <audio
-                controls
-                autoPlay={false}
-                className="w-full max-w-md"
-                src={previewUrl || streamUrl}
-              >
-                Your browser does not support the audio element.
-              </audio>
-            </div>
-          ) : previewUrl ? (
-            <div className="flex flex-col items-center">
-              {isZKEncrypted && (
-                <div className={`mb-4 px-4 py-2 rounded-lg flex items-center gap-2 ${darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-700'}`}>
-                  <Shield size={16} />
-                  <span className="text-sm font-medium">Zero-Knowledge Encrypted</span>
-                </div>
-              )}
-              <img
-                src={previewUrl}
-                alt={file.name}
-                style={{
-                  transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                  transition: 'transform 0.3s ease'
-                }}
-                className="max-w-full max-h-full object-contain"
-              />
             </div>
           ) : (
-            <div className={darkMode ? 'text-white' : 'text-gray-900'}>Preview not available</div>
-          )}
-        </div>
-      </div>
-    </div>
+            <div className="flex flex-col items-center text-center gap-6 p-8 text-fg-muted">
+              <div className="rounded-2xl bg-primary/10 p-6">
+                <Spinner size="lg" className="text-primary" />
+              </div>
+              <div>
+                <h3 className="text-h3 text-fg mb-2">Converting Video for Browser Playback</h3>
+                <p className="text-body-sm mb-2">
+                  {previewWarning || 'Preparing a browser-compatible stream…'}
+                </p>
+                <p className="text-caption text-fg-subtle">
+                  This may take a few minutes for large or high-resolution videos.
+                  <br />
+                  Playback will start automatically once ready.
+                </p>
+              </div>
+              <div className="w-full max-w-xs border-t border-border pt-4">
+                <p className="text-caption text-fg-subtle mb-3">
+                  Can&rsquo;t wait? Download the original file to play locally:
+                </p>
+                <a
+                  href={downloadLink}
+                  download={file.name}
+                  className={buttonVariants({ variant: 'secondary' })}
+                >
+                  <Download className="h-4 w-4" />
+                  Download Original
+                </a>
+              </div>
+            </div>
+          )
+        ) : isAudioFile ? (
+          // Audio file — HTML5 audio player
+          <div className="flex flex-col items-center justify-center text-center gap-6 p-8 text-fg-muted">
+            {zkBadge}
+            <div className="rounded-2xl bg-pink-500/10 p-6">
+              <Music className="h-16 w-16 text-pink-500" />
+            </div>
+            <div>
+              <h3 className="text-h3 text-fg mb-2">{file.name}</h3>
+              <p className="text-body-sm">{file.mime_type || 'Audio file'}</p>
+            </div>
+            <audio
+              controls
+              autoPlay={false}
+              className="w-full max-w-md"
+              src={previewUrl || streamUrl}
+            >
+              Your browser does not support the audio element.
+            </audio>
+          </div>
+        ) : previewUrl ? (
+          <div className="flex flex-col items-center">
+            {zkBadge}
+            <img
+              src={previewUrl}
+              alt={file.name}
+              style={{
+                transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                transition: 'transform 0.3s ease'
+              }}
+              className="max-w-full max-h-full object-contain"
+            />
+          </div>
+        ) : (
+          <div className="text-fg">Preview not available</div>
+        )}
+      </ModalBody>
+    </Modal>
   );
 };
 

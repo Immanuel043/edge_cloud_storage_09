@@ -3,35 +3,27 @@ import { Cloud, HardDrive, FileText, Crown, Zap } from 'lucide-react';
 import { formatBytes } from '../../utils/helpers';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import type { StorageStatsProps } from './types';
+import { Button, Card, CardContent } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 /**
- * StorageStats - Compact storage display for non-ZK users
- *
- * Desktop: Single horizontal row with cache/warm/cold badges
- * Mobile: Stacked layout
- *
- * Shows:
- * - Plan badge with upgrade button
- * - Used storage vs total quota
- * - Progress bar (inline on desktop)
- * - Cache/Warm/Cold distribution as badges
- * - File count
+ * StorageStats — compact storage summary card for non-ZK users. Desktop
+ * shows a single horizontal row (usage, progress bar, tier breakdown, file
+ * count); mobile stacks them. Shows an upgrade affordance when > 80% used.
  */
-const StorageStats: React.FC<StorageStatsProps> = ({ stats, darkMode, onUpgradeClick }) => {
+const StorageStats: React.FC<StorageStatsProps> = ({ stats, onUpgradeClick }) => {
   const { subscription, usage } = useSubscription();
 
   if (!stats) return null;
 
-  // Use subscription data if available, otherwise fall back to stats
   const used = usage?.storage_used_bytes ?? stats.used ?? 0;
   const storageQuotaGb =
     typeof subscription?.storage_quota_gb === 'number' ? subscription.storage_quota_gb : 0;
   const total =
     storageQuotaGb > 0
       ? storageQuotaGb * 1024 * 1024 * 1024
-      : (stats.quota || (100 * 1024 * 1024 * 1024)); // Use || to treat 0 as "no quota"
+      : stats.quota || 100 * 1024 * 1024 * 1024;
 
-  // Calculate percentage - safely handle usage?.storage_percent which may be unknown
   const usageStoragePercent =
     usage && typeof (usage as Record<string, unknown>).storage_percent === 'number'
       ? ((usage as Record<string, unknown>).storage_percent as number)
@@ -44,158 +36,123 @@ const StorageStats: React.FC<StorageStatsProps> = ({ stats, darkMode, onUpgradeC
   const warmSize = stats.distribution?.warm?.size ?? 0;
   const coldSize = stats.distribution?.cold?.size ?? 0;
 
-  // Color based on usage
-  const getProgressColor = (): string => {
-    if (percentage > 90) return 'bg-red-500';
-    if (percentage > 70) return 'bg-yellow-500';
-    return 'bg-blue-500';
-  };
+  const progressToneClass =
+    percentage > 90 ? 'bg-danger' : percentage > 70 ? 'bg-warning' : 'bg-primary';
 
-  // Show upgrade button when storage > 80%
   const showUpgrade = percentage > 80;
 
   return (
-    <div className={`mb-3 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-      {/* Plan Badge */}
+    <Card variant="bordered" className="mb-3">
       {subscription && (
-        <div
-          className={`px-3 pt-3 pb-2 flex items-center justify-between border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}
-        >
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <div className="flex items-center gap-2">
-            <Crown className={`w-4 h-4 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
-            <span
-              className={`text-sm font-semibold ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
-            >
-              {typeof subscription.plan_name === 'string'
-                ? subscription.plan_name
-                : 'Unknown Plan'}
+            <Crown className="h-4 w-4 text-primary" />
+            <span className="text-body-sm font-semibold text-primary">
+              {typeof subscription.plan_name === 'string' ? subscription.plan_name : 'Unknown Plan'}
             </span>
           </div>
           {showUpgrade && onUpgradeClick && (
-            <button
+            <Button
+              variant="primary"
+              size="sm"
               onClick={onUpgradeClick}
-              className="flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 rounded-md transition-all"
+              leftIcon={<Zap className="h-3 w-3" />}
             >
-              <Zap className="w-3 h-3" />
               Upgrade
-            </button>
+            </Button>
           )}
         </div>
       )}
 
-      {/* Desktop: Horizontal layout */}
-      <div className="p-3">
-        <div className="hidden sm:flex items-center justify-between gap-4">
-          {/* Storage info */}
+      <CardContent className="p-3">
+        {/* Desktop: horizontal */}
+        <div className="hidden items-center justify-between gap-4 sm:flex">
           <div className="flex items-center gap-3">
-            <HardDrive size={18} className={darkMode ? 'text-blue-400' : 'text-blue-500'} />
-            <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            <HardDrive size={18} className="text-primary" />
+            <span className="text-body-sm font-medium text-fg">
               {formatBytes(used)} / {formatBytes(total)}
             </span>
           </div>
 
-          {/* Progress bar - fixed width */}
-          <div className="flex items-center gap-2 flex-1 max-w-xs">
-            <div
-              className={`flex-1 h-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}
-            >
+          <div className="flex max-w-xs flex-1 items-center gap-2">
+            <div className="h-2 flex-1 rounded-full bg-surface-muted">
               <div
-                className={`h-2 rounded-full transition-all duration-300 ${getProgressColor()}`}
+                className={cn('h-2 rounded-full transition-all duration-normal', progressToneClass)}
                 style={{ width: `${Math.min(100, percentage)}%` }}
               />
             </div>
-            <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              {percentage.toFixed(1)}%
-            </span>
+            <span className="text-caption text-fg-subtle">{percentage.toFixed(1)}%</span>
           </div>
 
-          {/* Cache/Warm/Cold badges */}
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
-              <Cloud size={12} className="text-blue-400" />
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                {formatBytes(cacheSize)}
-              </span>
-            </div>
-            <div className="flex items-center gap-1">
-              <HardDrive size={12} className="text-green-400" />
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                {formatBytes(warmSize)}
-              </span>
-            </div>
-            <div className="flex items-center gap-1">
-              <HardDrive size={12} className="text-gray-400" />
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                {formatBytes(coldSize)}
-              </span>
-            </div>
+            <TierBadge icon={<Cloud size={12} />} iconClass="text-primary" size={cacheSize} />
+            <TierBadge icon={<HardDrive size={12} />} iconClass="text-success" size={warmSize} />
+            <TierBadge icon={<HardDrive size={12} />} iconClass="text-fg-subtle" size={coldSize} />
           </div>
 
-          {/* File count */}
           <div className="flex items-center gap-2">
-            <FileText size={14} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
-            <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+            <FileText size={14} className="text-fg-subtle" />
+            <span className="text-body-sm text-fg-muted">
               {fileCount} {fileCount === 1 ? 'file' : 'files'}
             </span>
           </div>
         </div>
 
-        {/* Mobile: Stacked layout */}
-        <div className="sm:hidden space-y-3">
-          {/* Header row */}
+        {/* Mobile: stacked */}
+        <div className="space-y-3 sm:hidden">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <HardDrive size={16} className={darkMode ? 'text-blue-400' : 'text-blue-500'} />
-              <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              <HardDrive size={16} className="text-primary" />
+              <span className="text-body-sm font-medium text-fg">
                 {formatBytes(used)} / {formatBytes(total)}
               </span>
             </div>
-            <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              {percentage.toFixed(1)}%
-            </span>
+            <span className="text-caption text-fg-subtle">{percentage.toFixed(1)}%</span>
           </div>
 
-          {/* Progress bar */}
-          <div className={`w-full h-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+          <div className="h-2 w-full rounded-full bg-surface-muted">
             <div
-              className={`h-2 rounded-full transition-all duration-300 ${getProgressColor()}`}
+              className={cn('h-2 rounded-full transition-all duration-normal', progressToneClass)}
               style={{ width: `${Math.min(100, percentage)}%` }}
             />
           </div>
 
-          {/* Cache/Warm/Cold row */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1">
-              <Cloud size={12} className="text-blue-400" />
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                Cache:
-              </span>
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                {formatBytes(cacheSize)}
-              </span>
+              <Cloud size={12} className="text-primary" />
+              <span className="text-caption text-fg-subtle">Cache:</span>
+              <span className="text-caption text-fg-muted">{formatBytes(cacheSize)}</span>
             </div>
             <div className="flex items-center gap-1">
-              <HardDrive size={12} className="text-green-400" />
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                Warm:
-              </span>
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                {formatBytes(warmSize)}
-              </span>
+              <HardDrive size={12} className="text-success" />
+              <span className="text-caption text-fg-subtle">Warm:</span>
+              <span className="text-caption text-fg-muted">{formatBytes(warmSize)}</span>
             </div>
           </div>
 
-          {/* File count */}
           <div className="flex items-center gap-2">
-            <FileText size={14} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
-            <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+            <FileText size={14} className="text-fg-subtle" />
+            <span className="text-body-sm text-fg-muted">
               {fileCount} {fileCount === 1 ? 'file' : 'files'}
             </span>
           </div>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 };
+
+interface TierBadgeProps {
+  icon: React.ReactNode;
+  iconClass: string;
+  size: number;
+}
+
+const TierBadge: React.FC<TierBadgeProps> = ({ icon, iconClass, size }) => (
+  <div className="flex items-center gap-1">
+    <span className={iconClass}>{icon}</span>
+    <span className="text-caption text-fg-muted">{formatBytes(size)}</span>
+  </div>
+);
 
 export default StorageStats;

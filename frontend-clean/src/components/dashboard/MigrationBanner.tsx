@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
-import { Shield, ArrowUpCircle, X, Loader, CheckCircle, AlertTriangle, Lock } from 'lucide-react';
+import { Shield, ArrowUpCircle, X, CheckCircle, AlertTriangle, Lock } from 'lucide-react';
 import { useStorage } from '../../contexts/StorageContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { useTheme } from '../../contexts/ThemeContext';
 import type { MigrationProgress, MigrationResult } from './types';
 import { getErrorMessage } from './types';
 import { formatMigrationStats, type MigrationStats } from '../../utils/zkMigration';
+import { Banner, Button, IconButton, Progress, Spinner } from '@/components/ui';
 
 /**
- * MigrationBanner Component
- *
- * Prompts users to migrate V1 encrypted files to V2.
+ * MigrationBanner — nudges users holding V1 ZK-encrypted files to upgrade to
+ * V2 (HKDF-derived keys, AEAD with AAD). Drives the migration via
+ * StorageContext and surfaces progress + success/failure inline.
  */
 const MigrationBanner: React.FC = () => {
   const storageContext = useStorage();
@@ -22,24 +22,20 @@ const MigrationBanner: React.FC = () => {
   const isMigrationPromptDismissed = storageContext.isMigrationPromptDismissed as () => boolean;
 
   const { zkEnabled, zkSessionUnlocked } = useAuth();
-  const { darkMode } = useTheme();
 
   const [showDetails, setShowDetails] = useState<boolean>(false);
   const [migrationResult, setMigrationResult] = useState<MigrationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Don't show if no migration needed or already dismissed
   if (!migrationStats?.migrationNeeded || isMigrationPromptDismissed()) {
     return null;
   }
 
-  // Check if ZK session is locked
   const isSessionLocked = zkEnabled && !zkSessionUnlocked;
 
   const handleMigrate = async (): Promise<void> => {
     setError(null);
     setMigrationResult(null);
-
     try {
       const result = await migrateAllFiles();
       setMigrationResult(result);
@@ -52,48 +48,42 @@ const MigrationBanner: React.FC = () => {
     dismissMigrationPrompt();
   };
 
-  // Show completion state
+  // Success state
   if (migrationResult) {
     return (
-      <div className={`border rounded-lg p-4 mb-4 ${darkMode ? 'bg-green-900/20 border-green-700' : 'bg-green-50 border-green-200'}`}>
-        <div className="flex items-start gap-3">
-          <CheckCircle className="text-green-600 flex-shrink-0 mt-0.5" size={20} />
-          <div className="flex-1">
-            <h3 className={`font-medium ${darkMode ? 'text-green-400' : 'text-green-900'}`}>Migration Complete</h3>
-            <p className={`text-sm mt-1 ${darkMode ? 'text-green-300' : 'text-green-700'}`}>
-              {migrationResult.completed} file(s) upgraded to enhanced encryption.
-              {migrationResult.failed > 0 && ` ${migrationResult.failed} file(s) failed.`}
-              {migrationResult.skipped > 0 &&
-                ` ${migrationResult.skipped} file(s) already up to date.`}
-            </p>
-          </div>
-          <button onClick={() => setMigrationResult(null)} className={darkMode ? 'text-green-400 hover:text-green-300' : 'text-green-600 hover:text-green-800'}>
-            <X size={18} />
-          </button>
-        </div>
+      <div className="mb-4">
+        <Banner
+          variant="success"
+          icon={<CheckCircle />}
+          title="Migration complete"
+          onDismiss={() => setMigrationResult(null)}
+        >
+          {migrationResult.completed} file(s) upgraded to enhanced encryption.
+          {migrationResult.failed > 0 && ` ${migrationResult.failed} file(s) failed.`}
+          {migrationResult.skipped > 0 &&
+            ` ${migrationResult.skipped} file(s) already up to date.`}
+        </Banner>
       </div>
     );
   }
 
-  // Show error state
+  // Error state
   if (error) {
     return (
-      <div className={`border rounded-lg p-4 mb-4 ${darkMode ? 'bg-red-900/20 border-red-700' : 'bg-red-50 border-red-200'}`}>
-        <div className="flex items-start gap-3">
-          <AlertTriangle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
-          <div className="flex-1">
-            <h3 className={`font-medium ${darkMode ? 'text-red-400' : 'text-red-900'}`}>Migration Failed</h3>
-            <p className={`text-sm mt-1 ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{error}</p>
-          </div>
-          <button onClick={() => setError(null)} className={darkMode ? 'text-red-400 hover:text-red-300' : 'text-red-600 hover:text-red-800'}>
-            <X size={18} />
-          </button>
-        </div>
+      <div className="mb-4">
+        <Banner
+          variant="danger"
+          icon={<AlertTriangle />}
+          title="Migration failed"
+          onDismiss={() => setError(null)}
+        >
+          {error}
+        </Banner>
       </div>
     );
   }
 
-  // Show progress state
+  // In-progress state
   if (migrationInProgress) {
     const progressPercent =
       migrationProgress.total > 0
@@ -101,20 +91,19 @@ const MigrationBanner: React.FC = () => {
         : 0;
 
     return (
-      <div className={`border rounded-lg p-4 mb-4 ${darkMode ? 'bg-blue-900/20 border-blue-700' : 'bg-blue-50 border-blue-200'}`}>
+      <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-4">
         <div className="flex items-start gap-3">
-          <Loader className="text-blue-600 flex-shrink-0 mt-0.5 animate-spin" size={20} />
+          <div className="mt-0.5 flex-shrink-0">
+            <Spinner size="sm" />
+          </div>
           <div className="flex-1">
-            <h3 className={`font-medium ${darkMode ? 'text-blue-400' : 'text-blue-900'}`}>Upgrading Encryption...</h3>
-            <p className={`text-sm mt-1 ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+            <h3 className="font-medium text-fg">Upgrading encryption...</h3>
+            <p className="mt-1 text-body-sm text-fg-muted">
               Migrating file {migrationProgress.current} of {migrationProgress.total}
               {migrationProgress.currentFile && `: ${migrationProgress.currentFile}`}
             </p>
-            <div className={`mt-2 w-full rounded-full h-2 ${darkMode ? 'bg-blue-900' : 'bg-blue-200'}`}>
-              <div
-                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${progressPercent}%` }}
-              />
+            <div className="mt-2">
+              <Progress value={progressPercent} tone="primary" size="sm" />
             </div>
           </div>
         </div>
@@ -122,62 +111,67 @@ const MigrationBanner: React.FC = () => {
     );
   }
 
-  // Show migration prompt
+  // Prompt state
   return (
-    <div className={`border rounded-lg p-4 mb-4 ${darkMode ? 'bg-gradient-to-r from-purple-900/20 to-blue-900/20 border-purple-700' : 'bg-gradient-to-r from-purple-50 to-blue-50 border-purple-200'}`}>
+    <div className="mb-4 rounded-xl border border-accent/30 bg-gradient-to-r from-accent/10 to-primary/10 p-4">
       <div className="flex items-start gap-3">
-        <div className={`p-2 rounded-lg ${darkMode ? 'bg-purple-900/30' : 'bg-purple-100'}`}>
-          <Shield className="text-purple-600" size={20} />
+        <div className="flex-shrink-0 rounded-lg bg-accent/15 p-2 text-accent">
+          <Shield className="h-5 w-5" />
         </div>
         <div className="flex-1">
-          <h3 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>Enhanced Encryption Available</h3>
-          <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{formatMigrationStats(migrationStats)}</p>
+          <h3 className="font-medium text-fg">Enhanced encryption available</h3>
+          <p className="mt-1 text-body-sm text-fg-muted">
+            {formatMigrationStats(migrationStats)}
+          </p>
 
           {showDetails && (
-            <div className={`mt-3 p-3 rounded-lg text-sm ${darkMode ? 'bg-gray-800/50 text-gray-400' : 'bg-white/50 text-gray-600'}`}>
-              <p className={`font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>What's improved:</p>
-              <ul className="list-disc list-inside space-y-1">
+            <div className="mt-3 rounded-lg border border-border bg-surface p-3 text-body-sm text-fg-muted">
+              <p className="mb-2 font-medium text-fg">What&apos;s improved:</p>
+              <ul className="list-inside list-disc space-y-1">
                 <li>HKDF-based key derivation for stronger security</li>
                 <li>Authenticated encryption with AAD prevents tampering</li>
                 <li>Improved key isolation per file and chunk</li>
               </ul>
-              <p className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+              <p className="mt-2 text-caption text-fg-subtle">
                 Files will be re-downloaded, re-encrypted, and re-uploaded. This may take a while
                 for large files.
               </p>
             </div>
           )}
 
-          <div className="mt-3 flex items-center gap-3">
+          <div className="mt-3 flex flex-wrap items-center gap-3">
             {isSessionLocked ? (
-              <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium cursor-not-allowed ${darkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-500'}`}>
-                <Lock size={16} />
+              <div className="inline-flex cursor-not-allowed items-center gap-2 rounded-lg bg-surface-muted px-4 py-2 text-body-sm font-medium text-fg-subtle">
+                <Lock className="h-4 w-4" />
                 Unlock session to upgrade
               </div>
             ) : (
-              <button
-                onClick={handleMigrate}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm font-medium"
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void handleMigrate()}
+                leftIcon={<ArrowUpCircle className="h-4 w-4" />}
               >
-                <ArrowUpCircle size={16} />
-                Upgrade Now
-              </button>
+                Upgrade now
+              </Button>
             )}
-            <button
+            <Button
+              variant="link"
+              size="sm"
               onClick={() => setShowDetails(!showDetails)}
-              className={`text-sm ${darkMode ? 'text-purple-400 hover:text-purple-300' : 'text-purple-600 hover:text-purple-700'}`}
             >
               {showDetails ? 'Hide details' : 'Learn more'}
-            </button>
+            </Button>
           </div>
         </div>
-        <button
+        <IconButton
+          variant="ghost"
+          size="sm"
           onClick={handleDismiss}
-          className={darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}
-          title="Dismiss (remind me later)"
+          aria-label="Dismiss (remind me later)"
         >
-          <X size={18} />
-        </button>
+          <X className="h-4 w-4" />
+        </IconButton>
       </div>
     </div>
   );

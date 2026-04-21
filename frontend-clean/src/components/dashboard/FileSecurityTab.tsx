@@ -1,40 +1,28 @@
 import React from 'react';
-import {
-  Shield, Lock, Users, Link2,
-  ShieldCheck, Key
-} from 'lucide-react';
+import { Shield, Lock, Users, Link2, ShieldCheck, Key } from 'lucide-react';
 import type { FileSecurityTabProps } from './types';
 
 // TODO: Connect to real security scanning API — /api/v1/files/{id}/security (not yet implemented)
 
 /**
- * FileSecurityTab - Displays file security information derived from actual file data
+ * FileSecurityTab — presents security posture for a file: encryption mode,
+ * scan status (placeholder until API lands), share-link summary, and the
+ * set of collaborators the file is shared with.
  */
-const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => {
+const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file }) => {
   const shareLinks = file.share_links || [];
   const sharedWith = file.shared_with || [];
   const isEncrypted = file.is_encrypted === true || !!file.encrypted_file_key;
 
   return (
     <div className="space-y-6">
-      {/* Encryption Status — derived from actual file data */}
       {isEncrypted ? (
-        <div className={`p-4 rounded-lg border ${
-          darkMode
-            ? 'bg-green-500/10 border-green-500/20'
-            : 'bg-green-50 border-green-200'
-        }`}>
+        <div className="rounded-lg border border-success/30 bg-success/10 p-4">
           <div className="flex items-start gap-3">
-            <Lock size={20} className="text-green-500 flex-shrink-0 mt-0.5" />
+            <Lock size={20} className="mt-0.5 shrink-0 text-success" />
             <div className="flex-1">
-              <h4 className={`text-sm font-semibold mb-1 ${
-                darkMode ? 'text-green-400' : 'text-green-700'
-              }`}>
-                File is encrypted
-              </h4>
-              <p className={`text-xs ${
-                darkMode ? 'text-green-400/80' : 'text-green-600'
-              }`}>
+              <h4 className="mb-1 text-body-sm font-semibold text-success">File is encrypted</h4>
+              <p className="text-caption text-success/80">
                 This file is protected with end-to-end encryption
                 {file.encryption_mode === 'client_zk' && ' (Zero-Knowledge)'}
               </p>
@@ -42,88 +30,52 @@ const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => 
           </div>
         </div>
       ) : (
-        <div className={`p-4 rounded-lg border ${
-          darkMode
-            ? 'bg-gray-500/10 border-gray-500/20'
-            : 'bg-gray-50 border-gray-200'
-        }`}>
+        <div className="rounded-lg border border-border bg-surface-muted p-4">
           <div className="flex items-start gap-3">
-            <Lock size={20} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
+            <Lock size={20} className="text-fg-subtle" />
             <div className="flex-1">
-              <h4 className={`text-sm font-semibold mb-1 ${
-                darkMode ? 'text-gray-400' : 'text-gray-600'
-              }`}>
-                Standard storage
-              </h4>
-              <p className={`text-xs ${
-                darkMode ? 'text-gray-500' : 'text-gray-500'
-              }`}>
-                Server-side encryption at rest
-              </p>
+              <h4 className="mb-1 text-body-sm font-semibold text-fg-muted">Standard storage</h4>
+              <p className="text-caption text-fg-subtle">Server-side encryption at rest</p>
             </div>
           </div>
         </div>
       )}
 
-      {/* Security Scan Status — no real API source yet */}
-      <div className={`p-4 rounded-lg border ${
-        darkMode
-          ? 'bg-gray-500/10 border-gray-500/20'
-          : 'bg-gray-50 border-gray-200'
-      }`}>
+      <div className="rounded-lg border border-border bg-surface-muted p-4">
         <div className="flex items-start gap-3">
-          <ShieldCheck size={20} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
+          <ShieldCheck size={20} className="text-fg-subtle" />
           <div className="flex-1">
-            <h4 className={`text-sm font-semibold mb-1 ${
-              darkMode ? 'text-gray-400' : 'text-gray-600'
-            }`}>
+            <h4 className="mb-1 text-body-sm font-semibold text-fg-muted">
               No security scan data available
             </h4>
-            <p className={`text-xs ${
-              darkMode ? 'text-gray-500' : 'text-gray-500'
-            }`}>
-              Security scanning is not yet connected
-            </p>
+            <p className="text-caption text-fg-subtle">Security scanning is not yet connected</p>
           </div>
         </div>
       </div>
 
-      {/* Share Links */}
       {shareLinks.length > 0 && (
         <div>
-          <h4 className={`text-sm font-semibold mb-3 ${
-            darkMode ? 'text-white' : 'text-gray-900'
-          }`}>
-            Active Share Links
-          </h4>
+          <h4 className="mb-3 text-body-sm font-semibold text-fg">Active share links</h4>
           <div className="space-y-2">
             {shareLinks.map((link, index) => (
-              <div
-                key={index}
-                className={`p-3 rounded-lg border ${
-                  darkMode
-                    ? 'bg-gray-700/50 border-gray-700'
-                    : 'bg-gray-50 border-gray-200'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
+              <div key={index} className="rounded-lg border border-border bg-surface p-3">
+                <div className="mb-2 flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Link2 size={14} className={darkMode ? 'text-purple-400' : 'text-purple-500'} />
-                    <span className={`text-xs font-medium ${
-                      darkMode ? 'text-white' : 'text-gray-900'
-                    }`}>
+                    <Link2 size={14} className="text-accent" />
+                    <span className="text-caption font-medium text-fg">
                       {link.access_type || 'View only'}
                     </span>
                   </div>
                   {link.password_protected && (
-                    <div className="flex items-center gap-1 text-xs text-amber-500">
+                    <div className="flex items-center gap-1 text-caption text-warning">
                       <Key size={12} />
                       <span>Password protected</span>
                     </div>
                   )}
                 </div>
-                <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Expires: {link.expires_at ? new Date(link.expires_at).toLocaleDateString() : 'Never'}
+                <p className="text-caption text-fg-muted">
+                  Expires:{' '}
+                  {link.expires_at ? new Date(link.expires_at).toLocaleDateString() : 'Never'}
                 </p>
               </div>
             ))}
@@ -131,37 +83,22 @@ const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => 
         </div>
       )}
 
-      {/* Shared With */}
       {sharedWith.length > 0 && (
         <div>
-          <h4 className={`text-sm font-semibold mb-3 ${
-            darkMode ? 'text-white' : 'text-gray-900'
-          }`}>
-            Shared With
-          </h4>
+          <h4 className="mb-3 text-body-sm font-semibold text-fg">Shared with</h4>
           <div className="space-y-2">
             {sharedWith.map((person, index) => (
               <div
                 key={index}
-                className={`flex items-center justify-between p-3 rounded-lg ${
-                  darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
-                }`}
+                className="flex items-center justify-between rounded-lg bg-surface-muted p-3"
               >
                 <div className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                    darkMode ? 'bg-blue-500/20' : 'bg-blue-100'
-                  }`}>
-                    <Users size={16} className={darkMode ? 'text-blue-400' : 'text-blue-600'} />
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/15">
+                    <Users size={16} className="text-primary" />
                   </div>
                   <div>
-                    <p className={`text-sm font-medium ${
-                      darkMode ? 'text-white' : 'text-gray-900'
-                    }`}>
-                      {person.email}
-                    </p>
-                    <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {person.role || 'Viewer'}
-                    </p>
+                    <p className="text-body-sm font-medium text-fg">{person.email}</p>
+                    <p className="text-caption text-fg-muted">{person.role || 'Viewer'}</p>
                   </div>
                 </div>
               </div>
@@ -170,23 +107,12 @@ const FileSecurityTab: React.FC<FileSecurityTabProps> = ({ file, darkMode }) => 
         </div>
       )}
 
-      {/* Security Tips */}
-      <div className={`p-4 rounded-lg border ${
-        darkMode
-          ? 'bg-gray-700/30 border-gray-700'
-          : 'bg-gray-50 border-gray-200'
-      }`}>
+      <div className="rounded-lg border border-border bg-surface p-4">
         <div className="flex items-start gap-3">
-          <Shield size={18} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+          <Shield size={18} className="text-fg-muted" />
           <div>
-            <h4 className={`text-sm font-semibold mb-2 ${
-              darkMode ? 'text-white' : 'text-gray-900'
-            }`}>
-              Security Best Practices
-            </h4>
-            <ul className={`text-xs space-y-1 ${
-              darkMode ? 'text-gray-400' : 'text-gray-600'
-            }`}>
+            <h4 className="mb-2 text-body-sm font-semibold text-fg">Security best practices</h4>
+            <ul className="space-y-1 text-caption text-fg-muted">
               <li>• Share files only with trusted recipients</li>
               <li>• Use password protection for sensitive files</li>
               <li>• Set expiration dates for temporary access</li>

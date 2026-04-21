@@ -9,11 +9,8 @@ import {
   Zap,
   Database,
   Lock,
-  Eye,
-  EyeOff,
   Search,
   Share2,
-  AlertTriangle,
   ArrowRight,
   Layers,
   Server,
@@ -56,6 +53,8 @@ import type {
   RecoveryCompleteData,
 } from './types';
 import { getErrorMessage } from './types';
+import { Banner, Button, FormField, IconButton, Input, Tabs, TabsList, TabsTrigger } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 // ==================== Bento Grid Components ====================
 
@@ -302,8 +301,6 @@ const AuthPage: React.FC = () => {
   const [showRecoveryConfirm, setShowRecoveryConfirm] = useState<boolean>(false);
 
   // Input State
-  const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [failedAttempts, setFailedAttempts] = useState<number>(0);
   const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
@@ -827,16 +824,14 @@ const AuthPage: React.FC = () => {
             >
               Pricing
             </Link>
-            <button
+            <IconButton
+              variant="ghost"
+              size="md"
               onClick={toggleTheme}
-              className={`p-2.5 rounded-xl border transition-all ${
-                darkMode
-                  ? 'hover:bg-white/5 border-white/10 hover:border-white/20 text-white'
-                  : 'hover:bg-gray-50 border-gray-200 hover:border-gray-300 text-gray-700 shadow-sm hover:shadow'
-              }`}
+              aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
             >
-              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
+              {darkMode ? <Sun /> : <Moon />}
+            </IconButton>
           </div>
         </div>
       </nav>
@@ -944,42 +939,21 @@ const AuthPage: React.FC = () => {
                 }`}
               >
                 {/* Tab Switcher */}
-                <div
-                  className={`mb-8 flex p-1 rounded-xl ${
-                    darkMode
-                      ? 'bg-white/5 border border-white/5'
-                      : 'bg-gray-100 border border-gray-200 shadow-inner'
-                  }`}
+                <Tabs
+                  value={authMode}
+                  onChange={(v) => setAuthMode(v as AuthMode)}
+                  variant="pill"
+                  className="mb-8"
                 >
-                  <button
-                    onClick={() => setAuthMode('login')}
-                    className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 ${
-                      authMode === 'login'
-                        ? darkMode
-                          ? 'bg-white/10 text-white shadow-lg'
-                          : 'bg-white text-gray-900 shadow-md border border-gray-200'
-                        : darkMode
-                          ? 'text-gray-400 hover:text-gray-200'
-                          : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    Log In
-                  </button>
-                  <button
-                    onClick={() => setAuthMode('register')}
-                    className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 ${
-                      authMode === 'register'
-                        ? darkMode
-                          ? 'bg-white/10 text-white shadow-lg'
-                          : 'bg-white text-gray-900 shadow-md border border-gray-200'
-                        : darkMode
-                          ? 'text-gray-400 hover:text-gray-200'
-                          : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    Sign Up
-                  </button>
-                </div>
+                  <TabsList className="w-full">
+                    <TabsTrigger value="login" className="flex-1 justify-center">
+                      Log in
+                    </TabsTrigger>
+                    <TabsTrigger value="register" className="flex-1 justify-center">
+                      Sign up
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
 
                 {authMode === 'register' && registrationStep === 'verify' ? (
                   <VerificationCodeInput
@@ -995,103 +969,53 @@ const AuthPage: React.FC = () => {
                 ) : (
                   <form onSubmit={(e) => void handleSubmit(e)} className="space-y-5">
                     {/* Email */}
-                    <div>
-                      <label
-                        className={`block text-xs font-medium uppercase tracking-wider mb-2 ml-1 ${
-                          darkMode ? 'text-gray-400' : 'text-gray-500'
-                        }`}
-                      >
-                        Email
-                      </label>
-                      <input
+                    <FormField label="Email" {...(fieldErrors.email ? { error: fieldErrors.email } : {})}>
+                      <Input
                         ref={emailRef}
                         type="email"
                         name="email"
                         value={formData.email}
                         onChange={handleInputChange}
                         onBlur={handleBlur}
-                        className={`w-full rounded-xl px-4 py-3.5 outline-none transition-all ${
-                          darkMode
-                            ? 'bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20'
-                            : 'bg-white border border-gray-300 text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:border-gray-400'
-                        } ${fieldErrors.email ? 'border-red-500/50' : ''}`}
+                        size="lg"
                         placeholder="name@company.com"
                       />
-                      {fieldErrors.email && (
-                        <p className="text-red-400 text-xs mt-1 ml-1">{fieldErrors.email}</p>
-                      )}
-                    </div>
+                    </FormField>
 
                     {/* Username (register only) */}
                     {authMode === 'register' && (
-                      <div>
-                        <label
-                          className={`block text-xs font-medium uppercase tracking-wider mb-2 ml-1 ${
-                            darkMode ? 'text-gray-400' : 'text-gray-500'
-                          }`}
-                        >
-                          Username
-                        </label>
-                        <input
+                      <FormField
+                        label="Username"
+                        {...(fieldErrors.username ? { error: fieldErrors.username } : {})}
+                      >
+                        <Input
                           ref={usernameRef}
                           type="text"
                           name="username"
                           value={formData.username}
                           onChange={handleInputChange}
-                          className={`w-full rounded-xl px-4 py-3.5 outline-none transition-all ${
-                            darkMode
-                              ? 'bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20'
-                              : 'bg-white border border-gray-300 text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:border-gray-400'
-                          } ${fieldErrors.username ? 'border-red-500/50' : ''}`}
+                          size="lg"
                           placeholder="username"
                         />
-                        {fieldErrors.username && (
-                          <p className="text-red-400 text-xs mt-1 ml-1">
-                            {fieldErrors.username}
-                          </p>
-                        )}
-                      </div>
+                      </FormField>
                     )}
 
                     {/* Password */}
                     <div>
-                      <label
-                        className={`block text-xs font-medium uppercase tracking-wider mb-2 ml-1 ${
-                          darkMode ? 'text-gray-400' : 'text-gray-500'
-                        }`}
+                      <FormField
+                        label="Password"
+                        {...(fieldErrors.password ? { error: fieldErrors.password } : {})}
                       >
-                        Password
-                      </label>
-                      <div className="relative">
-                        <input
+                        <Input
                           ref={passwordRef}
-                          type={showPassword ? 'text' : 'password'}
                           name="password"
                           value={formData.password}
                           onChange={handleInputChange}
-                          className={`w-full rounded-xl px-4 py-3.5 pr-12 outline-none transition-all ${
-                            darkMode
-                              ? 'bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20'
-                              : 'bg-white border border-gray-300 text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:border-gray-400'
-                          } ${fieldErrors.password ? 'border-red-500/50' : ''}`}
+                          passwordReveal
+                          size="lg"
                           placeholder="••••••••"
                         />
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword(!showPassword)}
-                          className={`absolute right-3 top-1/2 -translate-y-1/2 transition-colors ${
-                            darkMode
-                              ? 'text-gray-500 hover:text-gray-300'
-                              : 'text-gray-400 hover:text-gray-600'
-                          }`}
-                        >
-                          {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                        </button>
-                      </div>
-                      {fieldErrors.password && (
-                        <p className="text-red-400 text-xs mt-1 ml-1">{fieldErrors.password}</p>
-                      )}
-
+                      </FormField>
                       {authMode === 'register' && formData.password && (
                         <div className="mt-2">
                           <PasswordStrengthMeter
@@ -1105,60 +1029,26 @@ const AuthPage: React.FC = () => {
 
                     {/* Confirm Password (register only) */}
                     {authMode === 'register' && (
-                      <div>
-                        <label
-                          className={`block text-xs font-medium uppercase tracking-wider mb-2 ml-1 ${
-                            darkMode ? 'text-gray-400' : 'text-gray-500'
-                          }`}
-                        >
-                          Confirm Password
-                        </label>
-                        <div className="relative">
-                          <input
-                            ref={confirmPasswordRef}
-                            type={showConfirmPassword ? 'text' : 'password'}
-                            name="confirmPassword"
-                            value={formData.confirmPassword}
-                            onChange={handleInputChange}
-                            className={`w-full rounded-xl px-4 py-3.5 pr-12 outline-none transition-all ${
-                              darkMode
-                                ? 'bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20'
-                                : 'bg-white border border-gray-300 text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:border-gray-400'
-                            } ${fieldErrors.confirmPassword ? 'border-red-500/50' : ''}`}
-                            placeholder="••••••••"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                            className={`absolute right-3 top-1/2 -translate-y-1/2 transition-colors ${
-                              darkMode
-                                ? 'text-gray-500 hover:text-gray-300'
-                                : 'text-gray-400 hover:text-gray-600'
-                            }`}
-                          >
-                            {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                          </button>
-                        </div>
-                        {fieldErrors.confirmPassword && (
-                          <p className="text-red-400 text-xs mt-1 ml-1">
-                            {fieldErrors.confirmPassword}
-                          </p>
-                        )}
-                      </div>
+                      <FormField
+                        label="Confirm password"
+                        {...(fieldErrors.confirmPassword ? { error: fieldErrors.confirmPassword } : {})}
+                      >
+                        <Input
+                          ref={confirmPasswordRef}
+                          name="confirmPassword"
+                          value={formData.confirmPassword}
+                          onChange={handleInputChange}
+                          passwordReveal
+                          size="lg"
+                          placeholder="••••••••"
+                        />
+                      </FormField>
                     )}
 
                     {/* Pre-selected Plan Indicator */}
                     {authMode === 'register' && planFromUrl && (
-                      <div
-                        className={`p-4 rounded-xl border ${
-                          darkMode
-                            ? 'bg-blue-500/10 border-blue-500/30'
-                            : 'bg-blue-50 border-blue-200'
-                        }`}
-                      >
-                        <p
-                          className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}
-                        >
+                      <div className="rounded-xl border border-primary/30 bg-primary/10 p-4">
+                        <p className="text-body-sm text-fg">
                           Selected plan:{' '}
                           <strong className="font-semibold">
                             {planFromUrl
@@ -1169,11 +1059,7 @@ const AuthPage: React.FC = () => {
                         </p>
                         <Link
                           to="/pricing"
-                          className={`text-sm underline mt-1 inline-block ${
-                            darkMode
-                              ? 'text-blue-400 hover:text-blue-300'
-                              : 'text-blue-600 hover:text-blue-700'
-                          }`}
+                          className="mt-1 inline-block text-body-sm text-primary underline hover:text-primary-hover"
                         >
                           Change plan
                         </Link>
@@ -1185,59 +1071,40 @@ const AuthPage: React.FC = () => {
                         manually set without server verification. checkZKStatus partially handles this
                         via onBlur, but the user can still toggle ZK on for a non-ZK account. */}
                     <div
-                      className={`p-4 rounded-xl border transition-all ${
+                      className={cn(
+                        'rounded-xl border p-4 transition-colors duration-base',
                         enableZK
-                          ? darkMode
-                            ? 'bg-blue-500/10 border-blue-500/30'
-                            : 'bg-blue-50 border-blue-200 shadow-sm'
-                          : darkMode
-                            ? 'bg-white/5 border-white/10 hover:border-white/20'
-                            : 'bg-gray-50 border-gray-200 hover:border-blue-200 hover:shadow-sm'
-                      }`}
+                          ? 'border-primary/30 bg-primary/10'
+                          : 'border-border bg-surface-muted hover:border-border-strong'
+                      )}
                     >
-                      <label className="flex items-start gap-3 cursor-pointer">
-                        <div className="relative flex items-center mt-0.5">
-                          <input
-                            type="checkbox"
-                            checked={enableZK}
-                            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                              setEnableZK(e.target.checked)
-                            }
-                            className={`w-5 h-5 rounded text-blue-500 focus:ring-blue-500/50 focus:ring-offset-0 ${
-                              darkMode ? 'border-gray-600 bg-white/5' : 'border-gray-300 bg-white'
-                            }`}
-                          />
-                        </div>
+                      <label className="flex cursor-pointer items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={enableZK}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setEnableZK(e.target.checked)
+                          }
+                          className="mt-0.5 h-5 w-5 cursor-pointer rounded border-border text-primary focus-visible:shadow-focus focus-visible:outline-none"
+                        />
                         <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
                             <Shield
-                              size={16}
-                              className={
-                                enableZK
-                                  ? darkMode
-                                    ? 'text-blue-400'
-                                    : 'text-blue-600'
-                                  : 'text-gray-400'
-                              }
+                              className={cn(
+                                'h-4 w-4',
+                                enableZK ? 'text-primary' : 'text-fg-subtle'
+                              )}
                             />
-                            <span
-                              className={`text-sm font-semibold ${
-                                darkMode ? 'text-white' : 'text-gray-900'
-                              }`}
-                            >
-                              Zero-Knowledge Encryption
+                            <span className="text-body-sm font-semibold text-fg">
+                              Zero-knowledge encryption
                             </span>
                             {authMode === 'register' && (
-                              <span className="px-2 py-0.5 text-[10px] font-bold bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-full uppercase shadow-sm">
+                              <span className="rounded-full bg-gradient-to-r from-primary to-accent px-2 py-0.5 text-[10px] font-bold uppercase text-white shadow-sm">
                                 Recommended
                               </span>
                             )}
                           </div>
-                          <p
-                            className={`text-xs leading-relaxed ${
-                              darkMode ? 'text-gray-400' : 'text-gray-600'
-                            }`}
-                          >
+                          <p className="text-caption leading-relaxed text-fg-muted">
                             Client-side encryption. We can&apos;t see your data.
                           </p>
                         </div>
@@ -1246,35 +1113,23 @@ const AuthPage: React.FC = () => {
 
                     {/* Error */}
                     {error && (
-                      <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center gap-3 text-red-400 text-sm">
-                        <AlertTriangle size={16} className="flex-shrink-0" />
+                      <Banner variant="danger" role="alert">
                         {error}
-                      </div>
+                      </Banner>
                     )}
 
                     {/* Submit Button */}
-                    <button
+                    <Button
                       type="submit"
+                      variant="primary"
+                      size="lg"
+                      fullWidth
+                      loading={loading}
                       disabled={loading || !!lockoutUntil}
-                      className={`w-full relative group bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-semibold py-3.5 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 overflow-hidden ${
-                        !darkMode
-                          ? 'shadow-lg shadow-blue-500/30 hover:shadow-xl hover:shadow-blue-500/40'
-                          : ''
-                      }`}
+                      rightIcon={!loading ? <ArrowRight className="h-4 w-4" /> : undefined}
                     >
-                      <span className="absolute inset-0 bg-gradient-to-r from-blue-400 to-purple-400 opacity-0 group-hover:opacity-20 transition-opacity" />
-                      {loading ? (
-                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      ) : (
-                        <>
-                          {authMode === 'login' ? 'Continue' : 'Create Account'}
-                          <ArrowRight
-                            size={18}
-                            className="group-hover:translate-x-1 transition-transform"
-                          />
-                        </>
-                      )}
-                    </button>
+                      {authMode === 'login' ? 'Continue' : 'Create account'}
+                    </Button>
                   </form>
                 )}
 
@@ -1282,12 +1137,9 @@ const AuthPage: React.FC = () => {
                 {authMode === 'login' && (
                   <div className="mt-6 text-center">
                     <button
+                      type="button"
                       onClick={() => setShowForgotPassword(true)}
-                      className={`text-sm transition-colors ${
-                        darkMode
-                          ? 'text-gray-500 hover:text-gray-300'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      className="text-body-sm text-fg-muted transition-colors hover:text-fg"
                     >
                       Forgot your password?
                     </button>
@@ -1297,18 +1149,10 @@ const AuthPage: React.FC = () => {
                 {/* OAuth Divider */}
                 <div className="relative my-6">
                   <div className="absolute inset-0 flex items-center">
-                    <div
-                      className={`w-full border-t ${
-                        darkMode ? 'border-gray-700' : 'border-gray-300'
-                      }`}
-                    />
+                    <div className="w-full border-t border-border" />
                   </div>
-                  <div className="relative flex justify-center text-sm">
-                    <span
-                      className={`px-4 ${
-                        darkMode ? 'bg-gray-900 text-gray-400' : 'bg-white text-gray-500'
-                      }`}
-                    >
+                  <div className="relative flex justify-center">
+                    <span className="bg-surface px-4 text-body-sm text-fg-muted">
                       Or continue with
                     </span>
                   </div>
@@ -1316,75 +1160,67 @@ const AuthPage: React.FC = () => {
 
                 {/* OAuth Buttons */}
                 <div className="grid grid-cols-2 gap-3">
-                  <button
+                  <Button
                     type="button"
+                    variant="secondary"
+                    size="md"
+                    fullWidth
                     disabled={loading || !!lockoutUntil}
-                    className={`flex items-center justify-center gap-2.5 px-4 py-3 rounded-xl font-medium transition-all border ${
-                      darkMode
-                        ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700 hover:border-gray-600'
-                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400 shadow-sm hover:shadow-md'
-                    } ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02]'}`}
+                    leftIcon={
+                      <svg className="h-5 w-5" viewBox="0 0 24 24">
+                        <path
+                          fill="#4285F4"
+                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                        />
+                      </svg>
+                    }
                   >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24">
-                      <path
-                        fill="#4285F4"
-                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                      />
-                      <path
-                        fill="#34A853"
-                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                      />
-                      <path
-                        fill="#FBBC05"
-                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                      />
-                      <path
-                        fill="#EA4335"
-                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                      />
-                    </svg>
-                    <span>Google</span>
-                  </button>
-                  <button
+                    Google
+                  </Button>
+                  <Button
                     type="button"
+                    variant="secondary"
+                    size="md"
+                    fullWidth
                     disabled={loading || !!lockoutUntil}
-                    className={`flex items-center justify-center gap-2.5 px-4 py-3 rounded-xl font-medium transition-all border ${
-                      darkMode
-                        ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700 hover:border-gray-600'
-                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400 shadow-sm hover:shadow-md'
-                    } ${loading || lockoutUntil ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02]'}`}
+                    leftIcon={
+                      <svg className="h-5 w-5" viewBox="0 0 24 24">
+                        <path fill="#F25022" d="M1 1h10v10H1z" />
+                        <path fill="#00A4EF" d="M1 13h10v10H1z" />
+                        <path fill="#7FBA00" d="M13 1h10v10H13z" />
+                        <path fill="#FFB900" d="M13 13h10v10H13z" />
+                      </svg>
+                    }
                   >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24">
-                      <path fill="#F25022" d="M1 1h10v10H1z" />
-                      <path fill="#00A4EF" d="M1 13h10v10H1z" />
-                      <path fill="#7FBA00" d="M13 1h10v10H13z" />
-                      <path fill="#FFB900" d="M13 13h10v10H13z" />
-                    </svg>
-                    <span>Microsoft</span>
-                  </button>
+                    Microsoft
+                  </Button>
                 </div>
 
                 {/* Trust indicators */}
-                <div
-                  className={`mt-6 pt-6 border-t ${
-                    darkMode ? 'border-white/5' : 'border-gray-100'
-                  }`}
-                >
-                  <div
-                    className={`flex items-center justify-center gap-6 text-xs ${
-                      darkMode ? 'text-gray-500' : 'text-gray-500'
-                    }`}
-                  >
+                <div className="mt-6 border-t border-border pt-6">
+                  <div className="flex items-center justify-center gap-6 text-caption text-fg-muted">
                     <div className="flex items-center gap-1.5">
-                      <Shield size={12} className="text-green-500" />
+                      <Shield className="h-3 w-3 text-success" />
                       <span>AES-256</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <Lock size={12} className="text-blue-500" />
+                      <Lock className="h-3 w-3 text-primary" />
                       <span>GDPR</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <Globe size={12} className="text-purple-500" />
+                      <Globe className="h-3 w-3 text-accent" />
                       <span>99.9% Uptime</span>
                     </div>
                   </div>

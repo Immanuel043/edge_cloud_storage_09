@@ -1,14 +1,43 @@
 import React, { useState, useMemo } from 'react';
 import {
-  X, Share2, Link2, Copy, Check, Lock, Clock, Download,
-  Eye, AlertCircle, FileText, Image, Video, Music,
-  Archive, Code, Zap, Loader2, Package, Folder
+  Share2,
+  Link2,
+  Copy,
+  Check,
+  Lock,
+  Clock,
+  Download,
+  Eye,
+  AlertCircle,
+  FileText,
+  Image,
+  Video,
+  Music,
+  Archive,
+  Code,
+  Zap,
+  Package,
+  Folder,
 } from 'lucide-react';
 import { formatBytes } from '../../utils/helpers';
 import { API_URL } from '../../config/constants';
 import type { ShareBundleComposerProps, ShareBundleResult } from './types';
 import { getErrorMessage } from './types';
 import type { LucideIcon } from 'lucide-react';
+import {
+  Badge,
+  Banner,
+  Button,
+  Checkbox,
+  FormField,
+  Input,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  Select,
+} from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 type ShareType = 'view' | 'download';
 
@@ -23,7 +52,7 @@ interface QuickPreset {
 const QUICK_PRESETS: QuickPreset[] = [
   { label: 'View 24h', shareType: 'view', expiresHours: 24, icon: Eye },
   { label: 'Download 7d', shareType: 'download', expiresHours: 168, icon: Download },
-  { label: 'Permanent Link', shareType: 'view', expiresHours: null, icon: Link2 },
+  { label: 'Permanent link', shareType: 'view', expiresHours: null, icon: Link2 },
 ];
 
 interface ShareBundleRequest {
@@ -45,14 +74,14 @@ interface ShareBundleError {
 }
 
 /**
- * ShareBundleComposer - Modal for creating share bundles
+ * ShareBundleComposer — modal for creating share bundles. Two-state UI:
+ * the composer form and the success card revealing the share URL.
  */
 const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
   selectedFiles = [],
   selectedFolders = [],
   onClose,
   onSuccess,
-  darkMode
 }) => {
   const [bundleName, setBundleName] = useState<string>('');
   const [shareType, setShareType] = useState<ShareType>('view');
@@ -68,20 +97,20 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
   const [shareResult, setShareResult] = useState<ShareBundleResult | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
 
-  // Calculate total size (files only - folder sizes will be calculated on backend)
+  // Calculate total size (files only — folder sizes calculated on backend)
   const totalSize = useMemo(() => {
     return selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
   }, [selectedFiles]);
 
-  // Total item count
   const totalItems = selectedFiles.length + selectedFolders.length;
 
   // Check for ZK-encrypted files that cannot be shared via bundles
-  const zkFiles = selectedFiles.filter(f => f.is_encrypted || f.encrypted_file_key || f.encryption_mode === 'client_zk');
+  const zkFiles = selectedFiles.filter(
+    (f) => f.is_encrypted || f.encrypted_file_key || f.encryption_mode === 'client_zk'
+  );
   const hasZKFiles = zkFiles.length > 0;
   const allFilesAreZK = zkFiles.length === selectedFiles.length && selectedFolders.length === 0;
 
-  // Generate default bundle name
   const defaultBundleName = useMemo(() => {
     if (selectedFolders.length === 1 && selectedFiles.length === 0) {
       return selectedFolders[0]?.name || 'Bundle';
@@ -115,8 +144,8 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
 
     try {
       const requestBody: ShareBundleRequest = {
-        file_ids: selectedFiles.map(f => f.id),
-        folder_ids: selectedFolders.map(f => f.id),
+        file_ids: selectedFiles.map((f) => f.id),
+        folder_ids: selectedFolders.map((f) => f.id),
         name: bundleName || defaultBundleName,
         share_type: shareType,
         expires_hours: expiresHours,
@@ -125,26 +154,25 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
         allow_preview: allowPreview,
         allow_zip_download: allowZipDownload,
         show_file_sizes: showFileSizes,
-        watermark_text: watermarkText.trim() || null
+        watermark_text: watermarkText.trim() || null,
       };
 
       const response = await fetch(`${API_URL}/api/v1/share-bundles`, {
         method: 'POST',
         credentials: 'include',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
-        const errorData = await response.json() as ShareBundleError;
+        const errorData = (await response.json()) as ShareBundleError;
         throw new Error(errorData.detail || 'Failed to create share bundle');
       }
 
-      const result = await response.json() as ShareBundleResult;
+      const result = (await response.json()) as ShareBundleResult;
       setShareResult(result);
-
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('Failed to create share bundle:', err);
@@ -172,98 +200,63 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
     if (mimeType.startsWith('video/')) return Video;
     if (mimeType.startsWith('audio/')) return Music;
     if (mimeType.includes('zip') || mimeType.includes('archive')) return Archive;
-    if (mimeType.includes('code') || mimeType.includes('javascript') || mimeType.includes('json')) return Code;
+    if (mimeType.includes('code') || mimeType.includes('javascript') || mimeType.includes('json')) {
+      return Code;
+    }
     return FileText;
   };
 
-  // Success state - show the share link
+  // Success state — show the share link
   if (shareResult) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-        <div className={`w-full max-w-lg mx-4 rounded-2xl shadow-2xl ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-          {/* Header */}
-          <div className={`px-6 py-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-xl bg-green-500/10">
-                  <Check className="text-green-500" size={24} />
-                </div>
-                <div>
-                  <h2 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    Share Bundle Created!
-                  </h2>
-                  <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                    {shareResult.file_count || 0} files • {formatBytes(shareResult.total_size || 0)}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={onSuccess || onClose}
-                className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                type="button"
-              >
-                <X size={20} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
-              </button>
+      <Modal open onClose={onSuccess || onClose} size="md">
+        <ModalHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-success/80 to-success">
+              <Check className="text-white" size={24} />
+            </div>
+            <div>
+              <h2 className="text-h2 font-bold text-fg">Share bundle created</h2>
+              <p className="text-body-sm text-fg-muted">
+                {shareResult.file_count || 0} files · {formatBytes(shareResult.total_size || 0)}
+              </p>
             </div>
           </div>
+        </ModalHeader>
 
-          {/* Content */}
-          <div className="p-6 space-y-4">
-            {/* Share Link */}
-            <div>
-              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                Share Link
-              </label>
+        <ModalBody>
+          <div className="space-y-4">
+            <FormField label="Share link">
               <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={shareResult.share_url}
-                  readOnly
-                  className={`flex-1 px-4 py-3 rounded-xl border text-sm ${
-                    darkMode
-                      ? 'bg-gray-700 border-gray-600 text-white'
-                      : 'bg-gray-50 border-gray-200 text-gray-900'
-                  }`}
-                />
-                <button
-                  onClick={handleCopyLink}
-                  className={`px-4 py-3 rounded-xl font-medium transition-all ${
-                    copied
-                      ? 'bg-green-500 text-white'
-                      : 'bg-blue-500 text-white hover:bg-blue-600'
-                  }`}
-                  type="button"
+                <Input type="text" value={shareResult.share_url} readOnly className="flex-1" />
+                <Button
+                  variant={copied ? 'primary' : 'secondary'}
+                  onClick={() => void handleCopyLink()}
+                  leftIcon={copied ? <Check size={18} /> : <Copy size={18} />}
                 >
-                  {copied ? <Check size={20} /> : <Copy size={20} />}
-                </button>
+                  {copied ? 'Copied' : 'Copy'}
+                </Button>
               </div>
-            </div>
+            </FormField>
 
-            {/* ZK files excluded warning */}
             {shareResult.excluded_zk_count != null && shareResult.excluded_zk_count > 0 && (
-              <div className={`p-3 rounded-lg border ${
-                darkMode
-                  ? 'bg-yellow-900/20 border-yellow-700/40'
-                  : 'bg-yellow-50 border-yellow-200'
-              }`}>
-                <p className={`text-sm ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
-                  {shareResult.excluded_zk_count} ZK-encrypted file{shareResult.excluded_zk_count > 1 ? 's were' : ' was'} excluded from this bundle.
-                </p>
-              </div>
+              <Banner variant="warning" icon={<AlertCircle />}>
+                {shareResult.excluded_zk_count} ZK-encrypted file
+                {shareResult.excluded_zk_count > 1 ? 's were' : ' was'} excluded from this bundle.
+              </Banner>
             )}
 
-            {/* Bundle Info */}
-            <div className={`p-4 rounded-xl ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'}`}>
-              <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="rounded-xl bg-surface-muted p-4">
+              <div className="grid grid-cols-2 gap-4 text-body-sm">
                 <div>
-                  <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Access:</span>
-                  <span className={`ml-2 font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    {shareResult.share_type === 'download' ? 'Download' : 'View Only'}
+                  <span className="text-fg-muted">Access:</span>
+                  <span className="ml-2 font-medium text-fg">
+                    {shareResult.share_type === 'download' ? 'Download' : 'View only'}
                   </span>
                 </div>
                 <div>
-                  <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Expires:</span>
-                  <span className={`ml-2 font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  <span className="text-fg-muted">Expires:</span>
+                  <span className="ml-2 font-medium text-fg">
                     {shareResult.expires_at
                       ? new Date(shareResult.expires_at).toLocaleDateString()
                       : 'Never'}
@@ -271,88 +264,66 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
                 </div>
                 {shareResult.password_protected && (
                   <div className="col-span-2">
-                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium ${
-                      darkMode ? 'bg-purple-900/30 text-purple-400' : 'bg-purple-100 text-purple-700'
-                    }`}>
-                      <Lock size={12} /> Password Protected
-                    </span>
+                    <Badge variant="accent" size="sm">
+                      <Lock size={12} />
+                      Password protected
+                    </Badge>
                   </div>
                 )}
               </div>
             </div>
           </div>
+        </ModalBody>
 
-          {/* Footer */}
-          <div className={`px-6 py-4 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <button
-              onClick={onSuccess || onClose}
-              className="w-full py-3 px-4 bg-blue-500 text-white rounded-xl font-medium hover:bg-blue-600 transition-colors"
-              type="button"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      </div>
+        <ModalFooter>
+          <Button variant="primary" fullWidth onClick={onSuccess || onClose}>
+            Done
+          </Button>
+        </ModalFooter>
+      </Modal>
     );
   }
 
   // Main composer UI
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className={`w-full max-w-2xl mx-4 rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-        {/* Header */}
-        <div className={`px-6 py-4 border-b flex-shrink-0 ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-purple-500/10">
-                <Package className="text-purple-500" size={24} />
-              </div>
-              <div>
-                <h2 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  Create Share Bundle
-                </h2>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  Share {totalItems} {totalItems === 1 ? 'item' : 'items'} with a single link
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={onClose}
-              className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-              type="button"
-            >
-              <X size={20} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
-            </button>
+    <Modal open onClose={onClose} size="lg">
+      <ModalHeader>
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent">
+            <Package className="text-white" size={24} />
+          </div>
+          <div>
+            <h2 className="text-h2 font-bold text-fg">Create share bundle</h2>
+            <p className="text-body-sm text-fg-muted">
+              Share {totalItems} {totalItems === 1 ? 'item' : 'items'} with a single link
+            </p>
           </div>
         </div>
+      </ModalHeader>
 
-        {/* Content */}
-        <div className="p-6 space-y-6 overflow-y-auto flex-1">
-          {/* Quick Presets */}
+      <ModalBody>
+        <div className="space-y-6">
+          {/* Quick presets */}
           <div>
-            <label className={`block text-sm font-medium mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              <Zap size={14} className="inline mr-1" /> Quick Presets
-            </label>
-            <div className="flex gap-2">
+            <div className="mb-3 flex items-center gap-2 text-body-sm font-medium text-fg">
+              <Zap size={14} />
+              Quick presets
+            </div>
+            <div className="flex flex-wrap gap-2">
               {QUICK_PRESETS.map((preset, idx) => {
                 const Icon = preset.icon;
+                const isActive =
+                  shareType === preset.shareType && expiresHours === preset.expiresHours;
                 return (
-                  <button
+                  <Button
                     key={idx}
+                    variant={isActive ? 'primary' : 'secondary'}
+                    size="sm"
+                    leftIcon={<Icon size={16} />}
                     onClick={() => handleQuickPreset(preset)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                      shareType === preset.shareType && expiresHours === preset.expiresHours
-                        ? 'bg-purple-500 text-white'
-                        : darkMode
-                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                    type="button"
                   >
-                    <Icon size={16} />
                     {preset.label}
-                  </button>
+                  </Button>
                 );
               })}
             </div>
@@ -360,291 +331,202 @@ const ShareBundleComposer: React.FC<ShareBundleComposerProps> = ({
 
           {/* ZK encrypted file warning */}
           {hasZKFiles && (
-            <div className={`p-3 rounded-lg border ${
-              darkMode
-                ? 'bg-yellow-900/20 border-yellow-700/40'
-                : 'bg-yellow-50 border-yellow-200'
-            }`}>
-              <div className="flex items-start gap-2">
-                <AlertCircle size={16} className="text-yellow-500 flex-shrink-0 mt-0.5" />
-                <p className={`text-xs ${darkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
-                  {allFilesAreZK
-                    ? 'All selected files use ZK encryption and cannot be shared via bundles.'
-                    : `${zkFiles.length} ZK-encrypted file${zkFiles.length > 1 ? 's' : ''} will be excluded from the bundle. Only non-ZK files will be shared.`
-                  }
-                </p>
-              </div>
-            </div>
+            <Banner variant="warning" icon={<AlertCircle />}>
+              {allFilesAreZK
+                ? 'All selected files use ZK encryption and cannot be shared via bundles.'
+                : `${zkFiles.length} ZK-encrypted file${
+                    zkFiles.length > 1 ? 's' : ''
+                  } will be excluded from the bundle. Only non-ZK files will be shared.`}
+            </Banner>
           )}
 
-          {/* Selected Items Preview */}
+          {/* Selected items preview */}
           <div>
-            <label className={`block text-sm font-medium mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Selected Items ({totalItems})
-              {totalSize > 0 && ` • ${formatBytes(totalSize)}`}
+            <div className="mb-3 text-body-sm font-medium text-fg">
+              Selected items ({totalItems})
+              {totalSize > 0 && ` · ${formatBytes(totalSize)}`}
               {selectedFolders.length > 0 && ' + folder contents'}
-            </label>
-            <div className={`rounded-xl border max-h-40 overflow-y-auto ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
-              {/* Folders first */}
+            </div>
+            <div className="max-h-40 overflow-y-auto rounded-xl border border-border bg-surface-muted">
               {selectedFolders.map((folder, idx) => (
                 <div
                   key={folder.id}
-                  className={`flex items-center gap-3 px-4 py-2.5 ${
-                    (idx !== selectedFolders.length - 1 || selectedFiles.length > 0)
-                      ? (darkMode ? 'border-b border-gray-600' : 'border-b border-gray-200')
-                      : ''
-                  }`}
+                  className={cn(
+                    'flex items-center gap-3 px-4 py-2.5',
+                    (idx !== selectedFolders.length - 1 || selectedFiles.length > 0) &&
+                      'border-b border-border'
+                  )}
                 >
-                  <Folder size={18} className="text-blue-500" />
-                  <span className={`flex-1 truncate text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    {folder.name}
-                  </span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${darkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>
+                  <Folder size={18} className="text-primary" />
+                  <span className="flex-1 truncate text-body-sm text-fg">{folder.name}</span>
+                  <Badge variant="info" size="sm">
                     Folder
-                  </span>
+                  </Badge>
                 </div>
               ))}
-              {/* Then files */}
               {selectedFiles.map((file, idx) => {
                 const IconComponent = getFileIcon(file.mime_type);
                 return (
                   <div
                     key={file.id}
-                    className={`flex items-center gap-3 px-4 py-2.5 ${
-                      idx !== selectedFiles.length - 1
-                        ? (darkMode ? 'border-b border-gray-600' : 'border-b border-gray-200')
-                        : ''
-                    }`}
+                    className={cn(
+                      'flex items-center gap-3 px-4 py-2.5',
+                      idx !== selectedFiles.length - 1 && 'border-b border-border'
+                    )}
                   >
-                    <IconComponent size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
-                    <span className={`flex-1 truncate text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {file.name}
-                    </span>
-                    <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                      {formatBytes(file.size)}
-                    </span>
+                    <IconComponent size={18} className="text-fg-muted" />
+                    <span className="flex-1 truncate text-body-sm text-fg">{file.name}</span>
+                    <span className="text-caption text-fg-subtle">{formatBytes(file.size)}</span>
                   </div>
                 );
               })}
             </div>
           </div>
 
-          {/* Bundle Name */}
-          <div>
-            <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Bundle Name
-            </label>
-            <input
+          {/* Bundle name */}
+          <FormField label="Bundle name">
+            <Input
               type="text"
               value={bundleName}
               onChange={(e) => setBundleName(e.target.value)}
               placeholder={defaultBundleName}
-              className={`w-full px-4 py-3 rounded-xl border text-sm ${
-                darkMode
-                  ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-500'
-                  : 'bg-white border-gray-200 text-gray-900 placeholder-gray-400'
-              } focus:outline-none focus:ring-2 focus:ring-purple-500`}
             />
-          </div>
+          </FormField>
 
-          {/* Share Type */}
+          {/* Share type */}
           <div>
-            <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Access Type
-            </label>
+            <div className="mb-2 text-body-sm font-medium text-fg">Access type</div>
             <div className="flex gap-3">
-              <button
+              <Button
+                variant={shareType === 'view' ? 'primary' : 'secondary'}
+                fullWidth
+                leftIcon={<Eye size={18} />}
                 onClick={() => setShareType('view')}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                  shareType === 'view'
-                    ? 'bg-blue-500 text-white'
-                    : darkMode
-                      ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-                type="button"
               >
-                <Eye size={18} />
-                View Only
-              </button>
-              <button
+                View only
+              </Button>
+              <Button
+                variant={shareType === 'download' ? 'primary' : 'secondary'}
+                fullWidth
+                leftIcon={<Download size={18} />}
                 onClick={() => setShareType('download')}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                  shareType === 'download'
-                    ? 'bg-green-500 text-white'
-                    : darkMode
-                      ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-                type="button"
               >
-                <Download size={18} />
                 Download
-              </button>
+              </Button>
             </div>
           </div>
 
           {/* Expiration */}
-          <div>
-            <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              <Clock size={14} className="inline mr-1" /> Expiration
-            </label>
-            <select
+          <FormField
+            label={
+              <span className="flex items-center gap-2">
+                <Clock size={14} />
+                Expiration
+              </span>
+            }
+          >
+            <Select
               value={expiresHours || 'never'}
-              onChange={(e) => setExpiresHours(e.target.value === 'never' ? null : parseInt(e.target.value))}
-              className={`w-full px-4 py-3 rounded-xl border text-sm ${
-                darkMode
-                  ? 'bg-gray-700 border-gray-600 text-white'
-                  : 'bg-white border-gray-200 text-gray-900'
-              } focus:outline-none focus:ring-2 focus:ring-purple-500`}
+              onChange={(e) =>
+                setExpiresHours(e.target.value === 'never' ? null : parseInt(e.target.value))
+              }
             >
               <option value="1">1 hour</option>
               <option value="24">24 hours</option>
               <option value="168">7 days</option>
               <option value="720">30 days</option>
               <option value="never">Never expires</option>
-            </select>
-          </div>
+            </Select>
+          </FormField>
 
-          {/* Password Protection */}
-          <div>
-            <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              <Lock size={14} className="inline mr-1" /> Password Protection (optional)
-            </label>
-            <input
+          {/* Password protection */}
+          <FormField
+            label={
+              <span className="flex items-center gap-2">
+                <Lock size={14} />
+                Password protection (optional)
+              </span>
+            }
+          >
+            <Input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Leave empty for no password"
-              className={`w-full px-4 py-3 rounded-xl border text-sm ${
-                darkMode
-                  ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-500'
-                  : 'bg-white border-gray-200 text-gray-900 placeholder-gray-400'
-              } focus:outline-none focus:ring-2 focus:ring-purple-500`}
             />
-          </div>
+          </FormField>
 
-          {/* Advanced Options */}
-          <div className={`p-4 rounded-xl ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'}`}>
-            <label className={`block text-sm font-medium mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Advanced Options
-            </label>
+          {/* Advanced options */}
+          <div className="rounded-xl bg-surface-muted p-4">
+            <div className="mb-3 text-body-sm font-medium text-fg">Advanced options</div>
             <div className="space-y-3">
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={allowPreview}
-                  onChange={(e) => setAllowPreview(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-300 text-purple-500 focus:ring-purple-500"
-                />
-                <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Allow file preview
-                </span>
-              </label>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={allowZipDownload}
-                  onChange={(e) => setAllowZipDownload(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-300 text-purple-500 focus:ring-purple-500"
-                />
-                <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Allow ZIP download (all files)
-                </span>
-              </label>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showFileSizes}
-                  onChange={(e) => setShowFileSizes(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-300 text-purple-500 focus:ring-purple-500"
-                />
-                <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Show file sizes to viewers
-                </span>
-              </label>
-              <div>
-                <label className={`block text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Watermark text (overlaid on previews):
-                </label>
-                <input
+              <Checkbox
+                checked={allowPreview}
+                onChange={(e) => setAllowPreview(e.target.checked)}
+                label="Allow file preview"
+              />
+              <Checkbox
+                checked={allowZipDownload}
+                onChange={(e) => setAllowZipDownload(e.target.checked)}
+                label="Allow ZIP download (all files)"
+              />
+              <Checkbox
+                checked={showFileSizes}
+                onChange={(e) => setShowFileSizes(e.target.checked)}
+                label="Show file sizes to viewers"
+              />
+              <FormField label="Watermark text (overlaid on previews)">
+                <Input
                   type="text"
                   value={watermarkText}
                   onChange={(e) => setWatermarkText(e.target.value)}
                   placeholder="e.g. Confidential"
                   maxLength={100}
-                  className={`w-full px-3 py-1.5 rounded-lg border text-sm ${
-                    darkMode
-                      ? 'bg-gray-700 border-gray-600 text-white'
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
                 />
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Max downloads:
-                </span>
-                <input
+              </FormField>
+              <FormField label="Max downloads">
+                <Input
                   type="number"
-                  min="1"
-                  value={maxDownloads || ''}
-                  onChange={(e) => setMaxDownloads(e.target.value ? parseInt(e.target.value) : null)}
+                  min={1}
+                  value={maxDownloads ?? ''}
+                  onChange={(e) =>
+                    setMaxDownloads(e.target.value ? parseInt(e.target.value) : null)
+                  }
                   placeholder="Unlimited"
-                  className={`w-24 px-3 py-1.5 rounded-lg border text-sm ${
-                    darkMode
-                      ? 'bg-gray-600 border-gray-500 text-white placeholder-gray-400'
-                      : 'bg-white border-gray-200 text-gray-900 placeholder-gray-400'
-                  } focus:outline-none focus:ring-2 focus:ring-purple-500`}
+                  className="max-w-[12rem]"
                 />
-              </div>
+              </FormField>
             </div>
           </div>
 
-          {/* Error Message */}
+          {/* Error */}
           {error && (
-            <div className="flex items-center gap-2 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
-              <AlertCircle size={20} className="text-red-500" />
-              <span className="text-red-500 text-sm">{error}</span>
-            </div>
+            <Banner variant="danger" icon={<AlertCircle />}>
+              {error}
+            </Banner>
           )}
         </div>
+      </ModalBody>
 
-        {/* Footer */}
-        <div className={`px-6 py-4 border-t flex-shrink-0 ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              className={`flex-1 py-3 px-4 rounded-xl font-medium transition-colors ${
-                darkMode
-                  ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-              type="button"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCreateBundle}
-              disabled={isCreating || (selectedFiles.length === 0 && selectedFolders.length === 0) || allFilesAreZK}
-              className="flex-1 py-3 px-4 bg-purple-500 text-white rounded-xl font-medium hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              type="button"
-            >
-              {isCreating ? (
-                <>
-                  <Loader2 size={18} className="animate-spin" />
-                  Creating...
-                </>
-              ) : (
-                <>
-                  <Share2 size={18} />
-                  Create Share Link
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose} disabled={isCreating}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          loading={isCreating}
+          disabled={
+            isCreating ||
+            (selectedFiles.length === 0 && selectedFolders.length === 0) ||
+            allFilesAreZK
+          }
+          leftIcon={!isCreating ? <Share2 size={18} /> : undefined}
+          onClick={() => void handleCreateBundle()}
+        >
+          {isCreating ? 'Creating...' : 'Create share link'}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 };
 

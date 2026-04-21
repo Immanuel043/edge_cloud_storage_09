@@ -1,36 +1,56 @@
 import React from 'react';
 import {
-  FileText, Calendar, HardDrive, MapPin,
-  Edit2, Image, Video, Music, Archive, Code
+  FileText,
+  Calendar,
+  HardDrive,
+  MapPin,
+  Edit2,
+  Image,
+  Video,
+  Music,
+  Archive,
+  Code,
 } from 'lucide-react';
 import { formatBytes, formatDate } from '../../utils/helpers';
 import type { FileDetailsTabProps } from './types';
+import { Badge, IconButton } from '@/components/ui';
 
 /**
- * FileDetailsTab - Displays detailed file information
+ * FileDetailsTab — core metadata panel for FileInfoPanel. Groups file
+ * name/type/format/size/dates/location/tags under consistent section
+ * headings; tags are gated "Coming soon" until the backend ships.
  */
-const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename, darkMode }) => {
-
+const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename }) => {
   const getFileIcon = (): React.ReactElement => {
     const mimeType = file.mime_type || file.type || '';
     const name = file.name || '';
 
     if (mimeType.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(name)) {
-      return <Image size={20} className="text-blue-500" />;
+      return <Image size={20} className="text-primary" />;
     }
     if (mimeType.startsWith('video/') || /\.(mp4|avi|mov|wmv|webm)$/i.test(name)) {
-      return <Video size={20} className="text-purple-500" />;
+      return <Video size={20} className="text-accent" />;
     }
     if (mimeType.startsWith('audio/') || /\.(mp3|wav|ogg|flac)$/i.test(name)) {
-      return <Music size={20} className="text-pink-500" />;
+      return <Music size={20} className="text-accent" />;
     }
-    if (mimeType.includes('zip') || mimeType.includes('tar') || mimeType.includes('rar') || /\.(zip|tar|gz|rar|7z)$/i.test(name)) {
-      return <Archive size={20} className="text-orange-500" />;
+    if (
+      mimeType.includes('zip') ||
+      mimeType.includes('tar') ||
+      mimeType.includes('rar') ||
+      /\.(zip|tar|gz|rar|7z)$/i.test(name)
+    ) {
+      return <Archive size={20} className="text-warning" />;
     }
-    if (mimeType.includes('code') || mimeType.includes('javascript') || mimeType.includes('python') || /\.(js|py|java|cpp|html|css)$/i.test(name)) {
-      return <Code size={20} className="text-green-500" />;
+    if (
+      mimeType.includes('code') ||
+      mimeType.includes('javascript') ||
+      mimeType.includes('python') ||
+      /\.(js|py|java|cpp|html|css)$/i.test(name)
+    ) {
+      return <Code size={20} className="text-success" />;
     }
-    return <FileText size={20} className="text-gray-500" />;
+    return <FileText size={20} className="text-fg-subtle" />;
   };
 
   const getFileFormat = (): string => {
@@ -41,159 +61,98 @@ const FileDetailsTab: React.FC<FileDetailsTabProps> = ({ file, onRename, darkMod
 
   return (
     <div className="space-y-6">
-      {/* File Name */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className={`text-sm font-semibold ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            File name
-          </h3>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-body-sm font-semibold text-fg">File name</h3>
           {onRename && (
-            <button
+            <IconButton
+              variant="ghost"
+              size="sm"
+              aria-label="Rename file"
               onClick={() => onRename(file)}
-              className={`p-1.5 rounded-lg transition-colors ${
-                darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-600'
-              }`}
-              title="Rename file"
-              type="button"
             >
-              <Edit2 size={14} />
-            </button>
+              <Edit2 className="h-3.5 w-3.5" />
+            </IconButton>
           )}
         </div>
-        <div className={`flex items-center gap-3 p-3 rounded-lg ${
-          darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
-        }`}>
+        <div className="flex items-center gap-3 rounded-lg bg-surface-muted p-3">
           {getFileIcon()}
-          <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            {file.name}
-          </span>
+          <span className="font-medium text-fg">{file.name}</span>
         </div>
       </div>
 
-      {/* File Type & Format */}
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <p className={`text-sm font-semibold mb-2 ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            Type
-          </p>
-          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-            {file.mime_type || 'Unknown'}
-          </p>
-        </div>
-        <div>
-          <p className={`text-sm font-semibold mb-2 ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            Format
-          </p>
-          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-            {getFileFormat()}
-          </p>
-        </div>
+        <SectionKV label="Type" value={file.mime_type || 'Unknown'} />
+        <SectionKV label="Format" value={getFileFormat()} />
       </div>
 
-      {/* File Size */}
-      <div>
-        <p className={`text-sm font-semibold mb-2 ${
-          darkMode ? 'text-gray-300' : 'text-gray-700'
-        }`}>
-          Size
-        </p>
-        <div className={`flex items-center gap-2 text-sm ${
-          darkMode ? 'text-gray-400' : 'text-gray-600'
-        }`}>
-          <HardDrive size={16} />
-          <span>{formatBytes(file.size)}</span>
-        </div>
-      </div>
+      <SectionWithIcon label="Size" icon={<HardDrive size={16} />}>
+        {formatBytes(file.size)}
+      </SectionWithIcon>
 
-      {/* Dates */}
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <p className={`text-sm font-semibold mb-2 ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            Created
-          </p>
-          <div className={`flex items-center gap-2 text-sm ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
-            <Calendar size={16} />
-            <span>{formatDate(file.created_at)}</span>
-          </div>
-        </div>
-        <div>
-          <p className={`text-sm font-semibold mb-2 ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            Modified
-          </p>
-          <div className={`flex items-center gap-2 text-sm ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
-            <Calendar size={16} />
-            <span>{formatDate(file.updated_at || file.created_at)}</span>
-          </div>
-        </div>
+        <SectionWithIcon label="Created" icon={<Calendar size={16} />}>
+          {formatDate(file.created_at)}
+        </SectionWithIcon>
+        <SectionWithIcon label="Modified" icon={<Calendar size={16} />}>
+          {formatDate(file.updated_at || file.created_at)}
+        </SectionWithIcon>
       </div>
 
-      {/* Pages (for PDFs) */}
       {file.pages && (
-        <div>
-          <p className={`text-sm font-semibold mb-2 ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
-          }`}>
-            Pages
-          </p>
-          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-            {file.pages} {file.pages === 1 ? 'page' : 'pages'}
-          </p>
-        </div>
+        <SectionKV
+          label="Pages"
+          value={`${file.pages} ${file.pages === 1 ? 'page' : 'pages'}`}
+        />
       )}
 
-      {/* Location */}
-      <div>
-        <p className={`text-sm font-semibold mb-2 ${
-          darkMode ? 'text-gray-300' : 'text-gray-700'
-        }`}>
-          Location
-        </p>
-        <div className={`flex items-center gap-2 text-sm ${
-          darkMode ? 'text-gray-400' : 'text-gray-600'
-        }`}>
-          <MapPin size={16} />
-          <span>{file.folder_path || 'Cloud Drive'}</span>
-        </div>
-      </div>
+      <SectionWithIcon label="Location" icon={<MapPin size={16} />}>
+        {file.folder_path || 'Cloud Drive'}
+      </SectionWithIcon>
 
-      {/* Tags — Coming soon (no backend API yet) */}
       <div className="opacity-60">
-        <div className="flex items-center justify-between mb-3">
+        <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <p className={`text-sm font-semibold ${
-              darkMode ? 'text-gray-300' : 'text-gray-700'
-            }`}>
-              Tags
-            </p>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${
-              darkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-500'
-            }`}>
+            <p className="text-body-sm font-semibold text-fg">Tags</p>
+            <Badge variant="neutral" size="sm">
               Coming soon
-            </span>
+            </Badge>
           </div>
         </div>
-        <p className={`text-sm italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+        <p className="text-body-sm italic text-fg-subtle">
           File tagging will be available in a future update
         </p>
       </div>
-
-      {/* Downloadable toggle removed — not functional (no backend support) */}
     </div>
   );
 };
+
+interface SectionKVProps {
+  label: string;
+  value: string;
+}
+
+const SectionKV: React.FC<SectionKVProps> = ({ label, value }) => (
+  <div>
+    <p className="mb-2 text-body-sm font-semibold text-fg">{label}</p>
+    <p className="text-body-sm text-fg-muted">{value}</p>
+  </div>
+);
+
+interface SectionWithIconProps {
+  label: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}
+
+const SectionWithIcon: React.FC<SectionWithIconProps> = ({ label, icon, children }) => (
+  <div>
+    <p className="mb-2 text-body-sm font-semibold text-fg">{label}</p>
+    <div className="flex items-center gap-2 text-body-sm text-fg-muted">
+      <span className="text-fg-subtle">{icon}</span>
+      <span>{children}</span>
+    </div>
+  </div>
+);
 
 export default FileDetailsTab;

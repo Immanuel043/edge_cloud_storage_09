@@ -38,8 +38,8 @@ const Dashboard: React.FC = () => {
   return (
     <>
       <Suspense fallback={
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-          <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <div className="flex min-h-screen items-center justify-center bg-bg">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
       }>
         {zkEnabled && zkSessionUnlocked ? (

@@ -10,7 +10,7 @@ import {
   TrendingUp,
   AlertCircle,
   RefreshCw,
-  ExternalLink
+  ExternalLink,
 } from 'lucide-react';
 import type {
   PlanDisplay,
@@ -18,23 +18,36 @@ import type {
   SubscriptionRecommendation,
   FeatureObject,
 } from '../../types/subscription-components.types';
-import { isSubscriptionDisplay, isUsageDisplay } from '../../types/subscription-components.types';
+import {
+  isSubscriptionDisplay,
+  isUsageDisplay,
+} from '../../types/subscription-components.types';
+import { cn } from '@/lib/cn';
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  CardContent,
+  Progress,
+  Skeleton,
+} from '@/components/ui';
 
 /**
- * SubscriptionDashboard
+ * SubscriptionDashboard — current plan, usage, recommendations, and entry
+ * points to the full pricing page + payment portal.
  *
- * Complete subscription management page showing:
- * - Current plan details
- * - Usage statistics with progress bars
- * - Available plans grid
- * - Upgrade recommendations
- * - Subscription history
+ * Rebuilt on Signal primitives: Card for each section, Progress for usage
+ * meters, Banner for warnings, Button for CTAs. Business logic (plan
+ * matching, modal open/close, warning dispatch) is preserved.
  */
 interface SubscriptionDashboardProps {
   onOpenPaymentPortal?: () => void;
 }
 
-export default function SubscriptionDashboard({ onOpenPaymentPortal }: SubscriptionDashboardProps = {}): ReactElement {
+export default function SubscriptionDashboard({
+  onOpenPaymentPortal,
+}: SubscriptionDashboardProps = {}): ReactElement {
   const navigate = useNavigate();
   const {
     subscription,
@@ -44,66 +57,69 @@ export default function SubscriptionDashboard({ onOpenPaymentPortal }: Subscript
     recommendations,
     loading,
     error,
-    refresh
+    refresh,
   } = useSubscription();
 
   const [selectedPlan, setSelectedPlan] = useState<PlanDisplay | null>(null);
   const [modalOpen, setModalOpen] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const handlePlanSelect = useCallback((planCode: string): void => {
-    const plan = availablePlans.find((p) => {
-      // Handle both camelCase and snake_case
-      const planCodeMatch = (p as { planCode?: string; plan_code?: string }).planCode === planCode ||
-                            (p as { planCode?: string; plan_code?: string }).plan_code === planCode;
-      return planCodeMatch;
-    });
-    
-    if (plan) {
-      // Convert to PlanDisplay format
-      const planData = plan as {
-        planCode?: string;
-        plan_code?: string;
-        displayName?: string;
-        display_name?: string;
-        priceMonthly?: number;
-        price_monthly?: number;
-        priceYearly?: number;
-        price_yearly?: number;
-        storageGb?: number;
-        storage_gb?: number;
-        bandwidthMbps?: number;
-        bandwidth_mbps?: number;
-        features?: unknown;
-        tier?: number;
-        [key: string]: unknown;
-      };
-      
-      const planDisplay: PlanDisplay = {
-        plan_code: planData.plan_code || planData.planCode || planCode,
-        display_name: planData.display_name || planData.displayName || planCode,
-        description: '',
-        price_monthly: planData.price_monthly ?? planData.priceMonthly ?? null,
-        price_six_months: null,
-        price_yearly: planData.price_yearly ?? planData.priceYearly ?? null,
-        storage_gb: planData.storage_gb ?? planData.storageGb ?? 0,
-        bandwidth_mbps: planData.bandwidth_mbps ?? planData.bandwidthMbps ?? 0,
-        max_concurrent_streams: 5,
-        features: Array.isArray(planData.features) 
-          ? (planData.features as (string | FeatureObject)[])
-          : [],
-        tier: planData.tier,
-      };
-      
-      const currentPlanCode = (subscription as { plan_code?: string; planCode?: string })?.plan_code ||
-                              (subscription as { plan_code?: string; planCode?: string })?.planCode;
-      
-      if (planDisplay.plan_code !== currentPlanCode) {
-        setSelectedPlan(planDisplay);
-        setModalOpen(true);
+  const handlePlanSelect = useCallback(
+    (planCode: string): void => {
+      const plan = availablePlans.find((p) => {
+        const planCodeMatch =
+          (p as { planCode?: string; plan_code?: string }).planCode === planCode ||
+          (p as { planCode?: string; plan_code?: string }).plan_code === planCode;
+        return planCodeMatch;
+      });
+
+      if (plan) {
+        const planData = plan as {
+          planCode?: string;
+          plan_code?: string;
+          displayName?: string;
+          display_name?: string;
+          priceMonthly?: number;
+          price_monthly?: number;
+          priceYearly?: number;
+          price_yearly?: number;
+          storageGb?: number;
+          storage_gb?: number;
+          bandwidthMbps?: number;
+          bandwidth_mbps?: number;
+          features?: unknown;
+          tier?: number;
+          [key: string]: unknown;
+        };
+
+        const planDisplay: PlanDisplay = {
+          plan_code: planData.plan_code || planData.planCode || planCode,
+          display_name: planData.display_name || planData.displayName || planCode,
+          description: '',
+          price_monthly: planData.price_monthly ?? planData.priceMonthly ?? null,
+          price_six_months: null,
+          price_yearly: planData.price_yearly ?? planData.priceYearly ?? null,
+          storage_gb: planData.storage_gb ?? planData.storageGb ?? 0,
+          bandwidth_mbps: planData.bandwidth_mbps ?? planData.bandwidthMbps ?? 0,
+          max_concurrent_streams: 5,
+          features: Array.isArray(planData.features)
+            ? (planData.features as (string | FeatureObject)[])
+            : [],
+          tier: planData.tier,
+        };
+
+        const currentPlanCode =
+          (subscription as { plan_code?: string; planCode?: string })?.plan_code ||
+          (subscription as { plan_code?: string; planCode?: string })?.planCode;
+
+        if (planDisplay.plan_code !== currentPlanCode) {
+          setSelectedPlan(planDisplay);
+          setModalOpen(true);
+        }
       }
-    }
-  }, [availablePlans, subscription]);
+    },
+    [availablePlans, subscription]
+  );
 
   const handleRefresh = useCallback(async (): Promise<void> => {
     setRefreshing(true);
@@ -126,298 +142,328 @@ export default function SubscriptionDashboard({ onOpenPaymentPortal }: Subscript
   if (error) {
     return (
       <div className="max-w-7xl mx-auto p-6">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0" />
-            <div>
-              <h3 className="text-lg font-semibold text-red-900">Error Loading Subscription</h3>
-              <p className="text-sm text-red-700 mt-1">{error}</p>
-              <button
-                onClick={() => void handleRefresh()}
-                className="mt-3 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        </div>
+        <Banner
+          variant="danger"
+          title="Error loading subscription"
+          action={
+            <Button variant="primary" size="sm" onClick={() => void handleRefresh()}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </Banner>
       </div>
     );
   }
 
-  // Type-safe subscription and usage - explicit cast after type guard to avoid index signature issues
-  const subscriptionDisplay = subscription && isSubscriptionDisplay(subscription) 
-    ? (subscription as unknown as import('../../types/subscription-components.types').SubscriptionDisplay)
-    : null;
-  const usageDisplay = usage && isUsageDisplay(usage) 
-    ? (usage as unknown as import('../../types/subscription-components.types').UsageDisplay)
-    : null;
+  const subscriptionDisplay =
+    subscription && isSubscriptionDisplay(subscription)
+      ? (subscription as unknown as import('../../types/subscription-components.types').SubscriptionDisplay)
+      : null;
+  const usageDisplay =
+    usage && isUsageDisplay(usage)
+      ? (usage as unknown as import('../../types/subscription-components.types').UsageDisplay)
+      : null;
+
+  const statusBadgeVariant = (status: string) =>
+    status === 'active' ? 'success' : status === 'past_due' ? 'danger' : 'warning';
 
   return (
-    <div className="max-w-7xl mx-auto p-6 space-y-8">
+    <div className="max-w-7xl mx-auto p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Subscription & Billing</h1>
-          <p className="text-gray-600 mt-1">Manage your plan and usage</p>
+          <h1 className="text-h1 font-semibold text-fg">Subscription & billing</h1>
+          <p className="text-body text-fg-muted mt-1">Manage your plan and usage</p>
         </div>
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => void handleRefresh()}
           disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+          leftIcon={
+            <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
+          }
         >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
           Refresh
-        </button>
+        </Button>
       </div>
 
       {/* Warnings */}
       {warnings && warnings.length > 0 && (
         <div className="space-y-3">
           {warnings.map((warning, index) => {
-            const warningDisplay = warning as SubscriptionWarning;
+            const w = warning as SubscriptionWarning;
             return (
-              <div
+              <Banner
                 key={index}
-                className={`
-                  border-l-4 rounded-lg p-4
-                  ${warningDisplay.severity === 'critical'
-                    ? 'bg-red-50 border-red-500'
-                    : 'bg-yellow-50 border-yellow-500'
-                  }
-                `}
+                variant={w.severity === 'critical' ? 'danger' : 'warning'}
+                icon={<AlertCircle />}
+                {...(w.action_label
+                  ? {
+                      action: (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() =>
+                            window.dispatchEvent(new CustomEvent('openUpgradeModal'))
+                          }
+                        >
+                          {w.action_label}
+                        </Button>
+                      ),
+                    }
+                  : {})}
               >
-                <div className="flex items-start gap-3">
-                  <AlertCircle className={`w-5 h-5 flex-shrink-0 mt-0.5 ${
-                    warningDisplay.severity === 'critical' ? 'text-red-600' : 'text-yellow-600'
-                  }`} />
-                  <div className="flex-1">
-                    <p className={`text-sm font-medium ${
-                      warningDisplay.severity === 'critical' ? 'text-red-900' : 'text-yellow-900'
-                    }`}>
-                      {warningDisplay.message}
-                    </p>
-                    {warningDisplay.action_label && (
-                      <button
-                        // TODO: Replace global CustomEvent with React context/callback prop for openUpgradeModal
-                        onClick={() => window.dispatchEvent(new CustomEvent('openUpgradeModal'))}
-                        className={`mt-2 text-sm font-medium ${
-                          warningDisplay.severity === 'critical' ? 'text-red-700 hover:text-red-800' : 'text-yellow-700 hover:text-yellow-800'
-                        }`}
-                      >
-                        {warningDisplay.action_label} →
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
+                {w.message}
+              </Banner>
             );
           })}
         </div>
       )}
 
-      {/* Current Plan Card */}
+      {/* Current plan card */}
       {subscriptionDisplay && (
-        <div className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-xl p-6 border border-blue-200">
-          <div className="flex items-start justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-blue-600 rounded-lg">
-                <Crown className="w-6 h-6 text-white" />
+        <Card variant="elevated" className="bg-gradient-to-br from-primary/5 to-accent/5 border-primary/20">
+          <CardContent className="p-6">
+            <div className="flex items-start justify-between mb-6 gap-4">
+              <div className="flex items-center gap-3">
+                <div
+                  aria-hidden
+                  className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-white"
+                >
+                  <Crown className="h-6 w-6" />
+                </div>
+                <div>
+                  <h2 className="text-h3 font-semibold text-fg">
+                    {subscriptionDisplay.plan_name}
+                  </h2>
+                  <div className="mt-1 flex items-center gap-2 text-body-sm">
+                    <span className="text-fg-muted">Status:</span>
+                    <Badge
+                      variant={statusBadgeVariant(subscriptionDisplay.status)}
+                      size="sm"
+                    >
+                      {subscriptionDisplay.status}
+                    </Badge>
+                  </div>
+                </div>
               </div>
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">{subscriptionDisplay.plan_name}</h2>
-                <p className="text-sm text-gray-600 mt-0.5">
-                  Status: <span className={`font-semibold ${
-                    subscriptionDisplay.status === 'active' ? 'text-green-600' :
-                    subscriptionDisplay.status === 'past_due' ? 'text-red-600' :
-                    'text-yellow-600'
-                  }`}>
-                    {subscriptionDisplay.status}
-                  </span>
+              <div className="text-right shrink-0">
+                <p className="text-h2 font-bold text-fg">
+                  {subscriptionDisplay.price_display || 'Free'}
                 </p>
+                {!subscriptionDisplay.plan_code.includes('free') &&
+                  subscriptionDisplay.billing_cycle && (
+                    <p className="text-body-sm text-fg-muted">
+                      per{' '}
+                      {subscriptionDisplay.billing_cycle === 'six_months'
+                        ? '6 months'
+                        : subscriptionDisplay.billing_cycle.replace('_', ' ')}
+                    </p>
+                  )}
               </div>
             </div>
-            <div className="text-right">
-              <p className="text-2xl font-bold text-gray-900">
-                {subscriptionDisplay.price_display || 'Free'}
-              </p>
-              {!subscriptionDisplay.plan_code.includes('free') && subscriptionDisplay.billing_cycle && (
-                <p className="text-sm text-gray-600">
-                  per {subscriptionDisplay.billing_cycle === 'six_months' ? '6 months' : subscriptionDisplay.billing_cycle.replace('_', ' ')}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="rounded-lg bg-surface p-4 border border-border">
+                <div className="flex items-center gap-2 text-fg-muted mb-2">
+                  <HardDrive className="h-4 w-4" />
+                  <span className="text-body-sm font-medium">Storage quota</span>
+                </div>
+                <p className="text-h2 font-bold text-fg">
+                  {subscriptionDisplay.storage_quota_gb} GB
                 </p>
+              </div>
+
+              <div className="rounded-lg bg-surface p-4 border border-border">
+                <div className="flex items-center gap-2 text-fg-muted mb-2">
+                  <Gauge className="h-4 w-4" />
+                  <span className="text-body-sm font-medium">Bandwidth limit</span>
+                </div>
+                <p className="text-h2 font-bold text-fg">
+                  {subscriptionDisplay.bandwidth_quota_mbps} Mbps
+                </p>
+              </div>
+
+              {subscriptionDisplay.next_billing_date && (
+                <div className="rounded-lg bg-surface p-4 border border-border">
+                  <div className="flex items-center gap-2 text-fg-muted mb-2">
+                    <Calendar className="h-4 w-4" />
+                    <span className="text-body-sm font-medium">Next billing</span>
+                  </div>
+                  <p className="text-body font-semibold text-fg">
+                    {new Date(subscriptionDisplay.next_billing_date).toLocaleDateString()}
+                  </p>
+                  {subscriptionDisplay.days_until_renewal != null && (
+                    <p
+                      className={cn(
+                        'text-body-sm font-medium mt-1',
+                        subscriptionDisplay.days_until_renewal > 14
+                          ? 'text-success'
+                          : subscriptionDisplay.days_until_renewal > 7
+                            ? 'text-warning'
+                            : 'text-danger'
+                      )}
+                    >
+                      {subscriptionDisplay.days_until_renewal} day
+                      {subscriptionDisplay.days_until_renewal !== 1 ? 's' : ''} remaining
+                    </p>
+                  )}
+                </div>
               )}
             </div>
-          </div>
+          </CardContent>
+        </Card>
+      )}
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Storage Quota */}
-            <div className="bg-white rounded-lg p-4">
-              <div className="flex items-center gap-2 text-gray-600 mb-2">
-                <HardDrive className="w-4 h-4" />
-                <span className="text-sm font-medium">Storage Quota</span>
-              </div>
-              <p className="text-2xl font-bold text-gray-900">{subscriptionDisplay.storage_quota_gb} GB</p>
-            </div>
+      {/* Usage */}
+      {usageDisplay && (
+        <Card variant="bordered">
+          <CardContent className="p-6">
+            <h2 className="text-h3 font-semibold text-fg mb-4">Current usage</h2>
 
-            {/* Bandwidth Limit */}
-            <div className="bg-white rounded-lg p-4">
-              <div className="flex items-center gap-2 text-gray-600 mb-2">
-                <Gauge className="w-4 h-4" />
-                <span className="text-sm font-medium">Bandwidth Limit</span>
-              </div>
-              <p className="text-2xl font-bold text-gray-900">{subscriptionDisplay.bandwidth_quota_mbps} Mbps</p>
-            </div>
-
-            {/* Next Billing Date */}
-            {subscriptionDisplay.next_billing_date && (
-              <div className="bg-white rounded-lg p-4">
-                <div className="flex items-center gap-2 text-gray-600 mb-2">
-                  <Calendar className="w-4 h-4" />
-                  <span className="text-sm font-medium">Next Billing</span>
+            {/* Storage */}
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="h-5 w-5 text-primary" />
+                  <span className="font-medium text-fg">Storage</span>
                 </div>
-                <p className="text-lg font-bold text-gray-900">
-                  {new Date(subscriptionDisplay.next_billing_date).toLocaleDateString()}
+                <span className="text-body-sm text-fg-muted">
+                  {usageDisplay.storage_used_display} /{' '}
+                  {usageDisplay.storage_quota_display}
+                </span>
+              </div>
+              <Progress
+                value={Math.min(usageDisplay.storage_percent, 100)}
+                tone={
+                  usageDisplay.storage_percent >= 95
+                    ? 'danger'
+                    : usageDisplay.storage_percent >= 80
+                      ? 'warning'
+                      : 'primary'
+                }
+              />
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-body-sm text-fg-muted">
+                  {usageDisplay.storage_percent.toFixed(1)}% used
                 </p>
-                {subscriptionDisplay.days_until_renewal != null && (
-                  <p className={`text-sm font-medium mt-1 ${
-                    subscriptionDisplay.days_until_renewal > 14 ? 'text-green-600' :
-                    subscriptionDisplay.days_until_renewal > 7 ? 'text-yellow-600' :
-                    'text-red-600'
-                  }`}>
-                    {subscriptionDisplay.days_until_renewal} day{subscriptionDisplay.days_until_renewal !== 1 ? 's' : ''} remaining
+                {usageDisplay.storage_remaining_display && (
+                  <p
+                    className={cn(
+                      'text-body-sm font-medium',
+                      usageDisplay.storage_percent >= 95
+                        ? 'text-danger'
+                        : usageDisplay.storage_percent >= 80
+                          ? 'text-warning'
+                          : 'text-success'
+                    )}
+                  >
+                    {usageDisplay.storage_remaining_display}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Bandwidth */}
+            {usageDisplay.bandwidth_used_display && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="h-5 w-5 text-success" />
+                    <span className="font-medium text-fg">Bandwidth</span>
+                  </div>
+                  <span className="text-body-sm text-fg-muted">
+                    Current: {usageDisplay.bandwidth_used_display}
+                  </span>
+                </div>
+                {usageDisplay.bandwidth_quota_display && (
+                  <p className="text-body-sm text-fg-muted">
+                    Limit: {usageDisplay.bandwidth_quota_display}
                   </p>
                 )}
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Usage Section */}
-      {usageDisplay && (
-        <div className="bg-white rounded-xl p-6 border border-gray-200">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Current Usage</h2>
-
-          {/* Storage Usage */}
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <HardDrive className="w-5 h-5 text-blue-600" />
-                <span className="font-medium text-gray-900">Storage</span>
-              </div>
-              <span className="text-sm text-gray-600">
-                {usageDisplay.storage_used_display} / {usageDisplay.storage_quota_display}
-              </span>
-            </div>
-            <div className="relative w-full h-3 bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ${
-                  usageDisplay.storage_percent >= 95 ? 'bg-red-500' :
-                  usageDisplay.storage_percent >= 80 ? 'bg-yellow-500' :
-                  'bg-blue-500'
-                }`}
-                style={{ width: `${Math.min(usageDisplay.storage_percent, 100)}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between mt-1">
-              <p className="text-sm text-gray-600">
-                {usageDisplay.storage_percent.toFixed(1)}% used
-              </p>
-              {usageDisplay.storage_remaining_display && (
-                <p className={`text-sm font-medium ${
-                  usageDisplay.storage_percent >= 95 ? 'text-red-600' :
-                  usageDisplay.storage_percent >= 80 ? 'text-yellow-600' :
-                  'text-green-600'
-                }`}>
-                  {usageDisplay.storage_remaining_display}
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Bandwidth Usage (if available) */}
-          {usageDisplay.bandwidth_used_display && (
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Gauge className="w-5 h-5 text-green-600" />
-                  <span className="font-medium text-gray-900">Bandwidth</span>
-                </div>
-                <span className="text-sm text-gray-600">
-                  Current: {usageDisplay.bandwidth_used_display}
-                </span>
-              </div>
-              {usageDisplay.bandwidth_quota_display && (
-                <p className="text-sm text-gray-600">
-                  Limit: {usageDisplay.bandwidth_quota_display}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Recommendations */}
       {recommendations && recommendations.length > 0 && (
-        <div className="bg-purple-50 border border-purple-200 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <TrendingUp className="w-5 h-5 text-purple-600" />
-            <h2 className="text-xl font-bold text-gray-900">Recommended for You</h2>
-          </div>
-          <div className="space-y-3">
-            {recommendations.map((rec, index) => {
-              const recDisplay = rec as SubscriptionRecommendation;
-              return (
-                <div key={index} className="bg-white rounded-lg p-4">
-                  <p className="text-sm text-gray-900 font-medium">
-                    {recDisplay.message || recDisplay.reason || 'Recommended plan'}
-                  </p>
-                  {recDisplay.plan_code && (
-                    <button
-                      onClick={() => handlePlanSelect(recDisplay.plan_code!)}
-                      className="mt-2 text-sm font-medium text-purple-600 hover:text-purple-700"
-                    >
-                      View {recDisplay.plan_name || recDisplay.plan_code} →
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <Card variant="bordered" className="bg-accent/5 border-accent/20">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <TrendingUp className="h-5 w-5 text-accent" />
+              <h2 className="text-h3 font-semibold text-fg">Recommended for you</h2>
+            </div>
+            <div className="space-y-3">
+              {recommendations.map((rec, index) => {
+                const r = rec as SubscriptionRecommendation;
+                return (
+                  <div
+                    key={index}
+                    className="rounded-lg bg-surface p-4 border border-border"
+                  >
+                    <p className="text-body-sm font-medium text-fg">
+                      {r.message || r.reason || 'Recommended plan'}
+                    </p>
+                    {r.plan_code && (
+                      <button
+                        type="button"
+                        onClick={() => handlePlanSelect(r.plan_code!)}
+                        className="mt-2 text-body-sm font-medium text-accent hover:text-accent/80 transition-colors"
+                      >
+                        View {r.plan_name || r.plan_code} →
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Upgrade Plans Button */}
-      <div className="bg-white rounded-xl p-6 border border-gray-200">
-        <h2 className="text-2xl font-bold text-gray-900 mb-4">Upgrade Your Plan</h2>
-        <p className="text-gray-600 mb-6">
-          Explore our range of plans and upgrade to get more storage, bandwidth, and premium features.
-        </p>
-        <button
-          onClick={() => navigate('/pricing')}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-lg font-semibold transition-all shadow-sm"
-        >
-          <TrendingUp size={20} />
-          View All Plans
-        </button>
-      </div>
+      {/* Upgrade CTA */}
+      <Card variant="bordered">
+        <CardContent className="p-6">
+          <h2 className="text-h2 font-semibold text-fg mb-3">Upgrade your plan</h2>
+          <p className="text-body text-fg-muted mb-5">
+            Explore our range of plans and upgrade to get more storage, bandwidth, and
+            premium features.
+          </p>
+          <Button
+            variant="primary"
+            size="lg"
+            leftIcon={<TrendingUp className="h-5 w-5" />}
+            onClick={() => navigate('/pricing')}
+          >
+            View all plans
+          </Button>
+        </CardContent>
+      </Card>
 
-      {/* Payment Portal Link */}
-      <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
-        <h3 className="font-semibold text-gray-900 mb-3">Payment & Invoices</h3>
-        <p className="text-sm text-gray-600 mb-4">
-          View payment history, manage payment methods, and track your invoices.
-        </p>
-        <button
-          onClick={onOpenPaymentPortal}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <ExternalLink className="w-4 h-4" />
-          Open Payment Portal
-        </button>
-      </div>
+      {/* Payment portal */}
+      <Card variant="bordered" className="bg-surface-muted">
+        <CardContent className="p-6">
+          <h3 className="text-h3 font-semibold text-fg mb-2">Payment & invoices</h3>
+          <p className="text-body-sm text-fg-muted mb-4">
+            View payment history, manage payment methods, and track your invoices.
+          </p>
+          <Button
+            variant="primary"
+            size="md"
+            leftIcon={<ExternalLink className="h-4 w-4" />}
+            onClick={onOpenPaymentPortal}
+          >
+            Open payment portal
+          </Button>
+        </CardContent>
+      </Card>
 
-      {/* Plan Change Modal */}
+      {/* Plan change modal */}
       {selectedPlan && (
         <PlanChangeModal
           isOpen={modalOpen}
@@ -430,48 +476,14 @@ export default function SubscriptionDashboard({ onOpenPaymentPortal }: Subscript
 }
 
 /**
- * Loading skeleton for SubscriptionDashboard
+ * Loading skeleton
  */
 function SubscriptionDashboardSkeleton(): ReactElement {
   return (
-    <div className="max-w-7xl mx-auto p-6 space-y-8 animate-pulse">
-      <div className="h-10 bg-gray-200 rounded w-64"></div>
-      <div className="h-48 bg-gray-200 rounded-xl"></div>
-      <div className="h-40 bg-gray-200 rounded-xl"></div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <PlanCardSkeleton />
-        <PlanCardSkeleton />
-        <PlanCardSkeleton />
-        <PlanCardSkeleton />
-      </div>
-    </div>
-  );
-}
-
-/**
- * PlanCardSkeleton component (imported from PlanCard)
- */
-function PlanCardSkeleton(): ReactElement {
-  return (
-    <div className="border-2 border-gray-200 rounded-xl p-6 bg-white animate-pulse">
-      <div className="text-center mb-4">
-        <div className="h-6 bg-gray-200 rounded w-32 mx-auto mb-2"></div>
-        <div className="h-4 bg-gray-200 rounded w-24 mx-auto mb-3"></div>
-        <div className="h-8 bg-gray-200 rounded w-20 mx-auto"></div>
-      </div>
-
-      <div className="space-y-2 mb-4 pb-4 border-b border-gray-200">
-        <div className="h-5 bg-gray-200 rounded"></div>
-        <div className="h-5 bg-gray-200 rounded"></div>
-      </div>
-
-      <div className="space-y-2 mb-6">
-        <div className="h-4 bg-gray-200 rounded"></div>
-        <div className="h-4 bg-gray-200 rounded"></div>
-        <div className="h-4 bg-gray-200 rounded"></div>
-      </div>
-
-      <div className="h-12 bg-gray-200 rounded-lg"></div>
+    <div className="max-w-7xl mx-auto p-6 space-y-6">
+      <Skeleton shape="text" className="h-10 w-64" />
+      <Skeleton shape="rect" className="h-48 rounded-xl" />
+      <Skeleton shape="rect" className="h-40 rounded-xl" />
     </div>
   );
 }

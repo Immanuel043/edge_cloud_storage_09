@@ -5,27 +5,36 @@ import {
   Lock,
   AlertCircle,
   Cloud,
-  Loader,
   Folder,
   Music,
   File,
+  Eye,
+  Edit3,
 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { formatBytes, getFileIcon, VIDEO_EXTENSIONS } from '../../utils/helpers';
 import type { ShareInfo, FolderContents } from './types';
 import { isShareInfo, isFolderContents, getErrorMessage } from './types';
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  CardContent,
+  FormField,
+  IconButton,
+  Input,
+  Spinner,
+} from '@/components/ui';
 
 /**
- * ShareViewer Component
+ * ShareViewer — public page for single-file / single-folder shares.
  *
- * Displays shared files or folders with preview capabilities.
- * Supports password-protected shares and different share types (view/download/edit).
- *
- * Features:
- * - Single file preview (video, audio, PDF, images)
- * - Folder browsing
- * - Password protection
- * - Download support (if allowed)
+ * Rebuilt on Signal primitives: Card + Button + IconButton + Badge + Banner
+ * + FormField / Input. Branded header lockup, token-driven surfaces for
+ * clean dark-mode rendering. Business logic (fetching share info, password
+ * gate, folder contents, stream-url building) is unchanged from the prior
+ * implementation.
  */
 const ShareViewer: React.FC = () => {
   const { token } = useParams<{ token: string }>();
@@ -39,9 +48,6 @@ const ShareViewer: React.FC = () => {
   const [videoError, setVideoError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  /**
-   * Check if file is a video
-   */
   const isVideoFile = (info: ShareInfo | null): boolean => {
     if (!info) return false;
     const mimeType = (info.mime_type || '').toLowerCase();
@@ -52,27 +58,18 @@ const ShareViewer: React.FC = () => {
     );
   };
 
-  /**
-   * Check if file is an audio file
-   */
   const isAudioFile = (info: ShareInfo | null): boolean => {
     if (!info) return false;
     const mimeType = (info.mime_type || '').toLowerCase();
     return mimeType.startsWith('audio/');
   };
 
-  /**
-   * Check if file is an image
-   */
   const isImageFile = (info: ShareInfo | null): boolean => {
     if (!info) return false;
     const mimeType = (info.mime_type || '').toLowerCase();
     return mimeType.startsWith('image/');
   };
 
-  /**
-   * Check if file is a PDF
-   */
   const isPdfFile = (info: ShareInfo | null): boolean => {
     if (!info) return false;
     const mimeType = (info.mime_type || '').toLowerCase();
@@ -80,9 +77,6 @@ const ShareViewer: React.FC = () => {
     return mimeType === 'application/pdf' || extension === 'pdf';
   };
 
-  /**
-   * Build streaming URL for shared content
-   */
   // Password in URL required for direct media src (headers not supported)
   const getStreamUrl = (): string => {
     if (!shareInfo?.file_id) return '';
@@ -131,11 +125,9 @@ const ShareViewer: React.FC = () => {
 
       const data: unknown = await response.json();
 
-      // Validate and set share info
       if (isShareInfo(data)) {
         setShareInfo(data);
 
-        // If it's a folder, load contents
         if (data.item_type === 'folder') {
           await loadFolderContents(pwd || password);
         }
@@ -187,7 +179,6 @@ const ShareViewer: React.FC = () => {
         url.searchParams.set('password', password);
       }
 
-      // Use direct link for browser-native download (avoids buffering large files in memory)
       const a = document.createElement('a');
       a.href = url.toString();
       a.download = shareInfo?.item_name || 'download';
@@ -202,346 +193,395 @@ const ShareViewer: React.FC = () => {
   const canDownload =
     shareInfo?.share_type === 'download' || shareInfo?.share_type === 'edit';
 
+  // ---------- Loading ----------
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 flex items-center justify-center">
+      <div className="min-h-screen bg-surface-muted flex items-center justify-center">
         <div className="text-center">
-          <Loader className="animate-spin text-blue-500 mx-auto mb-3" size={48} />
-          <p className="text-gray-600">Loading shared content...</p>
+          <Spinner size="lg" className="mx-auto mb-3" />
+          <p className="text-body-sm text-fg-muted">Loading shared content…</p>
         </div>
       </div>
     );
   }
 
+  // ---------- Error ----------
   if (error && !requiresPassword) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 text-center">
-          <AlertCircle className="text-red-500 mx-auto mb-4" size={64} />
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Oops!</h2>
-          <p className="text-gray-600 mb-6">{error}</p>
-          <button
-            onClick={() => navigate('/auth')}
-            className="px-6 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600"
-          >
-            Go to Login
-          </button>
-        </div>
+      <div className="min-h-screen bg-surface-muted flex items-center justify-center p-4">
+        <Card variant="elevated" className="max-w-md w-full">
+          <CardContent className="p-8 text-center">
+            <div
+              aria-hidden
+              className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-danger/10 text-danger"
+            >
+              <AlertCircle className="h-8 w-8" />
+            </div>
+            <h2 className="text-h3 font-semibold text-fg mb-2">Oops!</h2>
+            <p className="text-body text-fg-muted mb-6">{error}</p>
+            <Button variant="primary" onClick={() => navigate('/auth')}>
+              Go to login
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
+  // ---------- Password gate ----------
   if (requiresPassword && !shareInfo) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600">
-              <Lock className="text-white" size={24} />
+      <div className="min-h-screen bg-surface-muted flex items-center justify-center p-4">
+        <Card variant="elevated" className="max-w-md w-full">
+          <CardContent className="p-8">
+            <div className="flex items-center gap-3 mb-6">
+              <div
+                aria-hidden
+                className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary"
+              >
+                <Lock className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-h3 font-semibold text-fg">Password required</h1>
+                <p className="text-body-sm text-fg-muted">This content is protected</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Password Required</h1>
-              <p className="text-sm text-gray-500">This content is protected</p>
-            </div>
-          </div>
 
-          {error && (
-            <div className="mb-4 p-3 rounded bg-red-100 text-red-700 text-sm">{error}</div>
-          )}
+            {error && (
+              <Banner variant="danger" className="mb-4">
+                {error}
+              </Banner>
+            )}
 
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Enter Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setPassword(e.target.value)
-                }
-                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                  if (e.key === 'Enter' && password) {
-                    handlePasswordSubmit();
+            <div className="space-y-4">
+              <FormField label="Enter password">
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setPassword(e.target.value)
                   }
-                }}
-                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Password"
-                autoFocus
-              />
-            </div>
+                  onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                    if (e.key === 'Enter' && password) {
+                      handlePasswordSubmit();
+                    }
+                  }}
+                  placeholder="Password"
+                  autoFocus
+                />
+              </FormField>
 
-            <button
-              onClick={handlePasswordSubmit}
-              disabled={!password}
-              className={`w-full py-3 rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg ${
-                !password
-                  ? 'bg-gray-300 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white'
-              }`}
-            >
-              <Lock size={20} />
-              Unlock
-            </button>
-          </div>
-        </div>
+              <Button
+                variant="primary"
+                fullWidth
+                disabled={!password}
+                leftIcon={<Lock className="h-4 w-4" />}
+                onClick={handlePasswordSubmit}
+              >
+                Unlock
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
-  // Main viewer for files/folders
+  // ---------- Share-type badge ----------
+  const shareTypeBadge = (() => {
+    const t = shareInfo?.share_type;
+    if (t === 'view') {
+      return (
+        <Badge variant="info" size="md">
+          <Eye className="h-3 w-3" /> View only
+        </Badge>
+      );
+    }
+    if (t === 'download') {
+      return (
+        <Badge variant="success" size="md">
+          <Download className="h-3 w-3" /> Can download
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="accent" size="md">
+        <Edit3 className="h-3 w-3" /> Can edit
+      </Badge>
+    );
+  })();
+
+  // ---------- Main viewer ----------
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b sticky top-0 z-10">
+    <div className="min-h-screen bg-surface-muted">
+      {/* Branded header */}
+      <header className="bg-surface border-b border-border sticky top-0 z-10 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600">
-                <Cloud className="text-white" size={24} />
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div
+                aria-hidden
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent text-white shadow-sm"
+              >
+                <Cloud className="h-5 w-5" />
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">
-                  {shareInfo?.item_name || 'Shared Content'}
+              <div className="min-w-0">
+                <h1 className="text-h3 font-semibold text-fg truncate">
+                  {shareInfo?.item_name || 'Shared content'}
                 </h1>
-                <p className="text-sm text-gray-500">
-                  {shareInfo?.item_type === 'folder' ? 'Shared Folder' : 'Shared File'}
+                <p className="text-body-sm text-fg-muted">
+                  {shareInfo?.item_type === 'folder' ? 'Shared folder' : 'Shared file'}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <span
-                className={`px-3 py-1 rounded-full text-xs font-medium ${
-                  shareInfo?.share_type === 'view'
-                    ? 'bg-blue-100 text-blue-700'
-                    : shareInfo?.share_type === 'download'
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-purple-100 text-purple-700'
-                }`}
-              >
-                {shareInfo?.share_type === 'view'
-                  ? '👁️ View Only'
-                  : shareInfo?.share_type === 'download'
-                    ? '⬇️ Can Download'
-                    : '✏️ Can Edit'}
-              </span>
+            <div className="flex items-center gap-2 shrink-0">
+              {shareTypeBadge}
 
               {canDownload && shareInfo?.item_type === 'file' && (
-                <button
+                <Button
+                  variant="primary"
+                  size="sm"
+                  leftIcon={<Download className="h-4 w-4" />}
                   onClick={() => void handleDownload()}
-                  className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 flex items-center gap-2"
                 >
-                  <Download size={16} />
                   Download
-                </button>
+                </Button>
               )}
             </div>
           </div>
         </div>
       </header>
 
-      {/* Content */}
+      {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {shareInfo?.item_type === 'file' ? (
-          // Single file viewer
-          <div className="bg-white rounded-xl shadow-lg p-8">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="p-4 rounded-xl bg-gray-100">
-                {getFileIcon(shareInfo.item_name, 48)}
+          // ---------- Single file ----------
+          <Card variant="elevated">
+            <CardContent className="p-8">
+              <div className="flex items-center gap-4 mb-6">
+                <div
+                  aria-hidden
+                  className="flex h-16 w-16 items-center justify-center rounded-xl bg-surface-muted"
+                >
+                  {getFileIcon(shareInfo.item_name, 40)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-h3 font-semibold text-fg mb-1 truncate">
+                    {shareInfo.item_name}
+                  </h2>
+                  <p className="text-body-sm text-fg-muted">
+                    {shareInfo.file_size ? formatBytes(shareInfo.file_size) : 'Unknown size'}
+                    {' · '}
+                    {shareInfo.mime_type || 'Unknown type'}
+                  </p>
+                </div>
               </div>
-              <div className="flex-1">
-                <h2 className="text-2xl font-bold text-gray-900 mb-1">
-                  {shareInfo.item_name}
-                </h2>
-                <p className="text-gray-600">
-                  {shareInfo.file_size ? formatBytes(shareInfo.file_size) : 'Unknown size'} •{' '}
-                  {shareInfo.mime_type || 'Unknown type'}
-                </p>
-              </div>
-            </div>
 
-            {shareInfo.allow_preview && (
-              <div className="border rounded-lg p-4 bg-gray-50 relative">
-                {shareInfo.watermark_text && (
-                  <div
-                    className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none"
-                    aria-hidden="true"
-                  >
-                    {Array.from({ length: 12 }).map((_, i) => (
-                      <div
-                        key={i}
-                        className="absolute whitespace-nowrap text-gray-400/20 font-bold text-2xl"
-                        style={{
-                          top: `${(i % 4) * 30 + 5}%`,
-                          left: `${Math.floor(i / 4) * 35 - 10}%`,
-                          transform: 'rotate(-35deg)',
+              {shareInfo.allow_preview && (
+                <div className="relative rounded-lg border border-border bg-surface-muted p-4">
+                  {shareInfo.watermark_text && (
+                    <div
+                      className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none"
+                      aria-hidden="true"
+                    >
+                      {Array.from({ length: 12 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="absolute whitespace-nowrap text-fg-subtle/20 font-bold text-2xl"
+                          style={{
+                            top: `${(i % 4) * 30 + 5}%`,
+                            left: `${Math.floor(i / 4) * 35 - 10}%`,
+                            transform: 'rotate(-35deg)',
+                          }}
+                        >
+                          {shareInfo.watermark_text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Video */}
+                  {isVideoFile(shareInfo) ? (
+                    <div className="relative">
+                      <video
+                        ref={videoRef}
+                        controls
+                        className="w-full max-h-[70vh] rounded-lg bg-black"
+                        src={getStreamUrl()}
+                        preload="metadata"
+                        onError={(e: React.SyntheticEvent<HTMLVideoElement>) => {
+                          console.error('Video error:', e);
+                          setVideoError(
+                            'Unable to play video. The format may not be supported by your browser.'
+                          );
+                        }}
+                        onLoadedData={() => {
+                          setVideoError(null);
                         }}
                       >
-                        {shareInfo.watermark_text}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {/* Video Preview */}
-                {isVideoFile(shareInfo) ? (
-                  <div className="relative">
-                    <video
-                      ref={videoRef}
-                      controls
-                      className="w-full max-h-[70vh] rounded-lg bg-black"
-                      src={getStreamUrl()}
-                      preload="metadata"
-                      onError={(e: React.SyntheticEvent<HTMLVideoElement>) => {
-                        console.error('Video error:', e);
-                        setVideoError(
-                          'Unable to play video. The format may not be supported by your browser.'
-                        );
-                      }}
-                      onLoadedData={() => {
-                        setVideoError(null);
-                      }}
-                    >
-                      Your browser does not support the video tag.
-                    </video>
-                    {videoError && (
-                      <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                        <p className="text-yellow-700 text-sm">{videoError}</p>
-                        {canDownload && (
-                          <button
-                            onClick={() => void handleDownload()}
-                            className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
-                          >
-                            Download to watch locally
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : /* Audio Preview */
-                isAudioFile(shareInfo) ? (
-                  <div className="flex flex-col items-center py-8">
-                    <Music className="text-purple-500 mb-4" size={64} />
-                    <audio
-                      controls
-                      className="w-full max-w-md"
-                      src={getStreamUrl()}
-                      preload="metadata"
-                    >
-                      Your browser does not support the audio tag.
-                    </audio>
-                  </div>
-                ) : /* PDF Preview */
-                isPdfFile(shareInfo) ? (
-                  <div className="w-full h-full min-h-[70vh]">
-                    <iframe
-                      src={getStreamUrl()}
-                      className="w-full h-full rounded-lg border-0"
-                      style={{ minHeight: '70vh' }}
-                      title={shareInfo.item_name}
-                    />
-                  </div>
-                ) : /* Image Preview */
-                isImageFile(shareInfo) ? (
-                  <img
-                    src={getStreamUrl()}
-                    alt={shareInfo.item_name}
-                    className="max-w-full max-h-[70vh] mx-auto rounded object-contain"
-                    onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
-                      const target = e.currentTarget;
-                      target.style.display = 'none';
-                    }}
-                  />
-                ) : (
-                  <div className="text-center py-12">
-                    <File className="mx-auto mb-4 text-gray-400" size={64} />
-                    <p className="text-gray-500 mb-2">Preview not available for this file type</p>
-                    {canDownload && (
-                      <button
-                        onClick={() => void handleDownload()}
-                        className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
+                        Your browser does not support the video tag.
+                      </video>
+                      {videoError && (
+                        <Banner
+                          variant="warning"
+                          className="mt-4"
+                          {...(canDownload
+                            ? {
+                                action: (
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
+                                    onClick={() => void handleDownload()}
+                                  >
+                                    Download to watch locally
+                                  </Button>
+                                ),
+                              }
+                            : {})}
+                        >
+                          {videoError}
+                        </Banner>
+                      )}
+                    </div>
+                  ) : /* Audio */
+                  isAudioFile(shareInfo) ? (
+                    <div className="flex flex-col items-center py-8">
+                      <Music className="text-accent mb-4 h-16 w-16" />
+                      <audio
+                        controls
+                        className="w-full max-w-md"
+                        src={getStreamUrl()}
+                        preload="metadata"
                       >
-                        Download file
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+                        Your browser does not support the audio tag.
+                      </audio>
+                    </div>
+                  ) : /* PDF */
+                  isPdfFile(shareInfo) ? (
+                    <div className="w-full h-full min-h-[70vh]">
+                      <iframe
+                        src={getStreamUrl()}
+                        className="w-full h-full rounded-lg border-0"
+                        style={{ minHeight: '70vh' }}
+                        title={shareInfo.item_name}
+                      />
+                    </div>
+                  ) : /* Image */
+                  isImageFile(shareInfo) ? (
+                    <img
+                      src={getStreamUrl()}
+                      alt={shareInfo.item_name}
+                      className="max-w-full max-h-[70vh] mx-auto rounded object-contain"
+                      onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
+                        const target = e.currentTarget;
+                        target.style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    /* Unknown */
+                    <div className="text-center py-12">
+                      <File className="mx-auto mb-4 h-16 w-16 text-fg-subtle" />
+                      <p className="text-body-sm text-fg-muted mb-3">
+                        Preview not available for this file type
+                      </p>
+                      {canDownload && (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          leftIcon={<Download className="h-4 w-4" />}
+                          onClick={() => void handleDownload()}
+                        >
+                          Download file
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         ) : (
-          // Folder browser
-          <div className="bg-white rounded-xl shadow-lg p-6 relative">
-            {folderContents?.watermark_text && (
-              <div
-                className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none rounded-xl"
-                aria-hidden="true"
-              >
-                {Array.from({ length: 12 }).map((_, i) => (
+          // ---------- Folder browser ----------
+          <Card variant="elevated" className="relative">
+            <CardContent className="p-6">
+              {folderContents?.watermark_text && (
+                <div
+                  className="absolute inset-0 z-10 pointer-events-none overflow-hidden select-none rounded-xl"
+                  aria-hidden="true"
+                >
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="absolute whitespace-nowrap text-fg-subtle/20 font-bold text-2xl"
+                      style={{
+                        top: `${(i % 4) * 30 + 5}%`,
+                        left: `${Math.floor(i / 4) * 35 - 10}%`,
+                        transform: 'rotate(-35deg)',
+                      }}
+                    >
+                      {folderContents.watermark_text}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <h2 className="text-h3 font-semibold text-fg mb-4 flex items-center gap-2">
+                <Folder className="text-primary h-6 w-6" />
+                {folderContents?.folder_name}
+              </h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {folderContents?.files?.map((file) => (
                   <div
-                    key={i}
-                    className="absolute whitespace-nowrap text-gray-400/20 font-bold text-2xl"
-                    style={{
-                      top: `${(i % 4) * 30 + 5}%`,
-                      left: `${Math.floor(i / 4) * 35 - 10}%`,
-                      transform: 'rotate(-35deg)',
-                    }}
+                    key={file.id}
+                    className="rounded-lg border border-border bg-surface p-4 transition-shadow hover:shadow-md"
                   >
-                    {folderContents.watermark_text}
+                    <div className="flex items-center gap-3">
+                      {getFileIcon(file.name, 32)}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-fg truncate">{file.name}</p>
+                        <p className="text-body-sm text-fg-muted">{formatBytes(file.size)}</p>
+                      </div>
+                      {canDownload && (
+                        <IconButton
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Download ${file.name}`}
+                          title="Download"
+                          onClick={() => void handleDownload(file.id)}
+                        >
+                          <Download className="h-4 w-4 text-primary" />
+                        </IconButton>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
-            <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-              <Folder className="text-blue-500" size={24} />
-              {folderContents?.folder_name}
-            </h2>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {folderContents?.files?.map((file) => (
-                <div
-                  key={file.id}
-                  className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
-                >
-                  <div className="flex items-center gap-3">
-                    {getFileIcon(file.name, 32)}
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">{file.name}</p>
-                      <p className="text-sm text-gray-500">{formatBytes(file.size)}</p>
-                    </div>
-                    {canDownload && (
-                      <button
-                        onClick={() => void handleDownload(file.id)}
-                        className="p-2 rounded hover:bg-gray-100"
-                        title="Download"
-                      >
-                        <Download size={18} className="text-blue-500" />
-                      </button>
-                    )}
-                  </div>
+              {folderContents?.files?.length === 0 && (
+                <div className="text-center py-12 text-fg-muted">
+                  <Folder className="mx-auto mb-3 h-12 w-12 opacity-50" />
+                  <p className="text-body-sm">
+                    {folderContents.notice || 'This folder is empty'}
+                  </p>
                 </div>
-              ))}
-            </div>
-
-            {folderContents?.files?.length === 0 && (
-              <div className="text-center py-12 text-gray-500">
-                <Folder size={48} className="mx-auto mb-3 opacity-50" />
-                <p>{folderContents.notice || 'This folder is empty'}</p>
-              </div>
-            )}
-          </div>
+              )}
+            </CardContent>
+          </Card>
         )}
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t mt-12 py-6">
+      <footer className="bg-surface border-t border-border mt-12 py-6">
         <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="text-gray-600 text-sm mb-2">
-            Powered by <span className="font-semibold">Edge Cloud Storage</span>
+          <p className="text-body-sm text-fg-muted mb-2">
+            Powered by <span className="font-semibold text-fg">Edge Cloud Storage</span>
           </p>
           <button
+            type="button"
             onClick={() => navigate('/auth')}
-            className="text-blue-500 hover:text-blue-600 text-sm font-medium"
+            className="text-body-sm font-medium text-primary hover:text-primary/80 transition-colors"
           >
             Sign in to your account →
           </button>

@@ -7,33 +7,28 @@ import {
   Shield,
   Cloud,
   FileText,
-  Loader,
   CheckCircle,
 } from 'lucide-react';
 import { API_URL } from '../../config/constants';
 import { formatBytes } from '../../utils/helpers';
-import {
-  deriveKeyFromPassword,
-  decryptFileKey,
-  decryptChunk,
-} from '../../utils/zkCrypto';
+import { deriveKeyFromPassword, decryptFileKey, decryptChunk } from '../../utils/zkCrypto';
 import type { ShareInfo, ZKShareInfo } from './types';
 import { isShareInfo, isZKShareInfo, getErrorMessage } from './types';
+import {
+  Banner,
+  Button,
+  Card,
+  CardContent,
+  FormField,
+  Input,
+  Progress,
+  Spinner,
+} from '@/components/ui';
 
 /**
- * SharePage Component
- *
- * Single file share page with support for:
- * - Legacy (non-ZK) file downloads
- * - ZK-encrypted file downloads with client-side decryption
- * - Password protection
- * - Download progress tracking
- *
- * Features:
- * - Detects ZK vs legacy shares automatically
- * - Client-side decryption for ZK files
- * - Progress indicator for chunked downloads
- * - Password validation
+ * SharePage — public landing page for a single shared file. Detects ZK vs
+ * legacy shares via `/share/:token/zk-info`, handles password entry, and
+ * performs client-side chunked decryption for ZK files.
  */
 const SharePage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
@@ -54,7 +49,6 @@ const SharePage: React.FC = () => {
 
   const fetchShareInfo = async (): Promise<void> => {
     try {
-      // Try to get ZK share info from dedicated ZK endpoint
       const response = await fetch(`${API_URL}/api/v1/share/${token}/zk-info`);
 
       if (response.ok) {
@@ -74,7 +68,6 @@ const SharePage: React.FC = () => {
         }
       }
 
-      // If info endpoint fails, it might be a legacy share
       if (response.status === 404) {
         setError('Share link not found or has expired');
       } else if (response.status === 410) {
@@ -97,9 +90,6 @@ const SharePage: React.FC = () => {
     }
   };
 
-  /**
-   * Handle ZK-encrypted file download with client-side decryption
-   */
   const handleZKDownload = async (): Promise<void> => {
     if (!password) {
       setError('Password required for encrypted files');
@@ -117,17 +107,14 @@ const SharePage: React.FC = () => {
     setDownloadProgress(0);
 
     try {
-      // 1. Derive key from password
       // TODO: Weak salt pattern — deriving salt from the share token is predictable.
       // The backend should store and return a random salt per share link.
-      // Using a fixed salt for share links (derived from token) as interim solution.
       const encoder = new TextEncoder();
       const tokenHash = await crypto.subtle.digest('SHA-256', encoder.encode(token || ''));
       const salt = new Uint8Array(tokenHash).slice(0, 32);
 
       const derivedKey = deriveKeyFromPassword(password, salt, 600000);
 
-      // 2. Decrypt the file key
       let fileKey: Uint8Array;
       try {
         fileKey = decryptFileKey(
@@ -141,7 +128,6 @@ const SharePage: React.FC = () => {
         return;
       }
 
-      // 3. Download and decrypt chunks
       const chunks = shareInfo.chunks || [];
       const decryptedChunks: Uint8Array[] = [];
       let totalBytes = 0;
@@ -161,17 +147,13 @@ const SharePage: React.FC = () => {
         }
 
         const encryptedChunk = new Uint8Array(await response.arrayBuffer());
-
-        // Decrypt chunk
         const decryptedChunk = decryptChunk(encryptedChunk, fileKey, i);
         decryptedChunks.push(decryptedChunk);
         totalBytes += decryptedChunk.length;
 
-        // Update progress
         setDownloadProgress(Math.round(((i + 1) / chunks.length) * 100));
       }
 
-      // 4. Combine chunks and create download
       const fileData = new Uint8Array(totalBytes);
       let offset = 0;
       for (const chunk of decryptedChunks) {
@@ -179,12 +161,11 @@ const SharePage: React.FC = () => {
         offset += chunk.length;
       }
 
-      // Create download
       const blob = new Blob([fileData]);
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = `shared_file_${(token || '').slice(0, 8)}`; // Default filename
+      a.download = `shared_file_${(token || '').slice(0, 8)}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -199,9 +180,6 @@ const SharePage: React.FC = () => {
     }
   };
 
-  /**
-   * Handle legacy (non-ZK) file download
-   */
   const handleLegacyDownload = async (): Promise<void> => {
     setDownloading(true);
     setError('');
@@ -216,7 +194,6 @@ const SharePage: React.FC = () => {
       const response = await fetch(url.toString(), { headers });
 
       if (response.status === 400) {
-        // This is a ZK file - switch to ZK mode
         const data: unknown = await response.json();
         if (
           typeof data === 'object' &&
@@ -256,7 +233,6 @@ const SharePage: React.FC = () => {
         return;
       }
 
-      // Extract filename from Content-Disposition header
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = 'download';
       if (contentDisposition) {
@@ -266,7 +242,6 @@ const SharePage: React.FC = () => {
         }
       }
 
-      // Download the file
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -286,177 +261,150 @@ const SharePage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600">
-            <Cloud className="text-white" size={24} />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Edge Cloud Storage</h1>
-            <p className="text-sm text-gray-500">Shared File</p>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-12">
-            <Loader className="animate-spin text-blue-500 mb-3" size={32} />
-            <p className="text-gray-600">Checking share link...</p>
-          </div>
-        ) : error && !requiresPassword ? (
-          <div className="flex flex-col items-center justify-center py-12">
-            <AlertCircle className="text-red-500 mb-3" size={48} />
-            <p className="text-red-600 text-center mb-4">{error}</p>
-            <button
-              onClick={() => navigate('/auth')}
-              className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors"
-            >
-              Go to Login
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {/* ZK Encryption Badge */}
-            {isZKEncrypted && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="flex items-center gap-2 text-green-700">
-                  <Shield size={20} />
-                  <span className="font-medium">Zero-Knowledge Encrypted</span>
-                </div>
-                <p className="text-sm text-green-600 mt-1">
-                  This file is encrypted. Decryption happens in your browser - the server never
-                  sees your data.
-                </p>
-              </div>
-            )}
-
-            {/* Info Box */}
-            <div className="bg-gray-50 rounded-lg p-4">
-              <div className="flex items-center gap-3 mb-2">
-                <FileText className="text-gray-600" size={20} />
-                <span className="font-medium text-gray-900">Shared File</span>
-              </div>
-              {shareInfo && 'file_size' in shareInfo && shareInfo.file_size && (
-                <p className="text-sm text-gray-500 ml-8">
-                  Size: {formatBytes(shareInfo.file_size)}
-                </p>
-              )}
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-primary/10 via-accent/10 to-accent/5 p-4">
+      <Card variant="elevated" className="w-full max-w-md">
+        <CardContent className="p-8">
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent">
+              <Cloud className="text-white" size={24} />
             </div>
+            <div>
+              <h1 className="text-h2 font-bold text-fg">Edge Cloud Storage</h1>
+              <p className="text-body-sm text-fg-muted">Shared file</p>
+            </div>
+          </div>
 
-            {/* Error Message */}
-            {error && requiresPassword && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-sm text-red-600">{error}</p>
-              </div>
-            )}
+          {loading ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Spinner size="lg" className="mb-3" />
+              <p className="text-body-sm text-fg-muted">Checking share link...</p>
+            </div>
+          ) : error && !requiresPassword ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <AlertCircle className="mb-3 text-danger" size={48} />
+              <p className="mb-4 text-center text-body-sm text-danger">{error}</p>
+              <Button variant="primary" onClick={() => navigate('/auth')}>
+                Go to login
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {isZKEncrypted && (
+                <Banner
+                  variant="success"
+                  icon={<Shield />}
+                  title="Zero-knowledge encrypted"
+                >
+                  This file is encrypted. Decryption happens in your browser — the server never
+                  sees your data.
+                </Banner>
+              )}
 
-            {/* Password Input */}
-            {requiresPassword && (
-              <div>
-                <label className="flex items-center gap-2 mb-2 text-sm font-medium text-gray-700">
-                  <Lock size={16} />
-                  {isZKEncrypted ? 'Decryption Password' : 'Password Required'}
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setPassword(e.target.value)
-                  }
-                  onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                    if (
-                      e.key === 'Enter' &&
-                      !downloading &&
-                      password &&
-                      handleDownload
-                    ) {
-                      void handleDownload();
-                    }
-                  }}
-                  className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder={isZKEncrypted ? 'Enter decryption password' : 'Enter password'}
-                  disabled={downloading}
-                  autoFocus
-                />
-                {isZKEncrypted && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Your password is used locally to decrypt the file.
+              <div className="rounded-lg bg-surface-muted p-4">
+                <div className="mb-2 flex items-center gap-3">
+                  <FileText className="text-fg-muted" size={20} />
+                  <span className="font-medium text-fg">Shared file</span>
+                </div>
+                {shareInfo && 'file_size' in shareInfo && shareInfo.file_size && (
+                  <p className="ml-8 text-body-sm text-fg-muted">
+                    Size: {formatBytes(shareInfo.file_size)}
                   </p>
                 )}
               </div>
-            )}
 
-            {/* Optional Password Field - Show button if not yet required */}
-            {!requiresPassword && (
-              <div>
-                <button
-                  onClick={() => setRequiresPassword(true)}
-                  className="text-sm text-blue-500 hover:text-blue-600 flex items-center gap-1"
-                >
-                  <Lock size={14} />
-                  This file is password protected? Click here
-                </button>
-              </div>
-            )}
-
-            {/* Download Progress */}
-            {downloading && downloadProgress > 0 && (
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm text-gray-600">
-                  <span>{isZKEncrypted ? 'Decrypting...' : 'Downloading...'}</span>
-                  <span>{downloadProgress}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className="bg-gradient-to-r from-blue-500 to-purple-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${downloadProgress}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Download Button */}
-            <button
-              onClick={() => void handleDownload()}
-              disabled={downloading || (requiresPassword && !password)}
-              className={`w-full py-3 rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg ${
-                downloading || (requiresPassword && !password)
-                  ? 'bg-gray-300 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white'
-              }`}
-            >
-              {downloading ? (
-                <>
-                  <Loader className="animate-spin" size={20} />
-                  {isZKEncrypted ? 'Decrypting & Downloading...' : 'Downloading...'}
-                </>
-              ) : downloadProgress === 100 ? (
-                <>
-                  <CheckCircle size={20} />
-                  Download Complete
-                </>
-              ) : (
-                <>
-                  <Download size={20} />
-                  {isZKEncrypted ? 'Decrypt & Download' : 'Download File'}
-                </>
+              {error && requiresPassword && (
+                <Banner variant="danger" icon={<AlertCircle />}>
+                  {error}
+                </Banner>
               )}
-            </button>
 
-            {/* Footer */}
-            <div className="text-center pt-4 border-t">
-              <p className="text-sm text-gray-500">Powered by Edge Cloud Storage</p>
-              <button
-                onClick={() => navigate('/auth')}
-                className="text-sm text-blue-500 hover:text-blue-600 mt-2"
+              {requiresPassword && (
+                <FormField
+                  label={
+                    <span className="flex items-center gap-2">
+                      <Lock size={16} />
+                      {isZKEncrypted ? 'Decryption password' : 'Password required'}
+                    </span>
+                  }
+                  hint={isZKEncrypted ? 'Your password is used locally to decrypt the file.' : undefined}
+                >
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !downloading && password) {
+                        void handleDownload();
+                      }
+                    }}
+                    placeholder={isZKEncrypted ? 'Enter decryption password' : 'Enter password'}
+                    disabled={downloading}
+                    autoFocus
+                  />
+                </FormField>
+              )}
+
+              {!requiresPassword && (
+                <Button
+                  variant="link"
+                  size="sm"
+                  leftIcon={<Lock size={14} />}
+                  onClick={() => setRequiresPassword(true)}
+                >
+                  This file is password protected? Click here
+                </Button>
+              )}
+
+              {downloading && downloadProgress > 0 && (
+                <div className="space-y-2">
+                  <div className="flex justify-between text-body-sm text-fg-muted">
+                    <span>{isZKEncrypted ? 'Decrypting...' : 'Downloading...'}</span>
+                    <span>{downloadProgress}%</span>
+                  </div>
+                  <Progress value={downloadProgress} tone="primary" />
+                </div>
+              )}
+
+              <Button
+                variant="primary"
+                fullWidth
+                loading={downloading}
+                disabled={downloading || (requiresPassword && !password)}
+                onClick={() => void handleDownload()}
+                leftIcon={
+                  downloadProgress === 100 && !downloading ? (
+                    <CheckCircle size={20} />
+                  ) : !downloading ? (
+                    <Download size={20} />
+                  ) : undefined
+                }
               >
-                Sign in to your account
-              </button>
+                {downloading
+                  ? isZKEncrypted
+                    ? 'Decrypting & downloading...'
+                    : 'Downloading...'
+                  : downloadProgress === 100
+                    ? 'Download complete'
+                    : isZKEncrypted
+                      ? 'Decrypt & download'
+                      : 'Download file'}
+              </Button>
+
+              <div className="border-t border-border pt-4 text-center">
+                <p className="text-body-sm text-fg-muted">Powered by Edge Cloud Storage</p>
+                <Button
+                  variant="link"
+                  size="sm"
+                  onClick={() => navigate('/auth')}
+                  className="mt-2"
+                >
+                  Sign in to your account
+                </Button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 };

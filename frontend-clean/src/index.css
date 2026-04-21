@@ -2,65 +2,171 @@
 @tailwind components;
 @tailwind utilities;
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+/* ==============================================================
+   Signal design tokens — CSS variables for color + gradient.
+   Paired with tailwind.config.js, which reads these as rgb(var(--*) / <alpha>).
+   See docs/DESIGN_TOKENS.md for rationale.
+   ============================================================== */
 
-::-webkit-scrollbar-track {
-  @apply bg-gray-100 dark:bg-gray-800;
-}
+@layer base {
+  :root {
+    /* Surfaces */
+    --bg: 249 250 252;
+    --surface: 255 255 255;
+    --surface-muted: 244 245 249;
+    --surface-sunken: 239 241 246;
 
-::-webkit-scrollbar-thumb {
-  @apply bg-gray-400 dark:bg-gray-600 rounded;
-}
+    /* Text */
+    --fg: 15 23 42;
+    --fg-muted: 71 85 105;
+    --fg-subtle: 100 116 139;
+    --fg-on-primary: 255 255 255;
 
-::-webkit-scrollbar-thumb:hover {
-  @apply bg-gray-500 dark:bg-gray-500;
-}
+    /* Borders */
+    --border: 226 229 239;
+    --border-strong: 203 208 224;
+    --border-focus: 99 102 241;
 
-* {
-  transition: background-color 0.3s ease, border-color 0.3s ease;
-}
+    /* Brand */
+    --primary: 79 70 229;
+    --primary-hover: 67 56 202;
+    --primary-soft: 238 238 255;
+    --primary-fg: 255 255 255;
 
-@keyframes pulse-border {
-  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
-  70% { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
-}
+    /* Accent (used only inside the Signal gradient) */
+    --accent: 139 92 246;
 
-.drop-zone-active {
-  animation: pulse-border 2s infinite;
-}
+    /* Semantic */
+    --success: 5 150 105;
+    --success-soft: 220 252 231;
+    --warning: 202 138 4;
+    --warning-soft: 254 249 195;
+    --danger: 220 38 38;
+    --danger-soft: 254 226 226;
+    --info: 2 132 199;
+    --info-soft: 224 242 254;
 
-@keyframes float {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(30px, -30px) scale(1.05); }
-  66% { transform: translate(-20px, 20px) scale(0.95); }
-}
-
-.animate-float {
-  animation: float 20s ease-in-out infinite;
-}
-
-@keyframes fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
+    /* The signal-gradient seal: identity / upgrade / success only */
+    --signal-gradient:
+      linear-gradient(
+        135deg,
+        rgb(79 70 229) 0%,
+        rgb(99 102 241) 35%,
+        rgb(139 92 246) 100%
+      );
   }
-  to {
-    opacity: 1;
-    transform: translateY(0);
+
+  .dark {
+    --bg: 11 14 23;
+    --surface: 18 22 33;
+    --surface-muted: 24 29 43;
+    --surface-sunken: 14 17 26;
+
+    --fg: 241 245 249;
+    --fg-muted: 148 163 184;
+    --fg-subtle: 100 116 139;
+    --fg-on-primary: 255 255 255;
+
+    --border: 38 44 62;
+    --border-strong: 55 64 85;
+    --border-focus: 129 140 248;
+
+    --primary: 129 140 248;
+    --primary-hover: 165 180 252;
+    --primary-soft: 30 27 75;
+    --primary-fg: 11 14 23;
+
+    --accent: 167 139 250;
+
+    --success: 52 211 153;
+    --success-soft: 6 78 59;
+    --warning: 250 204 21;
+    --warning-soft: 66 32 6;
+    --danger: 248 113 113;
+    --danger-soft: 69 10 10;
+    --info: 56 189 248;
+    --info-soft: 8 47 73;
+
+    --signal-gradient:
+      linear-gradient(
+        135deg,
+        rgb(99 102 241) 0%,
+        rgb(129 140 248) 40%,
+        rgb(167 139 250) 100%
+      );
+  }
+
+  /* Inter Variable's distinctive character is behind stylistic sets — turn them on.
+     cv11 = single-story 'a', ss03 = straight 'l', cv05 = tighter '@', ss01 = open digits. */
+  html {
+    font-family: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: 'cv11', 'ss03', 'cv05', 'ss01';
+    /* Tell the UA about both color schemes so native controls (scrollbars, form
+       element chrome) adapt when the user toggles. */
+    color-scheme: light dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-bg text-fg;
+    font-size: 0.9375rem; /* 15px — Signal body default, not 16px */
+    line-height: 1.55;
+  }
+
+  /* Focus ring default — primitives override per-component but this catches anything unstyled. */
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgb(var(--border-focus) / 0.35);
+    border-radius: 4px;
+  }
+
+  /* Thin, token-aware scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgb(var(--surface-muted));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--border-strong));
+    border: 2px solid rgb(var(--surface-muted));
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--fg-subtle));
   }
 }
 
-.animate-fade-up {
-  animation: fade-up 0.6s ease-out both;
-  animation-delay: var(--fade-delay, 0ms);
+/* ==============================================================
+   Utility layer — custom animations surface as Tailwind utilities
+   (animate-fade-up, animate-float, animate-pulse-border). Keyframes
+   live in tailwind.config.js so they tree-shake when unused.
+   ============================================================== */
+
+@layer utilities {
+  /* Honor --fade-delay CSS variable on elements using animate-fade-up.
+     Consumers set style={{ '--fade-delay': '120ms' }} for staggered reveals. */
+  .animate-fade-up {
+    animation-delay: var(--fade-delay, 0ms);
+  }
+
+  /* Legacy alias kept for the drag-drop zone pulse. */
+  .drop-zone-active {
+    animation: pulse-border 2s infinite;
+  }
 }
+
+/* ==============================================================
+   Motion preferences — mirror the reduced-motion rule across all
+   token-driven transitions.
+   ============================================================== */
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

@@ -1,12 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Upload, Edit, Download, Share2, Eye, Clock, CheckCircle, Loader, AlertCircle, Edit2, Trash2
+  Upload,
+  Edit,
+  Download,
+  Share2,
+  Eye,
+  Clock,
+  CheckCircle,
+  AlertCircle,
+  Edit2,
+  Trash2,
 } from 'lucide-react';
 import { formatDate } from '../../utils/helpers';
 import { storageService } from '../../services/storageService';
 import type { FileActivityTabProps, FileActivity, FileActivityAction } from './types';
 import { getErrorMessage } from './types';
 import type { LucideIcon } from 'lucide-react';
+import { Button, EmptyState, Spinner } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 /**
  * Mask an IP address for privacy by hiding the last segments.
@@ -15,17 +26,36 @@ import type { LucideIcon } from 'lucide-react';
  */
 function maskIpAddress(ip: string): string {
   const parts = ip.split('.');
-  if (parts.length === 4) {
-    return `${parts[0]}.${parts[1]}.*.*`;
-  }
-  // IPv6 or other formats - mask last segments
+  if (parts.length === 4) return `${parts[0]}.${parts[1]}.*.*`;
   return ip.replace(/:[^:]+$/, ':****');
 }
 
+type ActionTone = 'primary' | 'warning' | 'success' | 'accent' | 'danger' | 'neutral';
+
+const TONE_TEXT: Record<ActionTone, string> = {
+  primary: 'text-primary',
+  warning: 'text-warning',
+  success: 'text-success',
+  accent: 'text-accent',
+  danger: 'text-danger',
+  neutral: 'text-fg-subtle',
+};
+
+const TONE_BG: Record<ActionTone, string> = {
+  primary: 'bg-primary/10',
+  warning: 'bg-warning/10',
+  success: 'bg-success/10',
+  accent: 'bg-accent/10',
+  danger: 'bg-danger/10',
+  neutral: 'bg-surface-muted',
+};
+
 /**
- * FileActivityTab - Displays file activity timeline
+ * FileActivityTab — audit timeline of actions taken on a file (upload,
+ * view, share, etc.), pulled from the activity service. Each entry shows
+ * the action, timestamp, and a masked IP when available.
  */
-const FileActivityTab: React.FC<FileActivityTabProps> = ({ file, darkMode }) => {
+const FileActivityTab: React.FC<FileActivityTabProps> = ({ file }) => {
   const [activities, setActivities] = useState<FileActivity[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,45 +94,19 @@ const FileActivityTab: React.FC<FileActivityTabProps> = ({ file, darkMode }) => 
     return iconMap[action] || Upload;
   };
 
-  const getActionColor = (action: FileActivityAction): string => {
-    const colorMap: Record<string, string> = {
-      file_uploaded: 'blue',
-      file_modified: 'amber',
-      file_downloaded: 'green',
-      file_shared: 'purple',
-      file_viewed: 'cyan',
-      file_renamed: 'amber',
-      file_deleted: 'red',
-      upload: 'blue',
-      download: 'green',
+  const getActionTone = (action: FileActivityAction): ActionTone => {
+    const toneMap: Record<string, ActionTone> = {
+      file_uploaded: 'primary',
+      file_modified: 'warning',
+      file_downloaded: 'success',
+      file_shared: 'accent',
+      file_viewed: 'primary',
+      file_renamed: 'warning',
+      file_deleted: 'danger',
+      upload: 'primary',
+      download: 'success',
     };
-    return colorMap[action] || 'gray';
-  };
-
-  const getIconColor = (color: string): string => {
-    const colors: Record<string, string> = {
-      blue: 'text-blue-500',
-      amber: 'text-amber-500',
-      green: 'text-green-500',
-      purple: 'text-purple-500',
-      cyan: 'text-cyan-500',
-      pink: 'text-pink-500',
-      red: 'text-red-500',
-    };
-    return colors[color] || 'text-gray-500';
-  };
-
-  const getBackgroundColor = (color: string): string => {
-    const colors: Record<string, string> = {
-      blue: darkMode ? 'bg-blue-500/10' : 'bg-blue-50',
-      amber: darkMode ? 'bg-amber-500/10' : 'bg-amber-50',
-      green: darkMode ? 'bg-green-500/10' : 'bg-green-50',
-      purple: darkMode ? 'bg-purple-500/10' : 'bg-purple-50',
-      cyan: darkMode ? 'bg-cyan-500/10' : 'bg-cyan-50',
-      pink: darkMode ? 'bg-pink-500/10' : 'bg-pink-50',
-      red: darkMode ? 'bg-red-500/10' : 'bg-red-50',
-    };
-    return colors[color] || (darkMode ? 'bg-gray-700' : 'bg-gray-50');
+    return toneMap[action] || 'neutral';
   };
 
   const getActionText = (activity: FileActivity): string => {
@@ -127,145 +131,96 @@ const FileActivityTab: React.FC<FileActivityTabProps> = ({ file, darkMode }) => 
       case 'file_deleted':
         return 'Deleted this file';
       default:
-        const actionStr = String(action);
-        return actionStr.replace(/_/g, ' ');
+        return String(action).replace(/_/g, ' ');
     }
   };
 
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
-        <Loader className={`animate-spin mb-4 ${darkMode ? 'text-blue-400' : 'text-blue-500'}`} size={48} />
-        <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          Loading activity...
-        </p>
+        <Spinner size="lg" />
+        <p className="mt-3 text-body-sm text-fg-muted">Loading activity...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center py-12">
-        <AlertCircle className="text-red-500 mb-4" size={48} />
-        <p className={`text-sm mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-          Failed to load activity
-        </p>
-        <p className={`text-xs mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          {error}
-        </p>
-        <button
-          onClick={fetchActivity}
-          className={`px-4 py-2 text-sm rounded-lg transition-colors ${
-            darkMode
-              ? 'bg-blue-600 hover:bg-blue-700 text-white'
-              : 'bg-blue-500 hover:bg-blue-600 text-white'
-          }`}
-        >
-          Try Again
-        </button>
+      <div className="flex flex-col items-center justify-center py-12 text-center">
+        <AlertCircle className="mb-4 h-12 w-12 text-danger" />
+        <p className="mb-2 text-body-sm font-medium text-fg">Failed to load activity</p>
+        <p className="mb-4 text-caption text-fg-muted">{error}</p>
+        <Button variant="primary" size="sm" onClick={fetchActivity}>
+          Try again
+        </Button>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      {/* Activity Timeline */}
       <div className="space-y-4">
         {activities.length > 0 ? (
           activities.map((activity, index) => {
             const Icon = getActionIcon(activity.action);
-            const color = getActionColor(activity.action);
+            const tone = getActionTone(activity.action);
 
             return (
               <div key={activity.id} className="flex gap-4">
-                {/* Timeline line */}
                 <div className="flex flex-col items-center">
-                  <div className={`p-2 rounded-lg ${getBackgroundColor(color)}`}>
-                    <Icon size={16} className={getIconColor(color)} />
+                  <div className={cn('rounded-lg p-2', TONE_BG[tone])}>
+                    <Icon size={16} className={TONE_TEXT[tone]} />
                   </div>
                   {index < activities.length - 1 && (
-                    <div className={`w-0.5 flex-1 my-1 ${
-                      darkMode ? 'bg-gray-700' : 'bg-gray-200'
-                    }`} style={{ minHeight: '20px' }}></div>
+                    <div
+                      className="my-1 w-0.5 flex-1 bg-border"
+                      style={{ minHeight: '20px' }}
+                    />
                   )}
                 </div>
 
-                {/* Activity details */}
                 <div className="flex-1 pb-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <p className={`text-sm font-medium mb-1 ${
-                        darkMode ? 'text-white' : 'text-gray-900'
-                      }`}>
-                        {getActionText(activity)}
-                      </p>
-                      <div className={`flex items-center gap-2 text-xs ${
-                        darkMode ? 'text-gray-400' : 'text-gray-600'
-                      }`}>
-                        <Clock size={12} />
-                        <span>{formatDate(activity.created_at)}</span>
-                        {activity.ip_address && (
-                          <>
-                            <span>•</span>
-                            <span>{maskIpAddress(activity.ip_address)}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
+                  <p className="mb-1 text-body-sm font-medium text-fg">
+                    {getActionText(activity)}
+                  </p>
+                  <div className="flex items-center gap-2 text-caption text-fg-muted">
+                    <Clock size={12} />
+                    <span>{formatDate(activity.created_at)}</span>
+                    {activity.ip_address && (
+                      <>
+                        <span>•</span>
+                        <span>{maskIpAddress(activity.ip_address)}</span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
             );
           })
         ) : (
-          <div className="text-center py-12">
-            <Clock className={`mx-auto mb-3 ${
-              darkMode ? 'text-gray-600' : 'text-gray-400'
-            }`} size={48} />
-            <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              No activity recorded yet
-            </p>
-          </div>
+          <EmptyState
+            icon={<Clock />}
+            title="No activity recorded yet"
+            description="Actions taken on this file will appear here."
+            size="sm"
+          />
         )}
       </div>
 
-      {/* Activity Summary */}
       {activities.length > 0 && (
-        <div className={`p-4 rounded-lg border ${
-          darkMode
-            ? 'bg-gray-700/30 border-gray-700'
-            : 'bg-gray-50 border-gray-200'
-        }`}>
-          <div className="flex items-center gap-2 mb-3">
-            <CheckCircle size={16} className={darkMode ? 'text-green-400' : 'text-green-500'} />
-            <h4 className={`text-sm font-semibold ${
-              darkMode ? 'text-white' : 'text-gray-900'
-            }`}>
-              Activity Summary
-            </h4>
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <CheckCircle size={16} className="text-success" />
+            <h4 className="text-body-sm font-semibold text-fg">Activity summary</h4>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <p className={`text-xs mb-1 ${
-                darkMode ? 'text-gray-400' : 'text-gray-600'
-              }`}>
-                Total Activities
-              </p>
-              <p className={`text-lg font-semibold ${
-                darkMode ? 'text-white' : 'text-gray-900'
-              }`}>
-                {activities.length}
-              </p>
+              <p className="mb-1 text-caption text-fg-muted">Total activities</p>
+              <p className="text-h3 font-semibold text-fg">{activities.length}</p>
             </div>
             <div>
-              <p className={`text-xs mb-1 ${
-                darkMode ? 'text-gray-400' : 'text-gray-600'
-              }`}>
-                Last Activity
-              </p>
-              <p className={`text-xs font-medium ${
-                darkMode ? 'text-white' : 'text-gray-900'
-              }`}>
+              <p className="mb-1 text-caption text-fg-muted">Last activity</p>
+              <p className="text-caption font-medium text-fg">
                 {formatDate(activities[0]?.created_at)}
               </p>
             </div>

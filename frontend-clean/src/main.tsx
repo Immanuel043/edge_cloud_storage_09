@@ -6,6 +6,11 @@
  */
 import './polyfills';
 
+// Self-hosted variable fonts — Inter for UI, JetBrains Mono for technical metadata.
+// Importing the default entrypoint registers the variable @font-face at build time.
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';

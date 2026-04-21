@@ -2,64 +2,37 @@ import React from 'react';
 import { Check, X } from 'lucide-react';
 import type { PasswordStrengthMeterProps } from './types';
 import type { PasswordRequirements } from '../../utils/security';
+import { cn } from '@/lib/cn';
 
-/**
- * Requirement item for display in the requirements list
- */
 interface RequirementItem {
   key: keyof PasswordRequirements;
   label: string;
 }
 
 /**
- * PasswordStrengthMeter Component
- *
- * Displays a visual password strength indicator with requirement checklist.
- * Follows strict TypeScript typing with no `any` usage.
+ * PasswordStrengthMeter — horizontal strength bar plus a checklist of the
+ * five password requirements. Score maps to a tone (weak/fair/good/strong).
  */
 const PasswordStrengthMeter: React.FC<PasswordStrengthMeterProps> = ({
   strengthData,
-  darkMode,
   showRequirements = true,
 }) => {
   if (!strengthData) return null;
 
   const { score, strength, requirements } = strengthData;
 
-  /**
-   * Get background color class based on strength level
-   */
-  const getStrengthColor = (): string => {
-    switch (strength) {
-      case 'strong':
-        return 'bg-green-500';
-      case 'good':
-        return 'bg-blue-500';
-      case 'fair':
-        return 'bg-yellow-500';
-      case 'weak':
-        return 'bg-red-500';
-      default:
-        return 'bg-gray-400';
-    }
+  const strengthBarClass: Record<string, string> = {
+    strong: 'bg-success',
+    good: 'bg-primary',
+    fair: 'bg-warning',
+    weak: 'bg-danger',
   };
 
-  /**
-   * Get text color class based on strength level and theme
-   */
-  const getStrengthTextColor = (): string => {
-    switch (strength) {
-      case 'strong':
-        return darkMode ? 'text-green-400' : 'text-green-600';
-      case 'good':
-        return darkMode ? 'text-blue-400' : 'text-blue-600';
-      case 'fair':
-        return darkMode ? 'text-yellow-400' : 'text-yellow-600';
-      case 'weak':
-        return darkMode ? 'text-red-400' : 'text-red-600';
-      default:
-        return darkMode ? 'text-gray-400' : 'text-gray-600';
-    }
+  const strengthTextClass: Record<string, string> = {
+    strong: 'text-success',
+    good: 'text-primary',
+    fair: 'text-warning',
+    weak: 'text-danger',
   };
 
   const requirementsList: RequirementItem[] = [
@@ -72,38 +45,35 @@ const PasswordStrengthMeter: React.FC<PasswordStrengthMeterProps> = ({
 
   return (
     <div className="mt-2 space-y-2">
-      {/* Strength Bar */}
       <div className="flex items-center gap-2">
-        <div
-          className={`flex-1 h-1.5 rounded-full ${
-            darkMode ? 'bg-gray-700' : 'bg-gray-200'
-          } overflow-hidden`}
-        >
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-muted">
           <div
-            className={`h-full rounded-full transition-all duration-300 ${getStrengthColor()}`}
+            className={cn(
+              'h-full rounded-full transition-all duration-normal',
+              strengthBarClass[strength] ?? 'bg-fg-subtle'
+            )}
             style={{ width: `${(score / 4) * 100}%` }}
           />
         </div>
-        <span className={`text-xs font-medium capitalize ${getStrengthTextColor()}`}>
+        <span
+          className={cn(
+            'text-caption font-medium capitalize',
+            strengthTextClass[strength] ?? 'text-fg-muted'
+          )}
+        >
           {strength}
         </span>
       </div>
 
-      {/* Requirements List */}
       {showRequirements && (
         <div className="grid grid-cols-2 gap-1">
           {requirementsList.map(({ key, label }) => (
             <div
               key={key}
-              className={`flex items-center gap-1.5 text-xs ${
-                requirements[key]
-                  ? darkMode
-                    ? 'text-green-400'
-                    : 'text-green-600'
-                  : darkMode
-                    ? 'text-gray-500'
-                    : 'text-gray-400'
-              }`}
+              className={cn(
+                'flex items-center gap-1.5 text-caption',
+                requirements[key] ? 'text-success' : 'text-fg-subtle'
+              )}
             >
               {requirements[key] ? (
                 <Check size={12} className="flex-shrink-0" />

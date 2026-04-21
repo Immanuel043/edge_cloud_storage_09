@@ -10,19 +10,16 @@ import type {
   FileItem,
 } from './types';
 import { API_URL } from '../../config/constants';
+import { Badge, Button, FormField, Input, Select } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 /**
- * SearchBar Component
- *
- * Search input with autocomplete, smart search, and filters.
- * Supports both server-side and client-side (ZK) search modes.
+ * SearchBar — dashboard search with autocomplete, smart search, and filters.
+ * Server-side smart search (hybrid/semantic/keyword) for Edge users; falls
+ * back to in-memory filtering for ZK users since their file names are
+ * encrypted server-side.
  */
-const SearchBar: React.FC<SearchBarProps> = ({
-  onSearch,
-  darkMode,
-  zkMode = false,
-  files = [],
-}) => {
+const SearchBar: React.FC<SearchBarProps> = ({ onSearch, zkMode = false, files = [] }) => {
   const [query, setQuery] = useState<string>('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
@@ -45,25 +42,19 @@ const SearchBar: React.FC<SearchBarProps> = ({
   const hasFetchedSmartSearch = useRef(false);
 
   useEffect(() => {
-    // Click outside to close suggestions
     const handleClickOutside = (event: MouseEvent): void => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
         setShowSuggestions(false);
       }
     };
-
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Disable smart search for ZK users on mount
   useEffect(() => {
-    if (zkMode) {
-      setSmartSearchEnabled(false);
-    }
+    if (zkMode) setSmartSearchEnabled(false);
   }, [zkMode]);
 
-  // Fetch smart search status on first input focus (not on mount)
   const handleSearchFocus = (): void => {
     if (hasFetchedSmartSearch.current || zkMode) return;
     hasFetchedSmartSearch.current = true;
@@ -76,35 +67,27 @@ const SearchBar: React.FC<SearchBarProps> = ({
         if (response.ok) {
           const data = (await response.json()) as SmartSearchStatus;
           setSmartSearchStatus(data);
-          if (!data.semantic_enabled) {
-            setSmartSearchEnabled(false);
-          }
+          if (!data.semantic_enabled) setSmartSearchEnabled(false);
         }
       } catch (error: unknown) {
         console.error('Failed to fetch smart search status:', error);
       }
     };
-    fetchSmartSearchStatus();
+    void fetchSmartSearchStatus();
   };
 
-  // Fetch autocomplete suggestions
   const fetchSuggestions = async (searchQuery: string): Promise<void> => {
     if (searchQuery.length < 2) {
       setSuggestions([]);
       return;
     }
 
-    // For ZK mode, generate suggestions from local file list
     if (zkMode) {
       const searchLower = searchQuery.toLowerCase();
       const matchedNames = files
-        .filter((f: FileItem) => {
-          const name = (f.name || '').toLowerCase();
-          return name.includes(searchLower);
-        })
+        .filter((f: FileItem) => (f.name || '').toLowerCase().includes(searchLower))
         .map((f: FileItem) => f.name)
         .slice(0, 5);
-
       setSuggestions(matchedNames);
       return;
     }
@@ -112,11 +95,8 @@ const SearchBar: React.FC<SearchBarProps> = ({
     try {
       const response = await fetch(
         `${API_URL}/api/v1/search/autocomplete?q=${encodeURIComponent(searchQuery)}`,
-        {
-          credentials: 'include',
-        }
+        { credentials: 'include' }
       );
-
       if (response.ok) {
         const data = (await response.json()) as { suggestions?: string[] };
         setSuggestions(data.suggestions || []);
@@ -126,80 +106,68 @@ const SearchBar: React.FC<SearchBarProps> = ({
     }
   };
 
-  // Debounced autocomplete
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
     const value = e.target.value;
     setQuery(value);
     setShowSuggestions(true);
-
-    // Clear previous timer
-    if (debounceTimer.current) {
-      clearTimeout(debounceTimer.current);
-    }
-
-    // Set new timer
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
     debounceTimer.current = setTimeout(() => {
-      fetchSuggestions(value);
+      void fetchSuggestions(value);
     }, 300);
   };
 
   const handleSearch = async (searchQuery: string = query): Promise<void> => {
     if (!searchQuery.trim()) return;
-
     setLoading(true);
     setShowSuggestions(false);
 
     try {
-      // For ZK users, perform client-side search
       if (zkMode) {
         const searchLower = searchQuery.toLowerCase();
         const matchedFiles = files.filter((file: FileItem) => {
           const fileName = (file.name || '').toLowerCase();
           const mimeType = (file.mime_type || '').toLowerCase();
-
           if (fileName.includes(searchLower)) return true;
-
           const ext = fileName.split('.').pop();
           if (ext && ext.includes(searchLower)) return true;
-
           if (mimeType.includes(searchLower)) return true;
-
           if (searchLower === 'image' && mimeType.startsWith('image/')) return true;
           if (searchLower === 'video' && mimeType.startsWith('video/')) return true;
           if (searchLower === 'audio' && mimeType.startsWith('audio/')) return true;
           if (searchLower === 'pdf' && mimeType === 'application/pdf') return true;
           if (
             searchLower === 'document' &&
-            (mimeType.includes('document') || mimeType.includes('pdf') || mimeType.includes('text'))
+            (mimeType.includes('document') ||
+              mimeType.includes('pdf') ||
+              mimeType.includes('text'))
           )
             return true;
-
           return false;
         });
 
         const results: SearchResults = {
           files: {
-            hits: matchedFiles.map((f: FileItem): SearchHit => ({
-              id: f.id,
-              name: f.name,
-              size: f.size ?? undefined,
-              mime_type: f.mime_type ?? undefined,
-              created_at: f.created_at ?? undefined,
-              is_encrypted: true,
-              score: 1.0,
-            })),
+            hits: matchedFiles.map(
+              (f: FileItem): SearchHit => ({
+                id: f.id,
+                name: f.name,
+                size: f.size ?? undefined,
+                mime_type: f.mime_type ?? undefined,
+                created_at: f.created_at ?? undefined,
+                is_encrypted: true,
+                score: 1.0,
+              })
+            ),
             total: matchedFiles.length,
           },
           mode: 'client-side' as const,
           semantic_enabled: false,
           zk_mode: true,
         };
-
         onSearch(results);
         return;
       }
 
-      // Use smart search endpoint if enabled
       const endpoint = smartSearchEnabled
         ? `${API_URL}/api/v1/search/smart`
         : `${API_URL}/api/v1/search/`;
@@ -226,23 +194,20 @@ const SearchBar: React.FC<SearchBarProps> = ({
 
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify(requestBody),
       });
 
       if (response.ok) {
         const data = (await response.json()) as Record<string, unknown>;
-
         let results: SearchResults;
         if (smartSearchEnabled) {
-          const dataResults = Array.isArray(data.results) ? data.results as SearchHit[] : [];
+          const dataResults = Array.isArray(data.results) ? (data.results as SearchHit[]) : [];
           const dataTotal = typeof data.total === 'number' ? data.total : 0;
           const dataMode = typeof data.mode === 'string' ? (data.mode as SearchMode) : undefined;
-          const dataSemanticEnabled = typeof data.semantic_enabled === 'boolean' ? data.semantic_enabled : undefined;
-          
+          const dataSemanticEnabled =
+            typeof data.semantic_enabled === 'boolean' ? data.semantic_enabled : undefined;
           results = {
             files: { hits: dataResults, total: dataTotal },
             mode: dataMode,
@@ -261,24 +226,19 @@ const SearchBar: React.FC<SearchBarProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter') {
-      handleSearch();
-    }
+    if (e.key === 'Enter') void handleSearch();
   };
 
-  // Clean up debounce timer on unmount
   useEffect(() => {
     return () => {
-      if (debounceTimer.current) {
-        clearTimeout(debounceTimer.current);
-      }
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
     };
   }, []);
 
   const handleSuggestionClick = (suggestion: string): void => {
     setQuery(suggestion);
     setShowSuggestions(false);
-    handleSearch(suggestion);
+    void handleSearch(suggestion);
   };
 
   const clearSearch = (): void => {
@@ -299,18 +259,20 @@ const SearchBar: React.FC<SearchBarProps> = ({
     });
   };
 
+  const modeButtonClass = (active: boolean): string =>
+    cn(
+      'flex flex-1 items-center justify-center gap-1 rounded-md px-3 py-1.5 text-caption transition-colors',
+      active
+        ? 'bg-accent text-white'
+        : 'bg-surface text-fg hover:bg-surface-muted'
+    );
+
   return (
     <div className="relative" ref={searchRef}>
-      {/* Search Input */}
+      {/* Search input */}
       <div className="relative">
-        <div
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border ${
-            darkMode
-              ? 'bg-gray-800 border-gray-700 text-white'
-              : 'bg-white border-gray-300 text-gray-900'
-          }`}
-        >
-          <Search size={20} className="text-gray-400" />
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-fg transition-colors focus-within:border-border-focus focus-within:shadow-focus">
+          <Search className="h-5 w-5 text-fg-subtle" />
           <input
             type="text"
             value={query}
@@ -318,91 +280,81 @@ const SearchBar: React.FC<SearchBarProps> = ({
             onKeyDown={handleKeyDown}
             onFocus={handleSearchFocus}
             placeholder="Search files and folders..."
-            className={`flex-1 bg-transparent outline-none ${
-              darkMode ? 'placeholder-gray-500' : 'placeholder-gray-400'
-            }`}
+            className="flex-1 bg-transparent text-body outline-none placeholder:text-fg-subtle"
           />
 
-          {loading && <Loader2 size={20} className="text-blue-500 animate-spin" />}
+          {loading && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
 
           {query && (
             <button
               onClick={clearSearch}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
+              className="rounded p-1 transition-colors hover:bg-surface-muted"
+              aria-label="Clear search"
             >
-              <X size={18} className="text-gray-400" />
+              <X className="h-4 w-4 text-fg-subtle" />
             </button>
           )}
 
-          {/* ZK Mode Indicator or Smart Search Toggle */}
           {zkMode ? (
             <div
-              className="p-1.5 rounded bg-green-500 text-white flex items-center gap-1"
+              className="flex items-center gap-1 rounded bg-success px-1.5 py-1 text-white"
               title="Zero-Knowledge Mode: Searching encrypted files locally"
             >
-              <Lock size={16} />
-              <span className="text-xs font-medium hidden sm:inline">ZK</span>
+              <Lock className="h-4 w-4" />
+              <span className="hidden text-caption font-medium sm:inline">ZK</span>
             </div>
           ) : (
             <button
               onClick={() => setSmartSearchEnabled(!smartSearchEnabled)}
-              className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
+              className={cn(
+                'flex items-center gap-1 rounded p-1.5 transition-colors',
                 smartSearchEnabled
-                  ? 'bg-purple-500 text-white'
-                  : darkMode
-                    ? 'hover:bg-gray-700 text-gray-400'
-                    : 'hover:bg-gray-200 text-gray-600'
-              }`}
+                  ? 'bg-accent text-white'
+                  : 'text-fg-muted hover:bg-surface-muted'
+              )}
               title={
                 smartSearchEnabled
-                  ? 'AI Smart Search enabled (click to disable)'
-                  : 'Enable AI Smart Search'
+                  ? 'AI smart search enabled (click to disable)'
+                  : 'Enable AI smart search'
               }
               disabled={smartSearchStatus === null || !smartSearchStatus.semantic_enabled}
             >
-              <Sparkles size={16} />
+              <Sparkles className="h-4 w-4" />
               {smartSearchEnabled && (
-                <span className="text-xs font-medium hidden sm:inline">AI</span>
+                <span className="hidden text-caption font-medium sm:inline">AI</span>
               )}
             </button>
           )}
 
-          {/* Hide advanced filters in ZK mode */}
           {!zkMode && (
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`p-1.5 rounded transition-colors ${
+              className={cn(
+                'rounded p-1.5 transition-colors',
                 showFilters
-                  ? 'bg-blue-500 text-white'
-                  : darkMode
-                    ? 'hover:bg-gray-700 text-gray-400'
-                    : 'hover:bg-gray-200 text-gray-600'
-              }`}
+                  ? 'bg-primary text-white'
+                  : 'text-fg-muted hover:bg-surface-muted'
+              )}
               title="Filters"
+              aria-label="Toggle filters"
             >
-              <Filter size={18} />
+              <Filter className="h-4 w-4" />
             </button>
           )}
         </div>
 
-        {/* Autocomplete Suggestions */}
+        {/* Autocomplete */}
         {showSuggestions && suggestions.length > 0 && (
-          <div
-            className={`absolute z-50 w-full mt-1 rounded-lg shadow-lg border ${
-              darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-            }`}
-          >
+          <div className="absolute z-50 mt-1 w-full rounded-lg border border-border bg-surface-elevated shadow-lg">
             {suggestions.map((suggestion, index) => (
               <div
                 key={index}
                 onClick={() => handleSuggestionClick(suggestion)}
-                className={`px-4 py-2 cursor-pointer transition-colors ${
-                  darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
-                }`}
+                className="cursor-pointer px-4 py-2 transition-colors hover:bg-surface-muted"
               >
                 <div className="flex items-center gap-2">
-                  <Search size={14} className="text-gray-400" />
-                  <span className="text-sm">{suggestion}</span>
+                  <Search className="h-3.5 w-3.5 text-fg-subtle" />
+                  <span className="text-body-sm text-fg">{suggestion}</span>
                 </div>
               </div>
             ))}
@@ -410,152 +362,87 @@ const SearchBar: React.FC<SearchBarProps> = ({
         )}
       </div>
 
-      {/* Filters Panel */}
+      {/* Filters panel */}
       {showFilters && (
-        <div
-          className={`absolute z-40 w-full mt-2 p-4 rounded-lg shadow-lg border ${
-            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-          }`}
-        >
-          <div className="flex items-center justify-between mb-4">
-            <h3 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Search Filters
-            </h3>
-            <button onClick={clearFilters} className="text-sm text-blue-500 hover:underline">
-              Clear All
-            </button>
+        <div className="absolute z-40 mt-2 w-full rounded-lg border border-border bg-surface-elevated p-4 shadow-lg">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-semibold text-fg">Search filters</h3>
+            <Button variant="link" size="sm" onClick={clearFilters}>
+              Clear all
+            </Button>
           </div>
 
-          {/* Smart Search Mode Selector */}
           {smartSearchEnabled && smartSearchStatus?.semantic_enabled && (
-            <div className={`mb-4 p-3 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-purple-50'}`}>
-              <div className="flex items-center gap-2 mb-2">
-                <Sparkles size={16} className="text-purple-500" />
-                <span
-                  className={`text-sm font-medium ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}
-                >
-                  AI Search Mode
-                </span>
+            <div className="mb-4 rounded-lg border border-accent/30 bg-accent/5 p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-accent" />
+                <span className="text-body-sm font-medium text-accent">AI search mode</span>
                 {smartSearchStatus?.coverage_percent !== undefined && (
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full ${darkMode ? 'bg-gray-600 text-gray-300' : 'bg-purple-100 text-purple-600'}`}
-                  >
+                  <Badge variant="info" size="sm">
                     {smartSearchStatus.coverage_percent}% indexed
-                  </span>
+                  </Badge>
                 )}
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => setSearchMode('hybrid')}
-                  className={`flex-1 px-3 py-1.5 text-xs rounded transition-colors ${
-                    searchMode === 'hybrid'
-                      ? 'bg-purple-500 text-white'
-                      : darkMode
-                        ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-                        : 'bg-white text-gray-700 hover:bg-gray-100'
-                  }`}
+                  className={modeButtonClass(searchMode === 'hybrid')}
                   title="Best of both: combines keyword and semantic search"
                 >
-                  <Zap size={12} className="inline mr-1" />
+                  <Zap className="h-3 w-3" />
                   Hybrid
                 </button>
                 <button
                   onClick={() => setSearchMode('semantic')}
-                  className={`flex-1 px-3 py-1.5 text-xs rounded transition-colors ${
-                    searchMode === 'semantic'
-                      ? 'bg-purple-500 text-white'
-                      : darkMode
-                        ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-                        : 'bg-white text-gray-700 hover:bg-gray-100'
-                  }`}
+                  className={modeButtonClass(searchMode === 'semantic')}
                   title="Find files by meaning (e.g., 'vacation photos')"
                 >
-                  <Sparkles size={12} className="inline mr-1" />
+                  <Sparkles className="h-3 w-3" />
                   Semantic
                 </button>
                 <button
                   onClick={() => setSearchMode('keyword')}
-                  className={`flex-1 px-3 py-1.5 text-xs rounded transition-colors ${
-                    searchMode === 'keyword'
-                      ? 'bg-purple-500 text-white'
-                      : darkMode
-                        ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-                        : 'bg-white text-gray-700 hover:bg-gray-100'
-                  }`}
+                  className={modeButtonClass(searchMode === 'keyword')}
                   title="Traditional exact keyword matching"
                 >
-                  <Search size={12} className="inline mr-1" />
+                  <Search className="h-3 w-3" />
                   Keyword
                 </button>
               </div>
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
-            {/* File Type */}
-            <div>
-              <label
-                className={`block text-sm font-medium mb-1 ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}
-              >
-                File Type
-              </label>
-              <select
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <FormField label="File type">
+              <Select
                 value={filters.mime_type}
                 onChange={(e) => setFilters({ ...filters, mime_type: e.target.value })}
-                className={`w-full px-3 py-2 rounded border text-sm ${
-                  darkMode
-                    ? 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-white border-gray-300 text-gray-900'
-                }`}
               >
-                <option value="">All Types</option>
-                <option value="image/jpeg">JPEG Images</option>
-                <option value="image/png">PNG Images</option>
-                <option value="application/pdf">PDF Documents</option>
-                <option value="video/mp4">MP4 Videos</option>
-                <option value="video/quicktime">MOV Videos</option>
-                <option value="application/zip">ZIP Archives</option>
-                <option value="text/plain">Text Files</option>
-              </select>
-            </div>
+                <option value="">All types</option>
+                <option value="image/jpeg">JPEG images</option>
+                <option value="image/png">PNG images</option>
+                <option value="application/pdf">PDF documents</option>
+                <option value="video/mp4">MP4 videos</option>
+                <option value="video/quicktime">MOV videos</option>
+                <option value="application/zip">ZIP archives</option>
+                <option value="text/plain">Text files</option>
+              </Select>
+            </FormField>
 
-            {/* Storage Tier */}
-            <div>
-              <label
-                className={`block text-sm font-medium mb-1 ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}
-              >
-                Storage Tier
-              </label>
-              <select
+            <FormField label="Storage tier">
+              <Select
                 value={filters.storage_tier}
                 onChange={(e) => setFilters({ ...filters, storage_tier: e.target.value })}
-                className={`w-full px-3 py-2 rounded border text-sm ${
-                  darkMode
-                    ? 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-white border-gray-300 text-gray-900'
-                }`}
               >
-                <option value="">All Tiers</option>
+                <option value="">All tiers</option>
                 <option value="cache">Cache</option>
                 <option value="warm">Warm</option>
                 <option value="cold">Cold</option>
-              </select>
-            </div>
+              </Select>
+            </FormField>
 
-            {/* Size Range */}
-            <div>
-              <label
-                className={`block text-sm font-medium mb-1 ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}
-              >
-                Min Size (MB)
-              </label>
-              <input
+            <FormField label="Min size (MB)">
+              <Input
                 type="number"
                 value={typeof filters.size_min === 'number' ? filters.size_min / 1048576 : ''}
                 onChange={(e) =>
@@ -565,23 +452,11 @@ const SearchBar: React.FC<SearchBarProps> = ({
                   })
                 }
                 placeholder="0"
-                className={`w-full px-3 py-2 rounded border text-sm ${
-                  darkMode
-                    ? 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-white border-gray-300 text-gray-900'
-                }`}
               />
-            </div>
+            </FormField>
 
-            <div>
-              <label
-                className={`block text-sm font-medium mb-1 ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}
-              >
-                Max Size (MB)
-              </label>
-              <input
+            <FormField label="Max size (MB)">
+              <Input
                 type="number"
                 value={typeof filters.size_max === 'number' ? filters.size_max / 1048576 : ''}
                 onChange={(e) =>
@@ -591,62 +466,33 @@ const SearchBar: React.FC<SearchBarProps> = ({
                   })
                 }
                 placeholder="1000"
-                className={`w-full px-3 py-2 rounded border text-sm ${
-                  darkMode
-                    ? 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-white border-gray-300 text-gray-900'
-                }`}
               />
-            </div>
+            </FormField>
 
-            {/* Date Range */}
-            <div>
-              <label
-                className={`block text-sm font-medium mb-1 ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}
-              >
-                From Date
-              </label>
-              <input
+            <FormField label="From date">
+              <Input
                 type="date"
                 value={filters.date_from}
                 onChange={(e) => setFilters({ ...filters, date_from: e.target.value })}
-                className={`w-full px-3 py-2 rounded border text-sm ${
-                  darkMode
-                    ? 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-white border-gray-300 text-gray-900'
-                }`}
               />
-            </div>
+            </FormField>
 
-            <div>
-              <label
-                className={`block text-sm font-medium mb-1 ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}
-              >
-                To Date
-              </label>
-              <input
+            <FormField label="To date">
+              <Input
                 type="date"
                 value={filters.date_to}
                 onChange={(e) => setFilters({ ...filters, date_to: e.target.value })}
-                className={`w-full px-3 py-2 rounded border text-sm ${
-                  darkMode
-                    ? 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-white border-gray-300 text-gray-900'
-                }`}
               />
-            </div>
+            </FormField>
           </div>
 
-          <button
-            onClick={() => handleSearch()}
-            className="w-full mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+          <Button
+            variant="primary"
+            className="mt-4 w-full"
+            onClick={() => void handleSearch()}
           >
-            Apply Filters
-          </button>
+            Apply filters
+          </Button>
         </div>
       )}
     </div>

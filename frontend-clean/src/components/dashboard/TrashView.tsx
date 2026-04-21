@@ -1,21 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { Trash2, RefreshCw, Trash, AlertTriangle, X } from 'lucide-react';
+import { Trash2, RefreshCw, Trash, AlertTriangle } from 'lucide-react';
 import FileGrid from './FileGrid';
 import FileList from './FileList';
 import { useStorage } from '../../contexts/StorageContext';
 import type { TrashViewProps, FileItem } from './types';
 import { getErrorMessage } from './types';
+import {
+  Banner,
+  Button,
+  Card,
+  CardContent,
+  EmptyState,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  Spinner,
+} from '@/components/ui';
 
-// Confirmation Modal Component
+/**
+ * TrashView — soft-deleted files with restore + permanent-delete actions.
+ * Header has Refresh and Empty-Trash controls. Destructive actions route
+ * through a Modal primitive for confirmation. Uses FileGrid/FileList with
+ * `trashedView={true}` to swap the action set (rename disabled, restore
+ * enabled).
+ */
+
 interface ConfirmDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   title: string;
   message: string;
   confirmText: string;
-  confirmButtonClass: string;
-  darkMode: boolean;
   isProcessing: boolean;
 }
 
@@ -26,92 +43,36 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   title,
   message,
   confirmText,
-  confirmButtonClass,
-  darkMode,
   isProcessing,
-}) => {
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className={`relative w-full max-w-md rounded-2xl shadow-2xl ${
-        darkMode ? 'bg-gray-800' : 'bg-white'
-      }`}>
-        {/* Close button */}
-        <button
-          onClick={onClose}
-          className={`absolute top-4 right-4 p-1 rounded-lg transition-colors ${
-            darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-500'
-          }`}
-          type="button"
-        >
-          <X size={20} />
-        </button>
-
-        {/* Content */}
-        <div className="p-6">
-          {/* Icon */}
-          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 ${
-            darkMode ? 'bg-red-500/10' : 'bg-red-50'
-          }`}>
-            <AlertTriangle className="text-red-500" size={24} />
-          </div>
-
-          {/* Title */}
-          <h3 className={`text-xl font-semibold mb-2 ${
-            darkMode ? 'text-white' : 'text-gray-900'
-          }`}>
-            {title}
-          </h3>
-
-          {/* Message */}
-          <p className={`text-sm mb-6 ${
-            darkMode ? 'text-gray-300' : 'text-gray-600'
-          }`}>
-            {message}
-          </p>
-
-          {/* Actions */}
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              disabled={isProcessing}
-              className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-colors ${
-                darkMode
-                  ? 'bg-gray-700 hover:bg-gray-600 text-gray-200'
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-              } disabled:opacity-50`}
-              type="button"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={onConfirm}
-              disabled={isProcessing}
-              className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${
-                confirmButtonClass || 'bg-red-500 hover:bg-red-600 text-white'
-              }`}
-              type="button"
-            >
-              {isProcessing ? 'Processing...' : confirmText || 'Confirm'}
-            </button>
-          </div>
+}) => (
+  <Modal open={isOpen} onClose={onClose} size="sm">
+    <ModalHeader>
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 text-danger">
+          <AlertTriangle className="h-5 w-5" />
         </div>
+        <span>{title}</span>
       </div>
-    </div>
-  );
-};
+    </ModalHeader>
+    <ModalBody>
+      <p className="text-body-sm text-fg-muted">{message}</p>
+    </ModalBody>
+    <ModalFooter>
+      <Button variant="secondary" onClick={onClose} disabled={isProcessing}>
+        Cancel
+      </Button>
+      <Button
+        variant="destructive"
+        onClick={() => void onConfirm()}
+        loading={isProcessing}
+        disabled={isProcessing}
+      >
+        {confirmText}
+      </Button>
+    </ModalFooter>
+  </Modal>
+);
 
-/**
- * TrashView - Displays trashed files with restore and permanent delete options
- */
 const TrashView: React.FC<TrashViewProps> = ({
   viewMode,
   darkMode,
@@ -129,7 +90,11 @@ const TrashView: React.FC<TrashViewProps> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [emptying, setEmptying] = useState<boolean>(false);
-  const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; fileId: string | null; fileName: string | null }>({
+  const [deleteModal, setDeleteModal] = useState<{
+    isOpen: boolean;
+    fileId: string | null;
+    fileName: string | null;
+  }>({
     isOpen: false,
     fileId: null,
     fileName: null,
@@ -160,17 +125,14 @@ const TrashView: React.FC<TrashViewProps> = ({
   };
 
   useEffect(() => {
-    fetchTrashedFiles();
+    void fetchTrashedFiles();
   }, []);
 
   const handleRestore = async (fileId: string): Promise<void> => {
     try {
       await contextRestoreFromTrash(fileId);
-      // Remove from trash list
-      setTrashedFiles(prev => prev.filter(f => f.id !== fileId));
-      if (onRestore) {
-        onRestore(fileId);
-      }
+      setTrashedFiles((prev) => prev.filter((f) => f.id !== fileId));
+      if (onRestore) onRestore(fileId);
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('Failed to restore file:', err);
@@ -188,18 +150,13 @@ const TrashView: React.FC<TrashViewProps> = ({
 
     try {
       await contextPermanentDelete(fileId);
-      // Remove from trash list
-      setTrashedFiles(prev => prev.filter(f => f.id !== fileId));
+      setTrashedFiles((prev) => prev.filter((f) => f.id !== fileId));
       setDeleteModal({ isOpen: false, fileId: null, fileName: null });
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('Failed to permanently delete file:', err);
       setError(errorMessage);
     }
-  };
-
-  const handleEmptyTrash = (): void => {
-    setEmptyTrashModal(true);
   };
 
   const confirmEmptyTrash = async (): Promise<void> => {
@@ -219,10 +176,10 @@ const TrashView: React.FC<TrashViewProps> = ({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="flex h-64 items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <RefreshCw className={`animate-spin ${darkMode ? 'text-blue-400' : 'text-blue-500'}`} size={32} />
-          <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>Loading trash...</p>
+          <Spinner size="lg" />
+          <p className="text-body-sm text-fg-muted">Loading trash...</p>
         </div>
       </div>
     );
@@ -230,147 +187,131 @@ const TrashView: React.FC<TrashViewProps> = ({
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="flex flex-col items-center gap-3">
-          <Trash2 className="text-red-500" size={48} />
-          <p className="text-red-500">{error}</p>
-          <button
-            onClick={fetchTrashedFiles}
-            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-            type="button"
-          >
-            Try Again
-          </button>
-        </div>
-      </div>
+      <Banner
+        variant="danger"
+        icon={<Trash2 />}
+        title="Failed to load trash"
+        action={
+          <Button variant="primary" size="sm" onClick={() => void fetchTrashedFiles()}>
+            Try again
+          </Button>
+        }
+      >
+        {error}
+      </Banner>
     );
   }
 
   return (
-    <div className="flex-1">
-      {/* Header */}
-      <div className={`flex items-center justify-between p-6 border-b ${
-        darkMode ? 'border-gray-700' : 'border-gray-200'
-      }`}>
-        <div className="flex items-center gap-4">
-          <Trash2 className={darkMode ? 'text-gray-400' : 'text-gray-600'} size={24} />
-          <div>
-            <h2 className={`text-2xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Trash
-            </h2>
-            <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              {trashedFiles.length} {trashedFiles.length === 1 ? 'file' : 'files'} • Files are automatically deleted after 30 days
-            </p>
+    <Card variant="bordered">
+      <CardContent className="p-0">
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border p-6">
+          <div className="flex items-center gap-4">
+            <Trash2 className="h-6 w-6 text-fg-muted" />
+            <div>
+              <h2 className="text-h2 font-semibold text-fg">Trash</h2>
+              <p className="mt-1 text-body-sm text-fg-muted">
+                {trashedFiles.length} {trashedFiles.length === 1 ? 'file' : 'files'} · Files
+                are automatically deleted after 30 days
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => void fetchTrashedFiles()}
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+            >
+              Refresh
+            </Button>
+            {trashedFiles.length > 0 && (
+              <Button
+                variant="destructive"
+                size="md"
+                onClick={() => setEmptyTrashModal(true)}
+                disabled={emptying}
+                loading={emptying}
+                leftIcon={!emptying ? <Trash className="h-4 w-4" /> : undefined}
+              >
+                Empty trash
+              </Button>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={fetchTrashedFiles}
-            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
-              darkMode
-                ? 'bg-gray-700 hover:bg-gray-600 text-gray-200'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-            type="button"
-          >
-            <RefreshCw size={16} />
-            Refresh
-          </button>
-          {trashedFiles.length > 0 && (
-            <button
-              onClick={handleEmptyTrash}
-              disabled={emptying}
-              className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg flex items-center gap-2 transition-colors disabled:opacity-50"
-              type="button"
-            >
-              <Trash size={16} />
-              {emptying ? 'Emptying...' : 'Empty Trash'}
-            </button>
+
+        {/* Files */}
+        <div className="p-6">
+          {trashedFiles.length === 0 ? (
+            <EmptyState
+              icon={<Trash2 />}
+              title="Trash is empty"
+              description="Files you delete will appear here. They'll be permanently deleted after 30 days."
+              size="lg"
+            />
+          ) : viewMode === 'grid' ? (
+            <FileGrid
+              folders={[]}
+              files={trashedFiles}
+              selectedFiles={selectedFiles}
+              onFolderClick={() => {}}
+              onFileClick={onFileClick}
+              onFilePreview={onFilePreview}
+              onFileDownload={onFileDownload}
+              onFileShare={onFileShare}
+              onFileDelete={handlePermanentDelete}
+              onVersionHistory={onVersionHistory}
+              onToggleFavorite={onToggleFavorite}
+              onRename={() => {}}
+              onFileInfo={onFileInfo}
+              darkMode={darkMode}
+              trashedView={true}
+              onRestore={handleRestore}
+            />
+          ) : (
+            <FileList
+              folders={[]}
+              files={trashedFiles}
+              selectedFiles={selectedFiles}
+              onFolderClick={() => {}}
+              onFileClick={onFileClick}
+              onFilePreview={onFilePreview}
+              onFileDownload={onFileDownload}
+              onFileShare={onFileShare}
+              onFileDelete={handlePermanentDelete}
+              onVersionHistory={onVersionHistory}
+              onToggleFavorite={onToggleFavorite}
+              onRename={() => {}}
+              onFileInfo={onFileInfo}
+              darkMode={darkMode}
+              trashedView={true}
+              onRestore={handleRestore}
+            />
           )}
         </div>
-      </div>
+      </CardContent>
 
-      {/* Files */}
-      <div className="p-6">
-        {trashedFiles.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className={`p-6 rounded-full mb-4 ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
-              <Trash2 className={darkMode ? 'text-gray-600' : 'text-gray-400'} size={48} />
-            </div>
-            <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Trash is empty
-            </h3>
-            <p className={`text-center max-w-md ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              Files you delete will appear here. They'll be permanently deleted after 30 days.
-            </p>
-          </div>
-        ) : viewMode === 'grid' ? (
-          <FileGrid
-            folders={[]}
-            files={trashedFiles}
-            selectedFiles={selectedFiles}
-            onFolderClick={() => {}}
-            onFileClick={onFileClick}
-            onFilePreview={onFilePreview}
-            onFileDownload={onFileDownload}
-            onFileShare={onFileShare}
-            onFileDelete={handlePermanentDelete}
-            onVersionHistory={onVersionHistory}
-            onToggleFavorite={onToggleFavorite}
-            onRename={() => {}} // Disable rename in trash
-            onFileInfo={onFileInfo}
-            darkMode={darkMode}
-            trashedView={true}
-            onRestore={handleRestore}
-          />
-        ) : (
-          <FileList
-            folders={[]}
-            files={trashedFiles}
-            selectedFiles={selectedFiles}
-            onFolderClick={() => {}}
-            onFileClick={onFileClick}
-            onFilePreview={onFilePreview}
-            onFileDownload={onFileDownload}
-            onFileShare={onFileShare}
-            onFileDelete={handlePermanentDelete}
-            onVersionHistory={onVersionHistory}
-            onToggleFavorite={onToggleFavorite}
-            onRename={() => {}} // Disable rename in trash
-            onFileInfo={onFileInfo}
-            darkMode={darkMode}
-            trashedView={true}
-            onRestore={handleRestore}
-          />
-        )}
-      </div>
-
-      {/* Delete Confirmation Modal */}
       <ConfirmDialog
         isOpen={deleteModal.isOpen}
         onClose={() => setDeleteModal({ isOpen: false, fileId: null, fileName: null })}
         onConfirm={confirmPermanentDelete}
-        title="Permanently Delete File?"
+        title="Permanently delete file?"
         message={`Are you sure you want to permanently delete "${deleteModal.fileName || 'this file'}"? This action cannot be undone and the file will be lost forever.`}
-        confirmText="Delete Forever"
-        confirmButtonClass="bg-red-500 hover:bg-red-600 text-white"
-        darkMode={darkMode}
+        confirmText="Delete forever"
         isProcessing={false}
       />
 
-      {/* Empty Trash Confirmation Modal */}
       <ConfirmDialog
         isOpen={emptyTrashModal}
         onClose={() => setEmptyTrashModal(false)}
         onConfirm={confirmEmptyTrash}
-        title="Empty Trash?"
+        title="Empty trash?"
         message={`Are you sure you want to permanently delete all ${trashedFiles.length} files in trash? This action cannot be undone and all files will be lost forever.`}
-        confirmText="Empty Trash"
-        confirmButtonClass="bg-red-500 hover:bg-red-600 text-white"
-        darkMode={darkMode}
+        confirmText="Empty trash"
         isProcessing={emptying}
       />
-    </div>
+    </Card>
   );
 };
 

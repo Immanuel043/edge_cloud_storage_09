@@ -270,7 +270,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
       {/* Locked Overlay */}
       {isLocked && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
-          <Lock className="w-16 h-16 mb-4 text-yellow-500" />
+          <Lock className="w-16 h-16 mb-4 text-warning" />
           <p className="text-lg">Session Locked</p>
           <p className="text-sm text-gray-400 mt-2">Unlock your ZK session to play encrypted videos</p>
         </div>
@@ -279,12 +279,12 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
       {/* Error Overlay */}
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
-          <AlertCircle className="w-16 h-16 mb-4 text-red-500" />
+          <AlertCircle className="w-16 h-16 mb-4 text-danger" />
           <p className="text-lg">Playback Error</p>
           <p className="text-sm text-gray-400 mt-2">{error.message}</p>
           <button
             onClick={clearError}
-            className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+            className="mt-4 px-4 py-2 bg-primary hover:bg-primary/90 rounded-lg transition-colors"
             type="button"
           >
             Try Again
@@ -338,12 +338,12 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
             />
             {/* Playback progress */}
             <div
-              className="absolute h-full bg-blue-500 rounded-full"
+              className="absolute h-full bg-primary rounded-full"
               style={{ width: `${progress}%` }}
             />
             {/* Scrubber */}
             <div
-              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-blue-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-primary rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
               style={{ left: `${progress}%`, transform: 'translate(-50%, -50%)' }}
             />
           </div>
@@ -354,7 +354,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
               {/* Play/Pause */}
               <button
                 onClick={togglePlay}
-                className="text-white hover:text-blue-400 transition-colors"
+                className="text-white hover:text-primary transition-colors"
                 type="button"
               >
                 {isPlaying ? <Pause size={24} /> : <Play size={24} />}
@@ -363,7 +363,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
               {/* Skip back */}
               <button
                 onClick={skipBack}
-                className="text-white hover:text-blue-400 transition-colors"
+                className="text-white hover:text-primary transition-colors"
                 type="button"
               >
                 <SkipBack size={20} />
@@ -372,7 +372,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
               {/* Skip forward */}
               <button
                 onClick={skipForward}
-                className="text-white hover:text-blue-400 transition-colors"
+                className="text-white hover:text-primary transition-colors"
                 type="button"
               >
                 <SkipForward size={20} />
@@ -382,7 +382,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={toggleMute}
-                  className="text-white hover:text-blue-400 transition-colors"
+                  className="text-white hover:text-primary transition-colors"
                   type="button"
                 >
                   {isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
@@ -408,7 +408,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
               {/* Lock button */}
               <button
                 onClick={lock}
-                className="text-white hover:text-yellow-400 transition-colors"
+                className="text-white hover:text-warning transition-colors"
                 title="Lock session"
                 type="button"
               >
@@ -418,7 +418,7 @@ const SecureVideoPlayer: React.FC<SecureVideoPlayerProps> = ({
               {/* Fullscreen */}
               <button
                 onClick={toggleFullscreen}
-                className="text-white hover:text-blue-400 transition-colors"
+                className="text-white hover:text-primary transition-colors"
                 type="button"
               >
                 <Maximize size={20} />

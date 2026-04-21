@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   Lightbulb,
-  Loader,
   AlertCircle,
   RefreshCw,
   Sparkles,
@@ -21,26 +20,47 @@ import {
   ChevronRight,
   Zap,
   Users,
-  Brain
+  Brain,
 } from 'lucide-react';
 import { recommendationService } from '../../services/recommendationService';
 import { formatBytes } from '../../utils/helpers';
-import type { RecommendationsViewProps, Recommendation, RecommendationSummary, TrendingFile } from './types';
+import type {
+  RecommendationsViewProps,
+  Recommendation,
+  RecommendationSummary,
+  TrendingFile,
+} from './types';
 import { getErrorMessage } from './types';
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  CardContent,
+  EmptyState,
+  IconButton,
+  Spinner,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 type AlgorithmType = 'hybrid' | 'content' | 'collaborative' | 'trending';
 type TabType = 'forYou' | 'trending';
 
 interface AlgorithmBadge {
   label: string;
-  color: string;
   icon: React.ReactElement;
 }
 
 /**
- * RecommendationsView - Displays AI-powered file recommendations
+ * RecommendationsView — AI-powered file recommendations. "For you" tab
+ * uses hybrid/content/collaborative/trending algorithms with thumbs-up /
+ * thumbs-down feedback loop; "Trending" tab ranks most-accessed files.
+ * Summary stats show total/accepted/accuracy/trending counts.
  */
-const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onFileClick }) => {
+const RecommendationsView: React.FC<RecommendationsViewProps> = ({ onFileClick }) => {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [trending, setTrending] = useState<TrendingFile[]>([]);
   const [summary, setSummary] = useState<RecommendationSummary | null>(null);
@@ -51,7 +71,7 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
   const [algorithm, setAlgorithm] = useState<AlgorithmType>('hybrid');
 
   useEffect(() => {
-    loadData();
+    void loadData();
   }, []);
 
   const loadData = async (forceRefresh = false): Promise<void> => {
@@ -63,12 +83,12 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
       const [recsData, trendingData, summaryData] = await Promise.all([
         recommendationService.getRecommendations({ algorithm, forceRefresh }).catch(() => []),
         recommendationService.getTrending(10, 7).catch(() => []),
-        recommendationService.getSummary().catch(() => null)
+        recommendationService.getSummary().catch(() => null),
       ]);
 
-      setRecommendations((recsData as unknown) as Recommendation[]);
-      setTrending((trendingData as unknown) as TrendingFile[]);
-      setSummary((summaryData as unknown) as RecommendationSummary | null);
+      setRecommendations(recsData as unknown as Recommendation[]);
+      setTrending(trendingData as unknown as TrendingFile[]);
+      setSummary(summaryData as unknown as RecommendationSummary | null);
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
       console.error('[Recommendations] Failed to load:', err);
@@ -80,15 +100,17 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
   };
 
   const handleRefresh = (): void => {
-    loadData(true);
+    void loadData(true);
   };
 
   const handleAlgorithmChange = async (newAlgorithm: AlgorithmType): Promise<void> => {
     setAlgorithm(newAlgorithm);
     try {
       setRefreshing(true);
-      const recsData = await recommendationService.getRecommendations({ algorithm: newAlgorithm });
-      setRecommendations((recsData as unknown) as Recommendation[]);
+      const recsData = await recommendationService.getRecommendations({
+        algorithm: newAlgorithm,
+      });
+      setRecommendations(recsData as unknown as Recommendation[]);
     } catch (err: unknown) {
       console.error('[Recommendations] Failed to change algorithm:', err);
     } finally {
@@ -99,7 +121,7 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
   const handleDismiss = async (recId: string): Promise<void> => {
     try {
       await recommendationService.dismissRecommendation(recId);
-      setRecommendations(prev => prev.filter(r => r.id !== recId));
+      setRecommendations((prev) => prev.filter((r) => r.id !== recId));
     } catch (err: unknown) {
       console.error('[Recommendations] Dismiss failed:', err);
     }
@@ -107,51 +129,72 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
 
   const handleFeedback = async (recId: string, isHelpful: boolean): Promise<void> => {
     try {
-      await recommendationService.submitFeedback(recId, isHelpful, isHelpful ? 'accept' : 'dismiss');
-      // Update UI to show feedback was recorded
-      setRecommendations(prev => prev.map(r =>
-        r.id === recId ? { ...r, feedbackGiven: isHelpful ? 'positive' : 'negative' } : r
-      ));
+      await recommendationService.submitFeedback(
+        recId,
+        isHelpful,
+        isHelpful ? 'accept' : 'dismiss'
+      );
+      setRecommendations((prev) =>
+        prev.map((r) =>
+          r.id === recId ? { ...r, feedbackGiven: isHelpful ? 'positive' : 'negative' } : r
+        )
+      );
     } catch (err: unknown) {
       console.error('[Recommendations] Feedback failed:', err);
     }
   };
 
   const getFileIcon = (mimeType?: string): React.ReactElement => {
-    if (!mimeType) return <File size={20} />;
-    if (mimeType.startsWith('image/')) return <Image size={20} className="text-purple-500" />;
-    if (mimeType.startsWith('video/')) return <Video size={20} className="text-red-500" />;
-    if (mimeType.startsWith('audio/')) return <Music size={20} className="text-green-500" />;
-    if (mimeType.includes('pdf') || mimeType.includes('document')) return <FileText size={20} className="text-blue-500" />;
-    if (mimeType.includes('zip') || mimeType.includes('archive')) return <Archive size={20} className="text-yellow-500" />;
-    if (mimeType.includes('javascript') || mimeType.includes('json')) return <Code size={20} className="text-orange-500" />;
-    return <File size={20} />;
+    if (!mimeType) return <File className="h-5 w-5" />;
+    if (mimeType.startsWith('image/')) return <Image className="h-5 w-5 text-accent" />;
+    if (mimeType.startsWith('video/')) return <Video className="h-5 w-5 text-danger" />;
+    if (mimeType.startsWith('audio/')) return <Music className="h-5 w-5 text-success" />;
+    if (mimeType.includes('pdf') || mimeType.includes('document'))
+      return <FileText className="h-5 w-5 text-primary" />;
+    if (mimeType.includes('zip') || mimeType.includes('archive'))
+      return <Archive className="h-5 w-5 text-warning" />;
+    if (mimeType.includes('javascript') || mimeType.includes('json'))
+      return <Code className="h-5 w-5 text-accent" />;
+    return <File className="h-5 w-5" />;
   };
 
   const getReasonIcon = (reason?: string): React.ReactElement => {
-    if (reason?.includes('similar')) return <Sparkles size={14} className="text-purple-500" />;
-    if (reason?.includes('trending')) return <TrendingUp size={14} className="text-green-500" />;
-    if (reason?.includes('collaborative')) return <Users size={14} className="text-blue-500" />;
-    return <Brain size={14} className="text-orange-500" />;
+    if (reason?.includes('similar'))
+      return <Sparkles className="h-3.5 w-3.5 text-accent" />;
+    if (reason?.includes('trending'))
+      return <TrendingUp className="h-3.5 w-3.5 text-success" />;
+    if (reason?.includes('collaborative'))
+      return <Users className="h-3.5 w-3.5 text-primary" />;
+    return <Brain className="h-3.5 w-3.5 text-warning" />;
   };
 
   const getAlgorithmBadge = (algo: AlgorithmType): AlgorithmBadge => {
     const badges: Record<AlgorithmType, AlgorithmBadge> = {
-      'hybrid': { label: 'Hybrid', color: 'bg-purple-600', icon: <Zap size={12} /> },
-      'content': { label: 'Content', color: 'bg-blue-600', icon: <FileText size={12} /> },
-      'collaborative': { label: 'Collaborative', color: 'bg-green-600', icon: <Users size={12} /> },
-      'trending': { label: 'Trending', color: 'bg-orange-600', icon: <TrendingUp size={12} /> }
+      hybrid: { label: 'Hybrid', icon: <Zap className="h-3 w-3" /> },
+      content: { label: 'Content', icon: <FileText className="h-3 w-3" /> },
+      collaborative: { label: 'Collaborative', icon: <Users className="h-3 w-3" /> },
+      trending: { label: 'Trending', icon: <TrendingUp className="h-3 w-3" /> },
     };
-    return badges[algo] || badges['hybrid'];
+    return badges[algo] || badges.hybrid;
+  };
+
+  const getMatchScoreVariant = (score: number): 'success' | 'warning' | 'neutral' => {
+    if (score > 0.7) return 'success';
+    if (score > 0.5) return 'warning';
+    return 'neutral';
+  };
+
+  const rankBadgeClass = (index: number): string => {
+    if (index === 0) return 'bg-warning text-white';
+    if (index === 1) return 'bg-fg-muted text-white';
+    if (index === 2) return 'bg-danger text-white';
+    return 'bg-surface-muted text-fg';
   };
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 space-y-4">
-        <Loader className="animate-spin text-blue-500" size={48} />
-        <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          Loading recommendations...
-        </p>
+      <div className="flex items-center justify-center py-12">
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -159,136 +202,107 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className={`p-3 rounded-xl ${darkMode ? 'bg-yellow-900/30' : 'bg-yellow-100'}`}>
-            <Lightbulb className="text-yellow-500" size={28} />
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-warning/10 text-warning">
+            <Lightbulb className="h-6 w-6" />
           </div>
           <div>
-            <h1 className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Recommendations
-            </h1>
-            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            <h1 className="text-h2 font-bold text-fg">Recommendations</h1>
+            <p className="text-body-sm text-fg-muted">
               AI-powered file suggestions based on your usage
             </p>
           </div>
         </div>
-        <button
+        <Button
+          variant="secondary"
+          size="md"
+          leftIcon={<RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />}
           onClick={handleRefresh}
           disabled={refreshing}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
-            darkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-          }`}
-          type="button"
+          loading={refreshing}
         >
-          <RefreshCw className={refreshing ? 'animate-spin' : ''} size={18} />
           Refresh
-        </button>
+        </Button>
       </div>
 
       {/* Summary Cards */}
       {summary && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className={`rounded-lg p-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <Lightbulb size={18} className="text-yellow-500" />
-              <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total Suggestions</span>
-            </div>
-            <div className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {summary.total_recommendations || 0}
-            </div>
-          </div>
-          <div className={`rounded-lg p-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <ThumbsUp size={18} className="text-green-500" />
-              <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Accepted</span>
-            </div>
-            <div className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {summary.accepted || 0}
-            </div>
-          </div>
-          <div className={`rounded-lg p-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <Star size={18} className="text-purple-500" />
-              <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Accuracy</span>
-            </div>
-            <div className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {summary.accuracy ? `${Math.round(summary.accuracy * 100)}%` : 'N/A'}
-            </div>
-          </div>
-          <div className={`rounded-lg p-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <TrendingUp size={18} className="text-blue-500" />
-              <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Trending Files</span>
-            </div>
-            <div className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {trending.length}
-            </div>
-          </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <SummaryCard
+            icon={<Lightbulb className="h-4 w-4 text-warning" />}
+            label="Total suggestions"
+            value={summary.total_recommendations || 0}
+          />
+          <SummaryCard
+            icon={<ThumbsUp className="h-4 w-4 text-success" />}
+            label="Accepted"
+            value={summary.accepted || 0}
+          />
+          <SummaryCard
+            icon={<Star className="h-4 w-4 text-accent" />}
+            label="Accuracy"
+            value={summary.accuracy ? `${Math.round(summary.accuracy * 100)}%` : 'N/A'}
+          />
+          <SummaryCard
+            icon={<TrendingUp className="h-4 w-4 text-primary" />}
+            label="Trending files"
+            value={trending.length}
+          />
         </div>
       )}
 
-      {/* Error Message */}
+      {/* Error */}
       {error && (
-        <div className={`rounded-lg p-4 ${darkMode ? 'bg-red-900/30' : 'bg-red-50'} border ${darkMode ? 'border-red-800' : 'border-red-200'}`}>
-          <div className="flex items-center gap-2 text-red-500">
-            <AlertCircle size={20} />
-            <span>{error}</span>
-          </div>
-        </div>
+        <Banner variant="danger" icon={<AlertCircle />} onDismiss={() => setError(null)}>
+          {error}
+        </Banner>
       )}
 
       {/* Tabs */}
-      <div className={`flex gap-2 p-1 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
-        <button
-          onClick={() => setActiveTab('forYou')}
-          className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md transition-all ${
-            activeTab === 'forYou'
-              ? darkMode ? 'bg-yellow-600 text-white' : 'bg-white text-yellow-600 shadow'
-              : darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'
-          }`}
-          type="button"
-        >
-          <Sparkles size={18} />
-          For You ({recommendations.length})
-        </button>
-        <button
-          onClick={() => setActiveTab('trending')}
-          className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md transition-all ${
-            activeTab === 'trending'
-              ? darkMode ? 'bg-yellow-600 text-white' : 'bg-white text-yellow-600 shadow'
-              : darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'
-          }`}
-          type="button"
-        >
-          <TrendingUp size={18} />
-          Trending ({trending.length})
-        </button>
-      </div>
+      <Tabs
+        value={activeTab}
+        onChange={(v) => setActiveTab(v as TabType)}
+        variant="pill"
+      >
+        <TabsList className="w-full">
+          <TabsTrigger value="forYou" className="flex-1 justify-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            For you ({recommendations.length})
+          </TabsTrigger>
+          <TabsTrigger value="trending" className="flex-1 justify-center gap-2">
+            <TrendingUp className="h-4 w-4" />
+            Trending ({trending.length})
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
-      {/* Algorithm Selector (for For You tab) */}
+      {/* Algorithm Selector */}
       {activeTab === 'forYou' && (
-        <div className="flex items-center gap-2">
-          <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Algorithm:</span>
-          {(['hybrid', 'content', 'collaborative', 'trending'] as AlgorithmType[]).map((algo) => {
-            const badge = getAlgorithmBadge(algo);
-            const colorClass = algorithm === algo
-              ? `${badge.color} text-white`
-              : darkMode
-                ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300';
-            return (
-              <button
-                key={algo}
-                onClick={() => handleAlgorithmChange(algo)}
-                className={`flex items-center gap-1 px-3 py-1 rounded-full text-sm transition-all ${colorClass}`}
-                type="button"
-              >
-                {badge.icon}
-                {badge.label}
-              </button>
-            );
-          })}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-body-sm text-fg-muted">Algorithm:</span>
+          {(['hybrid', 'content', 'collaborative', 'trending'] as AlgorithmType[]).map(
+            (algo) => {
+              const badge = getAlgorithmBadge(algo);
+              const active = algorithm === algo;
+              return (
+                <button
+                  key={algo}
+                  onClick={() => void handleAlgorithmChange(algo)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full px-3 py-1 text-body-sm transition-colors duration-base',
+                    active
+                      ? 'bg-primary text-white'
+                      : 'bg-surface-muted text-fg hover:bg-surface'
+                  )}
+                  type="button"
+                >
+                  {badge.icon}
+                  {badge.label}
+                </button>
+              );
+            }
+          )}
         </div>
       )}
 
@@ -296,91 +310,107 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
       {activeTab === 'forYou' && (
         <div className="space-y-3">
           {recommendations.length === 0 ? (
-            <div className={`rounded-lg p-8 text-center ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-              <Lightbulb className={`mx-auto mb-4 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`} size={48} />
-              <h3 className={`text-lg font-medium mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                No Recommendations Yet
-              </h3>
-              <p className={`mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Upload more files and interact with them to get personalized recommendations
-              </p>
-            </div>
+            <Card variant="bordered">
+              <CardContent className="p-6">
+                <EmptyState
+                  icon={<Lightbulb />}
+                  title="No recommendations yet"
+                  description="Upload more files and interact with them to get personalized recommendations."
+                  size="lg"
+                />
+              </CardContent>
+            </Card>
           ) : (
             recommendations.map((rec) => (
-              <div
+              <Card
                 key={rec.id}
-                className={`rounded-lg p-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'} hover:shadow-lg transition-shadow cursor-pointer`}
-                onClick={() => onFileClick?.(rec.recommended_file)}
+                variant="bordered"
+                className="cursor-pointer transition-shadow hover:shadow-md"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-3">
-                    <div className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      {getFileIcon(rec.recommended_file?.mime_type)}
+                <CardContent
+                  className="p-4"
+                  onClick={() => onFileClick?.(rec.recommended_file)}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-surface-muted">
+                        {getFileIcon(rec.recommended_file?.mime_type)}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-fg">
+                          {rec.recommended_file?.name || 'Unknown file'}
+                        </h3>
+                        <div className="mt-1 flex items-center gap-2 text-body-sm text-fg-muted">
+                          <span>{formatBytes(rec.recommended_file?.size || 0)}</span>
+                          <span>•</span>
+                          <span>{rec.recommended_file?.storage_tier || 'cache'}</span>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          {getReasonIcon(rec.reason)}
+                          <span className="text-caption text-fg-muted">
+                            {rec.reason || 'Based on your activity'}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {rec.recommended_file?.name || 'Unknown File'}
-                      </h3>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          {formatBytes(rec.recommended_file?.size || 0)}
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant={getMatchScoreVariant(rec.recommendation_score || 0)}
+                        size="sm"
+                      >
+                        {Math.round((rec.recommendation_score || 0) * 100)}% match
+                      </Badge>
+                      {!rec.feedbackGiven && (
+                        <div className="flex gap-1">
+                          <IconButton
+                            variant="ghost"
+                            size="sm"
+                            aria-label="Helpful"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleFeedback(rec.id, true);
+                            }}
+                          >
+                            <ThumbsUp className="h-4 w-4" />
+                          </IconButton>
+                          <IconButton
+                            variant="ghost"
+                            size="sm"
+                            aria-label="Not helpful"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleFeedback(rec.id, false);
+                            }}
+                          >
+                            <ThumbsDown className="h-4 w-4" />
+                          </IconButton>
+                        </div>
+                      )}
+                      {rec.feedbackGiven && (
+                        <span
+                          className={cn(
+                            'text-caption',
+                            rec.feedbackGiven === 'positive' ? 'text-success' : 'text-danger'
+                          )}
+                        >
+                          {rec.feedbackGiven === 'positive' ? 'Liked' : 'Dismissed'}
                         </span>
-                        <span className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>•</span>
-                        <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          {rec.recommended_file?.storage_tier || 'cache'}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-2">
-                        {getReasonIcon(rec.reason)}
-                        <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                          {rec.reason || 'Based on your activity'}
-                        </span>
-                      </div>
+                      )}
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        aria-label="Dismiss"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleDismiss(rec.id);
+                        }}
+                      >
+                        <X className="h-4 w-4" />
+                      </IconButton>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className={`text-sm font-medium px-2 py-1 rounded ${
-                      (rec.recommendation_score || 0) > 0.7
-                        ? darkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-700'
-                        : (rec.recommendation_score || 0) > 0.5
-                          ? darkMode ? 'bg-yellow-900/30 text-yellow-400' : 'bg-yellow-100 text-yellow-700'
-                          : darkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-700'
-                    }`}>
-                      {Math.round((rec.recommendation_score || 0) * 100)}% match
-                    </div>
-                    {!rec.feedbackGiven && (
-                      <div className="flex gap-1">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleFeedback(rec.id, true); }}
-                          className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                          type="button"
-                        >
-                          <ThumbsUp size={16} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleFeedback(rec.id, false); }}
-                          className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                          type="button"
-                        >
-                          <ThumbsDown size={16} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                        </button>
-                      </div>
-                    )}
-                    {rec.feedbackGiven && (
-                      <span className={`text-xs ${rec.feedbackGiven === 'positive' ? 'text-green-500' : 'text-red-500'}`}>
-                        {rec.feedbackGiven === 'positive' ? 'Liked' : 'Dismissed'}
-                      </span>
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDismiss(rec.id); }}
-                      className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                      type="button"
-                    >
-                      <X size={16} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                </CardContent>
+              </Card>
             ))
           )}
         </div>
@@ -390,54 +420,55 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
       {activeTab === 'trending' && (
         <div className="space-y-3">
           {trending.length === 0 ? (
-            <div className={`rounded-lg p-8 text-center ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-              <TrendingUp className={`mx-auto mb-4 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`} size={48} />
-              <h3 className={`text-lg font-medium mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                No Trending Files
-              </h3>
-              <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Your most accessed files will appear here
-              </p>
-            </div>
+            <Card variant="bordered">
+              <CardContent className="p-6">
+                <EmptyState
+                  icon={<TrendingUp />}
+                  title="No trending files"
+                  description="Your most accessed files will appear here."
+                  size="lg"
+                />
+              </CardContent>
+            </Card>
           ) : (
             trending.map((file, index) => (
-              <div
+              <Card
                 key={file.id || index}
-                className={`rounded-lg p-4 ${darkMode ? 'bg-gray-800' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'} hover:shadow-lg transition-shadow cursor-pointer`}
-                onClick={() => onFileClick?.(file)}
+                variant="bordered"
+                className="cursor-pointer transition-shadow hover:shadow-md"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${
-                      index === 0 ? 'bg-yellow-500 text-white' :
-                      index === 1 ? 'bg-gray-400 text-white' :
-                      index === 2 ? 'bg-orange-600 text-white' :
-                      darkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-200 text-gray-700'
-                    }`}>
-                      {index + 1}
-                    </div>
-                    <div className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      {getFileIcon(file.mime_type)}
-                    </div>
-                    <div>
-                      <h3 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {file.name || file.file_name || 'Unknown File'}
-                      </h3>
-                      <div className="flex items-center gap-2 mt-1">
-                        <Eye size={14} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                        <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          {file.access_count || file.interaction_count || 0} views
-                        </span>
-                        <span className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>•</span>
-                        <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          {formatBytes(file.size || file.file_size || 0)}
-                        </span>
+                <CardContent className="p-4" onClick={() => onFileClick?.(file)}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          'flex h-8 w-8 items-center justify-center rounded-full font-bold',
+                          rankBadgeClass(index)
+                        )}
+                      >
+                        {index + 1}
+                      </div>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-surface-muted">
+                        {getFileIcon(file.mime_type)}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-fg">
+                          {file.name || file.file_name || 'Unknown file'}
+                        </h3>
+                        <div className="mt-1 flex items-center gap-2 text-body-sm text-fg-muted">
+                          <Eye className="h-3.5 w-3.5" />
+                          <span>
+                            {file.access_count || file.interaction_count || 0} views
+                          </span>
+                          <span>•</span>
+                          <span>{formatBytes(file.size || file.file_size || 0)}</span>
+                        </div>
                       </div>
                     </div>
+                    <ChevronRight className="h-5 w-5 text-fg-muted" />
                   </div>
-                  <ChevronRight size={20} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                </div>
-              </div>
+                </CardContent>
+              </Card>
             ))
           )}
         </div>
@@ -445,5 +476,21 @@ const RecommendationsView: React.FC<RecommendationsViewProps> = ({ darkMode, onF
     </div>
   );
 };
+
+const SummaryCard: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  value: string | number;
+}> = ({ icon, label, value }) => (
+  <Card variant="bordered">
+    <CardContent className="p-4">
+      <div className="mb-2 flex items-center gap-2">
+        {icon}
+        <span className="text-body-sm text-fg-muted">{label}</span>
+      </div>
+      <div className="text-h2 font-bold text-fg">{value}</div>
+    </CardContent>
+  </Card>
+);
 
 export default RecommendationsView;

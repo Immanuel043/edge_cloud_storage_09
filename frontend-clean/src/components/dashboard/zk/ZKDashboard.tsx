@@ -1,8 +1,7 @@
 import React, { Suspense, useState, useRef, useMemo, useEffect } from 'react';
 import {
-  Upload, X, CheckCircle, Cloud, Sun, Moon, LogOut, Home,
-  Settings, ChevronRight, Grid, List, Info, Lock, FolderPlus, Shield, Trash2,
-  ArrowUpDown, AlertTriangle, CreditCard
+  Upload, X, CheckCircle, Cloud, Home, Settings, ChevronRight, Lock,
+  FolderPlus, Shield, Trash2, ArrowUpDown, AlertTriangle, CreditCard,
 } from 'lucide-react';
 import { ZK_SERVICE_URL } from '../../../config/constants';
 import zkEncryptionService from '../../../services/zkEncryptionService';
@@ -17,7 +16,9 @@ import UploadProgress from '../UploadProgress';
 import DownloadProgress from '../DownloadProgress';
 import SearchBar from '../SearchBar';
 import MigrationBanner from '../MigrationBanner';
-import ServiceModeBadge from '../ServiceModeBadge';
+import { DashboardTopBar } from '../shared/DashboardTopBar';
+import { LockSessionDialog } from '../shared/LockSessionDialog';
+import { NavItem, NavSection } from '@/components/layout';
 
 // Lazy-loaded views
 const TrashView = React.lazy(() => import('../TrashView'));
@@ -632,7 +633,7 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
     }
 
     if (activeView === 'payment-portal') {
-      return <PaymentPortal onBack={() => setActiveView('billing')} darkMode={darkMode} />;
+      return <PaymentPortal onBack={() => setActiveView('billing')} />;
     }
 
     if (activeView === 'trash') {
@@ -658,15 +659,15 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
 
     return (
       <div
-        className={`rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} ${isDragging ? 'ring-2 ring-blue-500' : ''}`}
+        className={`rounded-lg bg-surface ${isDragging ? 'ring-2 ring-primary' : ''}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {isDragging && (
-          <div className="p-8 text-center border-2 border-dashed border-blue-500 m-4 rounded-lg">
-            <Upload className="mx-auto mb-2 text-blue-500" size={48} />
-            <p className="text-blue-500">Drop files here to upload (encrypted)</p>
+          <div className="m-4 rounded-lg border-2 border-dashed border-primary p-8 text-center">
+            <Upload className="mx-auto mb-2 text-primary" size={48} />
+            <p className="text-primary">Drop files here to upload (encrypted)</p>
           </div>
         )}
 
@@ -683,10 +684,10 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
             ) : (
               <>
                 {/* Breadcrumb */}
-                <div className="flex items-center gap-2 mb-4 text-sm">
+                <div className="mb-4 flex items-center gap-2 text-body-sm">
                   <button
                     onClick={() => navigateToFolder(null)}
-                    className={`flex items-center gap-1 ${currentFolder ? (darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700') : (darkMode ? 'text-white' : 'text-gray-900')} transition-colors`}
+                    className={`flex items-center gap-1 transition-colors ${currentFolder ? 'text-primary hover:text-primary/80' : 'text-fg'}`}
                     type="button"
                   >
                     <Home size={16} />
@@ -694,8 +695,8 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
                   </button>
                   {currentFolder && (
                     <>
-                      <ChevronRight size={16} className="text-gray-400" />
-                      <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                      <ChevronRight size={16} className="text-fg-subtle" />
+                      <span className="font-medium text-fg">
                         {currentFolderName || 'Folder'}
                       </span>
                     </>
@@ -739,16 +740,16 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
                 )}
 
                 {filteredFiles.length === 0 && filteredFolders.length === 0 && (
-                  <div className="text-center py-12">
-                    <div className="flex justify-center mb-4">
-                      <div className={`p-4 rounded-full ${darkMode ? 'bg-green-900/30' : 'bg-green-100'}`}>
-                        <Shield className={darkMode ? 'text-green-400' : 'text-green-600'} size={48} />
+                  <div className="py-12 text-center">
+                    <div className="mb-4 flex justify-center">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-success/10">
+                        <Shield className="text-success" size={48} />
                       </div>
                     </div>
-                    <p className={`text-lg font-medium mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <p className="mb-2 text-h3 font-medium text-fg">
                       Your encrypted storage is empty
                     </p>
-                    <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
+                    <p className="text-body-sm text-fg-muted">
                       Upload files to encrypt them with your password. Only you can decrypt them.
                     </p>
                   </div>
@@ -762,168 +763,88 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
   };
 
   return (
-    <div className={`min-h-screen ${darkMode ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
-      {/* Simplified ZK Sidebar */}
-      <aside className={`fixed top-0 left-0 h-full w-64 shadow-xl flex flex-col ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-        {/* Logo */}
-        <div className={`p-6 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-          <div className="flex items-center justify-center gap-3">
-            <div className={`p-2 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 shadow-lg`}>
-              <Shield className="text-white" size={28} />
-            </div>
-            <div>
-              <h1 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                ZK Storage
-              </h1>
-              <p className={`text-xs ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
-                End-to-End Encrypted
-              </p>
-            </div>
+    <div className="min-h-screen bg-bg">
+      {/*
+        ZK Sidebar — narrower nav (encrypted-only flows), built on `NavItem` +
+        `NavSection` layout primitives. Signature green ZK accent kept in the
+        brand lockup; the rest uses Signal tokens so dark-mode swaps cleanly.
+      */}
+      <aside className="fixed top-0 left-0 z-40 h-full w-64 border-r border-border bg-surface flex flex-col">
+        {/* Brand */}
+        <div className="flex items-center gap-3 px-5 py-5 border-b border-border">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-success to-emerald-600 shadow-md">
+            <Shield className="h-5 w-5 text-white" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-body font-semibold text-fg">ZK Storage</div>
+            <div className="text-caption text-success">End-to-End Encrypted</div>
           </div>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto p-4 space-y-2">
-          <button
-            onClick={() => setActiveView('cloud-drive')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
-              activeView === 'cloud-drive'
-                ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg'
-                : darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-green-50'
-            }`}
-            type="button"
-          >
-            <Cloud size={20} />
-            <span className="font-medium text-sm">Encrypted Files</span>
-          </button>
-
-          <button
-            onClick={() => setActiveView('billing')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
-              activeView === 'billing'
-                ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg'
-                : darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-blue-50'
-            }`}
-            type="button"
-          >
-            <CreditCard size={20} />
-            <span className="font-medium text-sm">Billing & Plans</span>
-          </button>
-
-          <button
-            onClick={() => setActiveView('settings')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
-              activeView === 'settings'
-                ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg'
-                : darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-green-50'
-            }`}
-            type="button"
-          >
-            <Settings size={20} />
-            <span className="font-medium text-sm">Settings</span>
-          </button>
-
-          <button
-            onClick={() => setActiveView('trash')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
-              activeView === 'trash'
-                ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg'
-                : darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-red-50'
-            }`}
-            type="button"
-          >
-            <Trash2 size={20} />
-            <span className="font-medium text-sm">Trash</span>
-          </button>
+        <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Primary">
+          <NavSection>
+            <NavItem
+              icon={<Cloud />}
+              label="Encrypted Files"
+              active={activeView === 'cloud-drive'}
+              onClick={() => setActiveView('cloud-drive')}
+            />
+            <NavItem
+              icon={<CreditCard />}
+              label="Billing & Plans"
+              active={activeView === 'billing'}
+              onClick={() => setActiveView('billing')}
+            />
+            <NavItem
+              icon={<Settings />}
+              label="Settings"
+              active={activeView === 'settings'}
+              onClick={() => setActiveView('settings')}
+            />
+            <NavItem
+              icon={<Trash2 />}
+              label="Trash"
+              active={activeView === 'trash'}
+              onClick={() => setActiveView('trash')}
+            />
+          </NavSection>
         </nav>
 
-        {/* Encryption Status in Sidebar */}
-        <div className={`p-4 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-          <div className={`p-3 rounded-lg ${darkMode ? 'bg-gray-900' : 'bg-gray-50'}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <Lock size={14} className={darkMode ? 'text-green-400' : 'text-green-600'} />
-              <span className={`text-xs font-medium ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
-                Session Active
-              </span>
-            </div>
-            <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              AES-256-GCM encryption
-            </p>
+        {/* Encryption status footer */}
+        <div className="shrink-0 border-t border-border bg-surface-muted px-4 py-3">
+          <div className="flex items-center gap-2 text-success">
+            <Lock className="h-3.5 w-3.5" />
+            <span className="text-caption font-semibold uppercase tracking-wide">
+              Session Active
+            </span>
           </div>
+          <p className="mt-1 text-caption text-fg-subtle">AES-256-GCM encryption</p>
         </div>
       </aside>
 
       {/* Main Content Area */}
       <div className="lg:ml-64 min-h-screen">
-        {/* Header */}
-        <header className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b sticky top-0 z-30`}>
-          <div className="px-4 py-4">
-            <div className="flex justify-end items-center gap-3">
-              <div className="flex-1 max-w-2xl">
-                <SearchBar
-                  onSearch={(results) => setSearchResults(results)}
-                  darkMode={darkMode}
-                  zkMode={true}
-                  files={files}
-                />
-              </div>
-
-              <button
-                onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
-                className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
-                title={`Switch to ${viewMode === 'grid' ? 'list' : 'grid'} view`}
-                type="button"
-              >
-                {viewMode === 'grid' ? <List size={20} /> : <Grid size={20} />}
-              </button>
-
-              <button
-                onClick={toggleTheme}
-                className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700 text-yellow-400' : 'bg-gray-100'}`}
-                title="Toggle theme"
-                type="button"
-              >
-                {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-              </button>
-
-              <button
-                onClick={() => setShowShortcuts(true)}
-                className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
-                title="Keyboard shortcuts"
-                type="button"
-              >
-                <Info size={20} />
-              </button>
-
-              {/* Lock Session Button */}
-              <button
-                onClick={() => setShowLockConfirm(true)}
-                className={`p-2 rounded-lg ${darkMode ? 'bg-yellow-900/50 hover:bg-yellow-900/70 text-yellow-400' : 'bg-yellow-100 hover:bg-yellow-200 text-yellow-700'} transition-all`}
-                title="Lock encryption session"
-                type="button"
-              >
-                <Lock size={20} />
-              </button>
-
-              {/* Service Mode Badge */}
-              <ServiceModeBadge isZKMode={true} darkMode={darkMode} />
-
-              <div className="flex items-center gap-2">
-                <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
-                  {user?.username || 'User'}
-                </span>
-                <button
-                  onClick={logout}
-                  className={`p-2 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
-                  title="Logout"
-                  type="button"
-                >
-                  <LogOut size={20} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </header>
+        {/* Header — shared top bar; ZK mode always has a lock button visible. */}
+        <DashboardTopBar
+          search={
+            <SearchBar
+              onSearch={(results) => setSearchResults(results)}
+              darkMode={darkMode}
+              zkMode={true}
+              files={files}
+            />
+          }
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          darkMode={darkMode}
+          onToggleTheme={toggleTheme}
+          onShowShortcuts={() => setShowShortcuts(true)}
+          onLockSession={() => setShowLockConfirm(true)}
+          username={user?.username || 'User'}
+          onLogout={logout}
+          isZKMode={true}
+        />
 
         {/* Main Content */}
         <div
@@ -982,11 +903,7 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
               </button>
               <button
                 onClick={handleCreateFolder}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                  darkMode
-                    ? 'bg-gray-700 text-white hover:bg-gray-600'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                className="flex items-center gap-2 rounded-lg bg-surface-muted px-4 py-2 text-fg transition-colors hover:bg-surface-elevated"
                 title="New folder (Ctrl+N)"
                 type="button"
               >
@@ -999,15 +916,11 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
 
               {/* Sort Dropdown */}
               <div className="flex items-center gap-2">
-                <ArrowUpDown size={16} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                <ArrowUpDown size={16} className="text-fg-muted" />
                 <select
                   value={sortBy}
                   onChange={handleSortChange}
-                  className={`px-3 py-1.5 rounded-lg border text-sm ${
-                    darkMode
-                      ? 'bg-gray-700 border-gray-600 text-white'
-                      : 'bg-white border-gray-300 text-gray-700'
-                  }`}
+                  className="rounded-lg border border-border bg-surface px-3 py-1.5 text-body-sm text-fg"
                 >
                   <option value="name">Name</option>
                   <option value="date">Date Modified</option>
@@ -1119,31 +1032,24 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
 
       {/* Upload Complete Toast */}
       {showUploadCompleteToast && (
-        <div className="fixed top-4 right-4 z-50 animate-slide-in">
-          <div className={`flex items-center gap-3 px-6 py-4 rounded-xl shadow-2xl border ${
-            darkMode
-              ? 'bg-gray-800 border-gray-700'
-              : 'bg-white border-gray-200'
-          }`}>
-            <div className="flex-shrink-0">
-              <CheckCircle size={24} className="text-green-500" />
+        <div className="fixed right-4 top-4 z-50 animate-slide-in">
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-surface-elevated px-6 py-4 shadow-2xl">
+            <div className="shrink-0">
+              <CheckCircle size={24} className="text-success" />
             </div>
             <div className="flex-1">
-              <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Encrypted & Uploaded!
-              </p>
-              <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              <p className="font-semibold text-fg">Encrypted & uploaded!</p>
+              <p className="text-body-sm text-fg-muted">
                 {completedUploadCount} {completedUploadCount === 1 ? 'file' : 'files'} secured
               </p>
             </div>
             <button
               onClick={() => setShowUploadCompleteToast(false)}
-              className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
-                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
-              }`}
+              className="shrink-0 rounded-lg p-1 transition-colors hover:bg-surface-muted"
               type="button"
+              aria-label="Dismiss"
             >
-              <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+              <X size={18} className="text-fg-muted" />
             </button>
           </div>
         </div>
@@ -1151,124 +1057,46 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
 
       {/* Upload Error Toast */}
       {uploadError && (
-        <div className="fixed top-4 right-4 z-50 animate-slide-in">
-          <div className={`flex items-start gap-3 px-6 py-4 rounded-xl shadow-2xl border max-w-md ${
-            darkMode
-              ? 'bg-gray-800 border-red-700/50'
-              : 'bg-white border-red-200'
-          }`}>
-            <div className="flex-shrink-0 mt-0.5">
-              <AlertTriangle size={24} className="text-red-500" />
+        <div className="fixed right-4 top-4 z-50 animate-slide-in">
+          <div className="flex max-w-md items-start gap-3 rounded-xl border border-danger/40 bg-surface-elevated px-6 py-4 shadow-2xl">
+            <div className="mt-0.5 shrink-0">
+              <AlertTriangle size={24} className="text-danger" />
             </div>
-            <div className="flex-1 min-w-0">
-              <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Upload Failed
-              </p>
-              <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'} truncate`} title={uploadError.fileName}>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-fg">Upload failed</p>
+              <p className="mt-1 truncate text-body-sm text-fg-muted" title={uploadError.fileName}>
                 {uploadError.fileName}
               </p>
-              <p className={`text-sm mt-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
-                {uploadError.message}
-              </p>
+              <p className="mt-2 text-body-sm text-danger">{uploadError.message}</p>
               {uploadError.type === UPLOAD_ERROR_TYPES.QUOTA_EXCEEDED && (
-                <p className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                <p className="mt-2 text-caption text-fg-subtle">
                   Tip: Delete some files or upgrade your storage plan.
                 </p>
               )}
               {uploadError.type === UPLOAD_ERROR_TYPES.RATE_LIMITED && (
-                <p className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                <p className="mt-2 text-caption text-fg-subtle">
                   Tip: Wait a few seconds before retrying.
                 </p>
               )}
             </div>
             <button
               onClick={() => setUploadError(null)}
-              className={`flex-shrink-0 p-1 rounded-lg transition-colors ${
-                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
-              }`}
+              className="shrink-0 rounded-lg p-1 transition-colors hover:bg-surface-muted"
               type="button"
+              aria-label="Dismiss"
             >
-              <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+              <X size={18} className="text-fg-muted" />
             </button>
           </div>
         </div>
       )}
 
-      {/* Lock Session Confirmation Modal */}
-      {showLockConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className={`w-full max-w-sm rounded-2xl shadow-2xl border ${
-            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-          }`}>
-            {/* Header */}
-            <div className={`p-5 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-gradient-to-br from-yellow-500 to-orange-600">
-                    <Lock className="text-white" size={20} />
-                  </div>
-                  <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    Lock Session?
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setShowLockConfirm(false)}
-                  className={`p-1.5 rounded-lg transition-colors ${
-                    darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-500'
-                  }`}
-                  type="button"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-
-            {/* Content */}
-            <div className="p-5">
-              <div className={`p-4 rounded-xl border ${
-                darkMode ? 'bg-yellow-900/20 border-yellow-700/40' : 'bg-yellow-50 border-yellow-200'
-              }`}>
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="text-yellow-500 flex-shrink-0 mt-0.5" size={18} />
-                  <div>
-                    <p className={`text-sm font-medium ${darkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>
-                      Your encryption keys will be cleared
-                    </p>
-                    <p className={`text-xs mt-1 ${darkMode ? 'text-yellow-400/80' : 'text-yellow-700'}`}>
-                      You'll need to enter your password to access your encrypted files again.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className={`p-5 border-t flex gap-3 ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-              <button
-                onClick={() => setShowLockConfirm(false)}
-                className={`flex-1 px-4 py-2.5 rounded-xl font-medium transition-colors ${
-                  darkMode
-                    ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-                }`}
-                type="button"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowLockConfirm(false);
-                  onLock();
-                }}
-                className="flex-1 px-4 py-2.5 rounded-xl font-semibold text-white bg-gradient-to-r from-yellow-500 to-orange-600 hover:from-yellow-600 hover:to-orange-700 transition-all"
-                type="button"
-              >
-                Lock Session
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Lock Session Confirmation Modal — shared primitive-based dialog. */}
+      <LockSessionDialog
+        open={showLockConfirm}
+        onClose={() => setShowLockConfirm(false)}
+        onConfirm={onLock}
+      />
     </div>
   );
 };
