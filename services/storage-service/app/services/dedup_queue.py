@@ -55,6 +55,46 @@ class CircuitBreaker:
         self.last_check = datetime.utcnow()
         self.last_health_info: Optional[Dict[str, float]] = None
 
+    @staticmethod
+    def _read_cgroup_memory() -> Optional[Dict[str, float]]:
+        # psutil.virtual_memory() reports HOST memory inside a container, which
+        # causes false-positive circuit trips on memory-constrained hosts (e.g.
+        # 8GB Docker Desktop VMs). Prefer cgroup v2 / v1 readings when present.
+        try:
+            with open("/sys/fs/cgroup/memory.current") as f:
+                used = int(f.read().strip())
+            with open("/sys/fs/cgroup/memory.max") as f:
+                raw = f.read().strip()
+            if raw == "max":
+                return None
+            total = int(raw)
+            if total <= 0:
+                return None
+            return {
+                "used": used,
+                "total": total,
+                "percent": used / total,
+                "available": total - used,
+            }
+        except (FileNotFoundError, ValueError, PermissionError):
+            pass
+        try:
+            with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
+                used = int(f.read().strip())
+            with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+                total = int(f.read().strip())
+            # cgroup v1 reports an absurdly large sentinel when unlimited
+            if total <= 0 or total > (1 << 62):
+                return None
+            return {
+                "used": used,
+                "total": total,
+                "percent": used / total,
+                "available": total - used,
+            }
+        except (FileNotFoundError, ValueError, PermissionError):
+            return None
+
     async def check_health(self) -> Dict:
         """Check system health and update circuit state"""
         now = datetime.utcnow()
@@ -70,9 +110,15 @@ class CircuitBreaker:
         self.last_check = now
 
         try:
-            # Check memory usage
-            memory = psutil.virtual_memory()
-            memory_percent = memory.percent / 100.0
+            # Check memory usage — cgroup-aware, falls back to psutil
+            cgroup_mem = self._read_cgroup_memory()
+            if cgroup_mem is not None:
+                memory_percent = cgroup_mem["percent"]
+                memory_available = cgroup_mem["available"]
+            else:
+                memory = psutil.virtual_memory()
+                memory_percent = memory.percent / 100.0
+                memory_available = memory.available
 
             # Check disk usage for storage path
             storage_path = os.getenv("STORAGE_ROOT", "/app/storage")
@@ -88,7 +134,7 @@ class CircuitBreaker:
             health_info = {
                 "memory_percent": round(memory_percent * 100, 2),
                 "disk_percent": round(disk_percent * 100, 2),
-                "memory_available_gb": round(memory.available / (1024**3), 2),
+                "memory_available_gb": round(memory_available / (1024**3), 2),
                 "disk_available_gb": round(disk.free / (1024**3), 2)
             }
             self.last_health_info = health_info

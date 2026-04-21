@@ -4,6 +4,7 @@ Audit Logging Service
 Comprehensive logging of all user actions for security, compliance, and forensics.
 """
 
+import hashlib
 import json
 import logging
 from typing import Optional, Dict, Any
@@ -67,32 +68,46 @@ class AuditService:
                 request_method = request.method
                 request_path = str(request.url.path)
 
-            # Convert metadata to JSON
-            metadata_json = None
+            # Build details JSONB: carry over the legacy fields (status_code,
+            # is_suspicious, risk_level) plus any caller-supplied metadata so no
+            # information is lost after the schema refactor.
+            details: Dict[str, Any] = {}
             if metadata:
-                try:
-                    metadata_json = json.dumps(metadata)
-                except Exception as e:
-                    logger.warning(f"Failed to serialize metadata: {e}")
-                    metadata_json = json.dumps({'error': 'Failed to serialize'})
+                details.update(metadata)
+            if status_code is not None:
+                details['status_code'] = status_code
+            if is_suspicious:
+                details['is_suspicious'] = True
+            if risk_level and risk_level != 'low':
+                details['risk_level'] = risk_level
+
+            # event_hash is required (SHA-256 over a canonical string) for
+            # tamper-detection per the AuditLog model contract.
+            hash_source = '|'.join([
+                action or '',
+                str(user_id) if user_id else '',
+                str(resource_id) if resource_id else '',
+                status or '',
+                datetime.utcnow().isoformat(),
+            ])
+            event_hash = hashlib.sha256(hash_source.encode('utf-8')).hexdigest()
 
             async with async_session() as session:
                 audit_entry = AuditLog(
+                    event_type=action,
+                    event_hash=event_hash,
                     user_id=user_id,
-                    action=action,
                     resource_type=resource_type,
-                    resource_id=resource_id,
+                    resource_id=str(resource_id) if resource_id else None,
                     resource_name=resource_name,
+                    action=action,
+                    result=status,
+                    result_message=error_message,
                     ip_address=ip_address,
                     user_agent=user_agent,
                     request_method=request_method,
                     request_path=request_path,
-                    status=status,
-                    status_code=status_code,
-                    error_message=error_message,
-                    context_data=metadata_json,
-                    is_suspicious=is_suspicious,
-                    risk_level=risk_level
+                    details=details or None,
                 )
 
                 session.add(audit_entry)

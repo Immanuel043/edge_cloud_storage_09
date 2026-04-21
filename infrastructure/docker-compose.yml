@@ -442,6 +442,10 @@ services:
     # ports removed: ClamAV only accessible within Docker network
     volumes:
       - clamav_data:/var/lib/clamav
+      # Size limits raised to 512M across StreamMaxLength / MaxFileSize /
+      # MaxScanSize / PCREMaxFileSize so clamd accepts the files the
+      # storage-service is willing to reassemble (MAX_SCAN_REASSEMBLE_BYTES).
+      - ./clamav/clamd.conf:/etc/clamav/clamd.conf:ro
     environment:
       - CLAMAV_NO_FRESHCLAM=false
     healthcheck:

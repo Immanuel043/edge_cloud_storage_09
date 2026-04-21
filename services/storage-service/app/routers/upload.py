@@ -12,6 +12,7 @@ import io
 import base64
 import hashlib
 import mimetypes
+import tempfile
 from datetime import datetime
 from ..dependencies import get_db, log_activity, get_current_user, get_plan_quota
 from ..services.auth import auth_service
@@ -37,7 +38,9 @@ from ..services.deduplication_enhanced import enhanced_dedup_service
 from .background_deduplication import background_dedup_service
 from ..services.dedup_classifier import dedup_classifier
 from ..services.search_service import search_service
-from ..services.virus_scanner import get_virus_scanner
+from ..services.virus_scanner import get_virus_scanner, VirusScanResult
+from ..utils.compression import compressor
+from ..utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
 from ..services.dlp_service import get_dlp_service
 from ..services.audit_service import get_audit_service
 from ..services.video_optimizer import video_optimizer
@@ -1380,6 +1383,54 @@ async def test_speed_encrypted(file: UploadFile = File(...)):
 # SECURITY SCANNING BACKGROUND TASK
 # ============================================================================
 
+async def _reassemble_chunked_file_for_scan(
+    file_obj: Object, file_key: bytes
+) -> str:
+    """Sequentially decrypt (+ decompress) chunks into a temp plaintext file.
+
+    Raises on any missing/corrupt chunk — never returns a partial file. Caller
+    MUST unlink the returned path in a finally block.
+    """
+    chunk_info = file_obj.chunk_info or {}
+    paths = chunk_info.get("paths") or {}
+    count = int(chunk_info.get("count") or 0)
+    compressed = bool(chunk_info.get("compressed"))
+    upload_id = chunk_info.get("upload_id") or str(file_obj.id)
+    if count <= 0:
+        raise ValueError(f"Invalid chunk_info for file {file_obj.id}")
+
+    os.makedirs(settings.TEMP_PATH, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f"scan_{file_obj.id}_", suffix=".bin", dir=settings.TEMP_PATH
+    )
+    os.close(fd)
+
+    try:
+        async with aiofiles.open(tmp_path, "wb") as out:
+            for i in range(count):
+                chunk_path = paths.get(str(i))
+                if not chunk_path or not os.path.exists(chunk_path):
+                    shard = upload_id[:2]
+                    chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                if not os.path.exists(chunk_path):
+                    raise FileNotFoundError(
+                        f"Missing chunk {i} for file {file_obj.id} at {chunk_path!r}"
+                    )
+                async with aiofiles.open(chunk_path, "rb") as cf:
+                    encrypted = await cf.read()
+                plaintext = encryption_service.decrypt_chunk(encrypted, file_key, i)
+                if compressed:
+                    plaintext = compressor.decompress(plaintext)
+                await out.write(plaintext)
+        return tmp_path
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 async def run_security_scans(
     file_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -1403,37 +1454,72 @@ async def run_security_scans(
     """
     audit_service = get_audit_service()
 
+    # Hoisted so the outer finally below can release them regardless of where
+    # inside the try an exception fires.
+    file_data: Optional[bytes] = None
+    scan_source_path: Optional[str] = None
+    scan_result_override: Optional[VirusScanResult] = None
+    chunk_hold_id: Optional[str] = None
+    chunk_hold_upload_id: Optional[str] = None
+    MAX_SCAN_REASSEMBLE_BYTES = 500 * 1024 * 1024
+
     try:
         logger.info(f"🔒 Starting security scans for {file_name} ({file_id})")
 
-        # Retrieve file data
-        file_data = None
+        def _needs_decompress() -> bool:
+            return (
+                isinstance(file_obj.file_metadata, dict)
+                and bool(file_obj.file_metadata.get("compressed"))
+            )
+
         try:
             # Decrypt the wrapped file key first
             file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
             if storage_strategy == "inline":
-                # Decrypt inline data
                 encrypted_data = base64.b64decode(file_obj.storage_key)
                 file_data = encryption_service.decrypt_data(encrypted_data, file_key)
+                if _needs_decompress():
+                    file_data = compressor.decompress(file_data)
             elif storage_strategy == "single":
-                # Read from file
                 if file_obj.object_path and os.path.exists(file_obj.object_path):
                     async with aiofiles.open(file_obj.object_path, 'rb') as f:
                         encrypted_data = await f.read()
                     file_data = encryption_service.decrypt_data(encrypted_data, file_key)
+                    if _needs_decompress():
+                        file_data = compressor.decompress(file_data)
             elif storage_strategy == "chunked":
-                # For chunked files, reassemble chunks
-                # Skip scanning very large chunked files to avoid memory issues
-                if file_size > 500 * 1024 * 1024:  # Skip files > 500MB
-                    logger.info(f"Skipping security scan for large chunked file: {file_name}")
-                    return
+                if file_size > MAX_SCAN_REASSEMBLE_BYTES:
+                    # Too large to reassemble safely. Surface as a bypass
+                    # verdict so the paid-tier fail-closed path still runs,
+                    # instead of silently skipping.
+                    logger.info(
+                        f"Chunked file {file_name} ({file_size} bytes) exceeds "
+                        f"scan reassembly cap; emitting bypass verdict"
+                    )
+                    scan_result_override = VirusScanResult(
+                        is_infected=False,
+                        error="file_too_large_for_reassembly",
+                        scan_status=VirusScanResult.STATUS_BYPASSED,
+                    )
+                else:
+                    chunk_hold_upload_id = (file_obj.chunk_info or {}).get("upload_id")
+                    if chunk_hold_upload_id:
+                        redis_client = await get_redis()
+                        chunk_hold_id = await acquire_chunk_hold(
+                            redis_client, chunk_hold_upload_id, "security_scan"
+                        )
+                    scan_source_path = await _reassemble_chunked_file_for_scan(
+                        file_obj, file_key
+                    )
 
         except Exception as e:
             logger.error(f"Failed to retrieve file data for scanning: {e}")
+            # The outer try/finally below releases the chunk hold and unlinks
+            # any partial temp file that the helper may have already cleaned up.
             return
 
-        if not file_data:
+        if file_data is None and scan_source_path is None and scan_result_override is None:
             logger.warning(f"No file data available for security scanning: {file_name}")
             return
 
@@ -1480,8 +1566,16 @@ async def run_security_scans(
                     )
 
                 # Run the scan. The scanner itself owns retries + circuit
-                # breaker; we just consume the verdict.
-                scan_result = await virus_scanner.scan_bytes(file_data)
+                # breaker; we just consume the verdict. The source varies by
+                # storage strategy: chunked uses a disk path (streams >100MB),
+                # inline/single uses bytes, and the oversized-chunked case
+                # produces a synthetic bypass verdict upstream.
+                if scan_result_override is not None:
+                    scan_result = scan_result_override
+                elif scan_source_path is not None:
+                    scan_result = await virus_scanner.scan_file(scan_source_path)
+                else:
+                    scan_result = await virus_scanner.scan_bytes(file_data)
 
                 # Record outcome metric for every path.
                 try:
@@ -1616,7 +1710,9 @@ async def run_security_scans(
             logger.error(f"Virus scan failed for {file_name}: {e}")
 
         # ============ DLP SCANNING ============
-        # Only scan text-based files for DLP
+        # Only scan text-based files, and only up to the DLP size cap. The cap
+        # (dlp_service.max_file_size) applies to every storage strategy so we
+        # don't push multi-hundred-MB text files through regex matchers.
         text_mime_types = [
             'text/', 'application/json', 'application/xml',
             'application/pdf', 'application/msword',
@@ -1624,11 +1720,24 @@ async def run_security_scans(
         ]
 
         should_dlp_scan = any(mime_type.startswith(mt) if mime_type else False for mt in text_mime_types)
+        dlp_service = get_dlp_service()
+        dlp_size_cap = dlp_service.max_file_size
 
-        if should_dlp_scan:
+        if not should_dlp_scan:
+            pass
+        elif file_size > dlp_size_cap:
+            logger.info(
+                f"Skipping DLP scan for {file_name}: size {file_size} exceeds "
+                f"DLP cap {dlp_size_cap}"
+            )
+        else:
             try:
-                dlp_service = get_dlp_service()
-                dlp_result = await dlp_service.scan_bytes(file_data, file_name)
+                if scan_source_path is not None:
+                    async with aiofiles.open(scan_source_path, "rb") as _dlp_f:
+                        dlp_bytes = await _dlp_f.read()
+                else:
+                    dlp_bytes = file_data
+                dlp_result = await dlp_service.scan_bytes(dlp_bytes, file_name)
 
                 # Get detected types
                 detected_types = list(set([m.type for m in dlp_result.matches]))
@@ -1680,6 +1789,26 @@ async def run_security_scans(
 
     except Exception as e:
         logger.error(f"Security scanning failed for {file_name}: {e}", exc_info=True)
+    finally:
+        # Always release the chunk hold and unlink any scan temp file, even on
+        # early returns from the inner retrieval except-block or mid-scan
+        # exceptions. Both cleanups are best-effort; failures are logged, not
+        # re-raised.
+        if chunk_hold_id and chunk_hold_upload_id:
+            try:
+                redis_client = await get_redis()
+                await release_chunk_hold(
+                    redis_client, chunk_hold_upload_id, chunk_hold_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to release chunk hold: {e}")
+        if scan_source_path:
+            try:
+                os.unlink(scan_source_path)
+            except OSError as e:
+                logger.warning(
+                    f"Failed to remove scan temp file {scan_source_path}: {e}"
+                )
 
 
 async def run_video_optimization(

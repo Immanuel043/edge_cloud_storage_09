@@ -212,7 +212,9 @@ class VirusScanner:
             )
 
             # Use INSTREAM command to send data directly
-            writer.write(b'INSTREAM\n')
+            # nCMD prefix: tells ClamAV to use newline-terminated command mode.
+            # Plain "INSTREAM\n" returns "UNKNOWN COMMAND" on modern clamd builds.
+            writer.write(b'nINSTREAM\n')
             await writer.drain()
 
             # Send data in chunks with batched draining
@@ -348,7 +350,9 @@ class VirusScanner:
                 timeout=10
             )
 
-            writer.write(b'INSTREAM\n')
+            # nCMD prefix: tells ClamAV to use newline-terminated command mode.
+            # Plain "INSTREAM\n" returns "UNKNOWN COMMAND" on modern clamd builds.
+            writer.write(b'nINSTREAM\n')
             await writer.drain()
 
             # Stream file in chunks with batched draining
