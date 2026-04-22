@@ -6,11 +6,14 @@ which uses Redis + Lua scripts for atomic operations and includes
 proper X-RateLimit-* headers in responses.
 """
 
-from typing import Callable
+from typing import Callable, Optional
 from fastapi import Request, Response
 from fastapi_limiter.depends import RateLimiter
+from jose import jwt, JWTError
 from slowapi.util import get_remote_address
 import logging
+
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -63,28 +66,68 @@ class RateLimitConfig:
     OAUTH_CALLBACK = {"times": 20, "minutes": 1}
 
 
-async def get_user_identifier(request: Request) -> str:
+def _real_client_ip(request: Request) -> str:
     """
-    Extract user identifier for rate limiting.
+    Resolve the real client IP behind the nginx proxy.
 
-    Uses authenticated user ID if available, otherwise falls back to IP address.
-    This allows for user-based rate limiting which is more fair than IP-based.
-
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        User identifier string (user:{id} or ip:{address})
+    nginx sets X-Real-IP to $remote_addr (overwriting any client-sent value),
+    so it is NOT spoofable through this proxy. X-Forwarded-For is
+    $proxy_add_x_forwarded_for (appends to client-sent value) and MUST NOT
+    be trusted as the first hop.
     """
-    try:
-        # Try to get user from request state (set by auth middleware)
-        if hasattr(request.state, 'user') and request.state.user:
-            return f"user:{request.state.user.id}"
-    except Exception as e:
-        logger.debug(f"Could not extract user from request: {e}")
+    xri = request.headers.get("x-real-ip")
+    if xri:
+        xri = xri.strip()
+        if xri:
+            return xri
+    return get_remote_address(request)
 
-    # Fall back to IP address
-    return f"ip:{get_remote_address(request)}"
+
+def _bearer_from_header(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
+async def get_ip_identifier(request: Request) -> str:
+    """IP-only identifier. Use for unauthenticated endpoints (login/register/reset)."""
+    return f"ip:{_real_client_ip(request)}"
+
+
+async def get_user_or_ip_identifier(request: Request) -> str:
+    """
+    User-aware identifier for authenticated endpoints.
+
+    Decodes the JWT signature-only (no DB lookups, no blocklist checks —
+    the limiter fires on every request and must stay cheap). A forged token
+    cannot pass signature verification without SECRET_KEY, so isolating by
+    `sub` is safe for bucketing. Typed tokens (download/password_reset/
+    registration) are rejected so they fall through to IP scoping.
+    """
+    token = (
+        request.cookies.get("access_token")
+        or _bearer_from_header(request.headers.get("authorization"))
+        or request.query_params.get("token")
+    )
+    if token:
+        try:
+            payload = jwt.decode(
+                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
+            if payload.get("type") is None:
+                sub = payload.get("sub")
+                if sub:
+                    return f"user:{sub}"
+        except JWTError:
+            pass
+    return f"ip:{_real_client_ip(request)}"
+
+
+# Back-compat alias (no external consumers currently).
+get_user_identifier = get_user_or_ip_identifier
 
 
 async def rate_limit_callback(request: Request, response: Response, pexpire: int):
@@ -127,26 +170,29 @@ async def rate_limit_callback(request: Request, response: Response, pexpire: int
 
 
 def create_rate_limiter(**kwargs) -> RateLimiter:
-    """
-    Factory function to create a RateLimiter with custom identifier.
-
-    Args:
-        **kwargs: Parameters to pass to RateLimiter (times, seconds, minutes, hours, etc.)
-
-    Returns:
-        Configured RateLimiter instance
-    """
+    """User-scoped limiter for authenticated routes (IP fallback when no token)."""
     return RateLimiter(
         **kwargs,
-        identifier=get_user_identifier,
-        callback=rate_limit_callback
+        identifier=get_user_or_ip_identifier,
+        callback=rate_limit_callback,
+    )
+
+
+def create_ip_rate_limiter(**kwargs) -> RateLimiter:
+    """IP-only limiter. Use for unauthenticated routes (login/register/reset)
+    where an authenticated caller must not share the bucket with themselves
+    across sessions or with other users at the same IP."""
+    return RateLimiter(
+        **kwargs,
+        identifier=get_ip_identifier,
+        callback=rate_limit_callback,
     )
 
 
 # Pre-configured rate limiters for common use cases
-auth_login_limiter = lambda: create_rate_limiter(**RateLimitConfig.AUTH_LOGIN)
-auth_register_limiter = lambda: create_rate_limiter(**RateLimitConfig.AUTH_REGISTER)
-auth_password_reset_limiter = lambda: create_rate_limiter(**RateLimitConfig.AUTH_PASSWORD_RESET)
+auth_login_limiter = lambda: create_ip_rate_limiter(**RateLimitConfig.AUTH_LOGIN)
+auth_register_limiter = lambda: create_ip_rate_limiter(**RateLimitConfig.AUTH_REGISTER)
+auth_password_reset_limiter = lambda: create_ip_rate_limiter(**RateLimitConfig.AUTH_PASSWORD_RESET)
 file_upload_limiter = lambda: create_rate_limiter(**RateLimitConfig.FILE_UPLOAD)
 file_download_limiter = lambda: create_rate_limiter(**RateLimitConfig.FILE_DOWNLOAD)
 api_read_limiter = lambda: create_rate_limiter(**RateLimitConfig.API_READ)
@@ -156,7 +202,10 @@ api_write_limiter = lambda: create_rate_limiter(**RateLimitConfig.API_WRITE)
 __all__ = [
     'RateLimitConfig',
     'create_rate_limiter',
+    'create_ip_rate_limiter',
     'get_user_identifier',
+    'get_user_or_ip_identifier',
+    'get_ip_identifier',
     'rate_limit_callback',
     'auth_login_limiter',
     'auth_register_limiter',
