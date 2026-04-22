@@ -9,10 +9,6 @@ on:
   pull_request:
     branches: [ main, develop ]
 
-  # Run daily at 2 AM UTC
-  schedule:
-    - cron: '0 2 * * *'
-
   # Allow manual triggering
   workflow_dispatch:
 
