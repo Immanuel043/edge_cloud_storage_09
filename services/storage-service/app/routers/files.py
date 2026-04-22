@@ -1451,6 +1451,27 @@ async def get_file_preview(
             if _optimization_active():
                 logger.info(f"Optimization pipeline active for {file_id}, returning 202")
                 return _return_202('processing', 'Video optimization in progress, thumbnails pending')
+
+            # Terminal by policy: ingestion pipeline's reject branch flagged
+            # this video as unprocessable for automatic preview. Only
+            # 'rejected' (not 'failed') is terminal — 'failed' keeps the
+            # retry semantics handled in the status=='failed' branch above.
+            if getattr(file_obj, 'video_processing_status', None) == 'rejected':
+                error_msg = (
+                    getattr(file_obj, 'video_processing_error', None)
+                    or 'Automatic preview unavailable for this video'
+                )
+                logger.info(f"Returning 409 for rejected video {file_id}: {error_msg}")
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        'status': 'failed',
+                        'message': error_msg,
+                        'error': error_msg,
+                        'file_id': file_id,
+                    },
+                )
+
             try:
                 queued = await _queue_preview_to_kafka()
                 if queued:

@@ -244,10 +244,10 @@ class PreviewWorker:
         file_obj = None
         async with self.semaphore:
             try:
-                # Update status to 'processing'
-                await self._set_status(file_id, 'processing')
-
-                # Get file from database
+                # Load file_obj FIRST so we can consult video_processing_status
+                # before writing any preview:status updates. Prior ordering set
+                # preview:status='processing' ahead of the load; an early
+                # return after that left the endpoint stuck returning 202.
                 async with async_session() as db:
                     from sqlalchemy import select
                     result = await db.execute(
@@ -257,17 +257,43 @@ class PreviewWorker:
 
                     if not file_obj:
                         logger.warning(f"⚠️ File not found: {file_id}")
-                        await self._set_status(file_id, 'failed', 'File not found')
+                        await self._set_status(file_id, 'failed', 'File not found', retryable=False)
                         # No user_id available, skip notification
                         return
-
-                    # Check for transcoded/optimized MP4 first (avoids re-downloading raw CAS)
-                    temp_file_path = None
-                    use_transcoded = False
 
                     mime = (file_obj.mime_type or '').lower()
                     ext = os.path.splitext(file_obj.file_name or '')[1].lower()
                     is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
+                    vp_status = getattr(file_obj, 'video_processing_status', None)
+
+                    # Ingestion-pipeline ownership checks, BEFORE we claim
+                    # preview:status='processing'. This prevents a stuck
+                    # spinner when we bail out due to pipeline ownership.
+                    if is_video and vp_status in ('queued', 'processing'):
+                        await self._set_status(file_id, 'deferred',
+                            'Waiting for video optimization pipeline', retryable=True)
+                        logger.info(
+                            f"Deferring preview for {file_obj.file_name} — "
+                            f"optimization pipeline active, will generate thumbnails on completion"
+                        )
+                        return
+                    if is_video and vp_status == 'rejected':
+                        # Ingestion pipeline's reject branch has already
+                        # written the terminal preview:status (either 'ready'
+                        # from a poster-frame attempt, or 'failed' retryable:false).
+                        # Do not clobber it.
+                        logger.info(
+                            f"Skipping preview worker for {file_obj.file_name} — "
+                            f"video_processing_status=rejected (pipeline owns preview:status)"
+                        )
+                        return
+
+                    # Now claim processing; ingestion pipeline has no ownership.
+                    await self._set_status(file_id, 'processing')
+
+                    # Check for transcoded/optimized MP4 first (avoids re-downloading raw CAS)
+                    temp_file_path = None
+                    use_transcoded = False
 
                     if is_video:
                         # Check optimized_path (from video ingestion pipeline)
@@ -283,25 +309,6 @@ class PreviewWorker:
                                 logger.info(f"Using transcoded MP4 for preview: {file_obj.file_name}")
                                 temp_file_path = transcoded_path
                                 use_transcoded = True
-
-                    # If optimization pipeline is running and no optimized file is ready yet,
-                    # defer entirely — the pipeline's _generate_thumbnails_for_transcoded()
-                    # will handle it once the optimized MP4 exists. This avoids:
-                    # (a) doomed ffmpeg attempts on slow codecs (AV1/HEVC 4K+)
-                    # (b) redundant multi-GB downloads that cause memory pressure
-                    if is_video and not use_transcoded:
-                        optimization_active = (
-                            hasattr(file_obj, 'video_processing_status')
-                            and file_obj.video_processing_status in ('queued', 'processing')
-                        )
-                        if optimization_active:
-                            await self._set_status(file_id, 'deferred',
-                                'Waiting for video optimization pipeline', retryable=True)
-                            logger.info(
-                                f"Deferring preview for {file_obj.file_name} — "
-                                f"optimization pipeline active, will generate thumbnails on completion"
-                            )
-                            return
 
                     # Memory pressure guard: don't download >500MB files when memory is high
                     if not use_transcoded and file_obj.file_size and file_obj.file_size > 500 * 1024 * 1024:

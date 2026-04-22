@@ -281,8 +281,10 @@ class VideoProcessingWorker:
                     except Exception:
                         plan_features = {}
 
-                    # Check if already processed (in case of duplicate messages)
-                    if file_obj.video_processing_status in ('ready', 'skipped'):
+                    # Check if already processed (in case of duplicate messages).
+                    # 'rejected' is also terminal: re-running would just hit the
+                    # reject branch again and redo the poster-thumbnail attempt.
+                    if file_obj.video_processing_status in ('ready', 'skipped', 'rejected'):
                         logger.info(
                             f"Video already processed ({file_obj.video_processing_status}): {file_name}"
                         )
@@ -302,6 +304,14 @@ class VideoProcessingWorker:
                         logger.info(
                             f"Video optimization complete: {file_name} "
                             f"[action={result['action']}, duration={result.get('duration_seconds', 0):.1f}s]"
+                        )
+                    elif result.get('action') == 'rejected':
+                        # Transcode rejected by size/duration policy is expected,
+                        # not an error. The poster-frame thumbnail path may still
+                        # have succeeded independently.
+                        logger.info(
+                            f"Video transcode rejected by policy: {file_name} "
+                            f"[reason={result.get('error', 'policy')}]"
                         )
                     else:
                         self.failed_count += 1

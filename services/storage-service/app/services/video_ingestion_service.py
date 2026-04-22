@@ -480,12 +480,118 @@ class VideoIngestionService:
                             os.remove(temp_path)
 
                 elif decision == 'reject':
-                    # File exceeds limits
-                    result['action'] = 'failed'
-                    result['error'] = f"Video exceeds limits (max {self.MAX_TRANSCODE_SIZE_GB}GB or {self.MAX_DURATION_MINUTES} minutes)"
-                    file_obj.video_processing_status = 'failed'
-                    file_obj.video_processing_error = result['error']
+                    # Reject-by-policy: transcode is genuinely skipped, but a
+                    # poster-frame thumbnail is still feasible for chunked/CAS
+                    # storage with moov-at-front. Ordering matters: attempt the
+                    # thumbnail FIRST while DB and Redis statuses still read as
+                    # in-flight, then flip to the terminal 'rejected' state
+                    # only after the attempt concludes. This prevents the
+                    # preview endpoint from returning a spurious 409 mid-attempt.
+
+                    # Build the user-facing message from the SAME env vars that
+                    # _needs_transcode() actually consulted (see
+                    # video_transcoder.py:227-228). self.MAX_TRANSCODE_SIZE_GB /
+                    # self.MAX_DURATION_MINUTES read different env var names
+                    # and can drift.
+                    reject_max_size_gb = float(os.getenv("TRANSCODE_MAX_SIZE_GB", "2"))
+                    reject_max_duration_min = int(os.getenv("TRANSCODE_MAX_DURATION_MINUTES", "30"))
+                    reject_msg = (
+                        f"Video exceeds automatic-preview limits "
+                        f"(max {reject_max_size_gb}GB or {reject_max_duration_min} minutes). "
+                        f"Download to play full video."
+                    )
+                    result['action'] = 'rejected'
+                    result['error'] = reject_msg
+
+                    # Seed preview:status='processing' so the preview endpoint
+                    # returns 202 during the poster-frame attempt. Never
+                    # downgrade an existing 'ready' written elsewhere.
+                    from ..database import get_redis
+                    redis = await get_redis()
+                    try:
+                        existing = await redis.get(f"preview:status:{file_id}")
+                        already_ready = False
+                        if existing:
+                            try:
+                                prev_status = json.loads(
+                                    existing if isinstance(existing, str) else existing.decode()
+                                )
+                                already_ready = prev_status.get('status') == 'ready'
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                        if not already_ready:
+                            await redis.setex(
+                                f"preview:status:{file_id}", 3600,
+                                json.dumps({
+                                    'status': 'processing',
+                                    'updated_at': datetime.utcnow().isoformat(),
+                                }),
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to seed preview:status for {file_id}: {e}")
+
+                    partial_path = f"/tmp/reject_thumb_{file_id}.partial"
+                    thumb_built = False
+                    try:
+                        built = await video_transcoder._build_thumbnail_probe_file(
+                            file_obj, encryption_service, probe_data or {}, partial_path,
+                        )
+                        if built:
+                            try:
+                                sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
+                                    file_id, partial_path,
+                                    source_hash=getattr(file_obj, 'content_hash', None),
+                                    user_id=str(file_obj.user_id),
+                                )
+                                if sizes_cached > 0:
+                                    file_obj.preview_generated_at = datetime.utcnow()
+                                    file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                                    thumb_built = True
+                                    logger.info(
+                                        f"Reject-path poster thumbnail generated for "
+                                        f"{file_obj.file_name} ({sizes_cached}/3 sizes)"
+                                    )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Reject-path thumbnail generation failed for {file_id}: {e}"
+                                )
+                        else:
+                            logger.info(
+                                f"Reject-path poster thumbnail not feasible for "
+                                f"{file_obj.file_name} (moov-at-end or unsupported storage)"
+                            )
+                    finally:
+                        if os.path.exists(partial_path):
+                            try:
+                                os.remove(partial_path)
+                            except OSError:
+                                pass
+
+                    # Commit terminal DB state now that the thumbnail attempt is done.
+                    file_obj.video_processing_status = 'rejected'
+                    file_obj.video_processing_error = reject_msg
                     await db_session.commit()
+
+                    # Surface a terminal preview:status so the endpoint returns
+                    # 409 when no thumbnail could be produced.
+                    # _generate_thumbnails_for_transcoded already wrote 'ready'
+                    # on success, so only touch Redis when the attempt failed.
+                    if not thumb_built:
+                        try:
+                            await redis.setex(
+                                f"preview:status:{file_id}", 3600,
+                                json.dumps({
+                                    'status': 'failed',
+                                    'error': reject_msg,
+                                    'retryable': False,
+                                    'updated_at': datetime.utcnow().isoformat(),
+                                }),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to write terminal preview:status for {file_id}: {e}"
+                            )
+
                     return result
 
                 else:
@@ -590,7 +696,7 @@ class VideoIngestionService:
             'optimized_path': file_obj.optimized_path if status == 'ready' else None,
             'optimized_size': file_obj.optimized_size,
             'processed_at': file_obj.video_processed_at.isoformat() if file_obj.video_processed_at else None,
-            'error': file_obj.video_processing_error if status == 'failed' else None
+            'error': file_obj.video_processing_error if status in ('failed', 'rejected') else None
         }
 
 
