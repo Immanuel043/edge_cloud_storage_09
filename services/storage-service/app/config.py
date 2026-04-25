@@ -242,6 +242,11 @@ class Settings:
     # Security Services Configuration
     VIRUS_SCANNING_ENABLED: bool = os.getenv("VIRUS_SCANNING_ENABLED", "true").lower() == "true"
     DLP_SCANNING_ENABLED: bool = os.getenv("DLP_SCANNING_ENABLED", "true").lower() == "true"
+    # Hard cap on a single ClamAV INSTREAM session. Tracks clamd.conf's
+    # StreamMaxLength / MaxFileSize / MaxScanSize (all 512M today). Files above
+    # this size emit a synthetic STATUS_BYPASSED verdict — paid tier still fail-
+    # closes via quarantine. Raise here AND in clamav/clamd.conf in lockstep.
+    MAX_INSTREAM_BYTES: int = int(os.getenv("MAX_INSTREAM_BYTES", 512 * 1024 * 1024))
 
     # Rust Data Plane Configuration (High-Performance Chunk Processing)
     # Provides 3-4x performance improvement for encryption/compression operations

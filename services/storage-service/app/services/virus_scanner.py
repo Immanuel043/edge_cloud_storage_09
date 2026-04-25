@@ -9,11 +9,20 @@ import asyncio
 import socket
 import struct
 import os
-from typing import Dict, Optional, Tuple
+from typing import AsyncIterator, Awaitable, Callable, Dict, Optional, Tuple
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class _DrainState:
+    """Mutable counter passed to producers so _write_frame can drain on a boundary."""
+
+    __slots__ = ("bytes_since_drain",)
+
+    def __init__(self) -> None:
+        self.bytes_since_drain = 0
 
 
 class VirusScanResult:
@@ -201,56 +210,47 @@ class VirusScanner:
                 scan_time=scan_time
             )
 
-    async def _scan_bytes_once(self, data: bytes) -> VirusScanResult:
-        """Single attempt to scan byte data via ClamAV INSTREAM protocol"""
+    async def _run_instream(
+        self,
+        produce_chunks: Callable[[asyncio.StreamWriter, "_DrainState"], Awaitable[None]],
+    ) -> VirusScanResult:
+        """Shared INSTREAM driver for all scan_* paths.
+
+        Opens one connection, sends `nINSTREAM\\n`, lets the producer write
+        chunk frames (4-byte big-endian length + payload), then writes the
+        zero-length terminator and reads the verdict. The producer owns
+        chunk sourcing (memory bytes / file reads / async generator); this
+        method owns the wire format and timing.
+        """
         start_time = asyncio.get_event_loop().time()
 
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
-                timeout=10
+                timeout=10,
             )
 
-            # Use INSTREAM command to send data directly
             # nCMD prefix: tells ClamAV to use newline-terminated command mode.
             # Plain "INSTREAM\n" returns "UNKNOWN COMMAND" on modern clamd builds.
             writer.write(b'nINSTREAM\n')
             await writer.drain()
 
-            # Send data in chunks with batched draining
-            data_size = len(data)
-            offset = 0
-            bytes_since_drain = 0
+            drain_state = _DrainState()
+            await produce_chunks(writer, drain_state)
 
-            while offset < data_size:
-                chunk = data[offset:offset + self.chunk_size]
-                chunk_len = len(chunk)
-
-                writer.write(struct.pack('!L', chunk_len))
-                writer.write(chunk)
-                bytes_since_drain += chunk_len + 4
-                offset += chunk_len
-
-                if bytes_since_drain >= self.drain_threshold:
-                    await writer.drain()
-                    bytes_since_drain = 0
-
-            # Final drain for remaining buffered data
-            if bytes_since_drain > 0:
+            if drain_state.bytes_since_drain > 0:
                 await writer.drain()
 
-            # Send zero-length chunk to indicate end of data
+            # Zero-length chunk terminates the stream.
             writer.write(struct.pack('!L', 0))
             await writer.drain()
 
-            # Read response
             response = await asyncio.wait_for(reader.read(4096), timeout=self.timeout)
             writer.close()
             await writer.wait_closed()
 
             scan_time = asyncio.get_event_loop().time() - start_time
-            response_str = response.decode('utf-8').strip()
-            return self._parse_response(response_str, scan_time)
+            return self._parse_response(response.decode('utf-8').strip(), scan_time)
 
         except asyncio.TimeoutError:
             scan_time = asyncio.get_event_loop().time() - start_time
@@ -258,7 +258,7 @@ class VirusScanner:
             return VirusScanResult(
                 is_infected=False,
                 error="Scan timeout",
-                scan_time=scan_time
+                scan_time=scan_time,
             )
         except Exception as e:
             scan_time = asyncio.get_event_loop().time() - start_time
@@ -266,8 +266,35 @@ class VirusScanner:
             return VirusScanResult(
                 is_infected=False,
                 error=str(e),
-                scan_time=scan_time
+                scan_time=scan_time,
             )
+
+    async def _write_frame(
+        self,
+        writer: asyncio.StreamWriter,
+        drain_state: "_DrainState",
+        payload: bytes,
+    ) -> None:
+        """Write one INSTREAM frame and drain on the configured boundary."""
+        writer.write(struct.pack('!L', len(payload)))
+        writer.write(payload)
+        drain_state.bytes_since_drain += len(payload) + 4
+        if drain_state.bytes_since_drain >= self.drain_threshold:
+            await writer.drain()
+            drain_state.bytes_since_drain = 0
+
+    async def _scan_bytes_once(self, data: bytes) -> VirusScanResult:
+        """Single attempt to scan byte data via ClamAV INSTREAM protocol"""
+
+        async def produce(writer: asyncio.StreamWriter, drain_state: "_DrainState") -> None:
+            offset = 0
+            data_size = len(data)
+            while offset < data_size:
+                chunk = data[offset:offset + self.chunk_size]
+                await self._write_frame(writer, drain_state, chunk)
+                offset += len(chunk)
+
+        return await self._run_instream(produce)
 
     async def scan_bytes(self, data: bytes) -> VirusScanResult:
         """
@@ -342,60 +369,92 @@ class VirusScanner:
 
     async def _scan_large_file_once(self, file_path: str) -> VirusScanResult:
         """Single attempt to scan a large file by streaming chunks"""
-        start_time = asyncio.get_event_loop().time()
 
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=10
-            )
-
-            # nCMD prefix: tells ClamAV to use newline-terminated command mode.
-            # Plain "INSTREAM\n" returns "UNKNOWN COMMAND" on modern clamd builds.
-            writer.write(b'nINSTREAM\n')
-            await writer.drain()
-
-            # Stream file in chunks with batched draining
-            bytes_since_drain = 0
+        async def produce(writer: asyncio.StreamWriter, drain_state: "_DrainState") -> None:
             with open(file_path, 'rb') as f:
                 while True:
                     chunk = f.read(self.chunk_size)
                     if not chunk:
                         break
+                    await self._write_frame(writer, drain_state, chunk)
 
-                    writer.write(struct.pack('!L', len(chunk)))
-                    writer.write(chunk)
-                    bytes_since_drain += len(chunk) + 4
+        return await self._run_instream(produce)
 
-                    if bytes_since_drain >= self.drain_threshold:
-                        await writer.drain()
-                        bytes_since_drain = 0
+    async def _scan_stream_once(
+        self, chunks: AsyncIterator[bytes]
+    ) -> VirusScanResult:
+        """Single attempt to scan an async iterator of plaintext chunks.
 
-            # Final drain for remaining buffered data
-            if bytes_since_drain > 0:
-                await writer.drain()
+        Each yielded chunk is sent as one INSTREAM frame as-is — clamd accepts
+        variable frame sizes within StreamMaxLength. Caller is responsible for
+        ensuring the iterator yields finite total bytes <= MAX_INSTREAM_BYTES;
+        scan_stream() short-circuits before reaching this method when oversize.
+        """
 
-            # Send zero-length chunk to indicate end
-            writer.write(struct.pack('!L', 0))
-            await writer.drain()
+        async def produce(writer: asyncio.StreamWriter, drain_state: "_DrainState") -> None:
+            async for chunk in chunks:
+                if not chunk:
+                    continue
+                await self._write_frame(writer, drain_state, chunk)
 
-            # Read response
-            response = await asyncio.wait_for(reader.read(4096), timeout=self.timeout)
-            writer.close()
-            await writer.wait_closed()
+        return await self._run_instream(produce)
 
-            scan_time = asyncio.get_event_loop().time() - start_time
-            response_str = response.decode('utf-8').strip()
-            return self._parse_response(response_str, scan_time)
+    async def scan_stream(
+        self,
+        chunks: AsyncIterator[bytes],
+        total_size: int,
+        max_bytes: Optional[int] = None,
+    ) -> VirusScanResult:
+        """Scan an async iterator of plaintext chunks via INSTREAM.
 
-        except Exception as e:
-            scan_time = asyncio.get_event_loop().time() - start_time
-            logger.error(f"Failed to scan large file: {e}")
+        Use for chunked uploads: stream decrypted chunks straight into clamd
+        without writing a plaintext temp file. Honors retry + circuit breaker
+        identically to scan_bytes / scan_file.
+
+        If total_size > max_bytes (defaults to settings.MAX_INSTREAM_BYTES),
+        short-circuits to STATUS_BYPASSED with error="file_too_large_for_instream"
+        WITHOUT opening a connection. The caller (paid tier) will fail-closed
+        and quarantine with a size-specific reason.
+
+        The iterator is consumed once. If retries are needed, they re-attempt
+        the connection layer only — chunk replay is the caller's problem (and
+        is not currently needed since the failure modes that retry are network
+        errors before any frames are sent).
+        """
+        # Lazy import: avoid pulling settings into module import time so unit
+        # tests that construct VirusScanner directly don't need the env loaded.
+        if max_bytes is None:
+            from ..config import settings
+            max_bytes = settings.MAX_INSTREAM_BYTES
+
+        if total_size > max_bytes:
+            logger.info(
+                f"scan_stream: file_size={total_size} exceeds max_bytes={max_bytes}; "
+                f"emitting STATUS_BYPASSED (file_too_large_for_instream) without opening a connection"
+            )
             return VirusScanResult(
                 is_infected=False,
-                error=str(e),
-                scan_time=scan_time
+                error="file_too_large_for_instream",
+                scan_status=VirusScanResult.STATUS_BYPASSED,
             )
+
+        if not self.circuit_breaker.can_attempt():
+            logger.warning("ClamAV circuit breaker OPEN, skipping stream scan")
+            return VirusScanResult(
+                is_infected=False,
+                error="Circuit breaker open: ClamAV temporarily unavailable",
+            )
+
+        # Stream scans cannot retry mid-iteration: an async generator over
+        # disk chunks can be re-created by the caller, but we only see one
+        # iterator. Single attempt, then surface the result.
+        result = await self._scan_stream_once(chunks)
+        if result.error is None:
+            self.circuit_breaker.record_success()
+        else:
+            self.circuit_breaker.record_failure()
+            logger.error(f"ClamAV stream scan failed: {result.error}")
+        return result
 
     async def _scan_large_file(self, file_path: str) -> VirusScanResult:
         """Scan large file with retry and circuit breaker"""

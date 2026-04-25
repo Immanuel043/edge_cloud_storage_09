@@ -19,6 +19,7 @@ from ..services.auth import auth_service
 from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType
 from ..services.storage import storage_service
 from ..services.encryption import encryption_service
+from ..services.scan_streaming import iter_decrypted_chunks
 from ..models.database import User, Object, FileVersion
 from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..database import get_redis
@@ -1384,13 +1385,23 @@ async def test_speed_encrypted(file: UploadFile = File(...)):
 # ============================================================================
 
 async def _reassemble_chunked_file_for_scan(
-    file_obj: Object, file_key: bytes
+    file_obj: Object, file_key: bytes, max_bytes: int
 ) -> str:
     """Sequentially decrypt (+ decompress) chunks into a temp plaintext file.
 
     Raises on any missing/corrupt chunk — never returns a partial file. Caller
     MUST unlink the returned path in a finally block.
+
+    `max_bytes` is enforced inside the helper as defense-in-depth: every caller
+    must pass an explicit cap so a future caller can't accidentally reassemble
+    multi-GB files into temp space. Raises ValueError before any IO if the
+    file's declared size exceeds the cap.
     """
+    if file_obj.file_size is not None and file_obj.file_size > max_bytes:
+        raise ValueError(
+            f"File {file_obj.id} size {file_obj.file_size} exceeds reassembly cap {max_bytes}"
+        )
+
     chunk_info = file_obj.chunk_info or {}
     paths = chunk_info.get("paths") or {}
     count = int(chunk_info.get("count") or 0)
@@ -1461,7 +1472,6 @@ async def run_security_scans(
     scan_result_override: Optional[VirusScanResult] = None
     chunk_hold_id: Optional[str] = None
     chunk_hold_upload_id: Optional[str] = None
-    MAX_SCAN_REASSEMBLE_BYTES = 500 * 1024 * 1024
 
     try:
         logger.info(f"🔒 Starting security scans for {file_name} ({file_id})")
@@ -1489,29 +1499,34 @@ async def run_security_scans(
                     if _needs_decompress():
                         file_data = compressor.decompress(file_data)
             elif storage_strategy == "chunked":
-                if file_size > MAX_SCAN_REASSEMBLE_BYTES:
-                    # Too large to reassemble safely. Surface as a bypass
-                    # verdict so the paid-tier fail-closed path still runs,
-                    # instead of silently skipping.
+                if file_size > settings.MAX_INSTREAM_BYTES:
+                    # Too large for ClamAV's StreamMaxLength. Surface as a
+                    # bypass verdict so paid-tier fail-closed still runs;
+                    # the size-specific error code drives a distinct
+                    # quarantine reason downstream so admins can tell this
+                    # apart from "scanner was down".
                     logger.info(
                         f"Chunked file {file_name} ({file_size} bytes) exceeds "
-                        f"scan reassembly cap; emitting bypass verdict"
+                        f"MAX_INSTREAM_BYTES={settings.MAX_INSTREAM_BYTES}; "
+                        f"emitting bypass verdict"
                     )
                     scan_result_override = VirusScanResult(
                         is_infected=False,
-                        error="file_too_large_for_reassembly",
+                        error="file_too_large_for_instream",
                         scan_status=VirusScanResult.STATUS_BYPASSED,
                     )
                 else:
+                    # Streaming scan — no plaintext temp file. Acquire a
+                    # chunk hold so GC can't reap chunks mid-iteration.
                     chunk_hold_upload_id = (file_obj.chunk_info or {}).get("upload_id")
                     if chunk_hold_upload_id:
                         redis_client = await get_redis()
                         chunk_hold_id = await acquire_chunk_hold(
                             redis_client, chunk_hold_upload_id, "security_scan"
                         )
-                    scan_source_path = await _reassemble_chunked_file_for_scan(
-                        file_obj, file_key
-                    )
+                    # No scan_source_path / file_data populated. The dispatch
+                    # block below detects chunked + neither set and routes
+                    # to scan_stream against _iter_decrypted_chunks.
 
         except Exception as e:
             logger.error(f"Failed to retrieve file data for scanning: {e}")
@@ -1519,7 +1534,15 @@ async def run_security_scans(
             # any partial temp file that the helper may have already cleaned up.
             return
 
-        if file_data is None and scan_source_path is None and scan_result_override is None:
+        # The streaming chunked path leaves both file_data and scan_source_path
+        # None on purpose — its source is the _iter_decrypted_chunks generator.
+        # Only treat the absence of all three as a real "no source" failure.
+        if (
+            file_data is None
+            and scan_source_path is None
+            and scan_result_override is None
+            and storage_strategy != "chunked"
+        ):
             logger.warning(f"No file data available for security scanning: {file_name}")
             return
 
@@ -1567,11 +1590,20 @@ async def run_security_scans(
 
                 # Run the scan. The scanner itself owns retries + circuit
                 # breaker; we just consume the verdict. The source varies by
-                # storage strategy: chunked uses a disk path (streams >100MB),
-                # inline/single uses bytes, and the oversized-chunked case
-                # produces a synthetic bypass verdict upstream.
+                # storage strategy: chunked streams decrypted chunks straight
+                # to clamd via INSTREAM (no temp file); inline/single uses
+                # bytes; oversized-chunked produces a synthetic bypass upstream.
                 if scan_result_override is not None:
                     scan_result = scan_result_override
+                elif (
+                    storage_strategy == "chunked"
+                    and file_data is None
+                    and scan_source_path is None
+                ):
+                    scan_result = await virus_scanner.scan_stream(
+                        iter_decrypted_chunks(file_obj, file_key),
+                        total_size=file_size,
+                    )
                 elif scan_source_path is not None:
                     scan_result = await virus_scanner.scan_file(scan_source_path)
                 else:
@@ -1654,6 +1686,18 @@ async def run_security_scans(
                             f"ClamAV unavailable for paid-tier upload ({file_name}); "
                             f"quarantining pending rescan. reason={scan_result.error}"
                         )
+                        # Distinct reason strings let the rescan script and
+                        # admin UI tell scanner-down (rescannable) from
+                        # file-too-large (permanently bypassed at this cap).
+                        if scan_result.error == "file_too_large_for_instream":
+                            quarantine_reason_text = (
+                                "File exceeds maximum scan size; pending rescan"
+                            )
+                        else:
+                            quarantine_reason_text = (
+                                "Virus scanner unavailable at upload time; "
+                                "pending rescan"
+                            )
                         try:
                             from ..database import async_session as _async_session
                             from sqlalchemy import update as _update
@@ -1664,10 +1708,7 @@ async def run_security_scans(
                                     .values(
                                         is_quarantined=True,
                                         quarantined_at=datetime.utcnow(),
-                                        quarantine_reason=(
-                                            "Virus scanner unavailable at upload time; "
-                                            "pending rescan"
-                                        ),
+                                        quarantine_reason=quarantine_reason_text,
                                     )
                                 )
                                 await quarantine_db.commit()
@@ -1732,11 +1773,24 @@ async def run_security_scans(
             )
         else:
             try:
-                if scan_source_path is not None:
+                if file_data is not None:
+                    dlp_bytes = file_data
+                elif scan_source_path is not None:
+                    async with aiofiles.open(scan_source_path, "rb") as _dlp_f:
+                        dlp_bytes = await _dlp_f.read()
+                elif storage_strategy == "chunked":
+                    # Streaming virus-scan path didn't materialize a temp
+                    # file. Reassemble now, bounded by the DLP cap so this
+                    # can't slip through with an oversized chunked file.
+                    scan_source_path = await _reassemble_chunked_file_for_scan(
+                        file_obj, file_key, max_bytes=dlp_size_cap
+                    )
                     async with aiofiles.open(scan_source_path, "rb") as _dlp_f:
                         dlp_bytes = await _dlp_f.read()
                 else:
-                    dlp_bytes = file_data
+                    dlp_bytes = None  # Nothing to scan; skip DLP gracefully.
+                if dlp_bytes is None:
+                    raise RuntimeError("No bytes available for DLP scan")
                 dlp_result = await dlp_service.scan_bytes(dlp_bytes, file_name)
 
                 # Get detected types

@@ -48,6 +48,10 @@ COPY services/storage-service/alembic.ini .
 # Copy application (this already includes app/alembic/ directory)
 COPY services/storage-service/app/ ./app/
 
+# Copy operational scripts (e.g. rescan_quarantined). Importable as `scripts.*`
+# from the WORKDIR (/app), invoked via `python -m scripts.<name>`.
+COPY services/storage-service/scripts/ ./scripts/
+
 # Copy Rust cdylib from builder stage (replaces C rolling hash)
 COPY --from=rust-builder /build/target/release/libedge_byte_processor.so /app/app/utils/libedge_byte_processor.so
 
