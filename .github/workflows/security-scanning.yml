@@ -43,7 +43,7 @@ jobs:
           bandit -r services/storage-service/app -f json -o bandit-report.json || true
 
       - name: Upload Bandit results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bandit-security-report
           path: bandit-report.json
@@ -73,7 +73,7 @@ jobs:
           npm audit --json > npm-audit-report.json || true
 
       - name: Upload npm audit results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: npm-audit-report
           path: frontend-clean/npm-audit-report.json
@@ -147,8 +147,7 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: main
-          head: HEAD
+          extra_args: --only-verified
 
       - name: Run GitLeaks
         uses: gitleaks/gitleaks-action@v2
@@ -172,7 +171,7 @@ jobs:
           format: 'ALL'
 
       - name: Upload OWASP results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: owasp-dependency-check-report
           path: reports/
@@ -201,7 +200,7 @@ jobs:
           pip-licenses --format=json > python-licenses.json
 
       - name: Upload license report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: license-compliance-report
           path: services/storage-service/python-licenses.json
