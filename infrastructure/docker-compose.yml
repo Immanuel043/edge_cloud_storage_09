@@ -1285,6 +1285,21 @@ services:
         condition: service_healthy
       web-service:
         condition: service_healthy
+    # Wait for upstream DNS before starting nginx. nginx resolves upstream
+    # hostnames at config-parse time and exits with "host not found in
+    # upstream" if DNS isn't ready — which can happen on any restart, not
+    # just first boot, because `restart: unless-stopped` bypasses depends_on.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        for host in storage-service web-service; do
+          until getent hosts "$$host" > /dev/null 2>&1; do
+            echo "[entrypoint] waiting for DNS: $$host"
+            sleep 1
+          done
+        done
+        exec /docker-entrypoint.sh nginx -g 'daemon off;'
     ports:
       - "127.0.0.1:80:80"
       - "127.0.0.1:443:443"
