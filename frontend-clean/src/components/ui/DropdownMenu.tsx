@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -75,6 +76,15 @@ export const DropdownMenuTrigger: React.FC<DropdownMenuTriggerProps> = ({ childr
 
 type Align = 'start' | 'center' | 'end';
 
+const VIEWPORT_PADDING = 8;
+
+interface DropdownPosition {
+  top: number;
+  left: number;
+  maxHeight: number;
+  transformOrigin: string;
+}
+
 export interface DropdownMenuContentProps {
   align?: Align;
   sideOffset?: number;
@@ -90,37 +100,78 @@ export const DropdownMenuContent: React.FC<DropdownMenuContentProps> = ({
 }) => {
   const { open, setOpen, triggerRef, contentId } = useDropdown();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [pos, setPos] = useState<DropdownPosition | null>(null);
 
   // Compute anchored position relative to viewport.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
-    const trigger = triggerRef.current;
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    // Tentative left — corrected after we know menu width.
-    const tentative = { top: rect.bottom + sideOffset, left: rect.left };
-    setPos(tentative);
-
-    const finalize = () => {
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
       const menu = menuRef.current;
-      if (!menu) return;
+      if (!trigger || !menu) return;
+
+      const rect = trigger.getBoundingClientRect();
       const menuRect = menu.getBoundingClientRect();
+
       let left = rect.left;
       if (align === 'center') left = rect.left + rect.width / 2 - menuRect.width / 2;
       if (align === 'end') left = rect.right - menuRect.width;
-      // Clamp inside viewport.
-      left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
-      setPos({ top: rect.bottom + sideOffset, left });
+      left = Math.max(
+        VIEWPORT_PADDING,
+        Math.min(left, window.innerWidth - menuRect.width - VIEWPORT_PADDING)
+      );
+
+      const spaceBelow = window.innerHeight - rect.bottom - sideOffset - VIEWPORT_PADDING;
+      const spaceAbove = rect.top - sideOffset - VIEWPORT_PADDING;
+      const shouldOpenAbove = menuRect.height > spaceBelow && spaceAbove > spaceBelow;
+      const availableHeight = Math.max(
+        VIEWPORT_PADDING,
+        shouldOpenAbove ? spaceAbove : spaceBelow
+      );
+      const renderedHeight = Math.min(menuRect.height, availableHeight);
+      const top = shouldOpenAbove
+        ? Math.max(VIEWPORT_PADDING, rect.top - sideOffset - renderedHeight)
+        : Math.min(
+            rect.bottom + sideOffset,
+            window.innerHeight - renderedHeight - VIEWPORT_PADDING
+          );
+
+      setPos({
+        top,
+        left,
+        maxHeight: availableHeight,
+        transformOrigin: shouldOpenAbove ? 'bottom right' : 'top right',
+      });
+    };
+
+    // Render once at the trigger so the menu can be measured, then settle it
+    // before paint. This prevents edge menus from flashing off-screen.
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    setPos({
+      top: Math.min(rect.bottom + sideOffset, window.innerHeight - VIEWPORT_PADDING),
+      left: Math.max(VIEWPORT_PADDING, Math.min(rect.left, window.innerWidth - VIEWPORT_PADDING)),
+      maxHeight: Math.max(VIEWPORT_PADDING, window.innerHeight - VIEWPORT_PADDING * 2),
+      transformOrigin: 'top right',
+    });
+
+    const raf = requestAnimationFrame(() => {
+      updatePosition();
       // Move focus to first enabled menuitem so ArrowUp/Down + Enter work.
-      const firstItem = menu.querySelector<HTMLElement>(
+      const firstItem = menuRef.current?.querySelector<HTMLElement>(
         '[role="menuitem"]:not([aria-disabled="true"])'
       );
       firstItem?.focus();
+    });
+
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
     };
-    // Next frame: menu is rendered, measure and reposition.
-    const raf = requestAnimationFrame(finalize);
-    return () => cancelAnimationFrame(raf);
   }, [open, align, sideOffset, triggerRef]);
 
   // Click-outside + ESC dismissal.
@@ -183,9 +234,15 @@ export const DropdownMenuContent: React.FC<DropdownMenuContentProps> = ({
       id={contentId}
       role="menu"
       onKeyDown={onKeyDown}
-      style={{ position: 'fixed', top: pos.top, left: pos.left }}
+      style={{
+        position: 'fixed',
+        top: pos.top,
+        left: pos.left,
+        maxHeight: pos.maxHeight,
+        transformOrigin: pos.transformOrigin,
+      }}
       className={cn(
-        'z-[200] min-w-[12rem] rounded-lg border border-border bg-surface-elevated p-1 shadow-lg',
+        'z-[200] min-w-[12rem] overflow-y-auto rounded-lg border border-border bg-surface-elevated p-1 shadow-lg',
         'animate-fade-up',
         className
       )}
