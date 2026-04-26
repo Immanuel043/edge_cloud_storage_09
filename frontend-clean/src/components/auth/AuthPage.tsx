@@ -340,6 +340,8 @@ const AuthPage: React.FC = () => {
     const plan = params.get('plan');
     const service = params.get('service');
     const billing = params.get('billing');
+    const invitation = params.get('invitation');
+    const emailParam = params.get('email');
 
     if (plan) {
       setPlanFromUrl(plan);
@@ -352,6 +354,15 @@ const AuthPage: React.FC = () => {
 
     if (service === 'zk') {
       setEnableZK(true);
+    }
+
+    // Share-invitation deep link: prefill email and switch to register so the
+    // recipient can claim the share with the email it was sent to.
+    if (emailParam) {
+      setFormData((prev) => ({ ...prev, email: emailParam }));
+    }
+    if (invitation) {
+      setAuthMode('register');
     }
   }, []);
 

@@ -336,12 +336,16 @@ class EmailService:
             )
             if message:
                 html_content += f'<p>Message: "{message}"</p>'
+            if share_url:
+                html_content += f'<p><a href="{share_url}">Open shared {item_type}</a></p>'
 
         text_content = (
             f"{owner_email} shared a {item_type} with you: {item_name} ({permission} access)."
         )
         if message:
             text_content += f'\nMessage: "{message}"'
+        if share_url:
+            text_content += f"\n\nOpen shared {item_type}: {share_url}"
 
         return await self.send_email(
             to_email=to_email,

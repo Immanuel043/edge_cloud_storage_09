@@ -30,6 +30,8 @@ interface ShareResponse {
   share_url: string;
   zk_files_hidden?: number;
   warning?: string;
+  invited_count?: number;
+  invited_emails?: string[];
 }
 
 /**
@@ -50,6 +52,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({
   const isZKEncrypted = file?.is_encrypted || file?.encryption_mode === 'client_zk';
 
   const [shareUrl, setShareUrl] = useState<string>('');
+  const [invitedEmails, setInvitedEmails] = useState<string[] | null>(null);
   const [shareWarning, setShareWarning] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -241,13 +244,15 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({
         );
       }
 
-      const data = await response.json() as { message?: string };
-      setShareUrl(`Shared with ${emailList.length} user(s)`);
+      await response.json() as { message?: string };
+      setInvitedEmails(emailList);
 
       if (onShareComplete) {
         onShareComplete({
-          share_url: data.message || `Shared with ${emailList.length} user(s)`,
-        } as Parameters<typeof onShareComplete>[0]);
+          share_url: '',
+          invited_count: emailList.length,
+          invited_emails: emailList,
+        });
       }
     } catch (err: unknown) {
       const errorMessage = getErrorMessage(err);
@@ -336,7 +341,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({
     <Modal open={true} onClose={onClose} size="md" title={`Share "${itemName}"`}>
       <ModalBody className="space-y-4">
         {/* Sharing mode toggle — pill tabs */}
-        {!shareUrl && (
+        {!shareUrl && !invitedEmails && (
           <Tabs
             value={sharingMode}
             onChange={(v) => setSharingMode(v as SharingMode)}
@@ -355,8 +360,30 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({
           </Tabs>
         )}
 
-        {shareUrl ? (
-          // Share created — show URL + summary
+        {invitedEmails ? (
+          // Collaborative share success — list invited recipients, no fake URL
+          <div className="space-y-3">
+            <div className="rounded-lg border border-border bg-surface-muted p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Users className="h-4 w-4 text-success" />
+                <p className="text-body-sm font-medium text-fg">
+                  Invitation sent to {invitedEmails.length}{' '}
+                  {invitedEmails.length === 1 ? 'recipient' : 'recipients'}
+                </p>
+              </div>
+              <ul className="text-body-sm text-fg-muted space-y-1 ml-6 list-disc">
+                {invitedEmails.map((e) => (
+                  <li key={e} className="break-all">{e}</li>
+                ))}
+              </ul>
+            </div>
+            <p className="text-caption text-fg-subtle">
+              They&rsquo;ll receive an email with a link to access &ldquo;{itemName}&rdquo;.
+              If they don&rsquo;t have an account yet, the link will guide them through sign-up.
+            </p>
+          </div>
+        ) : shareUrl ? (
+          // Share link created — show URL + summary
           <div className="space-y-4">
             <div className="rounded-lg border border-border bg-surface-muted p-3">
               <p className="text-caption text-fg-subtle mb-1">Share URL:</p>
@@ -533,7 +560,7 @@ const ShareOptionsModal: React.FC<ShareOptionsModalProps> = ({
       </ModalBody>
 
       <ModalFooter>
-        {shareUrl ? (
+        {(shareUrl || invitedEmails) ? (
           <Button variant="primary" fullWidth onClick={onClose}>
             Done
           </Button>

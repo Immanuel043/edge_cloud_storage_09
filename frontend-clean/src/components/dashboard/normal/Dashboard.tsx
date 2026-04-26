@@ -135,7 +135,17 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     });
   };
 
-  const [activeView, setActiveView] = useState<ActiveViewType>('cloud-drive');
+  const [activeView, setActiveView] = useState<ActiveViewType>(() => {
+    // Honor ?view=<name> deep links (e.g. /?view=shared-with-me from share emails)
+    const viewParam = new URLSearchParams(window.location.search).get('view');
+    const validViews: ReadonlySet<string> = new Set([
+      'cloud-drive', 'recents', 'favorites', 'shared-with-me', 'trash',
+      'dedup', 'analytics', 'auto-organize', 'recommendations', 'quota-alerts',
+      'storage-optimization', 'settings', 'billing', 'payment-portal',
+      'security-alerts', 'my-share-links', 'share-analytics',
+    ]);
+    return viewParam && validViews.has(viewParam) ? (viewParam as ActiveViewType) : 'cloud-drive';
+  });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [searchQuery] = useState<string>('');

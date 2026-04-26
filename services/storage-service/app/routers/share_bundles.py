@@ -755,7 +755,16 @@ async def share_bundle_with_users(
 
     # Send email notifications (fire-and-forget)
     from ..services.email_service import email_service
-    for email in share_data.emails:
+    from ..config import settings
+    from urllib.parse import urlencode
+    for _shared_access, email, invitation_token, recipient_user in shared_items:
+        if recipient_user:
+            share_url = f"{settings.FRONTEND_URL}/?view=shared-with-me"
+        else:
+            share_url = (
+                f"{settings.FRONTEND_URL}/auth?"
+                + urlencode({"invitation": invitation_token, "email": email})
+            )
         background_tasks.add_task(
             email_service.send_share_notification,
             to_email=email,
@@ -764,6 +773,7 @@ async def share_bundle_with_users(
             item_type="bundle",
             permission=share_data.permission,
             message=share_data.message,
+            share_url=share_url,
         )
 
     return responses

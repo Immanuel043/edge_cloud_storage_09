@@ -516,6 +516,8 @@ export interface ShareData {
   password_protected?: boolean;
   max_downloads?: number;
   downloads_used?: number;
+  invited_count?: number;
+  invited_emails?: string[];
 }
 
 /**

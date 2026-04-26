@@ -11,7 +11,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,15 @@ async def share_file_with_users(
 
     # Send email notifications (fire-and-forget)
     from ..services.email_service import email_service
-    for email in share_data.emails:
+    from ..config import settings
+    for _shared_access, email, invitation_token, recipient_user in shared_items:
+        if recipient_user:
+            share_url = f"{settings.FRONTEND_URL}/?view=shared-with-me"
+        else:
+            share_url = (
+                f"{settings.FRONTEND_URL}/auth?"
+                + urlencode({"invitation": invitation_token, "email": email})
+            )
         background_tasks.add_task(
             email_service.send_share_notification,
             to_email=email,
@@ -232,6 +240,7 @@ async def share_file_with_users(
             item_type="file",
             permission=share_data.permission,
             message=share_data.message,
+            share_url=share_url,
         )
 
     return responses
@@ -312,7 +321,15 @@ async def share_folder_with_users(
 
     # Send email notifications (fire-and-forget)
     from ..services.email_service import email_service
-    for email in share_data.emails:
+    from ..config import settings
+    for _shared_access, email, invitation_token, recipient_user in shared_items:
+        if recipient_user:
+            share_url = f"{settings.FRONTEND_URL}/?view=shared-with-me"
+        else:
+            share_url = (
+                f"{settings.FRONTEND_URL}/auth?"
+                + urlencode({"invitation": invitation_token, "email": email})
+            )
         background_tasks.add_task(
             email_service.send_share_notification,
             to_email=email,
@@ -321,6 +338,7 @@ async def share_folder_with_users(
             item_type="folder",
             permission=share_data.permission,
             message=share_data.message,
+            share_url=share_url,
         )
 
     return responses
