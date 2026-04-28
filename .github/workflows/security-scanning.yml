@@ -92,8 +92,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          cd services/storage-service
-          docker build -t edge-storage:latest .
+          docker build -t edge-storage:latest -f services/storage-service/Dockerfile .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
