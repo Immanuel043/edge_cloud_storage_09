@@ -45,6 +45,7 @@ jobs:
       - name: Run ML feature tests with detailed markers
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
+          SECRET_KEY: test-secret-key-for-ci-only-not-for-production
           TESTING: true
         run: |
           pytest tests/unit/ml_features/ -v -m ml --cov --cov-report=html
@@ -52,6 +53,7 @@ jobs:
       - name: Run slow/integration tests
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
+          SECRET_KEY: test-secret-key-for-ci-only-not-for-production
           TESTING: true
         run: |
           pytest tests/integration/ -v -m "slow or integration" --cov-append
@@ -72,6 +74,21 @@ jobs:
     name: Performance Tests
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -87,6 +104,10 @@ jobs:
           pip install locust pytest-benchmark
 
       - name: Run performance benchmarks
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
+          SECRET_KEY: test-secret-key-for-ci-only-not-for-production
+          TESTING: true
         run: |
           pytest tests/performance/ -v --benchmark-only
 
@@ -96,6 +117,9 @@ jobs:
   security-scan:
     name: Security Scanning
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: Checkout code
