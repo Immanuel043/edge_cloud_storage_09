@@ -1,9 +1,11 @@
 # services/storage-service/app/models/schemas.py
 
-from pydantic import BaseModel, EmailStr, field_validator
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 from uuid import UUID
+
+from pydantic import BaseModel, EmailStr, field_validator
+
 
 # User Schemas
 class UserCreate(BaseModel):
@@ -12,9 +14,11 @@ class UserCreate(BaseModel):
     password: str
     plan_type: str = "individual"
 
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
 
 class UserResponse(BaseModel):
     id: str
@@ -26,29 +30,36 @@ class UserResponse(BaseModel):
     theme: str
     created_at: Optional[datetime] = None
 
+
 class ThemeUpdate(BaseModel):
     theme: str
+
 
 # Email Verification Schemas
 class RegisterInitRequest(BaseModel):
     """Request to start registration - sends verification code"""
+
     email: EmailStr
+
 
 class RegisterVerifyRequest(BaseModel):
     """Request to verify email code"""
+
     email: EmailStr
     verification_code: str
-    
-    @field_validator('verification_code')
+
+    @field_validator("verification_code")
     @classmethod
     def validate_code(cls, v):
         """Validate verification code format"""
         if not v or len(v) != 6 or not v.isdigit():
-            raise ValueError('Verification code must be 6 digits')
+            raise ValueError("Verification code must be 6 digits")
         return v
+
 
 class RegisterCompleteRequest(BaseModel):
     """Request to complete registration after email verification"""
+
     email: EmailStr
     username: str
     password: str
@@ -56,46 +67,57 @@ class RegisterCompleteRequest(BaseModel):
     plan_code: Optional[str] = "normal_free"  # Plan to subscribe to
     billing_cycle: Optional[str] = "monthly"  # Billing cycle: 'monthly', 'six_months', 'yearly'
 
+
 class ResendCodeRequest(BaseModel):
     """Request to resend verification code"""
+
     email: EmailStr
+
 
 # Password Reset Schemas
 class ForgotPasswordRequest(BaseModel):
     """Request to initiate password reset"""
+
     email: EmailStr
+
 
 class ForgotPasswordVerifyRequest(BaseModel):
     """Request to verify password reset code"""
+
     email: EmailStr
     code: str
 
-    @field_validator('code')
+    @field_validator("code")
     @classmethod
     def validate_code(cls, v):
         """Validate reset code format"""
         if not v or len(v) != 6 or not v.isdigit():
-            raise ValueError('Code must be 6 digits')
+            raise ValueError("Code must be 6 digits")
         return v
+
 
 class ForgotPasswordResetRequest(BaseModel):
     """Request to set new password after verification"""
+
     email: EmailStr
     reset_token: str
     new_password: str
 
-    @field_validator('new_password')
+    @field_validator("new_password")
     @classmethod
     def validate_password(cls, v):
         if len(v) < 8:
-            raise ValueError('Password must be at least 8 characters')
+            raise ValueError("Password must be at least 8 characters")
         return v
+
 
 class VerificationResponse(BaseModel):
     """Response after email verification"""
+
     verified: bool
     token: str
     message: Optional[str] = None
+
 
 # File Schemas
 class FileUploadInit(BaseModel):
@@ -103,14 +125,15 @@ class FileUploadInit(BaseModel):
     file_size: int
     folder_id: Optional[str] = None
 
+
 class FileResponse(BaseModel):
     id: str
     name: str
     size: int
     mime_type: Optional[str]
     folder_id: Optional[str] = None
-    storage_tier: Optional[str] = 'hot'  # Optional for ZK files which may not have tiers
-    backup_status: Optional[str] = 'none'  # Optional for ZK files
+    storage_tier: Optional[str] = "hot"  # Optional for ZK files which may not have tiers
+    backup_status: Optional[str] = "none"  # Optional for ZK files
     created_at: datetime
     last_accessed: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -127,10 +150,12 @@ class FileResponse(BaseModel):
     encryption_version: Optional[int] = None  # 1=V1, 2=V2 (HKDF+AAD)
     encryption_mode: Optional[str] = None  # "client_zk" for ZK encryption
 
+
 # Folder Schemas
 class FolderCreate(BaseModel):
     name: str
     parent_id: Optional[str] = None
+
 
 class FolderResponse(BaseModel):
     id: str
@@ -139,15 +164,17 @@ class FolderResponse(BaseModel):
     parent_id: Optional[str]
     created_at: datetime
 
+
 # Share Schemas
 class ShareCreate(BaseModel):
-    share_type: str = 'view'  # view, download, edit
+    share_type: str = "view"  # view, download, edit
     expires_hours: Optional[int] = None  # None = never expires
     password: Optional[str] = None
     max_downloads: Optional[int] = None  # None = unlimited
     allow_preview: bool = True
     allowed_ips: Optional[List[str]] = None  # IP whitelist (null = unrestricted)
     watermark_text: Optional[str] = None  # Overlay watermark on previews
+
 
 class ShareResponse(BaseModel):
     share_url: str
@@ -161,11 +188,13 @@ class ShareResponse(BaseModel):
     zk_files_hidden: int = 0  # Count of ZK files hidden from folder share viewers
     warning: Optional[str] = None  # Warning message (e.g., ZK files hidden)
 
+
 class CollaborativeShareCreate(BaseModel):
     emails: List[str]  # List of emails to share with
-    permission: str = 'view'  # view, download, edit
+    permission: str = "view"  # view, download, edit
     expires_hours: Optional[int] = None
     message: Optional[str] = None  # Optional message to recipients
+
 
 class CollaborativeShareResponse(BaseModel):
     id: str
@@ -174,6 +203,7 @@ class CollaborativeShareResponse(BaseModel):
     invitation_status: str
     invitation_token: Optional[str] = None
     created_at: datetime
+
 
 class SharedItemResponse(BaseModel):
     id: str
@@ -266,6 +296,7 @@ class ShareAccessLogResponse(BaseModel):
 
 class ShareAnalyticsSummary(BaseModel):
     """Aggregate analytics across all user's shares"""
+
     total_shares: int = 0
     active_shares: int = 0
     total_views: int = 0
@@ -277,6 +308,7 @@ class ShareAnalyticsSummary(BaseModel):
 
 class ShareDailyStats(BaseModel):
     """Daily access stats for a single day"""
+
     date: str  # YYYY-MM-DD
     views: int = 0
     downloads: int = 0
@@ -284,12 +316,14 @@ class ShareDailyStats(BaseModel):
 
 class ShareAnalyticsTrends(BaseModel):
     """Time-series access data"""
+
     daily: List[ShareDailyStats]
     period_days: int
 
 
 class ShareItemStats(BaseModel):
     """Per-share analytics"""
+
     id: str
     name: str
     share_type: str  # link or bundle
@@ -304,6 +338,7 @@ class ShareItemStats(BaseModel):
 
 class ShareAnalyticsTopItems(BaseModel):
     """Top shares by views/downloads"""
+
     items: List[ShareItemStats]
     total: int
 
@@ -312,13 +347,15 @@ class ShareAnalyticsTopItems(BaseModel):
 # Share Bundle Schemas - Multi-file sharing (better than Google Drive)
 # ============================================================================
 
+
 class ShareBundleCreate(BaseModel):
     """Request to create a share bundle with multiple files and/or folders"""
+
     file_ids: Optional[List[str]] = []  # List of file IDs to include in bundle
     folder_ids: Optional[List[str]] = []  # List of folder IDs (all files inside will be included)
     name: Optional[str] = None  # Auto-generate if not provided
     description: Optional[str] = None
-    share_type: str = 'view'  # view, download
+    share_type: str = "view"  # view, download
     expires_hours: Optional[int] = None  # None = never expires
     password: Optional[str] = None
     max_downloads: Optional[int] = None
@@ -331,6 +368,7 @@ class ShareBundleCreate(BaseModel):
 
 class ShareBundleUpdate(BaseModel):
     """Request to update share bundle settings"""
+
     name: Optional[str] = None
     description: Optional[str] = None
     share_type: Optional[str] = None
@@ -347,6 +385,7 @@ class ShareBundleUpdate(BaseModel):
 
 class ShareBundleFileItem(BaseModel):
     """File item within a share bundle"""
+
     id: str
     name: str
     size: int
@@ -358,6 +397,7 @@ class ShareBundleFileItem(BaseModel):
 
 class ShareBundleResponse(BaseModel):
     """Response when creating/getting a share bundle"""
+
     id: str
     name: str
     description: Optional[str] = None
@@ -383,6 +423,7 @@ class ShareBundleResponse(BaseModel):
 
 class ShareBundleListResponse(BaseModel):
     """Response for listing user's share bundles"""
+
     id: str
     name: str
     share_type: str
@@ -398,6 +439,7 @@ class ShareBundleListResponse(BaseModel):
 
 class ShareBundlePublicInfo(BaseModel):
     """Public info for share bundle viewer (no auth required)"""
+
     name: str
     description: Optional[str] = None
     file_count: int
@@ -414,11 +456,13 @@ class ShareBundlePublicInfo(BaseModel):
 
 class ShareBundleAddFiles(BaseModel):
     """Request to add files to existing bundle"""
+
     file_ids: List[str]
 
 
 class ShareBundleRemoveFiles(BaseModel):
     """Request to remove files from bundle"""
+
     file_ids: List[str]
 
 
@@ -430,6 +474,7 @@ class StorageStats(BaseModel):
     percentage_used: float
     distribution: Dict[str, Dict[str, Any]]
 
+
 # Activity Schemas
 class ActivityResponse(BaseModel):
     id: str
@@ -439,6 +484,7 @@ class ActivityResponse(BaseModel):
     metadata: Optional[Dict[str, Any]]
     created_at: datetime
 
+
 # Upload Schemas
 class UploadInitResponse(BaseModel):
     upload_id: str
@@ -447,6 +493,7 @@ class UploadInitResponse(BaseModel):
     total_chunks: int
     direct_upload: bool
     recommended_concurrency: int = 4
+
 
 class UploadStatusResponse(BaseModel):
     upload_id: str
@@ -459,17 +506,21 @@ class UploadStatusResponse(BaseModel):
     progress: float
     recommended_concurrency: int = 4
 
+
 # Token Schemas
 class PendingUpgrade(BaseModel):
     plan_code: str
     billing_cycle: Optional[str] = None
+
 
 class Token(BaseModel):
     access_token: str
     token_type: str
     user: UserResponse
     pending_upgrade: Optional[PendingUpgrade] = None
-#Storage Stats extended with type distribution
+
+
+# Storage Stats extended with type distribution
 class StorageStats(BaseModel):
     quota: int
     used: int
@@ -479,17 +530,20 @@ class StorageStats(BaseModel):
     distribution: Dict[str, Dict[str, Any]]  # by tier
     type_distribution: Dict[str, Dict[str, Any]]  # by storage type
 
+
 # URL Upload Schemas
 class URLUploadRequest(BaseModel):
     url: str
     folder_id: Optional[str] = None
     filename: Optional[str] = None  # Override auto-detected filename
 
+
 class URLUploadResponse(BaseModel):
     job_id: str
     status: str
     url: str
     message: str
+
 
 class URLUploadStatusResponse(BaseModel):
     job_id: str
@@ -503,6 +557,7 @@ class URLUploadStatusResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+
 # Folder Upload Schemas
 class FolderUploadInit(BaseModel):
     folder_name: str
@@ -510,23 +565,28 @@ class FolderUploadInit(BaseModel):
     total_files: int
     total_size: int
 
+
 class FolderUploadInitResponse(BaseModel):
     session_id: str
     root_folder_id: str
     folder_name: str
     message: str
 
+
 class FolderFileItem(BaseModel):
     relative_path: str  # Path relative to root folder (e.g., "docs/file.txt")
     file_size: int
     mime_type: Optional[str] = None
 
+
 class FolderUploadFileRequest(BaseModel):
     session_id: str
     relative_path: str
 
+
 class FolderUploadCompleteRequest(BaseModel):
     session_id: str
+
 
 class FolderUploadStatusResponse(BaseModel):
     session_id: str
@@ -537,6 +597,7 @@ class FolderUploadStatusResponse(BaseModel):
     failed_files: int
     progress: float  # 0-100
     errors: List[str] = []
+
 
 # ML Features - Quota Prediction Schemas
 class QuotaPredictionResponse(BaseModel):
@@ -555,6 +616,7 @@ class QuotaPredictionResponse(BaseModel):
     model_type: Optional[str] = None
     prediction_date: datetime
 
+
 class UsageHistoryPoint(BaseModel):
     date: datetime
     storage_used: int
@@ -563,12 +625,14 @@ class UsageHistoryPoint(BaseModel):
     warm_used: int
     cold_used: int
 
+
 class UsageHistoryResponse(BaseModel):
     user_id: str
     start_date: datetime
     end_date: datetime
     data_points: List[UsageHistoryPoint]
     total_points: int
+
 
 class QuotaAlertResponse(BaseModel):
     id: str
@@ -582,6 +646,7 @@ class QuotaAlertResponse(BaseModel):
     created_at: datetime
     message: str  # Human-readable alert message
 
+
 class DismissAlertRequest(BaseModel):
     alert_id: str
 
@@ -590,8 +655,10 @@ class DismissAlertRequest(BaseModel):
 # Storage Optimization Schemas
 # ============================================================================
 
+
 class StorageAnalysisResponse(BaseModel):
     """Response schema for storage analysis"""
+
     id: str
     user_id: str
 
@@ -625,6 +692,7 @@ class StorageAnalysisResponse(BaseModel):
 
 class OptimizationSuggestionResponse(BaseModel):
     """Response schema for optimization suggestion"""
+
     id: str
     user_id: str
     analysis_id: str
@@ -654,12 +722,14 @@ class OptimizationSuggestionResponse(BaseModel):
 
 class OptimizationActionRequest(BaseModel):
     """Request to apply an optimization suggestion"""
+
     suggestion_id: str
     auto_apply: bool = False  # Whether to apply automatically
 
 
 class OptimizationActionResponse(BaseModel):
     """Response after applying optimization"""
+
     id: str
     action_type: str
     status: str
@@ -672,6 +742,7 @@ class OptimizationActionResponse(BaseModel):
 
 class StorageBreakdown(BaseModel):
     """Storage breakdown by category"""
+
     category: str
     files: int
     size: int
@@ -680,6 +751,7 @@ class StorageBreakdown(BaseModel):
 
 class OptimizationSummary(BaseModel):
     """Summary of all optimization opportunities"""
+
     user_id: str
     total_size: int
     total_files: int
@@ -703,8 +775,10 @@ class OptimizationSummary(BaseModel):
 # Auto-Organization Schemas
 # ============================================================================
 
+
 class OrganizationClusterResponse(BaseModel):
     """Response schema for organization cluster"""
+
     id: str
     user_id: str
     cluster_id: int
@@ -737,6 +811,7 @@ class OrganizationClusterResponse(BaseModel):
 
 class FileClusterAssignmentResponse(BaseModel):
     """Response schema for file cluster assignment"""
+
     file_id: str
     cluster_id: str
     confidence_score: float
@@ -745,6 +820,7 @@ class FileClusterAssignmentResponse(BaseModel):
 
 class OrganizationRuleResponse(BaseModel):
     """Response schema for organization rule"""
+
     id: str
     user_id: str
     rule_name: str
@@ -779,6 +855,7 @@ class OrganizationRuleResponse(BaseModel):
 
 class OrganizationSessionResponse(BaseModel):
     """Response schema for organization session"""
+
     id: str
     user_id: str
     session_type: str  # ml_clustering, rule_based, manual
@@ -808,6 +885,7 @@ class OrganizationSessionResponse(BaseModel):
 
 class StartOrganizationRequest(BaseModel):
     """Request to start auto-organization"""
+
     algorithm: str = "kmeans"  # kmeans or dbscan
     num_clusters: Optional[int] = None  # For k-means (auto-detect if None)
     min_files: int = 10  # Minimum files to organize
@@ -816,12 +894,14 @@ class StartOrganizationRequest(BaseModel):
 
 class ApplyClusterRequest(BaseModel):
     """Request to apply a cluster organization"""
+
     cluster_id: str
     target_folder_path: Optional[str] = None  # Override suggested path
 
 
 class CreateRuleRequest(BaseModel):
     """Request to create organization rule"""
+
     rule_name: str
     rule_type: str  # pattern, extension, date, ml_cluster
 
@@ -845,6 +925,7 @@ class CreateRuleRequest(BaseModel):
 
 class UpdateRuleRequest(BaseModel):
     """Request to update organization rule"""
+
     is_active: Optional[bool] = None
     auto_apply: Optional[bool] = None
     priority: Optional[int] = None
@@ -853,6 +934,7 @@ class UpdateRuleRequest(BaseModel):
 
 class OrganizationPreview(BaseModel):
     """Preview of organization results"""
+
     clusters: List[OrganizationClusterResponse]
     total_files: int
     total_clusters: int
@@ -864,8 +946,10 @@ class OrganizationPreview(BaseModel):
 # Content Recommendations Schemas
 # ============================================================================
 
+
 class FileDetailResponse(BaseModel):
     """File details for recommendation response"""
+
     id: str
     name: str
     size: int
@@ -879,6 +963,7 @@ class FileDetailResponse(BaseModel):
 
 class SimilarFileResponse(BaseModel):
     """Response schema for similar file recommendation"""
+
     file: FileDetailResponse
     similarity_score: float  # 0-1
     similarity_type: str  # content, collaborative, hybrid
@@ -888,6 +973,7 @@ class SimilarFileResponse(BaseModel):
 
 class RecommendationResponse(BaseModel):
     """Response schema for file recommendation"""
+
     id: str
     user_id: str
     recommended_file: FileDetailResponse
@@ -903,6 +989,7 @@ class RecommendationResponse(BaseModel):
 
 class UserInteractionRequest(BaseModel):
     """Request to track user interaction"""
+
     file_id: str
     interaction_type: str  # view, download, share, favorite, tag
     total_time_spent: Optional[int] = None  # Seconds spent viewing
@@ -911,6 +998,7 @@ class UserInteractionRequest(BaseModel):
 
 class UserInteractionResponse(BaseModel):
     """Response after tracking interaction"""
+
     id: str
     file_id: str
     interaction_type: str
@@ -920,6 +1008,7 @@ class UserInteractionResponse(BaseModel):
 
 class RecommendationFeedbackRequest(BaseModel):
     """Request to submit feedback on recommendation"""
+
     recommendation_id: str
     feedback_type: str  # positive, negative, irrelevant
     feedback_score: Optional[int] = None  # 1-5 rating
@@ -928,6 +1017,7 @@ class RecommendationFeedbackRequest(BaseModel):
 
 class RecommendationFeedbackResponse(BaseModel):
     """Response after submitting feedback"""
+
     id: str
     recommendation_id: str
     feedback_type: str
@@ -937,6 +1027,7 @@ class RecommendationFeedbackResponse(BaseModel):
 
 class RecommendationSettingsRequest(BaseModel):
     """Request to configure recommendation preferences"""
+
     enabled: bool = True
     algorithm_preference: Optional[str] = None  # tfidf, collaborative, hybrid
     min_score_threshold: float = 0.3  # Minimum score to show (0-1)
@@ -948,6 +1039,7 @@ class RecommendationSettingsRequest(BaseModel):
 
 class RecommendationSettingsResponse(BaseModel):
     """Response for recommendation settings"""
+
     user_id: str
     enabled: bool
     algorithm_preference: Optional[str] = None
@@ -961,6 +1053,7 @@ class RecommendationSettingsResponse(BaseModel):
 
 class TrendingFileResponse(BaseModel):
     """Response for trending files"""
+
     file: FileDetailResponse
     trending_score: float  # Based on recent interactions
     interaction_count: int  # Total interactions in time window
@@ -970,6 +1063,7 @@ class TrendingFileResponse(BaseModel):
 
 class PersonalizedRecommendationSummary(BaseModel):
     """Summary of all recommendations for a user"""
+
     user_id: str
     total_recommendations: int
     by_type: Dict[str, int]  # Count by recommendation_type
@@ -982,6 +1076,7 @@ class PersonalizedRecommendationSummary(BaseModel):
 
 class FileSimilarityResponse(BaseModel):
     """Response for pre-computed file similarity"""
+
     file_id: str
     similar_file_id: str
     similarity_score: float
@@ -992,6 +1087,7 @@ class FileSimilarityResponse(BaseModel):
 
 class BatchRecommendationRequest(BaseModel):
     """Request for batch recommendation generation"""
+
     file_ids: Optional[List[str]] = None  # Generate for specific files
     regenerate: bool = False  # Force regeneration of existing recommendations
     algorithm: str = "hybrid"  # tfidf, collaborative, hybrid
@@ -1000,6 +1096,7 @@ class BatchRecommendationRequest(BaseModel):
 
 class BatchRecommendationResponse(BaseModel):
     """Response for batch recommendation generation"""
+
     job_id: str
     status: str  # pending, processing, completed, failed
     total_files: int

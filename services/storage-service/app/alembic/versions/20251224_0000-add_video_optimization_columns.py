@@ -13,13 +13,13 @@ Adds columns for proactive video optimization pipeline:
 - Object.optimized_size: Size of optimized version in bytes
 - Object.video_processed_at: Timestamp when processing completed
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '20251224_0000'
-down_revision = '20251223_0000'
+revision = "20251224_0000"
+down_revision = "20251223_0000"
 branch_labels = None
 depends_on = None
 

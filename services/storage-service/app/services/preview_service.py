@@ -10,10 +10,10 @@ Reuses existing preview_generator and preview_optimizer - no new generation logi
 
 import asyncio
 import logging
+import mimetypes
 import os
 import tempfile
-import mimetypes
-from typing import Optional, Tuple, Dict
+from typing import Dict, Optional, Tuple
 
 import aiofiles
 
@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Types eligible for preview generation (mirrors preview_generator supported types)
 _PREVIEWABLE_MIMES = {
-    'image/', 'video/', 'audio/', 'application/pdf',
+    "image/",
+    "video/",
+    "audio/",
+    "application/pdf",
 }
 _PREVIEWABLE_EXTS = (
     preview_generator.IMAGE_TYPES
@@ -36,7 +39,7 @@ _PREVIEWABLE_EXTS = (
 )
 
 # Cache TTLs (match existing values in files.py)
-_TTL_VIDEO = 604_800    # 7 days
+_TTL_VIDEO = 604_800  # 7 days
 _TTL_DEFAULT = 2_592_000  # 30 days
 
 # Max file size for upload-time preview generation (larger files fall back to on-demand)
@@ -48,8 +51,8 @@ _SINGLEFLIGHT_TIMEOUT = 30  # seconds
 
 def _is_previewable(mime_type: Optional[str], file_name: Optional[str]) -> bool:
     """Check whether a file is eligible for preview generation."""
-    mime = (mime_type or '').lower()
-    ext = os.path.splitext((file_name or '').strip())[1].lower()
+    mime = (mime_type or "").lower()
+    ext = os.path.splitext((file_name or "").strip())[1].lower()
 
     if any(mime.startswith(prefix) for prefix in _PREVIEWABLE_MIMES):
         return True
@@ -59,8 +62,8 @@ def _is_previewable(mime_type: Optional[str], file_name: Optional[str]) -> bool:
 
 
 def _cache_ttl(mime_type: Optional[str]) -> int:
-    mime = (mime_type or '').lower()
-    return _TTL_VIDEO if mime.startswith('video/') else _TTL_DEFAULT
+    mime = (mime_type or "").lower()
+    return _TTL_VIDEO if mime.startswith("video/") else _TTL_DEFAULT
 
 
 class PreviewService:
@@ -105,18 +108,18 @@ class PreviewService:
                 return
 
             # Write plaintext to temp file for preview_generator
-            ext = os.path.splitext((file_name or '').strip())[1].lower()
+            ext = os.path.splitext((file_name or "").strip())[1].lower()
             temp_fd, temp_path = tempfile.mkstemp(suffix=ext)
             os.close(temp_fd)
 
             try:
-                async with aiofiles.open(temp_path, 'wb') as f:
+                async with aiofiles.open(temp_path, "wb") as f:
                     await f.write(plaintext_data)
 
                 cached_count = 0
                 ttl = _cache_ttl(mime_type)
 
-                for size_name in ('small', 'medium', 'large'):
+                for size_name in ("small", "medium", "large"):
                     try:
                         preview_bytes, content_type = await preview_generator.generate_preview(
                             file_path=temp_path,
@@ -128,16 +131,23 @@ class PreviewService:
                         # Freshness guard (allow_missing_row=True since Object row may not exist yet)
                         if content_hash:
                             fresh = await should_persist_preview(
-                                file_id, content_hash, redis_client, allow_missing_row=True,
+                                file_id,
+                                content_hash,
+                                redis_client,
+                                allow_missing_row=True,
                             )
                             if not fresh:
-                                logger.info(f"Skipping stale upload-time preview for {file_id}:{size_name}")
+                                logger.info(
+                                    f"Skipping stale upload-time preview for {file_id}:{size_name}"
+                                )
                                 continue
 
                         cache_key = f"preview:{file_id}:{size_name}"
                         await redis_client.setex(cache_key, ttl, preview_bytes)
                         if content_hash:
-                            await async_save_preview_to_disk(file_id, size_name, preview_bytes, content_hash)
+                            await async_save_preview_to_disk(
+                                file_id, size_name, preview_bytes, content_hash
+                            )
                         cached_count += 1
                     except Exception as exc:
                         logger.warning(
@@ -146,8 +156,7 @@ class PreviewService:
                         )
 
                 logger.info(
-                    f"Pre-generated {cached_count}/3 previews for "
-                    f"{file_name} at upload time"
+                    f"Pre-generated {cached_count}/3 previews for " f"{file_name} at upload time"
                 )
 
             finally:
@@ -209,7 +218,7 @@ class PreviewService:
             cache_key = f"preview:{file_id}:{requested_size}"
             cached = await redis_client.get(cache_key)
             if cached:
-                return cached, 'image/jpeg'
+                return cached, "image/jpeg"
             return None
 
         # Leader path: do the actual generation
@@ -301,9 +310,9 @@ class PreviewService:
             # Check for transcoded video first
             from .video_transcoder import video_transcoder
 
-            mime = (file_obj.mime_type or '').lower()
-            ext = os.path.splitext(file_obj.file_name or '')[1].lower()
-            is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
+            mime = (file_obj.mime_type or "").lower()
+            ext = os.path.splitext(file_obj.file_name or "")[1].lower()
+            is_video = mime.startswith("video/") or ext in preview_generator.VIDEO_TYPES
 
             _LARGE_VIDEO_THRESHOLD = 50 * 1024 * 1024  # 50MB
             if is_video and file_obj.file_size > _LARGE_VIDEO_THRESHOLD:
@@ -314,9 +323,7 @@ class PreviewService:
                 return None
 
             if is_video and video_transcoder.is_cached(file_id):
-                transcoded_path = os.path.join(
-                    video_transcoder.OUTPUT_DIR, f"{file_id}.mp4"
-                )
+                transcoded_path = os.path.join(video_transcoder.OUTPUT_DIR, f"{file_id}.mp4")
                 if os.path.exists(transcoded_path):
                     logger.info(f"Using transcoded MP4 for preview: {file_obj.file_name}")
                     temp_file_path = transcoded_path
@@ -327,7 +334,7 @@ class PreviewService:
                     file_obj=file_obj,
                     encryption_service=encryption_service,
                 )
-                if result.status != 'ok':
+                if result.status != "ok":
                     return None
                 temp_file_path = result.temp_file_path
 
@@ -335,14 +342,14 @@ class PreviewService:
             from .preview_storage import async_save_preview_to_disk, should_persist_preview
 
             ttl = _cache_ttl(file_obj.mime_type)
-            source_hash = getattr(file_obj, 'content_hash', None)
+            source_hash = getattr(file_obj, "content_hash", None)
             results: Dict[str, Tuple[bytes, str]] = {}
 
-            for size_name in ('small', 'medium', 'large'):
+            for size_name in ("small", "medium", "large"):
                 try:
                     preview_bytes, content_type = await preview_generator.generate_preview(
                         file_path=temp_file_path,
-                        mime_type='video/mp4' if use_transcoded else file_obj.mime_type,
+                        mime_type="video/mp4" if use_transcoded else file_obj.mime_type,
                         size=size_name,
                         file_name=file_obj.file_name,
                     )
@@ -351,18 +358,20 @@ class PreviewService:
                     if source_hash:
                         fresh = await should_persist_preview(file_id, source_hash, redis_client)
                         if not fresh:
-                            logger.info(f"Skipping stale on-demand preview for {file_id}:{size_name}")
+                            logger.info(
+                                f"Skipping stale on-demand preview for {file_id}:{size_name}"
+                            )
                             continue
 
                     cache_key = f"preview:{file_id}:{size_name}"
                     await redis_client.setex(cache_key, ttl, preview_bytes)
                     if source_hash:
-                        await async_save_preview_to_disk(file_id, size_name, preview_bytes, source_hash)
+                        await async_save_preview_to_disk(
+                            file_id, size_name, preview_bytes, source_hash
+                        )
                     results[size_name] = (preview_bytes, content_type)
                 except Exception as exc:
-                    logger.warning(
-                        f"Preview size {size_name} failed for {file_id}: {exc}"
-                    )
+                    logger.warning(f"Preview size {size_name} failed for {file_id}: {exc}")
 
             if results:
                 logger.info(

@@ -73,9 +73,7 @@ class ChunkProcessor:
                         pass
                     # Route to Kafka DLQ so the partition advances past
                     # the poison pill, then commit the offset.
-                    await dlq_producer.send_failed_message(
-                        msg, error=e, worker="chunk-processor"
-                    )
+                    await dlq_producer.send_failed_message(msg, error=e, worker="chunk-processor")
                     await self.consumer.commit()
         finally:
             await self.consumer.stop()

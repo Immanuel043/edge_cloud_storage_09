@@ -17,15 +17,15 @@ Usage:
 
 import asyncio
 import logging
+import os
 import signal
 import sys
-import os
 
 # Add parent path for imports when running as __main__
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app.config import settings
-from app.database import init_redis, close_redis, engine
+from app.database import close_redis, engine, init_redis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +45,7 @@ async def _supervised_video_worker(video_worker):
             break
         except Exception as e:
             retries += 1
-            backoff = min(2 ** retries, 60)
+            backoff = min(2**retries, 60)
             logger.warning(
                 f"Video processing worker crashed (attempt {retries}/{max_retries}): {e}. "
                 f"Restarting in {backoff}s..."
@@ -57,17 +57,19 @@ async def _supervised_video_worker(video_worker):
 
 async def main():
     logger.info("Starting combined worker (WORKER_MODE=worker)")
-    logger.info(f"Config: QUOTA_PREDICTION_ENABLED={settings.QUOTA_PREDICTION_ENABLED}, "
-                f"STORAGE_OPTIMIZATION_ENABLED={settings.STORAGE_OPTIMIZATION_ENABLED}")
+    logger.info(
+        f"Config: QUOTA_PREDICTION_ENABLED={settings.QUOTA_PREDICTION_ENABLED}, "
+        f"STORAGE_OPTIMIZATION_ENABLED={settings.STORAGE_OPTIMIZATION_ENABLED}"
+    )
 
     # Initialize shared infrastructure
     await init_redis()
     logger.info("Redis connection established")
 
     # Import workers after Redis is initialized
+    from app.workers.orphan_cleanup_worker import orphan_cleanup_worker
     from app.workers.quota_prediction_worker import quota_prediction_worker
     from app.workers.storage_optimization_worker import storage_optimization_worker
-    from app.workers.orphan_cleanup_worker import orphan_cleanup_worker
     from app.workers.video_processing_worker import VideoProcessingWorker
 
     workers = []

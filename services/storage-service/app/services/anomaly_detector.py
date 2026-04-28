@@ -4,14 +4,16 @@ Activity anomaly detection service.
 Reads from audit_logs (AuditLog ORM), creates SecurityAlert records.
 Algorithms: volume anomaly, bulk deletion, time-of-day, auth failure spike.
 """
+
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from sqlalchemy import select, func, text
+
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.database import AuditLog, SecurityAlert
 from ..config import settings
+from ..models.database import AuditLog, SecurityAlert
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +202,7 @@ async def check_auth_failure_spike(db: AsyncSession) -> list[SecurityAlert]:
                 status="open",
                 ip_address=ip,
                 title=f"Authentication brute force: {count} failures from {ip}",
-                description=(
-                    f"{count} failed login attempts from IP {ip} in the last 10 minutes."
-                ),
+                description=(f"{count} failed login attempts from IP {ip} in the last 10 minutes."),
                 trigger_pattern="auth_failure_spike",
                 evidence={
                     "ip_address": ip,
@@ -258,15 +258,15 @@ async def check_time_of_day_anomaly(db: AsyncSession) -> list[SecurityAlert]:
             # Build hourly histogram
             hist_result = await db.execute(
                 select(
-                    func.extract('hour', AuditLog.timestamp).label('hr'),
-                    func.count().label('cnt'),
+                    func.extract("hour", AuditLog.timestamp).label("hr"),
+                    func.count().label("cnt"),
                 )
                 .filter(
                     AuditLog.user_id == user_id,
                     AuditLog.event_type.in_(_FILE_EVENT_TYPES),
                     AuditLog.timestamp >= window_start,
                 )
-                .group_by('hr')
+                .group_by("hr")
             )
 
             histogram = {int(hr): cnt for hr, cnt in hist_result.all()}
@@ -276,7 +276,7 @@ async def check_time_of_day_anomaly(db: AsyncSession) -> list[SecurityAlert]:
             counts = list(histogram.values())
             mean = sum(counts) / len(counts)
             variance = sum((c - mean) ** 2 for c in counts) / len(counts)
-            std = variance ** 0.5
+            std = variance**0.5
 
             current_count = histogram.get(current_hour, 0)
 

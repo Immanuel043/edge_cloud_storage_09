@@ -4,9 +4,12 @@ Internal Service Client for Cross-Service Communication
 Provides authenticated HTTP client for service-to-service communication
 between Storage Service and ZK Encryption Service.
 """
-import httpx
+
 import logging
 from typing import Optional
+
+import httpx
+
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -38,7 +41,7 @@ class InternalServiceClient:
                 response = await client.get(
                     f"{self.zk_service_url}/api/v1/zk/internal/check-email",
                     params={"email": email},
-                    headers={"X-Internal-API-Key": self.internal_api_key}
+                    headers={"X-Internal-API-Key": self.internal_api_key},
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -47,7 +50,9 @@ class InternalServiceClient:
                     logger.error(f"Invalid internal API key for ZK service check")
                     return False
                 else:
-                    logger.warning(f"Unexpected status code from ZK service: {response.status_code}")
+                    logger.warning(
+                        f"Unexpected status code from ZK service: {response.status_code}"
+                    )
                     return False
         except httpx.TimeoutException:
             logger.warning(f"Timeout checking email on ZK service: {email}")

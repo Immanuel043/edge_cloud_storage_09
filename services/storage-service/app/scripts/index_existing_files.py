@@ -1,6 +1,7 @@
 """
 Migration script to index all existing files and folders in Elasticsearch
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -8,10 +9,10 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from sqlalchemy import select
 from app.database import async_session
-from app.models.database import Object, Folder
+from app.models.database import Folder, Object
 from app.services.search_service import search_service
+from sqlalchemy import select
 
 
 async def index_all_files():
@@ -28,19 +29,23 @@ async def index_all_files():
 
         for file in files:
             try:
-                await search_service.index_file({
-                    'id': str(file.id),
-                    'name': file.file_name,
-                    'original_name': file.file_name,
-                    'mime_type': file.mime_type,
-                    'size': file.file_size,
-                    'hash': file.content_hash,
-                    'storage_tier': file.storage_tier if hasattr(file, 'storage_tier') else 'cache',
-                    'folder_id': str(file.folder_id) if file.folder_id else None,
-                    'user_id': str(file.user_id),
-                    'created_at': file.created_at,
-                    'updated_at': file.created_at  # Use created_at if updated_at doesn't exist
-                })
+                await search_service.index_file(
+                    {
+                        "id": str(file.id),
+                        "name": file.file_name,
+                        "original_name": file.file_name,
+                        "mime_type": file.mime_type,
+                        "size": file.file_size,
+                        "hash": file.content_hash,
+                        "storage_tier": (
+                            file.storage_tier if hasattr(file, "storage_tier") else "cache"
+                        ),
+                        "folder_id": str(file.folder_id) if file.folder_id else None,
+                        "user_id": str(file.user_id),
+                        "created_at": file.created_at,
+                        "updated_at": file.created_at,  # Use created_at if updated_at doesn't exist
+                    }
+                )
                 indexed += 1
                 if indexed % 10 == 0:
                     print(f"Indexed {indexed} files...")
@@ -65,15 +70,17 @@ async def index_all_folders():
 
         for folder in folders:
             try:
-                await search_service.index_folder({
-                    'id': str(folder.id),
-                    'name': folder.name,
-                    'parent_id': str(folder.parent_id) if folder.parent_id else None,
-                    'user_id': str(folder.user_id),
-                    'path': folder.path,
-                    'created_at': folder.created_at,
-                    'updated_at': folder.created_at
-                })
+                await search_service.index_folder(
+                    {
+                        "id": str(folder.id),
+                        "name": folder.name,
+                        "parent_id": str(folder.parent_id) if folder.parent_id else None,
+                        "user_id": str(folder.user_id),
+                        "path": folder.path,
+                        "created_at": folder.created_at,
+                        "updated_at": folder.created_at,
+                    }
+                )
                 indexed += 1
                 if indexed % 10 == 0:
                     print(f"Indexed {indexed} folders...")

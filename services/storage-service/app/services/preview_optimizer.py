@@ -11,43 +11,43 @@ For a 400MB video, this reduces download from 400MB → 10-20MB
 Preview generation: 176s → 3-5s (98% faster)
 """
 
-import os
 import asyncio
-import tempfile
-import aiofiles
 import base64
 import logging
+import os
 import struct
+import tempfile
 from dataclasses import dataclass
 from typing import Optional, Tuple
+
+import aiofiles
+
 from .video_optimizer import video_optimizer
 
 logger = logging.getLogger(__name__)
 
 MB = 1024 * 1024
-MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB = 100  # Hard cap for blocking preview fetches (lowered to prevent OOM)
-MAX_BG_ENCRYPTED_VIDEO_MB = 200   # Background: single-storage encrypted (full file in memory + decrypted copy)
-MAX_BG_CAS_VIDEO_MB = 500         # Background: CAS/chunked (streamed to disk, no double-buffer)
+MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB = (
+    100  # Hard cap for blocking preview fetches (lowered to prevent OOM)
+)
+MAX_BG_ENCRYPTED_VIDEO_MB = (
+    200  # Background: single-storage encrypted (full file in memory + decrypted copy)
+)
+MAX_BG_CAS_VIDEO_MB = 500  # Background: CAS/chunked (streamed to disk, no double-buffer)
 
 
 @dataclass
 class PreviewDownloadResult:
     """Explicit result from download_partial_for_preview."""
-    status: str               # 'ok', 'deferred', 'failed'
+
+    status: str  # 'ok', 'deferred', 'failed'
     temp_file_path: Optional[str] = None
     is_complete: bool = False
     error: Optional[str] = None
 
 
-TAIL_HEAVY_VIDEO_EXTS = {
-    '.mov', '.qt', '.mp4', '.m4v', '.3gp', '.3g2', '.f4v', '.m4a'
-}
-TAIL_HEAVY_VIDEO_MIME_PREFIXES = {
-    'video/quicktime',
-    'video/mp4',
-    'video/3gpp',
-    'video/3gpp2'
-}
+TAIL_HEAVY_VIDEO_EXTS = {".mov", ".qt", ".mp4", ".m4v", ".3gp", ".3g2", ".f4v", ".m4a"}
+TAIL_HEAVY_VIDEO_MIME_PREFIXES = {"video/quicktime", "video/mp4", "video/3gpp", "video/3gpp2"}
 
 
 def _needs_head_tail(file_obj, is_partial: bool) -> bool:
@@ -60,14 +60,14 @@ def _needs_head_tail(file_obj, is_partial: bool) -> bool:
     if not is_partial:
         return False
 
-    mime = (file_obj.mime_type or '').lower()
-    if not mime.startswith('video/'):
+    mime = (file_obj.mime_type or "").lower()
+    if not mime.startswith("video/"):
         return False
 
     if file_obj.file_size <= 50 * 1024 * 1024:  # Only treat large videos specially
         return False
 
-    ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+    ext = os.path.splitext(file_obj.file_name or "")[1].lower()
     if ext in TAIL_HEAVY_VIDEO_EXTS:
         return True
 
@@ -91,7 +91,7 @@ def _has_moov(data: bytes) -> tuple[bool, Optional[int], Optional[int]]:
         return False, None, None
 
     # Search for 'moov' or 'moof' signatures
-    for signature_name, signature in [('moov', b'moov'), ('moof', b'moof')]:
+    for signature_name, signature in [("moov", b"moov"), ("moof", b"moof")]:
         offset = 0
 
         while offset < len(data) - 8:
@@ -104,12 +104,14 @@ def _has_moov(data: bytes) -> tuple[bool, Optional[int], Optional[int]]:
             if pos >= 4:
                 try:
                     # Read the 4 bytes before signature as box size
-                    box_size_bytes = data[pos - 4:pos]
-                    box_size = struct.unpack('>I', box_size_bytes)[0]  # big-endian uint32
+                    box_size_bytes = data[pos - 4 : pos]
+                    box_size = struct.unpack(">I", box_size_bytes)[0]  # big-endian uint32
 
                     # Validate box size is reasonable (not too small, not larger than remaining data)
                     if 8 <= box_size <= len(data) - (pos - 4):
-                        logger.info(f"✓ {signature_name} atom found at offset {pos - 4}, size: {box_size} bytes")
+                        logger.info(
+                            f"✓ {signature_name} atom found at offset {pos - 4}, size: {box_size} bytes"
+                        )
                         return True, pos - 4, box_size
                 except struct.error:
                     pass
@@ -132,7 +134,7 @@ def _is_fragmented_mp4(data: bytes) -> bool:
         return False
 
     # Check for fragment indicators
-    return b'moof' in data or b'mfhd' in data
+    return b"moof" in data or b"mfhd" in data
 
 
 def _moov_has_mvex(data: bytes, start: int, end: int) -> bool:
@@ -143,13 +145,13 @@ def _moov_has_mvex(data: bytes, start: int, end: int) -> bool:
     """
     pos = start
     while pos + 8 <= end:
-        raw_size = struct.unpack('>I', data[pos:pos + 4])[0]
-        child_type = data[pos + 4:pos + 8]
+        raw_size = struct.unpack(">I", data[pos : pos + 4])[0]
+        child_type = data[pos + 4 : pos + 8]
 
         if raw_size == 1:
             if pos + 16 > end:
                 break
-            child_size = struct.unpack('>Q', data[pos + 8:pos + 16])[0]
+            child_size = struct.unpack(">Q", data[pos + 8 : pos + 16])[0]
             if child_size < 16:
                 break
         elif raw_size == 0:
@@ -159,7 +161,7 @@ def _moov_has_mvex(data: bytes, start: int, end: int) -> bool:
             if child_size < 8:
                 break
 
-        if child_type == b'mvex':
+        if child_type == b"mvex":
             return True
 
         pos += child_size
@@ -181,14 +183,14 @@ def _quick_probe_moov(
     """
     pos = 0
     while pos + 8 <= len(data):
-        raw_size = struct.unpack('>I', data[pos:pos + 4])[0]
-        box_type = data[pos + 4:pos + 8]
+        raw_size = struct.unpack(">I", data[pos : pos + 4])[0]
+        box_type = data[pos + 4 : pos + 8]
 
         if raw_size == 1:
             # 64-bit extended size — minimum valid box is 16 bytes
             if pos + 16 > len(data):
                 break
-            box_size = struct.unpack('>Q', data[pos + 8:pos + 16])[0]
+            box_size = struct.unpack(">Q", data[pos + 8 : pos + 16])[0]
             if box_size < 16:
                 break  # Invalid extended-size box
         elif raw_size == 0:
@@ -198,7 +200,7 @@ def _quick_probe_moov(
             if box_size < 8:
                 break  # Invalid box
 
-        if box_type == b'moov':
+        if box_type == b"moov":
             moov_end = pos + box_size
             is_complete = moov_end <= len(data)
 
@@ -227,8 +229,9 @@ def _decrypt_cas_block(encrypted_data: bytes, block_hash: str, user_id: str) -> 
     Runs in HEAVY_TASK_EXECUTOR to avoid blocking the event loop.
     """
     import hashlib
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
     from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     nonce = encrypted_data[:12]
     tag = encrypted_data[12:28]
@@ -236,21 +239,16 @@ def _decrypt_cas_block(encrypted_data: bytes, block_hash: str, user_id: str) -> 
 
     content_hash_bytes = bytes.fromhex(block_hash)
     salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
-    block_key = hashlib.pbkdf2_hmac(
-        'sha256', content_hash_bytes, salt, 100000, dklen=32
-    )
+    block_key = hashlib.pbkdf2_hmac("sha256", content_hash_bytes, salt, 100000, dklen=32)
 
-    cipher = Cipher(
-        algorithms.AES(block_key),
-        modes.GCM(nonce, tag),
-        backend=default_backend()
-    )
+    cipher = Cipher(algorithms.AES(block_key), modes.GCM(nonce, tag), backend=default_backend())
     decryptor = cipher.decryptor()
     decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
 
     if len(decrypted_block) >= 4 and decrypted_block[:4] == _ZSTD_MAGIC:
         try:
             import zstandard
+
             dctx = zstandard.ZstdDecompressor()
             decrypted_block = dctx.decompress(decrypted_block, max_output_size=64 * 1024 * 1024)
         except Exception:
@@ -275,28 +273,29 @@ async def _read_and_decrypt_cas_block(
     """
     from ..utils.executors import run_in_heavy_pool
 
-    block_path = stored_block['path']
+    block_path = stored_block["path"]
     try:
-        async with aiofiles.open(block_path, 'rb') as f:
+        async with aiofiles.open(block_path, "rb") as f:
             encrypted_data = await f.read()
     except FileNotFoundError:
         raise FileNotFoundError(f"Block file missing at {block_path}")
 
     if is_convergent:
-        was_compressed = stored_block.get('was_compressed', False)
+        was_compressed = stored_block.get("was_compressed", False)
         # Try Rust data plane for fast PBKDF2 decryption
         try:
             from ..services.rust_dataplane_client import get_rust_client
+
             rust_client = get_rust_client()
             return await rust_client.convergent_decrypt(
-                encrypted_data, block_hash, user_id,
+                encrypted_data,
+                block_hash,
+                user_id,
                 was_compressed=was_compressed,
             )
         except Exception:
             # Fallback: Python PBKDF2 (runs in heavy thread pool)
-            return await run_in_heavy_pool(
-                _decrypt_cas_block, encrypted_data, block_hash, user_id
-            )
+            return await run_in_heavy_pool(_decrypt_cas_block, encrypted_data, block_hash, user_id)
     else:
         raise ValueError("Non-convergent CAS blocks require encryption_service")
 
@@ -318,19 +317,19 @@ async def _fetch_from_cas(
     Returns:
         Total bytes written.
     """
-    blocks = chunk_info['blocks']
-    stored_blocks = chunk_info['stored_blocks']
-    is_convergent = chunk_info.get('convergent_encryption', False)
+    blocks = chunk_info["blocks"]
+    stored_blocks = chunk_info["stored_blocks"]
+    is_convergent = chunk_info.get("convergent_encryption", False)
     user_id = str(file_obj.user_id)
 
-    block_map = {b['hash']: b for b in stored_blocks}
+    block_map = {b["hash"]: b for b in stored_blocks}
     current_pos = 0
     total_written = 0
 
-    async with aiofiles.open(output_path, 'wb') as output_f:
+    async with aiofiles.open(output_path, "wb") as output_f:
         for block in blocks:
-            block_hash = block['hash']
-            block_size = block['size']
+            block_hash = block["hash"]
+            block_size = block["size"]
             block_end = current_pos + block_size - 1
 
             if block_end < start_byte:
@@ -366,6 +365,7 @@ async def _fetch_from_cas(
 # CAS probe-then-fetch helpers
 # ---------------------------------------------------------------------------
 
+
 def _select_cas_probe_blocks(
     blocks: list,
     head_bytes_target: int = 64 * MB,
@@ -385,7 +385,7 @@ def _select_cas_probe_blocks(
     head_total = 0
     for i in range(n):
         head_indices.append(i)
-        head_total += blocks[i]['size']
+        head_total += blocks[i]["size"]
         if head_total >= head_bytes_target:
             break
 
@@ -400,7 +400,7 @@ def _select_cas_probe_blocks(
     tail_total = 0
     for i in range(n - 1, -1, -1):
         tail_indices.append(i)
-        tail_total += blocks[i]['size']
+        tail_total += blocks[i]["size"]
         if tail_total >= tail_bytes_target:
             break
     tail_indices.reverse()
@@ -425,18 +425,18 @@ async def _fetch_cas_probe(
     declared size (offset map would be invalid).
     Raises FileNotFoundError if a block file is missing on disk.
     """
-    blocks = chunk_info['blocks']
-    stored_blocks = chunk_info['stored_blocks']
-    is_convergent = chunk_info.get('convergent_encryption', False)
+    blocks = chunk_info["blocks"]
+    stored_blocks = chunk_info["stored_blocks"]
+    is_convergent = chunk_info.get("convergent_encryption", False)
     user_id = str(file_obj.user_id)
-    block_map = {b['hash']: b for b in stored_blocks}
+    block_map = {b["hash"]: b for b in stored_blocks}
 
     # Pre-compute cumulative file offsets for each block
     file_offsets: list[int] = []
     cum = 0
     for b in blocks:
         file_offsets.append(cum)
-        cum += b['size']
+        cum += b["size"]
 
     probe_parts: list[bytes] = []
     offset_map: list[tuple[int, int, int]] = []
@@ -444,17 +444,17 @@ async def _fetch_cas_probe(
 
     for idx in probe_indices:
         block = blocks[idx]
-        stored = block_map.get(block['hash'])
+        stored = block_map.get(block["hash"])
         if not stored:
-            logger.warning(f"CAS probe: block {idx} hash {block['hash'][:8]} not in stored_blocks, skipping")
+            logger.warning(
+                f"CAS probe: block {idx} hash {block['hash'][:8]} not in stored_blocks, skipping"
+            )
             continue
 
-        decrypted = await _read_and_decrypt_cas_block(
-            stored, block['hash'], user_id, is_convergent
-        )
+        decrypted = await _read_and_decrypt_cas_block(stored, block["hash"], user_id, is_convergent)
 
         # Strict size validation — offset map depends on declared sizes
-        if len(decrypted) != block['size']:
+        if len(decrypted) != block["size"]:
             raise ValueError(
                 f"CAS block {idx} size mismatch: declared={block['size']}, "
                 f"actual={len(decrypted)} — aborting probe (offset map invalid)"
@@ -465,7 +465,7 @@ async def _fetch_cas_probe(
         probe_pos += len(decrypted)
         await asyncio.sleep(0)  # Yield between blocks
 
-    return b''.join(probe_parts), offset_map
+    return b"".join(probe_parts), offset_map
 
 
 def _probe_offset_to_file_offset(
@@ -520,13 +520,14 @@ async def _fetch_contiguous_range(
     Returns:
         Total bytes written
     """
-    if chunk_info and 'blocks' in chunk_info and 'stored_blocks' in chunk_info and file_obj:
+    if chunk_info and "blocks" in chunk_info and "stored_blocks" in chunk_info and file_obj:
         return await _fetch_from_cas(chunk_info, file_obj, start_byte, end_byte, output_path)
 
     # --- Try Rust streaming for traditional chunked storage ---
     use_rust = False
     try:
         from ..services.rust_dataplane_client import get_rust_client
+
         rust_client = get_rust_client()
         if await rust_client.is_available():
             use_rust = True
@@ -550,7 +551,7 @@ async def _fetch_contiguous_range(
 
         try:
             total_written = 0
-            async with aiofiles.open(output_path, 'wb') as output_f:
+            async with aiofiles.open(output_path, "wb") as output_f:
                 async for data in rust_client.stream_download_chunks(
                     chunks=chunks,
                     file_key=file_key,
@@ -568,9 +569,7 @@ async def _fetch_contiguous_range(
             )
             return total_written
         except Exception as exc:
-            logger.warning(
-                "Rust stream_download_chunks failed, falling back to Python: %s", exc
-            )
+            logger.warning("Rust stream_download_chunks failed, falling back to Python: %s", exc)
             # Fall through to Python path below
 
     # Traditional chunked storage
@@ -586,7 +585,7 @@ async def _fetch_contiguous_range(
 
     total_written = 0
 
-    async with aiofiles.open(output_path, 'wb') as output_f:
+    async with aiofiles.open(output_path, "wb") as output_f:
         for chunk_idx in range(start_chunk, end_chunk + 1):
             # Get chunk path
             chunk_path = chunk_paths.get(str(chunk_idx))
@@ -596,7 +595,7 @@ async def _fetch_contiguous_range(
 
             # Load and decrypt chunk (offload CPU-heavy decrypt/decompress)
             try:
-                async with aiofiles.open(chunk_path, 'rb') as f:
+                async with aiofiles.open(chunk_path, "rb") as f:
                     encrypted_chunk = await f.read()
             except FileNotFoundError:
                 logger.warning(f"Chunk {chunk_idx} not found at {chunk_path}")
@@ -608,12 +607,17 @@ async def _fetch_contiguous_range(
                 dec = enc_svc.decrypt_chunk(enc, key, idx)
                 if compressed:
                     from ..utils.compression import compressor
+
                     dec = compressor.decompress(dec)
                 return dec
 
             decrypted_chunk = await run_in_heavy_pool(
                 _decrypt_decompress,
-                encrypted_chunk, encryption_service, file_key, chunk_idx, was_compressed
+                encrypted_chunk,
+                encryption_service,
+                file_key,
+                chunk_idx,
+                was_compressed,
             )
 
             # Calculate which bytes from this chunk to write
@@ -660,11 +664,11 @@ class PreviewOptimizer:
         if file_size < self.MAX_DOWNLOAD_DOCUMENT:
             return file_size
 
-        if mime_type and mime_type.startswith('video/'):
+        if mime_type and mime_type.startswith("video/"):
             return min(self.MAX_DOWNLOAD_VIDEO, file_size)
-        elif mime_type and mime_type.startswith('image/'):
+        elif mime_type and mime_type.startswith("image/"):
             return min(self.MAX_DOWNLOAD_IMAGE, file_size)
-        elif mime_type and 'pdf' in mime_type:
+        elif mime_type and "pdf" in mime_type:
             return min(self.MAX_DOWNLOAD_DOCUMENT, file_size)
         else:
             return min(self.MAX_DOWNLOAD_DOCUMENT, file_size)
@@ -676,7 +680,7 @@ class PreviewOptimizer:
         encryption_service,
         file_key: bytes,
         head_size: int = 10 * 1024 * 1024,  # 10MB
-        tail_size: int = 2 * 1024 * 1024    # 2MB
+        tail_size: int = 2 * 1024 * 1024,  # 2MB
     ) -> Tuple[str, bool]:
         """
         Download head + tail of file for video preview (MOV files with moov at end)
@@ -691,15 +695,17 @@ class PreviewOptimizer:
         # If file is small enough, download completely
         if file_size <= head_size + tail_size:
             logger.info(f"File small enough ({file_size/1024/1024:.1f}MB), downloading completely")
-            async with aiofiles.open(file_path, 'rb') as f:
+            async with aiofiles.open(file_path, "rb") as f:
                 encrypted_data = await f.read()
 
-            file_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_data, file_key)
+            file_data = await run_in_heavy_pool(
+                encryption_service.decrypt_file, encrypted_data, file_key
+            )
 
             temp_fd, temp_file_path = tempfile.mkstemp()
             os.close(temp_fd)
 
-            async with aiofiles.open(temp_file_path, 'wb') as f:
+            async with aiofiles.open(temp_file_path, "wb") as f:
                 await f.write(file_data)
 
             return temp_file_path, True
@@ -711,25 +717,29 @@ class PreviewOptimizer:
         )
 
         # Read head (first N MB)
-        async with aiofiles.open(file_path, 'rb') as f:
+        async with aiofiles.open(file_path, "rb") as f:
             encrypted_head = await f.read(head_size)
 
         # Read tail (last N MB)
-        async with aiofiles.open(file_path, 'rb') as f:
+        async with aiofiles.open(file_path, "rb") as f:
             # Seek to tail position
             tail_offset = file_size - tail_size
             await f.seek(tail_offset)
             encrypted_tail = await f.read()
 
         # Decrypt both portions (offloaded to thread pool)
-        head_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_head, file_key)
-        tail_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_tail, file_key)
+        head_data = await run_in_heavy_pool(
+            encryption_service.decrypt_file, encrypted_head, file_key
+        )
+        tail_data = await run_in_heavy_pool(
+            encryption_service.decrypt_file, encrypted_tail, file_key
+        )
 
         # Create temp file with head + tail
         temp_fd, temp_file_path = tempfile.mkstemp()
         os.close(temp_fd)
 
-        async with aiofiles.open(temp_file_path, 'wb') as f:
+        async with aiofiles.open(temp_file_path, "wb") as f:
             await f.write(head_data)
             await f.write(tail_data)
 
@@ -758,10 +768,7 @@ class PreviewOptimizer:
         """
 
         if max_size is None:
-            max_size = self.get_max_download_size(
-                file_obj.mime_type,
-                file_obj.file_size
-            )
+            max_size = self.get_max_download_size(file_obj.mime_type, file_obj.file_size)
 
         # Determine if we need partial download
         is_partial = file_obj.file_size > max_size
@@ -796,12 +803,15 @@ class PreviewOptimizer:
 
                 if was_compressed:
                     from ..utils.compression import compressor
+
                     file_data = compressor.decompress(file_data)
 
-                async with aiofiles.open(temp_file_path, 'wb') as f:
+                async with aiofiles.open(temp_file_path, "wb") as f:
                     await f.write(file_data)
 
-                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
+                return PreviewDownloadResult(
+                    status="ok", temp_file_path=temp_file_path, is_complete=True
+                )
 
             elif file_obj.storage_type == "single":
                 # Single file storage
@@ -816,19 +826,21 @@ class PreviewOptimizer:
 
                 # Check file size for OOM protection
                 file_size_mb = file_obj.file_size / MB
-                mime = (file_obj.mime_type or '').lower()
-                is_video = mime.startswith('video/')
+                mime = (file_obj.mime_type or "").lower()
+                is_video = mime.startswith("video/")
 
                 # For large single-storage videos, guard based on caller context.
                 # Encrypted single-storage loads full ciphertext + decrypted copy (2x memory).
-                effective_limit = MAX_BG_ENCRYPTED_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                effective_limit = (
+                    MAX_BG_ENCRYPTED_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                )
                 if is_video and file_size_mb > effective_limit:
                     logger.info(
                         f"Large single-storage video: {file_obj.file_name} "
                         f"({file_size_mb:.1f}MB > {effective_limit}MB limit)"
                     )
                     os.unlink(temp_file_path)
-                    status = 'failed' if background else 'deferred'
+                    status = "failed" if background else "deferred"
                     return PreviewDownloadResult(
                         status=status,
                         error=f"Video {file_size_mb:.0f}MB exceeds {effective_limit}MB limit",
@@ -838,26 +850,33 @@ class PreviewOptimizer:
                 # NOTE: For encrypted files, we must read the COMPLETE file for decryption
                 # because GCM encryption requires the full ciphertext to verify the MAC.
                 # After decryption, we can then use only a portion for preview generation.
-                logger.info(f"Downloading full single-storage file for preview: {file_obj.file_name} ({file_size_mb:.1f}MB)")
-                async with aiofiles.open(file_obj.object_path, 'rb') as f:
+                logger.info(
+                    f"Downloading full single-storage file for preview: {file_obj.file_name} ({file_size_mb:.1f}MB)"
+                )
+                async with aiofiles.open(file_obj.object_path, "rb") as f:
                     encrypted_data = await f.read()  # Always read complete encrypted file
 
                 from ..utils.executors import run_in_heavy_pool
 
-                file_data = await run_in_heavy_pool(encryption_service.decrypt_file, encrypted_data, file_key)
+                file_data = await run_in_heavy_pool(
+                    encryption_service.decrypt_file, encrypted_data, file_key
+                )
 
                 if was_compressed:
                     from ..utils.compression import compressor
+
                     file_data = await run_in_heavy_pool(compressor.decompress, file_data)
 
                 # Write file data for preview
                 # For videos, always write full data since moov atom may be at the end
                 # We've already decrypted the full file, so truncating wastes that work
-                mime = (file_obj.mime_type or '').lower()
-                is_video = mime.startswith('video/')
-                is_pdf = mime == 'application/pdf' or (file_obj.file_name or '').lower().endswith('.pdf')
+                mime = (file_obj.mime_type or "").lower()
+                is_video = mime.startswith("video/")
+                is_pdf = mime == "application/pdf" or (file_obj.file_name or "").lower().endswith(
+                    ".pdf"
+                )
 
-                async with aiofiles.open(temp_file_path, 'wb') as f:
+                async with aiofiles.open(temp_file_path, "wb") as f:
                     if is_partial and not is_video and not is_pdf:
                         # Non-video, non-PDF: write only first portion
                         await f.write(file_data[:max_size])
@@ -871,7 +890,9 @@ class PreviewOptimizer:
                                 f"(not truncated to {max_size/1024/1024:.1f}MB to preserve {'xref table' if is_pdf else 'moov atom'})"
                             )
 
-                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
+                return PreviewDownloadResult(
+                    status="ok", temp_file_path=temp_file_path, is_complete=True
+                )
 
             else:  # chunked or content-addressed storage
                 # Download only first N chunks (or full file for CAS)
@@ -886,7 +907,7 @@ class PreviewOptimizer:
 
                 # Content-addressed storage (from dedup): use CAS block reconstruction
                 if "blocks" in chunk_info and "stored_blocks" in chunk_info:
-                    blocks_list = chunk_info['blocks']
+                    blocks_list = chunk_info["blocks"]
 
                     if _needs_head_tail(file_obj, is_partial):
                         # === CAS PROBE-THEN-FETCH (supports any file size) ===
@@ -904,7 +925,9 @@ class PreviewOptimizer:
                             quick_data, quick_map = await _fetch_cas_probe(
                                 chunk_info, file_obj, [0]
                             )
-                            found, moov_off, moov_size, is_complete, is_fmp4 = _quick_probe_moov(quick_data)
+                            found, moov_off, moov_size, is_complete, is_fmp4 = _quick_probe_moov(
+                                quick_data
+                            )
 
                             if found and is_complete and not is_fmp4:
                                 real_offset = _probe_offset_to_file_offset(moov_off, quick_map)
@@ -921,20 +944,24 @@ class PreviewOptimizer:
                                         chunk_info, file_obj, 0, fetch_end, temp_file_path
                                     )
                                     return PreviewDownloadResult(
-                                        status='ok',
+                                        status="ok",
                                         temp_file_path=temp_file_path,
                                         is_complete=False,
                                     )
 
                             if found and is_complete and is_fmp4:
-                                logger.info("CAS quick probe: fMP4 detected (mvex in moov), using full probe path")
+                                logger.info(
+                                    "CAS quick probe: fMP4 detected (mvex in moov), using full probe path"
+                                )
                             elif found and not is_complete:
                                 logger.info(
                                     f"CAS quick probe: moov found at {moov_off} but truncated "
                                     f"(needs {moov_off + moov_size} bytes), using full probe path"
                                 )
                             elif not found:
-                                logger.info("CAS quick probe: moov not in block 0, using full probe path")
+                                logger.info(
+                                    "CAS quick probe: moov not in block 0, using full probe path"
+                                )
 
                             del quick_data
                         except (ValueError, FileNotFoundError) as exc:
@@ -942,7 +969,7 @@ class PreviewOptimizer:
                         # All other cases: fall through to existing full sparse probe
 
                         # Phase 1: Sparse probe (~64MB head + middle + ~64MB tail)
-                        probe_data = b''
+                        probe_data = b""
                         offset_map = []
                         try:
                             probe_indices = _select_cas_probe_blocks(blocks_list)
@@ -971,7 +998,10 @@ class PreviewOptimizer:
                                 moov_probe_offset, offset_map
                             )
 
-                            if real_moov_offset is not None and real_moov_offset <= MOOV_EARLY_THRESHOLD:
+                            if (
+                                real_moov_offset is not None
+                                and real_moov_offset <= MOOV_EARLY_THRESHOLD
+                            ):
                                 # PARTIAL FETCH: moov at start — NO SIZE LIMIT
                                 moov_end = real_moov_offset + (moov_box_size or 10 * MB)
                                 guard = 2 * MB
@@ -988,17 +1018,24 @@ class PreviewOptimizer:
                                     chunk_info, file_obj, 0, fetch_end, temp_file_path
                                 )
                                 return PreviewDownloadResult(
-                                    status='ok',
+                                    status="ok",
                                     temp_file_path=temp_file_path,
                                     is_complete=False,
                                 )
 
                         # FULL DOWNLOAD FALLBACK
                         reason = (
-                            "probe failed" if not offset_map
-                            else "fragmented MP4" if is_fragmented
-                            else "moov not found in probe" if not has_moov
-                            else "moov beyond 64MB threshold"
+                            "probe failed"
+                            if not offset_map
+                            else (
+                                "fragmented MP4"
+                                if is_fragmented
+                                else (
+                                    "moov not found in probe"
+                                    if not has_moov
+                                    else "moov beyond 64MB threshold"
+                                )
+                            )
                         )
                         del probe_data
 
@@ -1006,7 +1043,7 @@ class PreviewOptimizer:
                         if not background and file_size_mb > MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB:
                             os.unlink(temp_file_path)
                             return PreviewDownloadResult(
-                                status='deferred',
+                                status="deferred",
                                 error=f"CAS video {file_size_mb:.0f}MB ({reason}) — deferred to background",
                             )
 
@@ -1021,7 +1058,7 @@ class PreviewOptimizer:
                             chunk_info, file_obj, 0, file_obj.file_size - 1, temp_file_path
                         )
                         return PreviewDownloadResult(
-                            status='ok',
+                            status="ok",
                             temp_file_path=temp_file_path,
                             is_complete=True,
                         )
@@ -1029,12 +1066,10 @@ class PreviewOptimizer:
                     elif is_partial:
                         # Non-video or small video: partial download up to max_size
                         fetch_end = min(max_size - 1, file_obj.file_size - 1)
-                        await _fetch_from_cas(
-                            chunk_info, file_obj, 0, fetch_end, temp_file_path
-                        )
-                        is_complete = (fetch_end >= file_obj.file_size - 1)
+                        await _fetch_from_cas(chunk_info, file_obj, 0, fetch_end, temp_file_path)
+                        is_complete = fetch_end >= file_obj.file_size - 1
                         return PreviewDownloadResult(
-                            status='ok',
+                            status="ok",
                             temp_file_path=temp_file_path,
                             is_complete=is_complete,
                         )
@@ -1045,7 +1080,7 @@ class PreviewOptimizer:
                             chunk_info, file_obj, 0, file_obj.file_size - 1, temp_file_path
                         )
                         return PreviewDownloadResult(
-                            status='ok',
+                            status="ok",
                             temp_file_path=temp_file_path,
                             is_complete=True,
                         )
@@ -1072,6 +1107,7 @@ class PreviewOptimizer:
                         dec = enc_svc.decrypt_chunk(enc, key, idx)
                         if compressed:
                             from ..utils.compression import compressor
+
                             dec = compressor.decompress(dec)
                         return dec
 
@@ -1086,19 +1122,28 @@ class PreviewOptimizer:
                             shard = upload_id[:2]
                             c0_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_0.enc"
 
-                        async with aiofiles.open(c0_path, 'rb') as f:
+                        async with aiofiles.open(c0_path, "rb") as f:
                             c0_enc = await f.read()
                         chunk0_data = await _run_heavy(
-                            _probe_decrypt_decompress, c0_enc, encryption_service, file_key, 0, was_compressed
+                            _probe_decrypt_decompress,
+                            c0_enc,
+                            encryption_service,
+                            file_key,
+                            0,
+                            was_compressed,
                         )
                         del c0_enc
 
-                        found, moov_off, moov_size, is_complete, is_fmp4 = _quick_probe_moov(chunk0_data)
+                        found, moov_off, moov_size, is_complete, is_fmp4 = _quick_probe_moov(
+                            chunk0_data
+                        )
 
                         if found and is_complete and not is_fmp4:
                             # Progressive MP4, full moov in chunk 0 — short-circuit
                             fetch_end = min(moov_off + moov_size + 2 * MB, file_obj.file_size - 1)
-                            fetch_end = max(fetch_end, min(10 * MB, file_obj.file_size - 1))  # 10MB floor
+                            fetch_end = max(
+                                fetch_end, min(10 * MB, file_obj.file_size - 1)
+                            )  # 10MB floor
 
                             logger.info(
                                 f"Quick probe: moov at offset {moov_off} ({moov_size} bytes), "
@@ -1107,19 +1152,26 @@ class PreviewOptimizer:
                             )
 
                             await _fetch_contiguous_range(
-                                start_byte=0, end_byte=fetch_end,
-                                chunk_paths=chunk_paths, file_key=file_key,
+                                start_byte=0,
+                                end_byte=fetch_end,
+                                chunk_paths=chunk_paths,
+                                file_key=file_key,
                                 encryption_service=encryption_service,
-                                output_path=temp_file_path, upload_id=upload_id,
-                                chunk_size=chunk_size, was_compressed=was_compressed,
-                                chunk_info=chunk_info, file_obj=file_obj,
+                                output_path=temp_file_path,
+                                upload_id=upload_id,
+                                chunk_size=chunk_size,
+                                was_compressed=was_compressed,
+                                chunk_info=chunk_info,
+                                file_obj=file_obj,
                             )
                             return PreviewDownloadResult(
-                                status='ok', temp_file_path=temp_file_path, is_complete=False
+                                status="ok", temp_file_path=temp_file_path, is_complete=False
                             )
 
                         if found and is_complete and is_fmp4:
-                            logger.info("Quick probe: fMP4 detected (mvex in moov), using full probe path")
+                            logger.info(
+                                "Quick probe: fMP4 detected (mvex in moov), using full probe path"
+                            )
                             # Fall through — existing path has 500MB limit + defer/background gating
 
                         if found and not is_complete:
@@ -1130,13 +1182,19 @@ class PreviewOptimizer:
                             )
 
                         if not found:
-                            logger.info("Quick probe: moov not in chunk 0, falling back to full sparse probe")
+                            logger.info(
+                                "Quick probe: moov not in chunk 0, falling back to full sparse probe"
+                            )
 
                     except (FileNotFoundError, OSError) as e:
-                        logger.warning(f"Quick probe failed ({type(e).__name__}: {e}), falling back to full probe")
+                        logger.warning(
+                            f"Quick probe failed ({type(e).__name__}: {e}), falling back to full probe"
+                        )
                         chunk0_data = None
                     except (ValueError, struct.error) as e:
-                        logger.warning(f"Quick probe decrypt/parse error: {e}, falling back to full probe")
+                        logger.warning(
+                            f"Quick probe decrypt/parse error: {e}, falling back to full probe"
+                        )
                         chunk0_data = None
                     # All other exceptions propagate — matching existing behavior at the outer try/except
 
@@ -1151,7 +1209,7 @@ class PreviewOptimizer:
                         middle_chunks_list = [
                             max(0, middle_idx - 1),
                             middle_idx,
-                            min(total_chunks - 1, middle_idx + 1)
+                            min(total_chunks - 1, middle_idx + 1),
                         ]
 
                     tail_start = max(0, total_chunks - 3)
@@ -1162,7 +1220,9 @@ class PreviewOptimizer:
                         tail_chunks_list.append(total_chunks - 1)
 
                     # Combine and deduplicate
-                    probe_chunks = sorted(set(head_chunks_list + middle_chunks_list + tail_chunks_list))
+                    probe_chunks = sorted(
+                        set(head_chunks_list + middle_chunks_list + tail_chunks_list)
+                    )
 
                     # If Stage A already downloaded chunk 0, reuse it
                     if chunk0_data is not None and 0 in probe_chunks:
@@ -1180,7 +1240,7 @@ class PreviewOptimizer:
 
                     try:
                         probe_bytes = 0
-                        async with aiofiles.open(probe_file_path, 'wb') as probe_f:
+                        async with aiofiles.open(probe_file_path, "wb") as probe_f:
                             # Write chunk 0 first if reusing from quick probe
                             if chunk0_data is not None:
                                 await probe_f.write(chunk0_data)
@@ -1191,10 +1251,12 @@ class PreviewOptimizer:
                                 chunk_path = chunk_paths.get(str(i))
                                 if not chunk_path:
                                     shard = upload_id[:2]
-                                    chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                                    chunk_path = (
+                                        f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+                                    )
 
                                 try:
-                                    async with aiofiles.open(chunk_path, 'rb') as f:
+                                    async with aiofiles.open(chunk_path, "rb") as f:
                                         encrypted_chunk = await f.read()
                                 except FileNotFoundError:
                                     logger.warning(f"Chunk {i} not found at {chunk_path}")
@@ -1202,7 +1264,11 @@ class PreviewOptimizer:
 
                                 decrypted_chunk = await _run_heavy(
                                     _probe_decrypt_decompress,
-                                    encrypted_chunk, encryption_service, file_key, i, was_compressed
+                                    encrypted_chunk,
+                                    encryption_service,
+                                    file_key,
+                                    i,
+                                    was_compressed,
                                 )
 
                                 await probe_f.write(decrypted_chunk)
@@ -1212,7 +1278,7 @@ class PreviewOptimizer:
                         logger.info(f"Probe complete: {probe_bytes/1024/1024:.1f}MB downloaded")
 
                         # --- PHASE 2: DETECT FORMAT AND LOCATE MOOV ---
-                        async with aiofiles.open(probe_file_path, 'rb') as f:
+                        async with aiofiles.open(probe_file_path, "rb") as f:
                             probe_data = await f.read()
 
                         is_fragmented = _is_fragmented_mp4(probe_data)
@@ -1226,14 +1292,18 @@ class PreviewOptimizer:
                             os.unlink(probe_file_path)
 
                             file_size_mb = file_obj.file_size / MB
-                            effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                            effective_limit = (
+                                MAX_BG_CAS_VIDEO_MB
+                                if background
+                                else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                            )
                             if file_size_mb > effective_limit:
                                 logger.info(
                                     f"File is {file_size_mb:.1f}MB (> {effective_limit}MB). "
                                     f"{'Failed' if background else 'Deferring to background'}."
                                 )
                                 os.unlink(temp_file_path)
-                                status = 'failed' if background else 'deferred'
+                                status = "failed" if background else "deferred"
                                 return PreviewDownloadResult(
                                     status=status,
                                     error=f"Video {file_size_mb:.0f}MB exceeds {effective_limit}MB (moov not found)",
@@ -1252,7 +1322,9 @@ class PreviewOptimizer:
                                 chunk_info=chunk_info,
                                 file_obj=file_obj,
                             )
-                            return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
+                            return PreviewDownloadResult(
+                                status="ok", temp_file_path=temp_file_path, is_complete=True
+                            )
 
                         logger.info(
                             f"Phase 2 - Detection: "
@@ -1264,7 +1336,11 @@ class PreviewOptimizer:
                         if is_fragmented:
                             # Fragmented MP4: Cannot use partial downloads
                             file_size_mb = file_obj.file_size / 1024 / 1024
-                            effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                            effective_limit = (
+                                MAX_BG_CAS_VIDEO_MB
+                                if background
+                                else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                            )
 
                             if file_size_mb > effective_limit:
                                 logger.info(
@@ -1272,7 +1348,7 @@ class PreviewOptimizer:
                                 )
                                 os.unlink(probe_file_path)
                                 os.unlink(temp_file_path)
-                                status = 'failed' if background else 'deferred'
+                                status = "failed" if background else "deferred"
                                 return PreviewDownloadResult(
                                     status=status,
                                     error=f"Fragmented MP4 {file_size_mb:.0f}MB exceeds {effective_limit}MB limit",
@@ -1299,7 +1375,9 @@ class PreviewOptimizer:
                             )
 
                             os.unlink(probe_file_path)
-                            return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
+                            return PreviewDownloadResult(
+                                status="ok", temp_file_path=temp_file_path, is_complete=True
+                            )
 
                         else:
                             # Progressive MP4/MOV: Fetch [0...moov_end+guard] contiguously
@@ -1318,14 +1396,18 @@ class PreviewOptimizer:
                                 # moov is in the tail portion - must download entire file
                                 # because gappy probe offset doesn't map to actual file offset
                                 file_size_mb = file_obj.file_size / MB
-                                effective_limit = MAX_BG_CAS_VIDEO_MB if background else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                                effective_limit = (
+                                    MAX_BG_CAS_VIDEO_MB
+                                    if background
+                                    else MAX_SYNC_FULL_VIDEO_DOWNLOAD_MB
+                                )
                                 if file_size_mb > effective_limit:
                                     logger.info(
                                         f"moov-at-end: {file_obj.file_name} ({file_size_mb:.1f}MB > {effective_limit}MB)"
                                     )
                                     os.unlink(probe_file_path)
                                     os.unlink(temp_file_path)
-                                    status = 'failed' if background else 'deferred'
+                                    status = "failed" if background else "deferred"
                                     return PreviewDownloadResult(
                                         status=status,
                                         error=f"Video {file_size_mb:.0f}MB exceeds {effective_limit}MB (moov at end)",
@@ -1352,12 +1434,16 @@ class PreviewOptimizer:
                                 )
 
                                 os.unlink(probe_file_path)
-                                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=True)
+                                return PreviewDownloadResult(
+                                    status="ok", temp_file_path=temp_file_path, is_complete=True
+                                )
 
                             else:
                                 # moov is early in the file - safe to use partial download
                                 moov_guard = 64 * 1024  # 64KB guard after moov
-                                fetch_end = min(moov_offset + 10 * 1024 * 1024, file_obj.file_size - 1)
+                                fetch_end = min(
+                                    moov_offset + 10 * 1024 * 1024, file_obj.file_size - 1
+                                )
 
                                 logger.info(
                                     f"Phase 3 - Fetch: Downloading contiguous range "
@@ -1380,7 +1466,9 @@ class PreviewOptimizer:
                                 )
 
                                 os.unlink(probe_file_path)
-                                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=False)
+                                return PreviewDownloadResult(
+                                    status="ok", temp_file_path=temp_file_path, is_complete=False
+                                )
 
                     except Exception as e:
                         # Cleanup on error
@@ -1406,10 +1494,11 @@ class PreviewOptimizer:
                     dec = enc_svc.decrypt_chunk(enc, key, idx)
                     if compressed:
                         from ..utils.compression import compressor
+
                         dec = compressor.decompress(dec)
                     return dec
 
-                async with aiofiles.open(temp_file_path, 'wb') as temp_f:
+                async with aiofiles.open(temp_file_path, "wb") as temp_f:
                     for i in range(chunks_to_download):
                         # Get chunk path
                         chunk_path = chunk_paths.get(str(i))
@@ -1421,7 +1510,7 @@ class PreviewOptimizer:
 
                         # Read encrypted chunk
                         try:
-                            async with aiofiles.open(chunk_path, 'rb') as f:
+                            async with aiofiles.open(chunk_path, "rb") as f:
                                 encrypted_chunk = await f.read()
                         except FileNotFoundError:
                             logger.warning(f"Chunk {i} not found at {chunk_path}")
@@ -1430,7 +1519,11 @@ class PreviewOptimizer:
                         # Decrypt + decompress (offloaded to thread pool)
                         decrypted_chunk = await _run_heavy_std(
                             _std_decrypt_decompress,
-                            encrypted_chunk, encryption_service, file_key, i, was_compressed
+                            encrypted_chunk,
+                            encryption_service,
+                            file_key,
+                            i,
+                            was_compressed,
                         )
 
                         # Write chunk (but stop if we hit max_size)
@@ -1446,8 +1539,10 @@ class PreviewOptimizer:
                             downloaded_bytes += bytes_to_write
                         await asyncio.sleep(0)  # Yield between chunks
 
-                is_complete = (chunks_to_download >= total_chunks)
-                return PreviewDownloadResult(status='ok', temp_file_path=temp_file_path, is_complete=is_complete)
+                is_complete = chunks_to_download >= total_chunks
+                return PreviewDownloadResult(
+                    status="ok", temp_file_path=temp_file_path, is_complete=is_complete
+                )
 
         except Exception as e:
             # Cleanup on error
@@ -1458,9 +1553,7 @@ class PreviewOptimizer:
                     pass
             raise
 
-    async def download_full_file_for_transcode(
-        self, file_obj, encryption_service, db=None
-    ) -> str:
+    async def download_full_file_for_transcode(self, file_obj, encryption_service, db=None) -> str:
         """
         Download and decrypt the entire file to a temp path for transcoding.
 
@@ -1485,19 +1578,21 @@ class PreviewOptimizer:
                 decrypted = encryption_service.decrypt_file(encrypted_data, file_key)
                 if was_compressed:
                     from ..utils.compression import compressor
+
                     decrypted = compressor.decompress(decrypted)
-                async with aiofiles.open(temp_file_path, 'wb') as f:
+                async with aiofiles.open(temp_file_path, "wb") as f:
                     await f.write(decrypted)
                 return temp_file_path
 
             if resolved_obj.storage_type == "single":
-                async with aiofiles.open(resolved_obj.object_path, 'rb') as src:
+                async with aiofiles.open(resolved_obj.object_path, "rb") as src:
                     encrypted_data = await src.read()
                 decrypted = encryption_service.decrypt_file(encrypted_data, file_key)
                 if was_compressed:
                     from ..utils.compression import compressor
+
                     decrypted = compressor.decompress(decrypted)
-                async with aiofiles.open(temp_file_path, 'wb') as dest:
+                async with aiofiles.open(temp_file_path, "wb") as dest:
                     await dest.write(decrypted)
                 return temp_file_path
 
@@ -1525,7 +1620,9 @@ class PreviewOptimizer:
                 )
                 return temp_file_path
 
-            raise ValueError(f"Unsupported storage type for transcoding: {resolved_obj.storage_type}")
+            raise ValueError(
+                f"Unsupported storage type for transcoding: {resolved_obj.storage_type}"
+            )
 
         except Exception as exc:
             if os.path.exists(temp_file_path):

@@ -11,10 +11,11 @@ Revision ID: 20260322_0001
 Revises: 20260228_0002
 Create Date: 2026-03-22
 """
+
 from alembic import op
 
-revision = '20260322_0001'
-down_revision = '20260228_0002'
+revision = "20260322_0001"
+down_revision = "20260228_0002"
 branch_labels = None
 depends_on = None
 

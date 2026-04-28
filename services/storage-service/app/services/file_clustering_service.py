@@ -11,18 +11,19 @@ ML-based clustering using classical algorithms (CPU-optimized):
 import logging
 import os
 import re
-from typing import List, Dict, Tuple, Optional
-from datetime import datetime
-import numpy as np
 from collections import Counter
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 # CPU optimization for AMD Ryzen 9 7950X
-os.environ['OMP_NUM_THREADS'] = '32'
-os.environ['MKL_NUM_THREADS'] = '32'
-os.environ['OPENBLAS_NUM_THREADS'] = '32'
+os.environ["OMP_NUM_THREADS"] = "32"
+os.environ["MKL_NUM_THREADS"] = "32"
+os.environ["OPENBLAS_NUM_THREADS"] = "32"
 
-from ..models.database import Object
 from ..config import settings
+from ..models.database import Object
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,7 @@ class FileClusteringService:
     def __init__(self):
         self.max_clusters = settings.AUTO_ORG_MAX_CLUSTERS
 
-    def prepare_features(
-        self,
-        files: List[Object]
-    ) -> Tuple[np.ndarray, List[str], List[Dict]]:
+    def prepare_features(self, files: List[Object]) -> Tuple[np.ndarray, List[str], List[Dict]]:
         """
         Extract features from files for clustering
 
@@ -54,9 +52,9 @@ class FileClusteringService:
             Tuple of (feature_matrix, feature_names, raw_features)
         """
         try:
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            from sklearn.preprocessing import StandardScaler, OneHotEncoder
             import scipy.sparse as sp
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
             # Extract filename tokens
             filenames = [self._tokenize_filename(f.file_name) for f in files]
@@ -66,14 +64,14 @@ class FileClusteringService:
                 max_features=100,  # Top 100 terms
                 ngram_range=(1, 2),  # Unigrams and bigrams
                 min_df=2,  # Appear in at least 2 documents
-                max_df=0.8  # Appear in at most 80% of documents
+                max_df=0.8,  # Appear in at most 80% of documents
             )
             tfidf_features = vectorizer.fit_transform(filenames)
 
             # Extension features (one-hot)
             extensions = [self._get_extension(f.file_name) for f in files]
             unique_exts = list(set(extensions))
-            ext_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
+            ext_encoder = OneHotEncoder(sparse=True, handle_unknown="ignore")
             ext_array = np.array(extensions).reshape(-1, 1)
             ext_features = ext_encoder.fit_transform(ext_array)
 
@@ -86,39 +84,37 @@ class FileClusteringService:
             date_features = []
             for f in files:
                 date = f.created_at or datetime.utcnow()
-                date_features.append([
-                    date.year,
-                    date.month,
-                    date.weekday()
-                ])
+                date_features.append([date.year, date.month, date.weekday()])
             date_features = np.array(date_features)
             date_scaler = StandardScaler()
             date_features_normalized = date_scaler.fit_transform(date_features)
 
             # Combine all features
             # Weight TF-IDF more heavily (70%), rest 30%
-            feature_matrix = sp.hstack([
-                tfidf_features * 0.70,
-                ext_features * 0.15,
-                sp.csr_matrix(size_features) * 0.075,
-                sp.csr_matrix(date_features_normalized) * 0.075
-            ])
+            feature_matrix = sp.hstack(
+                [
+                    tfidf_features * 0.70,
+                    ext_features * 0.15,
+                    sp.csr_matrix(size_features) * 0.075,
+                    sp.csr_matrix(date_features_normalized) * 0.075,
+                ]
+            )
 
             # Feature names for interpretation
             feature_names = (
-                vectorizer.get_feature_names_out().tolist() +
-                [f"ext_{ext}" for ext in unique_exts] +
-                ['log_size', 'year', 'month', 'weekday']
+                vectorizer.get_feature_names_out().tolist()
+                + [f"ext_{ext}" for ext in unique_exts]
+                + ["log_size", "year", "month", "weekday"]
             )
 
             # Raw features for analysis
             raw_features = [
                 {
-                    'filename': f.file_name,
-                    'extension': self._get_extension(f.file_name),
-                    'size': f.file_size,
-                    'created_at': f.created_at,
-                    'tokens': self._tokenize_filename(f.file_name)
+                    "filename": f.file_name,
+                    "extension": self._get_extension(f.file_name),
+                    "size": f.file_size,
+                    "created_at": f.created_at,
+                    "tokens": self._tokenize_filename(f.file_name),
                 }
                 for f in files
             ]
@@ -133,11 +129,7 @@ class FileClusteringService:
             logger.error(f"Feature preparation failed: {e}", exc_info=True)
             raise
 
-    def cluster_kmeans(
-        self,
-        files: List[Object],
-        n_clusters: Optional[int] = None
-    ) -> Dict:
+    def cluster_kmeans(self, files: List[Object], n_clusters: Optional[int] = None) -> Dict:
         """
         Cluster files using K-Means algorithm
 
@@ -162,24 +154,17 @@ class FileClusteringService:
             logger.info(f"Running K-Means with {n_clusters} clusters on {len(files)} files")
 
             # K-Means clustering
-            kmeans = KMeans(
-                n_clusters=n_clusters,
-                random_state=42,
-                n_init=10,
-                max_iter=300
-            )
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10, max_iter=300)
             cluster_labels = kmeans.fit_predict(features)
 
             # Calculate quality metrics
-            silhouette = silhouette_score(features, cluster_labels) if len(set(cluster_labels)) > 1 else 0.0
+            silhouette = (
+                silhouette_score(features, cluster_labels) if len(set(cluster_labels)) > 1 else 0.0
+            )
 
             # Analyze clusters
             clusters = self._analyze_clusters(
-                cluster_labels,
-                files,
-                raw_features,
-                kmeans.cluster_centers_,
-                feature_names
+                cluster_labels, files, raw_features, kmeans.cluster_centers_, feature_names
             )
 
             logger.info(
@@ -188,24 +173,19 @@ class FileClusteringService:
             )
 
             return {
-                'algorithm': 'kmeans',
-                'n_clusters': n_clusters,
-                'cluster_labels': cluster_labels.tolist(),
-                'silhouette_score': float(silhouette),
-                'clusters': clusters,
-                'centroids': kmeans.cluster_centers_.tolist()
+                "algorithm": "kmeans",
+                "n_clusters": n_clusters,
+                "cluster_labels": cluster_labels.tolist(),
+                "silhouette_score": float(silhouette),
+                "clusters": clusters,
+                "centroids": kmeans.cluster_centers_.tolist(),
             }
 
         except Exception as e:
             logger.error(f"K-Means clustering failed: {e}", exc_info=True)
             raise
 
-    def cluster_dbscan(
-        self,
-        files: List[Object],
-        eps: float = 0.5,
-        min_samples: int = 5
-    ) -> Dict:
+    def cluster_dbscan(self, files: List[Object], eps: float = 0.5, min_samples: int = 5) -> Dict:
         """
         Cluster files using DBSCAN algorithm (density-based)
 
@@ -224,7 +204,9 @@ class FileClusteringService:
             # Prepare features
             features, feature_names, raw_features = self.prepare_features(files)
 
-            logger.info(f"Running DBSCAN with eps={eps}, min_samples={min_samples} on {len(files)} files")
+            logger.info(
+                f"Running DBSCAN with eps={eps}, min_samples={min_samples} on {len(files)} files"
+            )
 
             # DBSCAN clustering
             dbscan = DBSCAN(eps=eps, min_samples=min_samples, n_jobs=-1)
@@ -246,7 +228,7 @@ class FileClusteringService:
                 files,
                 raw_features,
                 None,  # DBSCAN doesn't have centroids
-                feature_names
+                feature_names,
             )
 
             logger.info(
@@ -255,12 +237,12 @@ class FileClusteringService:
             )
 
             return {
-                'algorithm': 'dbscan',
-                'n_clusters': n_clusters,
-                'n_noise': n_noise,
-                'cluster_labels': cluster_labels.tolist(),
-                'silhouette_score': float(silhouette),
-                'clusters': clusters
+                "algorithm": "dbscan",
+                "n_clusters": n_clusters,
+                "n_noise": n_noise,
+                "cluster_labels": cluster_labels.tolist(),
+                "silhouette_score": float(silhouette),
+                "clusters": clusters,
             }
 
         except Exception as e:
@@ -273,7 +255,7 @@ class FileClusteringService:
         files: List[Object],
         raw_features: List[Dict],
         centroids: Optional[np.ndarray],
-        feature_names: List[str]
+        feature_names: List[str],
     ) -> List[Dict]:
         """
         Analyze cluster properties and generate names/descriptions
@@ -298,14 +280,14 @@ class FileClusteringService:
             # Extract keywords from filenames
             all_tokens = []
             for rf in cluster_raw_features:
-                all_tokens.extend(rf['tokens'].split())
+                all_tokens.extend(rf["tokens"].split())
 
             # Top keywords (TF-IDF style)
             token_counts = Counter(all_tokens)
             top_keywords = [word for word, count in token_counts.most_common(5)]
 
             # Common file extensions
-            extensions = [rf['extension'] for rf in cluster_raw_features]
+            extensions = [rf["extension"] for rf in cluster_raw_features]
             ext_counts = Counter(extensions)
             common_extensions = [ext for ext, count in ext_counts.most_common(3)]
 
@@ -319,10 +301,7 @@ class FileClusteringService:
 
             # Generate cluster name
             cluster_name = self._generate_cluster_name(
-                top_keywords,
-                common_extensions,
-                date_range_start,
-                len(cluster_files)
+                top_keywords, common_extensions, date_range_start, len(cluster_files)
             )
 
             # Generate description
@@ -331,7 +310,7 @@ class FileClusteringService:
                 common_extensions,
                 top_keywords,
                 date_range_start,
-                date_range_end
+                date_range_end,
             )
 
             # Suggested folder path
@@ -344,20 +323,22 @@ class FileClusteringService:
                 # (placeholder - would need feature vectors)
                 cohesion = 0.8  # Default good cohesion
 
-            clusters.append({
-                'cluster_id': int(label),
-                'cluster_name': cluster_name,
-                'cluster_description': description,
-                'num_files': len(cluster_files),
-                'total_size': total_size,
-                'top_keywords': top_keywords,
-                'common_extensions': common_extensions,
-                'date_range_start': date_range_start,
-                'date_range_end': date_range_end,
-                'cohesion_score': cohesion,
-                'suggested_folder_path': suggested_path,
-                'file_ids': [str(f.id) for f in cluster_files]
-            })
+            clusters.append(
+                {
+                    "cluster_id": int(label),
+                    "cluster_name": cluster_name,
+                    "cluster_description": description,
+                    "num_files": len(cluster_files),
+                    "total_size": total_size,
+                    "top_keywords": top_keywords,
+                    "common_extensions": common_extensions,
+                    "date_range_start": date_range_start,
+                    "date_range_end": date_range_end,
+                    "cohesion_score": cohesion,
+                    "suggested_folder_path": suggested_path,
+                    "file_ids": [str(f.id) for f in cluster_files],
+                }
+            )
 
         return clusters
 
@@ -383,26 +364,26 @@ class FileClusteringService:
         Extracts meaningful tokens from filename
         """
         # Remove extension
-        name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        name = filename.rsplit(".", 1)[0] if "." in filename else filename
 
         # Split on common delimiters
-        tokens = re.split(r'[_\-\s\.\(\)\[\]]+', name.lower())
+        tokens = re.split(r"[_\-\s\.\(\)\[\]]+", name.lower())
 
         # Remove very short tokens and numbers-only
         tokens = [t for t in tokens if len(t) > 2 and not t.isdigit()]
 
-        return ' '.join(tokens)
+        return " ".join(tokens)
 
     def _get_extension(self, filename: str) -> str:
         """Extract file extension"""
-        return filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'unknown'
+        return filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
 
     def _generate_cluster_name(
         self,
         keywords: List[str],
         extensions: List[str],
         start_date: Optional[datetime],
-        num_files: int
+        num_files: int,
     ) -> str:
         """Generate human-readable cluster name"""
         # Use top keyword if available
@@ -413,13 +394,13 @@ class FileClusteringService:
             name_parts.append(keywords[0].capitalize())
 
         # Add file type if clear
-        if extensions and extensions[0] in ['pdf', 'jpg', 'png', 'docx', 'xlsx']:
+        if extensions and extensions[0] in ["pdf", "jpg", "png", "docx", "xlsx"]:
             type_map = {
-                'pdf': 'Documents',
-                'jpg': 'Photos',
-                'png': 'Images',
-                'docx': 'Word Documents',
-                'xlsx': 'Spreadsheets'
+                "pdf": "Documents",
+                "jpg": "Photos",
+                "png": "Images",
+                "docx": "Word Documents",
+                "xlsx": "Spreadsheets",
             }
             name_parts.append(type_map.get(extensions[0], extensions[0].upper()))
 
@@ -431,7 +412,7 @@ class FileClusteringService:
         if not name_parts:
             name_parts = [f"Group {num_files} files"]
 
-        return ' '.join(name_parts[:3])  # Max 3 parts
+        return " ".join(name_parts[:3])  # Max 3 parts
 
     def _generate_cluster_description(
         self,
@@ -439,7 +420,7 @@ class FileClusteringService:
         extensions: List[str],
         keywords: List[str],
         start_date: Optional[datetime],
-        end_date: Optional[datetime]
+        end_date: Optional[datetime],
     ) -> str:
         """Generate cluster description"""
         parts = [f"{num_files} files"]
@@ -456,16 +437,12 @@ class FileClusteringService:
             else:
                 parts.append(f"from {start_date.year}-{end_date.year}")
 
-        return ', '.join(parts) + '.'
+        return ", ".join(parts) + "."
 
-    def _suggest_folder_path(
-        self,
-        cluster_name: str,
-        start_date: Optional[datetime]
-    ) -> str:
+    def _suggest_folder_path(self, cluster_name: str, start_date: Optional[datetime]) -> str:
         """Suggest folder path for cluster"""
         # Clean cluster name for path
-        clean_name = re.sub(r'[^\w\s-]', '', cluster_name).strip().replace(' ', '_')
+        clean_name = re.sub(r"[^\w\s-]", "", cluster_name).strip().replace(" ", "_")
 
         # Add year prefix if available
         if start_date:

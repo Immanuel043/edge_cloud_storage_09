@@ -2,9 +2,9 @@
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import sessionmaker
 import redis.asyncio as redis
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
 from .config import settings
 
@@ -50,17 +50,17 @@ def _unique_prepared_statement_name() -> str:
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    pool_size=50,          # Base pool size
-    max_overflow=100,      # Additional connections beyond pool_size
-    pool_pre_ping=True,    # Verify connections before using
-    pool_timeout=30,       # Max seconds to wait for a connection from pool
-    pool_recycle=3600,     # Recycle connections after 1 hour (prevent stale connections)
+    pool_size=50,  # Base pool size
+    max_overflow=100,  # Additional connections beyond pool_size
+    pool_pre_ping=True,  # Verify connections before using
+    pool_timeout=30,  # Max seconds to wait for a connection from pool
+    pool_recycle=3600,  # Recycle connections after 1 hour (prevent stale connections)
     connect_args={
-        "command_timeout": 30,                          # Max seconds for any single query
-        "statement_cache_size": 0,                      # asyncpg internal cache off
-        "prepared_statement_cache_size": 0,             # SQLAlchemy dialect cache off
+        "command_timeout": 30,  # Max seconds for any single query
+        "statement_cache_size": 0,  # asyncpg internal cache off
+        "prepared_statement_cache_size": 0,  # SQLAlchemy dialect cache off
         "prepared_statement_name_func": _unique_prepared_statement_name,
-    }
+    },
 )
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -93,9 +93,7 @@ if settings.READ_DATABASE_URL:
             "prepared_statement_name_func": _unique_prepared_statement_name,
         },
     )
-    ReadAsyncSessionLocal = sessionmaker(
-        read_engine, class_=AsyncSession, expire_on_commit=False
-    )
+    ReadAsyncSessionLocal = sessionmaker(read_engine, class_=AsyncSession, expire_on_commit=False)
 else:
     # Fall-through: reuse the primary's session factory. Callers of
     # ``get_read_db`` get the same session they would from ``get_db``.
@@ -141,19 +139,21 @@ def build_redis_url(db_index: int) -> str:
         redis://:pw@host:6379/?ssl=1 → redis://:pw@host:6379/2?ssl=1
     """
     parsed = urlparse(settings.REDIS_URL)
-    return urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        f"/{db_index}",
-        parsed.params,
-        parsed.query,
-        parsed.fragment,
-    ))
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"/{db_index}",
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
 
 
 # Client singletons (initialized at startup).
-redis_client = None              # DB 0 — default client (sessions + legacy usage)
-redis_ratelimit_client = None    # DB 2 — FastAPILimiter + billing RateLimiter
+redis_client = None  # DB 0 — default client (sessions + legacy usage)
+redis_ratelimit_client = None  # DB 2 — FastAPILimiter + billing RateLimiter
 
 
 async def init_redis():

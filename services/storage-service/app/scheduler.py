@@ -4,6 +4,7 @@ Billing Notification Scheduler
 
 Production-ready scheduler that runs billing notification jobs.
 """
+
 import asyncio
 import logging
 import signal
@@ -13,10 +14,8 @@ from datetime import datetime
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
 logger = logging.getLogger(__name__)
@@ -90,10 +89,10 @@ async def main():
                 break
             await asyncio.sleep(10)
 
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("👋 Billing Notification Scheduler Shutting Down")
     logger.info(f"Total iterations completed: {iteration}")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":

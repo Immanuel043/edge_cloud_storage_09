@@ -5,13 +5,14 @@ Revises: 20251021_0003
 Create Date: 2025-10-22 04:20:00.000000
 
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 # revision identifiers, used by Alembic.
-revision = '20251022_0000'
-down_revision = '20251021_0003'
+revision = "20251022_0000"
+down_revision = "20251021_0003"
 branch_labels = None
 depends_on = None
 
@@ -34,4 +35,4 @@ def upgrade():
 
 def downgrade():
     """Remove file_metadata column from objects table."""
-    op.drop_column('objects', 'file_metadata')
+    op.drop_column("objects", "file_metadata")

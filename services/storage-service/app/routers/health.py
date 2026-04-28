@@ -7,20 +7,21 @@ Provides detailed health information about database connections,
 query performance, and system resources.
 """
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
-from typing import Dict, Any
-import time
-import psutil
 import os
+import time
 from datetime import datetime
+from typing import Any, Dict
+
+import psutil
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import engine, get_db, get_redis
 from ..middleware.db_performance import (
-    get_slow_queries,
-    get_query_stats,
     get_all_endpoint_stats,
+    get_query_stats,
+    get_slow_queries,
 )
 
 router = APIRouter(prefix="/api/v1/health", tags=["health"])
@@ -52,9 +53,11 @@ async def database_health(db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
             "checked_out": pool.checkedout(),
             "overflow": pool.overflow(),
             "total_connections": pool.size() + pool.overflow(),
-            "utilization_percent": round(
-                (pool.checkedout() / (pool.size() + pool.overflow())) * 100, 2
-            ) if (pool.size() + pool.overflow()) > 0 else 0,
+            "utilization_percent": (
+                round((pool.checkedout() / (pool.size() + pool.overflow())) * 100, 2)
+                if (pool.size() + pool.overflow()) > 0
+                else 0
+            ),
         }
 
         # Get database statistics
@@ -118,7 +121,7 @@ async def database_health(db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
                 "size": pool.size(),
                 "checked_in": pool.checkedin(),
                 "checked_out": pool.checkedout(),
-            }
+            },
         }
 
 
@@ -221,15 +224,16 @@ async def get_database_stats(db: AsyncSession = Depends(get_db)) -> Dict[str, An
         return {
             "tables": table_counts,
             "top_indexes": index_usage,
-            "cache_hit_ratio": round(cache_hit.cache_hit_ratio, 2) if cache_hit and cache_hit.cache_hit_ratio else 0,
+            "cache_hit_ratio": (
+                round(cache_hit.cache_hit_ratio, 2)
+                if cache_hit and cache_hit.cache_hit_ratio
+                else 0
+            ),
             "query_performance": get_all_endpoint_stats(),
         }
 
     except Exception as e:
-        return {
-            "error": str(e),
-            "status": "failed to retrieve stats"
-        }
+        return {"error": str(e), "status": "failed to retrieve stats"}
 
 
 @router.get("/system")
@@ -252,7 +256,7 @@ async def system_health() -> Dict[str, Any]:
         memory = psutil.virtual_memory()
 
         # Disk usage
-        disk = psutil.disk_usage('/app/storage' if os.path.exists('/app/storage') else '/')
+        disk = psutil.disk_usage("/app/storage" if os.path.exists("/app/storage") else "/")
 
         # Process info
         process = psutil.Process(os.getpid())
@@ -281,15 +285,12 @@ async def system_health() -> Dict[str, Any]:
                 "memory_rss": format_bytes(process_memory.rss),
                 "memory_vms": format_bytes(process_memory.vms),
                 "threads": process.num_threads(),
-                "fds": process.num_fds() if hasattr(process, 'num_fds') else None,
-            }
+                "fds": process.num_fds() if hasattr(process, "num_fds") else None,
+            },
         }
 
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+        return {"status": "error", "error": str(e)}
 
 
 @router.get("/redis")
@@ -307,10 +308,7 @@ async def redis_health() -> Dict[str, Any]:
         redis_client = await get_redis()
 
         if not redis_client:
-            return {
-                "status": "unavailable",
-                "error": "Redis client not initialized"
-            }
+            return {"status": "unavailable", "error": "Redis client not initialized"}
 
         start_time = time.time()
 
@@ -335,15 +333,12 @@ async def redis_health() -> Dict[str, Any]:
         }
 
     except Exception as e:
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+        return {"status": "unhealthy", "error": str(e)}
 
 
 def format_bytes(bytes_value: int) -> str:
     """Format bytes to human readable format"""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if bytes_value < 1024.0:
             return f"{bytes_value:.2f} {unit}"
         bytes_value /= 1024.0

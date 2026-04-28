@@ -5,13 +5,13 @@ Revises: 20251108_0000
 Create Date: 2025-11-08
 
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '20251108_0001'
-down_revision = '20251108_0000'
+revision = "20251108_0001"
+down_revision = "20251108_0000"
 branch_labels = None
 depends_on = None
 
@@ -22,14 +22,20 @@ def upgrade():
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS is_encrypted BOOLEAN DEFAULT FALSE")
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS encrypted_file_key TEXT")
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS file_key_iv VARCHAR(255)")
-    op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS encryption_algorithm VARCHAR(50) DEFAULT 'AES-256-GCM'")
-    op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS upload_status VARCHAR(20) DEFAULT 'completed'")
+    op.execute(
+        "ALTER TABLE objects ADD COLUMN IF NOT EXISTS encryption_algorithm VARCHAR(50) DEFAULT 'AES-256-GCM'"
+    )
+    op.execute(
+        "ALTER TABLE objects ADD COLUMN IF NOT EXISTS upload_status VARCHAR(20) DEFAULT 'completed'"
+    )
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS upload_id VARCHAR(255)")
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMP WITH TIME ZONE")
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS file_hash VARCHAR(128)")
 
     # Create index for encrypted files
-    op.execute("CREATE INDEX IF NOT EXISTS idx_objects_is_encrypted ON objects(is_encrypted) WHERE is_encrypted = TRUE")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_objects_is_encrypted ON objects(is_encrypted) WHERE is_encrypted = TRUE"
+    )
 
 
 def downgrade():

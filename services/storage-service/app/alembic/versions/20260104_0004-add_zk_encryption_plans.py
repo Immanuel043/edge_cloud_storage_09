@@ -4,13 +4,15 @@ Revision ID: add_zk_encryption_plans
 Revises: migrate_existing_subscriptions
 Create Date: 2026-01-04
 """
-from alembic import op
-import sqlalchemy as sa
+
 from datetime import datetime
 
+import sqlalchemy as sa
+from alembic import op
+
 # revision identifiers
-revision = 'add_zk_encryption_plans'
-down_revision = 'migrate_existing_subscriptions'
+revision = "add_zk_encryption_plans"
+down_revision = "migrate_existing_subscriptions"
 branch_labels = None
 depends_on = None
 

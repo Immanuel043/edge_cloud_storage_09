@@ -2,15 +2,16 @@
 File Similarity Detection Service
 Uses perceptual hashing and other techniques to find similar/duplicate files
 """
+
+import asyncio
 import io
 import logging
-from typing import Dict, List, Tuple, Optional
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
 
-from PIL import Image
 import imagehash
 import numpy as np
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -36,29 +37,19 @@ class SimilarityService:
         """
         try:
             loop = asyncio.get_event_loop()
-            hashes = await loop.run_in_executor(
-                executor,
-                self._compute_hashes_sync,
-                image_data
-            )
-            return {
-                "success": True,
-                **hashes
-            }
+            hashes = await loop.run_in_executor(executor, self._compute_hashes_sync, image_data)
+            return {"success": True, **hashes}
         except Exception as e:
             logger.error(f"Hash computation failed: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": str(e)}
 
     def _compute_hashes_sync(self, image_data: bytes) -> Dict[str, str]:
         """Compute hashes (blocking operation)"""
         image = Image.open(io.BytesIO(image_data))
 
         # Convert to RGB if necessary
-        if image.mode not in ('RGB', 'L'):
-            image = image.convert('RGB')
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
 
         # Compute different hash types
         hashes = {
@@ -66,16 +57,13 @@ class SimilarityService:
             "dhash": str(imagehash.dhash(image, hash_size=self.hash_size)),
             "whash": str(imagehash.whash(image, hash_size=self.hash_size)),
             "average_hash": str(imagehash.average_hash(image, hash_size=self.hash_size)),
-            "colorhash": str(imagehash.colorhash(image))
+            "colorhash": str(imagehash.colorhash(image)),
         }
 
         return hashes
 
     async def find_similar_images(
-        self,
-        image_data: bytes,
-        all_image_hashes: List[Dict],
-        threshold: int = 10
+        self, image_data: bytes, all_image_hashes: List[Dict], threshold: int = 10
     ) -> List[Dict]:
         """
         Find similar images using perceptual hashing
@@ -98,11 +86,7 @@ class SimilarityService:
             # Compare with all stored hashes
             loop = asyncio.get_event_loop()
             similar_files = await loop.run_in_executor(
-                executor,
-                self._find_similar_sync,
-                query_hashes,
-                all_image_hashes,
-                threshold
+                executor, self._find_similar_sync, query_hashes, all_image_hashes, threshold
             )
 
             return similar_files
@@ -112,10 +96,7 @@ class SimilarityService:
             return []
 
     def _find_similar_sync(
-        self,
-        query_hashes: Dict,
-        all_hashes: List[Dict],
-        threshold: int
+        self, query_hashes: Dict, all_hashes: List[Dict], threshold: int
     ) -> List[Dict]:
         """Find similar images (blocking)"""
         similar_files = []
@@ -144,14 +125,16 @@ class SimilarityService:
                     max_distance = self.hash_size * self.hash_size  # Maximum possible distance
                     similarity = max(0, 100 - (avg_distance / max_distance * 100))
 
-                    similar_files.append({
-                        "file_id": item["file_id"],
-                        "similarity": round(similarity, 2),
-                        "distance": round(avg_distance, 2),
-                        "phash_distance": phash_dist,
-                        "dhash_distance": dhash_dist,
-                        "whash_distance": whash_dist
-                    })
+                    similar_files.append(
+                        {
+                            "file_id": item["file_id"],
+                            "similarity": round(similarity, 2),
+                            "distance": round(avg_distance, 2),
+                            "phash_distance": phash_dist,
+                            "dhash_distance": dhash_dist,
+                            "whash_distance": whash_dist,
+                        }
+                    )
 
             except Exception as e:
                 logger.warning(f"Failed to compare with file {item.get('file_id')}: {e}")
@@ -179,10 +162,7 @@ class SimilarityService:
 
             loop = asyncio.get_event_loop()
             score = await loop.run_in_executor(
-                executor,
-                self._compute_ssim_sync,
-                image1_data,
-                image2_data
+                executor, self._compute_ssim_sync, image1_data, image2_data
             )
             return score
 
@@ -198,8 +178,8 @@ class SimilarityService:
         from skimage.metrics import structural_similarity as ssim
 
         # Load images
-        img1 = Image.open(io.BytesIO(image1_data)).convert('L')  # Grayscale
-        img2 = Image.open(io.BytesIO(image2_data)).convert('L')
+        img1 = Image.open(io.BytesIO(image1_data)).convert("L")  # Grayscale
+        img2 = Image.open(io.BytesIO(image2_data)).convert("L")
 
         # Resize to same dimensions
         target_size = (256, 256)  # Standardize size for comparison
@@ -247,9 +227,7 @@ class SimilarityService:
             return 0.0
 
     async def find_duplicate_images(
-        self,
-        all_image_hashes: List[Dict],
-        threshold: int = 5
+        self, all_image_hashes: List[Dict], threshold: int = 5
     ) -> List[List[Dict]]:
         """
         Find groups of duplicate/near-duplicate images
@@ -264,10 +242,7 @@ class SimilarityService:
         try:
             loop = asyncio.get_event_loop()
             duplicate_groups = await loop.run_in_executor(
-                executor,
-                self._find_duplicates_sync,
-                all_image_hashes,
-                threshold
+                executor, self._find_duplicates_sync, all_image_hashes, threshold
             )
             return duplicate_groups
 
@@ -275,11 +250,7 @@ class SimilarityService:
             logger.error(f"Duplicate detection failed: {e}")
             return []
 
-    def _find_duplicates_sync(
-        self,
-        all_hashes: List[Dict],
-        threshold: int
-    ) -> List[List[Dict]]:
+    def _find_duplicates_sync(self, all_hashes: List[Dict], threshold: int) -> List[List[Dict]]:
         """Find duplicate images (blocking)"""
         duplicate_groups = []
         processed = set()
@@ -293,7 +264,7 @@ class SimilarityService:
             hash1 = imagehash.hex_to_hash(item1["phash"])
 
             # Find all similar images
-            for j, item2 in enumerate(all_hashes[i+1:], start=i+1):
+            for j, item2 in enumerate(all_hashes[i + 1 :], start=i + 1):
                 if item2["file_id"] in processed or "phash" not in item2:
                     continue
 
@@ -306,10 +277,9 @@ class SimilarityService:
 
             # Add group if it has duplicates
             if len(group) > 1:
-                duplicate_groups.append([{
-                    "file_id": item["file_id"],
-                    "phash": item["phash"]
-                } for item in group])
+                duplicate_groups.append(
+                    [{"file_id": item["file_id"], "phash": item["phash"]} for item in group]
+                )
 
             processed.add(item1["file_id"])
 

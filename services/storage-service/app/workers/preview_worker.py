@@ -17,36 +17,35 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import signal
+import sys
 from datetime import datetime
 from typing import Optional
 
-from aiokafka import AIOKafkaConsumer, TopicPartition
 import redis.asyncio as aioredis
+from aiokafka import AIOKafkaConsumer, TopicPartition
 
 # Add parent path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.preview_generator import preview_generator
-from app.services.preview_optimizer import preview_optimizer
-from app.services.encryption import encryption_service
 from app.database import async_session, get_redis, init_redis
 from app.models.database import Object
+from app.services.encryption import encryption_service
+from app.services.preview_generator import preview_generator
+from app.services.preview_optimizer import preview_optimizer
 from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 # Configuration
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
-KAFKA_TOPIC = 'preview-processing'
-KAFKA_GROUP_ID = 'preview-processors'
-MAX_CONCURRENT_PREVIEWS = int(os.getenv('MAX_CONCURRENT_PREVIEWS', '2'))
-PREVIEW_SIZES = ['small', 'medium', 'large']
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_TOPIC = "preview-processing"
+KAFKA_GROUP_ID = "preview-processors"
+MAX_CONCURRENT_PREVIEWS = int(os.getenv("MAX_CONCURRENT_PREVIEWS", "2"))
+PREVIEW_SIZES = ["small", "medium", "large"]
 PREVIEW_CACHE_TTL = 604800  # 7 days for videos
 
 
@@ -89,12 +88,12 @@ class PreviewWorker:
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
-                auto_offset_reset='earliest',
+                auto_offset_reset="earliest",
                 enable_auto_commit=False,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                 # Fetch multiple messages for LIFO sorting
                 max_poll_records=10,
-                fetch_max_wait_ms=1000
+                fetch_max_wait_ms=1000,
             )
 
             await self.consumer.start()
@@ -155,12 +154,11 @@ class PreviewWorker:
                     continue
 
                 # Sort by timestamp DESC (LIFO - newest first)
-                all_msgs.sort(
-                    key=lambda m: m.value.get('timestamp', ''),
-                    reverse=True
-                )
+                all_msgs.sort(key=lambda m: m.value.get("timestamp", ""), reverse=True)
 
-                logger.info(f"📦 Processing batch of {len(all_msgs)} preview requests (newest first)")
+                logger.info(
+                    f"📦 Processing batch of {len(all_msgs)} preview requests (newest first)"
+                )
 
                 # Dispatch the batch concurrently, but AWAIT before
                 # committing. This gives at-least-once semantics (the
@@ -198,21 +196,17 @@ class PreviewWorker:
         try:
             await self._process_preview(msg.value)
         except Exception as e:
-            logger.exception(
-                "preview_worker: failed to process offset %s", msg.offset
-            )
-            await dlq_producer.send_failed_message(
-                msg, error=e, worker="preview-worker"
-            )
+            logger.exception("preview_worker: failed to process offset %s", msg.offset)
+            await dlq_producer.send_failed_message(msg, error=e, worker="preview-worker")
 
     async def _process_preview(self, data: dict):
         """Process a single preview generation request"""
-        file_id = data.get('file_id')
+        file_id = data.get("file_id")
         if not file_id:
             logger.warning("⚠️ Missing file_id in message")
             return
 
-        upload_id = data.get('upload_id', '')
+        upload_id = data.get("upload_id", "")
         logger.info(f"🎬 Processing preview for file {file_id}...")
 
         # Distributed lock: prevent duplicate processing of the same file
@@ -222,7 +216,9 @@ class PreviewWorker:
             status_raw = await self.redis.get(f"preview:status:{file_id}")
             if status_raw:
                 try:
-                    info = json.loads(status_raw if isinstance(status_raw, str) else status_raw.decode())
+                    info = json.loads(
+                        status_raw if isinstance(status_raw, str) else status_raw.decode()
+                    )
                     if info.get("status") == "ready":
                         logger.info(f"Preview already ready for {file_id}, skipping duplicate")
                         return
@@ -233,6 +229,7 @@ class PreviewWorker:
 
         # Acquire chunk hold to prevent dedup from deleting chunks during preview
         from app.utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
+
         chunk_hold_id = None
         if upload_id:
             try:
@@ -250,34 +247,37 @@ class PreviewWorker:
                 # return after that left the endpoint stuck returning 202.
                 async with async_session() as db:
                     from sqlalchemy import select
-                    result = await db.execute(
-                        select(Object).filter(Object.id == file_id)
-                    )
+
+                    result = await db.execute(select(Object).filter(Object.id == file_id))
                     file_obj = result.scalar_one_or_none()
 
                     if not file_obj:
                         logger.warning(f"⚠️ File not found: {file_id}")
-                        await self._set_status(file_id, 'failed', 'File not found', retryable=False)
+                        await self._set_status(file_id, "failed", "File not found", retryable=False)
                         # No user_id available, skip notification
                         return
 
-                    mime = (file_obj.mime_type or '').lower()
-                    ext = os.path.splitext(file_obj.file_name or '')[1].lower()
-                    is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
-                    vp_status = getattr(file_obj, 'video_processing_status', None)
+                    mime = (file_obj.mime_type or "").lower()
+                    ext = os.path.splitext(file_obj.file_name or "")[1].lower()
+                    is_video = mime.startswith("video/") or ext in preview_generator.VIDEO_TYPES
+                    vp_status = getattr(file_obj, "video_processing_status", None)
 
                     # Ingestion-pipeline ownership checks, BEFORE we claim
                     # preview:status='processing'. This prevents a stuck
                     # spinner when we bail out due to pipeline ownership.
-                    if is_video and vp_status in ('queued', 'processing'):
-                        await self._set_status(file_id, 'deferred',
-                            'Waiting for video optimization pipeline', retryable=True)
+                    if is_video and vp_status in ("queued", "processing"):
+                        await self._set_status(
+                            file_id,
+                            "deferred",
+                            "Waiting for video optimization pipeline",
+                            retryable=True,
+                        )
                         logger.info(
                             f"Deferring preview for {file_obj.file_name} — "
                             f"optimization pipeline active, will generate thumbnails on completion"
                         )
                         return
-                    if is_video and vp_status == 'rejected':
+                    if is_video and vp_status == "rejected":
                         # Ingestion pipeline's reject branch has already
                         # written the terminal preview:status (either 'ready'
                         # from a poster-frame attempt, or 'failed' retryable:false).
@@ -289,7 +289,7 @@ class PreviewWorker:
                         return
 
                     # Now claim processing; ingestion pipeline has no ownership.
-                    await self._set_status(file_id, 'processing')
+                    await self._set_status(file_id, "processing")
 
                     # Check for transcoded/optimized MP4 first (avoids re-downloading raw CAS)
                     temp_file_path = None
@@ -298,26 +298,42 @@ class PreviewWorker:
                     if is_video:
                         # Check optimized_path (from video ingestion pipeline)
                         if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
-                            logger.info(f"Using optimized MP4 for preview: {file_obj.file_name} -> {file_obj.optimized_path}")
+                            logger.info(
+                                f"Using optimized MP4 for preview: {file_obj.file_name} -> {file_obj.optimized_path}"
+                            )
                             temp_file_path = file_obj.optimized_path
                             use_transcoded = True
                         else:
                             # Check transcoder cache
                             from app.services.video_transcoder import video_transcoder
-                            transcoded_path = os.path.join(video_transcoder.OUTPUT_DIR, f"{file_id}.mp4")
+
+                            transcoded_path = os.path.join(
+                                video_transcoder.OUTPUT_DIR, f"{file_id}.mp4"
+                            )
                             if os.path.exists(transcoded_path):
-                                logger.info(f"Using transcoded MP4 for preview: {file_obj.file_name}")
+                                logger.info(
+                                    f"Using transcoded MP4 for preview: {file_obj.file_name}"
+                                )
                                 temp_file_path = transcoded_path
                                 use_transcoded = True
 
                     # Memory pressure guard: don't download >500MB files when memory is high
-                    if not use_transcoded and file_obj.file_size and file_obj.file_size > 500 * 1024 * 1024:
+                    if (
+                        not use_transcoded
+                        and file_obj.file_size
+                        and file_obj.file_size > 500 * 1024 * 1024
+                    ):
                         try:
                             import psutil
+
                             mem = psutil.virtual_memory()
                             if mem.percent > 80:
-                                await self._set_status(file_id, 'deferred',
-                                    'Memory pressure, deferring preview', retryable=True)
+                                await self._set_status(
+                                    file_id,
+                                    "deferred",
+                                    "Memory pressure, deferring preview",
+                                    retryable=True,
+                                )
                                 logger.warning(
                                     f"Memory at {mem.percent}%, deferring preview for "
                                     f"{file_obj.file_name} ({file_obj.file_size / (1024**2):.0f}MB)"
@@ -328,7 +344,9 @@ class PreviewWorker:
 
                     if not use_transcoded:
                         # Download file for preview (can take time - that's OK, we're in background!)
-                        logger.info(f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)")
+                        logger.info(
+                            f"   Downloading file: {file_obj.file_name} ({file_obj.file_size / 1024 / 1024:.1f}MB)"
+                        )
 
                         result = await preview_optimizer.download_partial_for_preview(
                             file_obj=file_obj,
@@ -336,25 +354,31 @@ class PreviewWorker:
                             background=True,
                         )
 
-                        if result.status != 'ok':
-                            error_msg = result.error or f"Download failed ({file_obj.file_size / 1024 / 1024:.0f}MB)"
+                        if result.status != "ok":
+                            error_msg = (
+                                result.error
+                                or f"Download failed ({file_obj.file_size / 1024 / 1024:.0f}MB)"
+                            )
                             logger.warning(f"❌ {error_msg}: {file_id} ({file_obj.file_name})")
 
                             # If optimization pipeline is active, it will generate thumbnails —
                             # suppress WS notification to avoid false "failed" flash in frontend
-                            optimization_active = (
-                                hasattr(file_obj, 'video_processing_status')
-                                and file_obj.video_processing_status in ('queued', 'processing')
-                            )
+                            optimization_active = hasattr(
+                                file_obj, "video_processing_status"
+                            ) and file_obj.video_processing_status in ("queued", "processing")
                             if optimization_active:
-                                await self._set_status(file_id, 'failed', error_msg, retryable=True)
+                                await self._set_status(file_id, "failed", error_msg, retryable=True)
                                 logger.info(
                                     f"Optimization pipeline active for {file_obj.file_name}, "
                                     f"set failed+retryable (no WS push)"
                                 )
                             else:
-                                await self._set_status(file_id, 'failed', error_msg, retryable=False)
-                                await self._publish_notification(file_id, str(file_obj.user_id), 'failed', error_msg)
+                                await self._set_status(
+                                    file_id, "failed", error_msg, retryable=False
+                                )
+                                await self._publish_notification(
+                                    file_id, str(file_obj.user_id), "failed", error_msg
+                                )
                             return
 
                         temp_file_path = result.temp_file_path
@@ -375,25 +399,31 @@ class PreviewWorker:
                             # Verify ALL 3 sizes are actually in Redis
                             all_present = True
                             for check_size in PREVIEW_SIZES:
-                                if not await self.redis.exists(f"preview:{file_obj.id}:{check_size}"):
+                                if not await self.redis.exists(
+                                    f"preview:{file_obj.id}:{check_size}"
+                                ):
                                     all_present = False
                                     break
 
                             if all_present:
-                                await self._set_status(file_id, 'ready')
+                                await self._set_status(file_id, "ready")
                                 # Atomic single-notify: only first pipeline to SET NX publishes
                                 should_notify = await self.redis.set(
                                     f"preview:notified:{file_id}", "1", nx=True, ex=3600
                                 )
                                 if should_notify:
-                                    await self._publish_notification(file_id, str(file_obj.user_id), 'ready')
+                                    await self._publish_notification(
+                                        file_id, str(file_obj.user_id), "ready"
+                                    )
                                 # Update DB preview columns
                                 try:
                                     file_obj.preview_generated_at = datetime.utcnow()
                                     file_obj.preview_content_hash = file_obj.content_hash
                                     await db.commit()
                                 except Exception:
-                                    logger.warning(f"Failed to update preview columns for {file_id}")
+                                    logger.warning(
+                                        f"Failed to update preview columns for {file_id}"
+                                    )
                                 logger.info(
                                     f"Preview ready for {file_obj.file_name} "
                                     f"({sizes_cached}/{len(PREVIEW_SIZES)} sizes, notified={bool(should_notify)})"
@@ -403,8 +433,9 @@ class PreviewWorker:
                                 # Monotonic guard: don't downgrade if already ready.
                                 if not await self._is_already_ready(file_id):
                                     await self._set_status(
-                                        file_id, 'failed',
-                                        f'Partial preview generation ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)',
+                                        file_id,
+                                        "failed",
+                                        f"Partial preview generation ({sizes_cached}/{len(PREVIEW_SIZES)} sizes)",
                                         retryable=True,
                                     )
                                     logger.warning(
@@ -412,15 +443,26 @@ class PreviewWorker:
                                         f"for {file_obj.file_name}, set failed+retryable (no WS push)"
                                     )
                                 else:
-                                    logger.info(f"Preview already ready for {file_obj.file_name}, skipping partial downgrade")
+                                    logger.info(
+                                        f"Preview already ready for {file_obj.file_name}, skipping partial downgrade"
+                                    )
                         else:
                             # Total failure (0/3). Monotonic guard: don't downgrade if already ready.
                             if not await self._is_already_ready(file_id):
-                                await self._set_status(file_id, 'failed', 'All preview sizes failed to generate')
-                                await self._publish_notification(file_id, str(file_obj.user_id), 'failed', 'All preview sizes failed')
+                                await self._set_status(
+                                    file_id, "failed", "All preview sizes failed to generate"
+                                )
+                                await self._publish_notification(
+                                    file_id,
+                                    str(file_obj.user_id),
+                                    "failed",
+                                    "All preview sizes failed",
+                                )
                                 logger.warning(f"All preview sizes failed for {file_obj.file_name}")
                             else:
-                                logger.info(f"Preview already ready for {file_obj.file_name}, skipping failure downgrade")
+                                logger.info(
+                                    f"Preview already ready for {file_obj.file_name}, skipping failure downgrade"
+                                )
 
                     finally:
                         # Cleanup temp file (but never delete transcoded/optimized files)
@@ -434,14 +476,18 @@ class PreviewWorker:
                 logger.error(f"Preview generation failed for {file_id}: {e}")
                 # Monotonic guard: don't downgrade ready
                 if not await self._is_already_ready(file_id):
-                    await self._set_status(file_id, 'failed', str(e)[:200])
+                    await self._set_status(file_id, "failed", str(e)[:200])
                     try:
                         if file_obj:
-                            await self._publish_notification(file_id, str(file_obj.user_id), 'failed', str(e)[:200])
+                            await self._publish_notification(
+                                file_id, str(file_obj.user_id), "failed", str(e)[:200]
+                            )
                     except Exception:
                         pass
                 else:
-                    logger.info(f"Preview already ready for {file_id}, skipping exception downgrade")
+                    logger.info(
+                        f"Preview already ready for {file_id}, skipping exception downgrade"
+                    )
             finally:
                 # Release chunk hold so dedup cleanup can proceed
                 if chunk_hold_id and upload_id:
@@ -465,7 +511,7 @@ class PreviewWorker:
                 info = json.loads(
                     status_raw if isinstance(status_raw, str) else status_raw.decode()
                 )
-                if info.get('status') == 'ready':
+                if info.get("status") == "ready":
                     return True
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -474,17 +520,19 @@ class PreviewWorker:
     async def _generate_and_cache_preview(self, file_obj, temp_file_path: str, size: str) -> bool:
         """Generate preview and cache in Redis + disk. Returns True if persisted."""
         from app.services.preview_storage import (
-            save_preview_to_disk, should_persist_preview, preview_cache_ttl,
+            preview_cache_ttl,
+            save_preview_to_disk,
+            should_persist_preview,
         )
 
         preview_bytes, content_type = await preview_generator.generate_preview(
             file_path=temp_file_path,
             mime_type=file_obj.mime_type,
             size=size,
-            file_name=file_obj.file_name
+            file_name=file_obj.file_name,
         )
 
-        source_hash = getattr(file_obj, 'content_hash', None)
+        source_hash = getattr(file_obj, "content_hash", None)
         if source_hash:
             fresh = await should_persist_preview(str(file_obj.id), source_hash, self.redis)
             if not fresh:
@@ -500,7 +548,9 @@ class PreviewWorker:
         logger.info(f"Cached preview {size} for {file_obj.id}")
         return True
 
-    async def _set_status(self, file_id: str, status: str, error: str = None, retryable: Optional[bool] = None):
+    async def _set_status(
+        self, file_id: str, status: str, error: str = None, retryable: Optional[bool] = None
+    ):
         """Update preview status in Redis, preserving retry_count across transitions."""
         status_key = f"preview:status:{file_id}"
         retry_count = 0
@@ -509,41 +559,39 @@ class PreviewWorker:
         if existing:
             try:
                 prev = json.loads(existing if isinstance(existing, str) else existing.decode())
-                retry_count = prev.get('retry_count', 0)
+                retry_count = prev.get("retry_count", 0)
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        if status == 'failed':
+        if status == "failed":
             retry_count += 1
 
         status_data = {
-            'status': status,
-            'updated_at': datetime.utcnow().isoformat(),
+            "status": status,
+            "updated_at": datetime.utcnow().isoformat(),
         }
         if error:
-            status_data['error'] = error
+            status_data["error"] = error
         if retry_count > 0:
-            status_data['retry_count'] = retry_count
+            status_data["retry_count"] = retry_count
         if retryable is not None:
-            status_data['retryable'] = retryable
+            status_data["retryable"] = retryable
 
-        await self.redis.setex(
-            status_key,
-            3600,
-            json.dumps(status_data)
-        )
+        await self.redis.setex(status_key, 3600, json.dumps(status_data))
 
-    async def _publish_notification(self, file_id: str, user_id: str, status: str, error: str = None):
+    async def _publish_notification(
+        self, file_id: str, user_id: str, status: str, error: str = None
+    ):
         """Publish preview status change to Redis Pub/Sub for WebSocket push"""
         try:
             message = {
-                'file_id': file_id,
-                'user_id': user_id,
-                'status': status,
+                "file_id": file_id,
+                "user_id": user_id,
+                "status": status,
             }
             if error:
-                message['error'] = error
-            await self.redis.publish('preview_notifications', json.dumps(message))
+                message["error"] = error
+            await self.redis.publish("preview_notifications", json.dumps(message))
             logger.info(f"   Published preview notification: file={file_id} status={status}")
         except Exception as e:
             logger.warning(f"   Failed to publish preview notification: {e}")

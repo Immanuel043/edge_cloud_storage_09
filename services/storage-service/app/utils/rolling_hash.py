@@ -9,7 +9,7 @@ and use the Python fallback when it is ``None``.
 import ctypes
 import logging
 import os
-from typing import List, Optional, Callable
+from typing import Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +27,14 @@ for _path in _SO_PATHS:
             _LIB = ctypes.CDLL(_path)
             _LIB.find_chunk_boundaries_c.argtypes = [
                 ctypes.POINTER(ctypes.c_uint8),  # data
-                ctypes.c_int64,                   # length
-                ctypes.POINTER(ctypes.c_int64),   # out_boundaries
-                ctypes.c_int64,                   # max_boundaries
-                ctypes.c_int64,                   # min_block_size
-                ctypes.c_int64,                   # max_block_size
-                ctypes.c_int64,                   # window_size
-                ctypes.c_uint64,                  # prime
-                ctypes.c_uint64,                  # modulus_mask
+                ctypes.c_int64,  # length
+                ctypes.POINTER(ctypes.c_int64),  # out_boundaries
+                ctypes.c_int64,  # max_boundaries
+                ctypes.c_int64,  # min_block_size
+                ctypes.c_int64,  # max_block_size
+                ctypes.c_int64,  # window_size
+                ctypes.c_uint64,  # prime
+                ctypes.c_uint64,  # modulus_mask
             ]
             _LIB.find_chunk_boundaries_c.restype = ctypes.c_int64
             logger.info("Loaded native rolling hash from %s", _path)

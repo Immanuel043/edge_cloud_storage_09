@@ -1,80 +1,85 @@
 # services/storage-service/app/routers/storage.py
 
-from fastapi import APIRouter, Depends, BackgroundTasks, Request,HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from typing import Dict, Any
-from datetime import datetime, timedelta
-from pydantic import BaseModel
 import json
 import secrets
-from ..dependencies import get_db, get_current_user, log_activity, get_plan_quota
-from ..services.auth import auth_service, pwd_context
-from ..models.database import User, Object, ActivityLog, ShareLink, SharedAccess, Folder
-from ..models.schemas import (
-    StorageStats, ShareCreate, ShareResponse, ActivityResponse, ThemeUpdate,
-    CollaborativeShareCreate, CollaborativeShareResponse, SharedItemResponse
-)
-from ..database import get_redis, AsyncSessionLocal
-from ..services.storage import storage_service
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..config import settings
-from ..utils.cache import cached
-from ..utils.rate_limiter import limiter, share_limiter, RateLimitConfig, check_ip_whitelist
+from ..database import AsyncSessionLocal, get_redis
+from ..dependencies import get_current_user, get_db, get_plan_quota, log_activity
+from ..models.database import ActivityLog, Folder, Object, SharedAccess, ShareLink, User
+from ..models.schemas import (
+    ActivityResponse,
+    CollaborativeShareCreate,
+    CollaborativeShareResponse,
+    ShareCreate,
+    SharedItemResponse,
+    ShareResponse,
+    StorageStats,
+    ThemeUpdate,
+)
+from ..services.auth import auth_service, pwd_context
+from ..services.storage import storage_service
 from ..utils.access_logger import log_share_access
-from typing import Optional, List
+from ..utils.cache import cached
+from ..utils.rate_limiter import RateLimitConfig, check_ip_whitelist, limiter, share_limiter
 
 router = APIRouter(prefix="/api/v1", tags=["storage"])
 
 
 @router.get("/storage/stats", response_model=StorageStats)
 async def get_storage_stats(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Get user storage statistics (live calculation from objects table)"""
-    
+
     # Calculate total storage used from objects table
     result = await db.execute(
         select(
-            func.coalesce(func.sum(Object.file_size), 0).label('total_used'),
-            func.count(Object.id).label('total_files')
-        )
-        .filter(Object.user_id == current_user.id)
+            func.coalesce(func.sum(Object.file_size), 0).label("total_used"),
+            func.count(Object.id).label("total_files"),
+        ).filter(Object.user_id == current_user.id)
     )
     stats = result.first()
     total_used = stats.total_used or 0
     total_files = stats.total_files or 0
-    
+
     # Get distribution by storage tier
     tier_result = await db.execute(
         select(
-            Object.storage_tier, 
-            func.count(Object.id).label('count'), 
-            func.coalesce(func.sum(Object.file_size), 0).label('size')
+            Object.storage_tier,
+            func.count(Object.id).label("count"),
+            func.coalesce(func.sum(Object.file_size), 0).label("size"),
         )
         .filter(Object.user_id == current_user.id)
         .group_by(Object.storage_tier)
     )
-    
+
     distribution = {}
     for tier, count, size in tier_result:
         distribution[tier] = {"count": count, "size": size}
-    
+
     # Get storage by type (inline, single, chunked)
     type_result = await db.execute(
         select(
             Object.storage_type,
-            func.count(Object.id).label('count'),
-            func.coalesce(func.sum(Object.file_size), 0).label('size')
+            func.count(Object.id).label("count"),
+            func.coalesce(func.sum(Object.file_size), 0).label("size"),
         )
         .filter(Object.user_id == current_user.id)
         .group_by(Object.storage_type)
     )
-    
+
     type_distribution = {}
     for storage_type, count, size in type_result:
         type_distribution[storage_type] = {"count": count, "size": size}
-    
+
     # Resolve quota from subscription plan (self-heals stale users.storage_quota)
     original_quota = current_user.storage_quota
     original_pointer = current_user.current_subscription_id
@@ -106,38 +111,34 @@ async def get_storage_stats(
         percentage_used=percentage_used,
         total_files=int(total_files) if total_files else 0,
         distribution=distribution,
-        type_distribution=type_distribution
+        type_distribution=type_distribution,
     )
+
 
 @router.get("/users/{user_id}/quota")
 @cached(expire=60)  # Cache for 1 minute
-async def get_user_quota(
-    user_id: str,
-    db: AsyncSession = Depends(get_db)
-):
+async def get_user_quota(user_id: str, db: AsyncSession = Depends(get_db)):
     """Get user quota information (cached)"""
-    result = await db.execute(
-        select(User).filter(User.id == user_id)
-    )
+    result = await db.execute(select(User).filter(User.id == user_id))
     user = result.scalar_one_or_none()
-    
+
     if not user:
         raise HTTPException(404, "User not found")
-    
+
     # Calculate actual usage (this is expensive, so we cache it)
     usage_result = await db.execute(
-        select(func.sum(Object.file_size))
-        .filter(Object.user_id == user_id)
+        select(func.sum(Object.file_size)).filter(Object.user_id == user_id)
     )
     actual_usage = usage_result.scalar() or 0
-    
+
     return {
         "user_id": str(user_id),
         "quota": user.storage_quota,
         "used": actual_usage,
         "available": user.storage_quota - actual_usage,
-        "percentage": (actual_usage / user.storage_quota * 100) if user.storage_quota > 0 else 0
+        "percentage": (actual_usage / user.storage_quota * 100) if user.storage_quota > 0 else 0,
     }
+
 
 @router.post("/storage/optimize")
 async def optimize_storage(
@@ -148,6 +149,7 @@ async def optimize_storage(
     """Trigger storage optimization"""
     background_tasks.add_task(optimize_user_storage, current_user.id)
     return {"status": "optimization started"}
+
 
 @router.post("/files/{file_id}/share", response_model=ShareResponse)
 async def create_share_link(
@@ -203,7 +205,10 @@ async def create_share_link(
 
     # Log activity
     await log_activity(
-        db, current_user.id, "share_created", str(file_id),
+        db,
+        current_user.id,
+        "share_created",
+        str(file_id),
         {
             "expires_hours": share_data.expires_hours,
             "has_password": bool(share_data.password),
@@ -216,7 +221,8 @@ async def create_share_link(
     # In production, this should be the frontend domain
     # For development, use localhost:3000
     from ..config import settings
-    if hasattr(settings, 'FRONTEND_URL'):
+
+    if hasattr(settings, "FRONTEND_URL"):
         frontend_url = settings.FRONTEND_URL
     else:
         # Default to development frontend URL
@@ -235,13 +241,14 @@ async def create_share_link(
         allow_preview=share_data.allow_preview,
     )
 
+
 @router.get("/share/{share_token}/zk-info")
 @share_limiter.limit(RateLimitConfig.SHARE_PASSWORD_CHECK)
 async def get_share_zk_info(
     share_token: str,
     request: Request,
     password: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get share link info for ZK-safe client-side decryption.
@@ -263,7 +270,9 @@ async def get_share_zk_info(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Check download limit
     if share_link.max_downloads and share_link.download_count >= share_link.max_downloads:
@@ -281,17 +290,17 @@ async def get_share_zk_info(
     chunk_urls = []
     if file_obj.chunk_info and "chunks" in file_obj.chunk_info:
         for i, chunk_hash in enumerate(file_obj.chunk_info["chunks"]):
-            chunk_urls.append({
-                "index": i,
-                "hash": chunk_hash,
-                "url": f"/api/v1/share/{share_token}/chunk/{i}"
-            })
+            chunk_urls.append(
+                {"index": i, "hash": chunk_hash, "url": f"/api/v1/share/{share_token}/chunk/{i}"}
+            )
     elif file_obj.content_hash:
-        chunk_urls.append({
-            "index": 0,
-            "hash": file_obj.content_hash,
-            "url": f"/api/v1/share/{share_token}/chunk/0"
-        })
+        chunk_urls.append(
+            {
+                "index": 0,
+                "hash": file_obj.content_hash,
+                "url": f"/api/v1/share/{share_token}/chunk/0",
+            }
+        )
 
     return {
         "file_id": str(file_obj.id),
@@ -312,7 +321,7 @@ async def download_share_chunk(
     chunk_index: int,
     request: Request,
     password: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Download encrypted chunk for client-side decryption.
@@ -335,7 +344,9 @@ async def download_share_chunk(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password (accept from both header and query param, header takes precedence)
     pw = request.headers.get("X-Share-Password") or password
@@ -361,11 +372,12 @@ async def download_share_chunk(
         if chunk_index != 0:
             raise HTTPException(status_code=404, detail="Chunk not found")
         # Return encrypted inline data
-        encrypted_data = file_obj.storage_key.encode() if isinstance(file_obj.storage_key, str) else file_obj.storage_key
-        return Response(
-            content=encrypted_data,
-            media_type="application/octet-stream"
+        encrypted_data = (
+            file_obj.storage_key.encode()
+            if isinstance(file_obj.storage_key, str)
+            else file_obj.storage_key
         )
+        return Response(content=encrypted_data, media_type="application/octet-stream")
     elif file_obj.chunk_info and "chunks" in file_obj.chunk_info:
         chunks = file_obj.chunk_info["chunks"]
         if chunk_index >= len(chunks):
@@ -373,18 +385,12 @@ async def download_share_chunk(
         chunk_hash = chunks[chunk_index]
         # Get encrypted chunk from storage (no decryption!)
         encrypted_chunk = await storage_service.get_encrypted_chunk(chunk_hash)
-        return Response(
-            content=encrypted_chunk,
-            media_type="application/octet-stream"
-        )
+        return Response(content=encrypted_chunk, media_type="application/octet-stream")
     else:
         if chunk_index != 0:
             raise HTTPException(status_code=404, detail="Chunk not found")
         encrypted_chunk = await storage_service.get_encrypted_chunk(file_obj.content_hash)
-        return Response(
-            content=encrypted_chunk,
-            media_type="application/octet-stream"
-        )
+        return Response(content=encrypted_chunk, media_type="application/octet-stream")
 
 
 @router.get("/share/{share_token}")
@@ -394,7 +400,7 @@ async def download_shared(
     request: Request,
     background_tasks: BackgroundTasks,
     password: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Download shared file with validation.
@@ -418,7 +424,9 @@ async def download_shared(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password (accept from both header and query param, header takes precedence)
     pw = request.headers.get("X-Share-Password") or password
@@ -440,10 +448,10 @@ async def download_shared(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Check if this is a ZK-encrypted file - redirect to ZK-safe endpoint
-    if file_obj.encryption_mode == 'client_zk':
+    if file_obj.encryption_mode == "client_zk":
         raise HTTPException(
             status_code=400,
-            detail="This file uses zero-knowledge encryption. Use /share/{token}/zk-info for client-side decryption."
+            detail="This file uses zero-knowledge encryption. Use /share/{token}/zk-info for client-side decryption.",
         )
 
     # Update download count and last accessed
@@ -451,16 +459,20 @@ async def download_shared(
     share_link.last_accessed = datetime.utcnow()
     await db.commit()
 
-    background_tasks.add_task(log_share_access, request, "download", share_link_id=share_link.id, file_id=file_obj.id)
+    background_tasks.add_task(
+        log_share_access, request, "download", share_link_id=share_link.id, file_id=file_obj.id
+    )
 
     # LEGACY: Server-side decryption for non-ZK files only
     from ..services.encryption import encryption_service
+
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
     # Content-addressed storage (CAS) — use stream_chunked_range
     chunk_info = file_obj.chunk_info or {}
-    if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+    if "blocks" in chunk_info and "stored_blocks" in chunk_info:
         from .files import stream_chunked_range
+
         total_size = file_obj.file_size
         generator = stream_chunked_range(file_obj, 0, total_size - 1, file_key, encryption_service)
         return StreamingResponse(
@@ -475,7 +487,11 @@ async def download_shared(
     async def stream_chunks():
         if file_obj.storage_type == "inline":
             # Inline data stored directly
-            encrypted_data = file_obj.storage_key.encode() if isinstance(file_obj.storage_key, str) else file_obj.storage_key
+            encrypted_data = (
+                file_obj.storage_key.encode()
+                if isinstance(file_obj.storage_key, str)
+                else file_obj.storage_key
+            )
             decrypted_data = encryption_service.decrypt_data(encrypted_data, file_key)
             yield decrypted_data
         elif file_obj.chunk_info and "chunks" in file_obj.chunk_info:
@@ -497,6 +513,7 @@ async def download_shared(
         },
     )
 
+
 @router.get("/activity", response_model=List[ActivityResponse])
 async def get_activity_logs(
     limit: int = 50,
@@ -505,16 +522,16 @@ async def get_activity_logs(
 ):
     """Get user activity logs"""
     from typing import List
-    
+
     result = await db.execute(
         select(ActivityLog)
         .filter(ActivityLog.user_id == current_user.id)
         .order_by(ActivityLog.created_at.desc())
         .limit(limit)
     )
-    
+
     activities = result.scalars().all()
-    
+
     return [
         ActivityResponse(
             id=str(a.id),
@@ -526,6 +543,7 @@ async def get_activity_logs(
         )
         for a in activities
     ]
+
 
 @router.get("/users/profile")
 async def get_user_profile(
@@ -547,6 +565,7 @@ async def get_user_profile(
         "created_at": current_user.created_at.isoformat(),
     }
 
+
 @router.put("/users/theme")
 async def update_theme(
     theme_data: ThemeUpdate,
@@ -563,6 +582,7 @@ async def update_theme(
 # VIDEO OPTIMIZATION SETTINGS
 # ============================================================================
 
+
 @router.get("/users/settings/video-optimization")
 async def get_video_optimization_settings(
     current_user: User = Depends(get_current_user),
@@ -576,14 +596,15 @@ async def get_video_optimization_settings(
         plan_gated: True (mode is determined by plan, not user setting)
     """
     from shared_billing import BillingService
+
     try:
-        billing = BillingService(db, service_type='normal')
+        billing = BillingService(db, service_type="normal")
         subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
-        mode = (subscription.plan.features or {}).get('video_optimization', False)
+        mode = (subscription.plan.features or {}).get("video_optimization", False)
         if not mode:
-            mode = 'no_optimization'
+            mode = "no_optimization"
     except Exception:
-        mode = 'no_optimization'
+        mode = "no_optimization"
 
     return {
         "mode": mode,
@@ -591,8 +612,8 @@ async def get_video_optimization_settings(
         "description": {
             "optimized": "Videos are automatically optimized for browser playback",
             "keep_both": "Both original and optimized versions accessible",
-            "no_optimization": "Video optimization not included in your plan"
-        }
+            "no_optimization": "Video optimization not included in your plan",
+        },
     }
 
 
@@ -602,10 +623,10 @@ async def optimize_user_storage(user_id: str):
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Object).filter(Object.user_id == user_id))
         files = result.scalars().all()
-        
+
         for file in files:
             age_days = (datetime.utcnow() - file.last_accessed).days
-            
+
             if age_days > 30 and file.storage_tier == "cache":
                 for chunk_hash in file.chunk_info.get("chunks", []):
                     await storage_service.move_to_tier(chunk_hash, "warm")
@@ -614,8 +635,10 @@ async def optimize_user_storage(user_id: str):
                 for chunk_hash in file.chunk_info.get("chunks", []):
                     await storage_service.move_to_tier(chunk_hash, "cold")
                 file.storage_tier = "cold"
-        
+
         await db.commit()
 
+
+from typing import List, Optional
+
 from fastapi import HTTPException
-from typing import Optional, List

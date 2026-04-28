@@ -1,17 +1,18 @@
 # services/storage-service/app/routers/deduplication.py
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
-from sqlalchemy.types import Integer
-from typing import Dict, Any, Optional
-import os
-import aiofiles
 import logging
+import os
+from typing import Any, Dict, Optional
 
-from ..dependencies import get_db, get_current_user
-from ..models.database import User, Object
-from ..services.deduplication_enhanced import enhanced_dedup_service
+import aiofiles
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.types import Integer
+
+from ..dependencies import get_current_user, get_db
+from ..models.database import Object, User
 from ..services.dedup_queue import smart_dedup_queue
+from ..services.deduplication_enhanced import enhanced_dedup_service
 
 # Get allowed emails from environment variable
 ALLOWED_GC_EMAILS = os.getenv("ALLOWED_GC_EMAILS", "").split(",")
@@ -21,16 +22,18 @@ ALLOWED_GC_EMAILS = [email.strip() for email in ALLOWED_GC_EMAILS if email.strip
 router = APIRouter(prefix="/api/v1/dedup", tags=["deduplication"])
 logger = logging.getLogger(__name__)
 
+
 @router.get("/analytics")
 async def get_dedup_analytics(
     user_only: bool = True,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Get deduplication analytics with accurate calculations"""
-    
+
     # Get real statistics based on unique blocks via file_block_mappings
-    result = await db.execute(text("""
+    result = await db.execute(
+        text("""
         WITH file_stats AS (
             SELECT
                 COUNT(DISTINCT o.id) as file_count,
@@ -76,10 +79,12 @@ async def get_dedup_analytics(
             a.avg_refs,
             COALESCE(b.physical_size, 0) as physical_size
         FROM file_stats f, block_stats b, avg_refs a
-    """), {"user_id": str(current_user.id)})
-    
+    """),
+        {"user_id": str(current_user.id)},
+    )
+
     stats = result.first()
-    
+
     if not stats or not stats.logical_size:
         # Return default values if no deduplicated files
         return {
@@ -89,19 +94,19 @@ async def get_dedup_analytics(
                 "physical_size": 0,
                 "saved_size": 0,
                 "dedup_ratio": 0,
-                "compression_ratio": 1
+                "compression_ratio": 1,
             },
-            "blocks": {
-                "total_blocks": 0,
-                "total_size": 0,
-                "avg_references": 0
-            },
-            "top_duplicates": []
+            "blocks": {"total_blocks": 0, "total_size": 0, "avg_references": 0},
+            "top_duplicates": [],
         }
-    
-    saved_size = stats.logical_size - stats.physical_size if stats.logical_size and stats.physical_size else 0
+
+    saved_size = (
+        stats.logical_size - stats.physical_size
+        if stats.logical_size and stats.physical_size
+        else 0
+    )
     dedup_ratio = (saved_size / stats.logical_size * 100) if stats.logical_size > 0 else 0
-    
+
     return {
         "summary": {
             "total_files": stats.file_count or 0,
@@ -109,25 +114,28 @@ async def get_dedup_analytics(
             "physical_size": stats.physical_size or 0,
             "saved_size": saved_size,
             "dedup_ratio": round(dedup_ratio, 2),
-            "compression_ratio": round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
+            "compression_ratio": (
+                round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
+            ),
         },
         "blocks": {
             "total_blocks": stats.total_mappings or 0,
             "total_size": stats.physical_size or 0,
-            "avg_references": float(stats.avg_refs or 0)
+            "avg_references": float(stats.avg_refs or 0),
         },
-        "top_duplicates": []
+        "top_duplicates": [],
     }
+
 
 @router.get("/savings")
 async def get_storage_savings(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Get accurate storage savings from deduplication"""
-    
+
     # Use actual block sizes via file_block_mappings
-    result = await db.execute(text("""
+    result = await db.execute(
+        text("""
         WITH file_stats AS (
             SELECT
                 COUNT(DISTINCT o.id) as file_count,
@@ -162,127 +170,123 @@ async def get_storage_savings(
                 ELSE 0
             END as savings_percentage
         FROM file_stats f, block_stats b
-    """), {"user_id": str(current_user.id)})
-    
+    """),
+        {"user_id": str(current_user.id)},
+    )
+
     stats = result.first()
-    
+
     if not stats or not stats.logical_size:
         return {
             "logical_size": 0,
             "physical_size": 0,
             "saved_size": 0,
             "savings_percentage": 0,
-            "storage_efficiency": 1
+            "storage_efficiency": 1,
         }
-    
+
     return {
         "logical_size": stats.logical_size or 0,
         "physical_size": stats.physical_size or 0,
         "saved_size": stats.saved_size or 0,
         "savings_percentage": float(stats.savings_percentage or 0),
-        "storage_efficiency": round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
+        "storage_efficiency": (
+            round(stats.logical_size / stats.physical_size, 2) if stats.physical_size > 0 else 1
+        ),
     }
+
 
 @router.post("/optimize/{file_id}")
 async def optimize_file_dedup(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Optimize a specific file for deduplication"""
-    
+
     # Get file
     result = await db.execute(
-        select(Object).where(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).where(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
-    
+
     if not file_obj:
         raise HTTPException(404, "File not found")
-    
+
     # Check if already deduplicated
-    if file_obj.storage_type == 'content_addressed':
+    if file_obj.storage_type == "content_addressed":
         dedup_info = file_obj.dedup_info or {}
         return {
             "status": "already_optimized",
-            "current_dedup_ratio": dedup_info.get('dedup_ratio', 0)
+            "current_dedup_ratio": dedup_info.get("dedup_ratio", 0),
         }
-    
+
     # Read file data based on storage type
     if file_obj.storage_type == "single" and file_obj.object_path:
         if not os.path.exists(file_obj.object_path):
             raise HTTPException(404, "File data not found")
-        
-        async with aiofiles.open(file_obj.object_path, 'rb') as f:
+
+        async with aiofiles.open(file_obj.object_path, "rb") as f:
             file_data = await f.read()
-        
+
         # Decrypt if needed
         if file_obj.encryption_key:
             from ..services.encryption import encryption_service
+
             file_key = encryption_service.decrypt_key(file_obj.encryption_key)
             file_data = encryption_service.decrypt_file(file_data, file_key)
-        
+
         # Perform deduplication
         dedup_result = await enhanced_dedup_service.store_deduplicated_file(
             file_data=file_data,
             file_name=file_obj.file_name,
             user_id=str(current_user.id),
             db=db,
-            metadata={'mime_type': file_obj.mime_type},
-            encrypt=bool(file_obj.encryption_key)
+            metadata={"mime_type": file_obj.mime_type},
+            encrypt=bool(file_obj.encryption_key),
         )
-        
+
         # Delete old storage if successful
-        if dedup_result.get('status') in ['stored_with_dedup', 'full_duplicate']:
+        if dedup_result.get("status") in ["stored_with_dedup", "full_duplicate"]:
             try:
                 os.remove(file_obj.object_path)
             except:
                 pass
-        
+
         return {
             "status": "optimized",
-            "new_file_id": dedup_result.get('file_id'),
-            "saved_size": dedup_result.get('saved_size', 0),
-            "dedup_ratio": dedup_result.get('dedup_ratio', 0)
+            "new_file_id": dedup_result.get("file_id"),
+            "saved_size": dedup_result.get("saved_size", 0),
+            "dedup_ratio": dedup_result.get("dedup_ratio", 0),
         }
-    
-    return {
-        "status": "not_applicable",
-        "message": "File type not suitable for optimization"
-    }
+
+    return {"status": "not_applicable", "message": "File type not suitable for optimization"}
+
 
 @router.post("/gc")
 async def run_garbage_collection(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Run garbage collection (admin only or authorized users)"""
-    
+
     # Get allowed emails from environment variable
     allowed_emails_env = os.getenv("ALLOWED_GC_EMAILS", "")
     allowed_emails = allowed_emails_env.split(",") if allowed_emails_env else []
     allowed_emails = [email.strip() for email in allowed_emails if email.strip()]
-    
+
     # Allow admin users or emails in the allowed list
     if current_user.plan_type != "admin" and current_user.email not in allowed_emails:
         raise HTTPException(403, f"Access denied for {current_user.email}")
-    
+
     # Run cleanup in background
-    background_tasks.add_task(
-        enhanced_dedup_service.garbage_collect, db
-    )
-    
+    background_tasks.add_task(enhanced_dedup_service.garbage_collect, db)
+
     return {"status": "gc_initiated", "authorized_user": current_user.email}
 
 
 @router.get("/health/dangling-references")
 async def check_dangling_references(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Detect orphan content_blocks with no file_block_mappings (admin only)."""
     allowed_emails_env = os.getenv("ALLOWED_GC_EMAILS", "")
@@ -307,14 +311,13 @@ async def check_dangling_references(
                 "created_at": str(r.created_at),
             }
             for r in rows
-        ]
+        ],
     }
 
 
 @router.get("/analytics/detailed")
 async def get_detailed_analytics(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Enhanced analytics with classification breakdown
@@ -327,7 +330,8 @@ async def get_detailed_analytics(
     """
 
     # Get classification breakdown from dedup_info JSON field
-    classification_stats = await db.execute(text("""
+    classification_stats = await db.execute(
+        text("""
         SELECT
             COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'skip') as skipped,
             COUNT(*) FILTER (WHERE dedup_info->>'classification_mode' = 'inline') as inline,
@@ -337,12 +341,15 @@ async def get_detailed_analytics(
         FROM objects
         WHERE user_id = :user_id
         AND is_deleted = false
-    """), {"user_id": str(current_user.id)})
+    """),
+        {"user_id": str(current_user.id)},
+    )
 
     class_stats = classification_stats.first()
 
     # Get skip reason breakdown
-    skip_reasons = await db.execute(text("""
+    skip_reasons = await db.execute(
+        text("""
         SELECT
             dedup_info->>'classification_reason' as reason,
             COUNT(*) as count,
@@ -354,10 +361,13 @@ async def get_detailed_analytics(
         GROUP BY dedup_info->>'classification_reason'
         ORDER BY count DESC
         LIMIT 10
-    """), {"user_id": str(current_user.id)})
+    """),
+        {"user_id": str(current_user.id)},
+    )
 
     # Get top duplicate blocks (by mapping count)
-    top_duplicates = await db.execute(text("""
+    top_duplicates = await db.execute(
+        text("""
         SELECT
             cb.block_hash,
             cb.block_size,
@@ -372,7 +382,9 @@ async def get_detailed_analytics(
         HAVING COUNT(fbm.id) > 1
         ORDER BY bytes_saved DESC
         LIMIT 10
-    """), {"user_id": str(current_user.id)})
+    """),
+        {"user_id": str(current_user.id)},
+    )
 
     return {
         "classification": {
@@ -380,14 +392,10 @@ async def get_detailed_analytics(
             "inline": class_stats.inline or 0,
             "async": class_stats.async_mode or 0,
             "unclassified": class_stats.unclassified or 0,
-            "skipped_bytes": class_stats.skipped_bytes or 0
+            "skipped_bytes": class_stats.skipped_bytes or 0,
         },
         "skip_reasons": [
-            {
-                "reason": row.reason,
-                "count": row.count,
-                "total_bytes": row.total_bytes
-            }
+            {"reason": row.reason, "count": row.count, "total_bytes": row.total_bytes}
             for row in skip_reasons
         ],
         "top_duplicates": [
@@ -395,17 +403,16 @@ async def get_detailed_analytics(
                 "hash": row.block_hash[:12] + "...",
                 "size": row.block_size,
                 "references": row.reference_count,
-                "bytes_saved": row.bytes_saved
+                "bytes_saved": row.bytes_saved,
             }
             for row in top_duplicates
-        ]
+        ],
     }
 
 
 @router.get("/analytics/efficiency")
 async def get_efficiency_breakdown(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Efficiency metrics by file type and size band
@@ -414,7 +421,8 @@ async def get_efficiency_breakdown(
     """
 
     # Get dedup efficiency by extension
-    by_extension = await db.execute(text("""
+    by_extension = await db.execute(
+        text("""
         WITH file_extensions AS (
             SELECT
                 LOWER(substring(file_name from '\\.([^.]+)$')) as ext,
@@ -438,10 +446,13 @@ async def get_efficiency_breakdown(
         HAVING COUNT(*) >= 2  -- At least 2 files
         ORDER BY total_saved DESC
         LIMIT 15
-    """), {"user_id": str(current_user.id)})
+    """),
+        {"user_id": str(current_user.id)},
+    )
 
     # Get dedup efficiency by size band
-    by_size = await db.execute(text("""
+    by_size = await db.execute(
+        text("""
         WITH size_bands AS (
             SELECT
                 CASE
@@ -473,7 +484,9 @@ async def get_efficiency_breakdown(
                 WHEN '100MB-1GB' THEN 3
                 ELSE 4
             END
-    """), {"user_id": str(current_user.id)})
+    """),
+        {"user_id": str(current_user.id)},
+    )
 
     return {
         "by_extension": [
@@ -482,7 +495,7 @@ async def get_efficiency_breakdown(
                 "file_count": row.file_count,
                 "total_logical": row.total_logical,
                 "total_saved": row.total_saved,
-                "avg_dedup_ratio": float(row.avg_dedup_ratio or 0)
+                "avg_dedup_ratio": float(row.avg_dedup_ratio or 0),
             }
             for row in by_extension
         ],
@@ -492,17 +505,15 @@ async def get_efficiency_breakdown(
                 "file_count": row.file_count,
                 "total_logical": row.total_logical,
                 "total_saved": row.total_saved,
-                "avg_dedup_ratio": float(row.avg_dedup_ratio or 0)
+                "avg_dedup_ratio": float(row.avg_dedup_ratio or 0),
             }
             for row in by_size
-        ]
+        ],
     }
 
 
 @router.get("/queue/status")
-async def get_queue_status(
-    current_user: User = Depends(get_current_user)
-):
+async def get_queue_status(current_user: User = Depends(get_current_user)):
     """
     Get smart queue status
 
@@ -522,7 +533,7 @@ async def get_queue_status(
     return {
         "queue": queue_status,
         "user": user_status,
-        "recommendations": _get_recommendations(queue_status, user_status)
+        "recommendations": _get_recommendations(queue_status, user_status),
     }
 
 
@@ -532,47 +543,55 @@ def _get_recommendations(queue_status: Dict, user_status: Dict) -> list:
 
     # Check circuit breaker
     if queue_status["circuit_breaker"]["state"] == "OPEN":
-        recommendations.append({
-            "type": "warning",
-            "message": "System overloaded - uploads may be delayed",
-            "action": "Wait a few minutes before uploading large files"
-        })
+        recommendations.append(
+            {
+                "type": "warning",
+                "message": "System overloaded - uploads may be delayed",
+                "action": "Wait a few minutes before uploading large files",
+            }
+        )
 
     # Check user quota
     if user_status["jobs_in_queue"] >= user_status["max_allowed"] * 0.8:
-        recommendations.append({
-            "type": "info",
-            "message": f"You have {user_status['jobs_in_queue']} files in queue",
-            "action": f"Maximum {user_status['max_allowed']} files allowed per user"
-        })
+        recommendations.append(
+            {
+                "type": "info",
+                "message": f"You have {user_status['jobs_in_queue']} files in queue",
+                "action": f"Maximum {user_status['max_allowed']} files allowed per user",
+            }
+        )
 
     # Check queue congestion
     total_queue = queue_status["queue_size"]
     max_queue = queue_status["capacity"]["max_queue_size"]
 
     if total_queue >= max_queue * 0.8:
-        recommendations.append({
-            "type": "warning",
-            "message": "Deduplication queue is congested",
-            "action": "Consider uploading smaller files or waiting for queue to clear"
-        })
+        recommendations.append(
+            {
+                "type": "warning",
+                "message": "Deduplication queue is congested",
+                "action": "Consider uploading smaller files or waiting for queue to clear",
+            }
+        )
     elif total_queue < max_queue * 0.2:
-        recommendations.append({
-            "type": "success",
-            "message": "System running smoothly",
-            "action": "Good time to upload large files"
-        })
+        recommendations.append(
+            {
+                "type": "success",
+                "message": "System running smoothly",
+                "action": "Good time to upload large files",
+            }
+        )
 
     return recommendations
 
 
 @router.get("/health/dedup-consistency")
 async def check_dedup_consistency(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Compare chunk_info block hashes vs file_block_mappings for each content_addressed file."""
-    mismatches = await db.execute(text("""
+    mismatches = await db.execute(
+        text("""
         WITH chunk_info_hashes AS (
             SELECT o.id AS file_id, o.file_name,
                    COALESCE(array_agg(DISTINCT b.val->>'hash' ORDER BY b.val->>'hash'), '{}') AS ci_hashes
@@ -600,10 +619,12 @@ async def check_dedup_consistency(
         FROM chunk_info_hashes ci
         LEFT JOIN mapping_hashes m ON m.file_id = ci.file_id
         WHERE ci.ci_hashes != COALESCE(m.m_hashes, '{}')
-    """), {"user_id": str(current_user.id)})
+    """),
+        {"user_id": str(current_user.id)},
+    )
     rows = mismatches.fetchall()
     return {
         "consistent": len(rows) == 0,
         "mismatched_files": len(rows),
-        "details": [{"file_id": str(r.file_id), "file_name": r.file_name} for r in rows]
+        "details": [{"file_id": str(r.file_id), "file_name": r.file_name} for r in rows],
     }

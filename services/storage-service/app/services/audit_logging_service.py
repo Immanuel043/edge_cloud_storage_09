@@ -23,17 +23,17 @@ Compliance Standards:
 - PCI DSS (if payment data)
 """
 
-import logging
 import hashlib
 import json
-from typing import Optional, Dict, List, Any
+import logging
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, desc
 from fastapi import Request
+from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.database import User
 
@@ -104,6 +104,7 @@ class AuditEventType(str, Enum):
 
 class AuditSeverity(str, Enum):
     """Severity levels for audit events"""
+
     DEBUG = "debug"
     INFO = "info"
     WARNING = "warning"
@@ -113,6 +114,7 @@ class AuditSeverity(str, Enum):
 
 class AuditCategory(str, Enum):
     """Categories for organizing audit events"""
+
     AUTHENTICATION = "authentication"
     AUTHORIZATION = "authorization"
     DATA_ACCESS = "data_access"
@@ -140,7 +142,7 @@ class AuditEvent:
         request_id: Optional[str] = None,
         session_id: Optional[str] = None,
         details: Optional[Dict] = None,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
     ):
         self.id = uuid4()
         self.event_type = event_type
@@ -218,7 +220,7 @@ class AuditEvent:
             "details": self.details,
             "metadata": self.metadata,
             "timestamp": self.timestamp.isoformat(),
-            "event_hash": self.event_hash
+            "event_hash": self.event_hash,
         }
 
 
@@ -241,9 +243,7 @@ class AuditLoggingService:
         # Configure audit logger to write to separate file
         if not self.logger.handlers:
             handler = logging.FileHandler("audit.log")
-            formatter = logging.Formatter(
-                '%(asctime)s - AUDIT - %(levelname)s - %(message)s'
-            )
+            formatter = logging.Formatter("%(asctime)s - AUDIT - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
@@ -260,7 +260,7 @@ class AuditLoggingService:
         severity: AuditSeverity = AuditSeverity.INFO,
         request: Optional[Request] = None,
         details: Optional[Dict] = None,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
     ) -> AuditEvent:
         """
         Log an audit event
@@ -304,7 +304,7 @@ class AuditLoggingService:
             user_agent=user_agent,
             request_id=request_id,
             details=details,
-            metadata=metadata
+            metadata=metadata,
         )
 
         # Store in AuditLog table (not ActivityLog — main flows write ActivityLog via log_activity())
@@ -386,7 +386,7 @@ class AuditLoggingService:
         user_id: UUID,
         success: bool,
         request: Optional[Request] = None,
-        details: Optional[Dict] = None
+        details: Optional[Dict] = None,
     ):
         """Log authentication attempt"""
         await self.log_event(
@@ -396,7 +396,7 @@ class AuditLoggingService:
             result="success" if success else "failure",
             severity=AuditSeverity.INFO if success else AuditSeverity.WARNING,
             request=request,
-            details=details
+            details=details,
         )
 
     async def log_file_access(
@@ -406,7 +406,7 @@ class AuditLoggingService:
         file_id: str,
         action: str,
         request: Optional[Request] = None,
-        details: Optional[Dict] = None
+        details: Optional[Dict] = None,
     ):
         """Log file access (GDPR compliance)"""
         event_map = {
@@ -426,7 +426,7 @@ class AuditLoggingService:
             resource_id=file_id,
             action=action,
             request=request,
-            details=details
+            details=details,
         )
 
     async def log_gdpr_event(
@@ -435,7 +435,7 @@ class AuditLoggingService:
         user_id: UUID,
         gdpr_action: str,
         request: Optional[Request] = None,
-        details: Optional[Dict] = None
+        details: Optional[Dict] = None,
     ):
         """Log GDPR-related events"""
         event_map = {
@@ -452,7 +452,7 @@ class AuditLoggingService:
             user_id=user_id,
             severity=AuditSeverity.WARNING,  # GDPR events are important
             request=request,
-            details=details
+            details=details,
         )
 
     async def log_security_event(
@@ -462,7 +462,7 @@ class AuditLoggingService:
         user_id: Optional[UUID] = None,
         severity: AuditSeverity = AuditSeverity.WARNING,
         request: Optional[Request] = None,
-        details: Optional[Dict] = None
+        details: Optional[Dict] = None,
     ):
         """Log security-related events"""
         await self.log_event(
@@ -471,7 +471,7 @@ class AuditLoggingService:
             user_id=user_id,
             severity=severity,
             request=request,
-            details=details
+            details=details,
         )
 
     async def log_key_rotation(
@@ -480,7 +480,7 @@ class AuditLoggingService:
         user_id: UUID,
         old_version: int,
         new_version: int,
-        details: Optional[Dict] = None
+        details: Optional[Dict] = None,
     ):
         """Log encryption key rotation"""
         await self.log_event(
@@ -491,8 +491,8 @@ class AuditLoggingService:
             details={
                 "old_key_version": old_version,
                 "new_key_version": new_version,
-                **(details or {})
-            }
+                **(details or {}),
+            },
         )
 
     # ===== Query and Reporting =====
@@ -507,7 +507,7 @@ class AuditLoggingService:
         end_date: Optional[datetime] = None,
         severity: Optional[AuditSeverity] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Dict]:
         """
         Query audit trail with filters
@@ -558,17 +558,13 @@ class AuditLoggingService:
                 "timestamp": log.timestamp.isoformat() if log.timestamp else None,
                 "ip_address": log.ip_address,
                 "user_agent": log.user_agent,
-                "metadata": log.meta_data
+                "metadata": log.meta_data,
             }
             for log in logs
         ]
 
     async def generate_compliance_report(
-        self,
-        db: AsyncSession,
-        start_date: datetime,
-        end_date: datetime,
-        report_type: str = "gdpr"
+        self, db: AsyncSession, start_date: datetime, end_date: datetime, report_type: str = "gdpr"
     ) -> Dict:
         """
         Generate compliance report for a date range
@@ -586,24 +582,15 @@ class AuditLoggingService:
 
         # Get all events in date range
         result = await db.execute(
-            select(ActivityLog)
-            .filter(
-                and_(
-                    ActivityLog.timestamp >= start_date,
-                    ActivityLog.timestamp <= end_date
-                )
+            select(ActivityLog).filter(
+                and_(ActivityLog.timestamp >= start_date, ActivityLog.timestamp <= end_date)
             )
         )
         logs = result.scalars().all()
 
         # Count events by type
         event_counts = {}
-        severity_counts = {
-            "info": 0,
-            "warning": 0,
-            "error": 0,
-            "critical": 0
-        }
+        severity_counts = {"info": 0, "warning": 0, "error": 0, "critical": 0}
 
         gdpr_events = []
         security_events = []
@@ -627,24 +614,17 @@ class AuditLoggingService:
 
         return {
             "report_type": report_type,
-            "period": {
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat()
-            },
+            "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
             "summary": {
                 "total_events": len(logs),
                 "unique_event_types": len(event_counts),
                 "gdpr_events": len(gdpr_events),
                 "security_events": len(security_events),
-                "data_access_events": len(access_events)
+                "data_access_events": len(access_events),
             },
             "severity_distribution": severity_counts,
             "event_type_counts": event_counts,
-            "top_events": sorted(
-                event_counts.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )[:10]
+            "top_events": sorted(event_counts.items(), key=lambda x: x[1], reverse=True)[:10],
         }
 
 

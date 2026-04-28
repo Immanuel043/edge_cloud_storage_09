@@ -3,27 +3,24 @@ Billing Notifications Background Job
 
 Runs periodically to check for upcoming payments and send reminders.
 """
-import asyncio
-from datetime import datetime, timezone
-import logging
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
+import logging
+from datetime import datetime, timezone
 
 from app.database import async_session
 from app.models.database import User
 from shared_billing import BillingService
-from shared_billing.notification_service import BillingNotificationService
 from shared_billing.models import BillingNotification, UserSubscription
+from shared_billing.notification_service import BillingNotificationService
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 
 async def send_payment_reminder_email(
-    user: User,
-    notification: BillingNotification,
-    subscription: UserSubscription,
-    plan_name: str
+    user: User, notification: BillingNotification, subscription: UserSubscription, plan_name: str
 ):
     """
     Send payment reminder email to user.
@@ -36,10 +33,11 @@ async def send_payment_reminder_email(
     """
     try:
         from app.services.email_service import EmailService
+
         email_service = EmailService()
 
         # Format payment date
-        payment_date = notification.payment_due_date.strftime('%B %d, %Y')
+        payment_date = notification.payment_due_date.strftime("%B %d, %Y")
 
         # Create email body
         subject = f"Payment Reminder: Your {plan_name} subscription renewal"
@@ -81,11 +79,7 @@ async def send_payment_reminder_email(
         """
 
         # Send email
-        await email_service.send_email(
-            to_email=user.email,
-            subject=subject,
-            body=body
-        )
+        await email_service.send_email(to_email=user.email, subject=subject, body=body)
 
         logger.info(f"Sent payment reminder to {user.email} for subscription {subscription.id}")
         return True
@@ -109,8 +103,8 @@ async def process_billing_notifications():
     async with async_session() as db:
         try:
             # Initialize services
-            billing_service = BillingService(db, service_type='normal')
-            notification_service = BillingNotificationService(db, service_type='normal')
+            billing_service = BillingService(db, service_type="normal")
+            notification_service = BillingNotificationService(db, service_type="normal")
 
             # Get subscriptions needing reminders
             subscriptions = await notification_service.get_subscriptions_needing_reminders()
@@ -125,18 +119,18 @@ async def process_billing_notifications():
 
                     # Schedule reminders for this subscription
                     await notification_service.schedule_reminders_for_subscription(
-                        subscription=subscription,
-                        plan=plan
+                        subscription=subscription, plan=plan
                     )
 
                 except Exception as e:
-                    logger.error(f"Failed to schedule reminders for subscription {subscription.id}: {e}")
+                    logger.error(
+                        f"Failed to schedule reminders for subscription {subscription.id}: {e}"
+                    )
                     continue
 
             # Get all pending notifications
             result = await db.execute(
-                select(BillingNotification)
-                .filter(BillingNotification.status == 'pending')
+                select(BillingNotification).filter(BillingNotification.status == "pending")
             )
             pending_notifications = result.scalars().all()
 
@@ -150,32 +144,30 @@ async def process_billing_notifications():
                 try:
                     # Get subscription with plan
                     sub_result = await db.execute(
-                        select(UserSubscription)
-                        .filter(UserSubscription.id == notification.subscription_id)
+                        select(UserSubscription).filter(
+                            UserSubscription.id == notification.subscription_id
+                        )
                     )
                     subscription = sub_result.scalar_one_or_none()
 
                     if not subscription:
                         logger.warning(f"Subscription not found for notification {notification.id}")
                         await notification_service.mark_notification_sent(
-                            notification.id,
-                            error_message="Subscription not found"
+                            notification.id, error_message="Subscription not found"
                         )
                         failed_count += 1
                         continue
 
                     # Get user
                     user_result = await db.execute(
-                        select(User)
-                        .filter(User.id == notification.user_id)
+                        select(User).filter(User.id == notification.user_id)
                     )
                     user = user_result.scalar_one_or_none()
 
                     if not user:
                         logger.warning(f"User not found for notification {notification.id}")
                         await notification_service.mark_notification_sent(
-                            notification.id,
-                            error_message="User not found"
+                            notification.id, error_message="User not found"
                         )
                         failed_count += 1
                         continue
@@ -188,7 +180,7 @@ async def process_billing_notifications():
                         user=user,
                         notification=notification,
                         subscription=subscription,
-                        plan_name=plan.display_name
+                        plan_name=plan.display_name,
                     )
 
                     # Mark as sent
@@ -198,8 +190,7 @@ async def process_billing_notifications():
                 except Exception as e:
                     logger.error(f"Failed to send notification {notification.id}: {e}")
                     await notification_service.mark_notification_sent(
-                        notification.id,
-                        error_message=str(e)
+                        notification.id, error_message=str(e)
                     )
                     failed_count += 1
 
@@ -209,9 +200,9 @@ async def process_billing_notifications():
             )
 
             return {
-                'sent': sent_count,
-                'failed': failed_count,
-                'total_subscriptions': len(subscriptions)
+                "sent": sent_count,
+                "failed": failed_count,
+                "total_subscriptions": len(subscriptions),
             }
 
         except Exception as e:

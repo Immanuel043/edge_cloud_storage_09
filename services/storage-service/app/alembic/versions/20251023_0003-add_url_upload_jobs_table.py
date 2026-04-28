@@ -5,14 +5,14 @@ Revises: 20251023_0002
 Create Date: 2025-10-23
 
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-
 # revision identifiers, used by Alembic.
-revision = '20251023_0003'
-down_revision = '20251023_0002'
+revision = "20251023_0003"
+down_revision = "20251023_0002"
 branch_labels = None
 depends_on = None
 
@@ -53,7 +53,9 @@ def upgrade():
     op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_user_id ON url_upload_jobs(user_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_file_id ON url_upload_jobs(file_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_status ON url_upload_jobs(status)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_created_at ON url_upload_jobs(created_at)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_url_upload_jobs_created_at ON url_upload_jobs(created_at)"
+    )
 
 
 def downgrade():

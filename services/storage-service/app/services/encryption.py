@@ -1,18 +1,20 @@
 # services/storage-service/app/services/encryption.py
 
-import os
 import base64
+import logging
+import os
 import platform
 import subprocess
-import logging
 from typing import Union
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import hashes
+
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
 
 # --- Helper: master key retrieval ---
 def _get_master_key() -> bytes:
@@ -42,7 +44,9 @@ def _get_master_key() -> bytes:
     if not secret:
         raise RuntimeError("No ENCRYPTION_MASTER_KEY or SECRET_KEY found in settings")
 
-    logger.warning("Deriving master key from SECRET_KEY via HKDF (consider setting ENCRYPTION_MASTER_KEY)")
+    logger.warning(
+        "Deriving master key from SECRET_KEY via HKDF (consider setting ENCRYPTION_MASTER_KEY)"
+    )
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
@@ -50,6 +54,7 @@ def _get_master_key() -> bytes:
         info=b"encryption-master-key",
     )
     return hkdf.derive(secret.encode())
+
 
 MASTER_KEY = _get_master_key()
 NONCE_SIZE = 12  # recommended nonce size for AES-GCM
@@ -74,12 +79,7 @@ def _check_aes_ni_support() -> bool:
 
         elif system == "Darwin":  # macOS
             # Use sysctl to check for AES support
-            result = subprocess.run(
-                ["sysctl", "-a"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
+            result = subprocess.run(["sysctl", "-a"], capture_output=True, text=True, timeout=2)
             # Most modern Intel/Apple Silicon CPUs support AES
             # Check for machdep.cpu.features or hw.optional.arm.FEAT_AES
             output = result.stdout.lower()
@@ -88,10 +88,7 @@ def _check_aes_ni_support() -> bool:
         elif system == "Windows":
             # Check CPU features via WMIC
             result = subprocess.run(
-                ["wmic", "cpu", "get", "caption"],
-                capture_output=True,
-                text=True,
-                timeout=2
+                ["wmic", "cpu", "get", "caption"], capture_output=True, text=True, timeout=2
             )
             # Most modern x86_64 CPUs support AES-NI (assume yes for Intel/AMD post-2010)
             # For accurate detection, would need to parse CPU model and check specs
@@ -115,6 +112,7 @@ if HAS_AES_NI:
     try:
         from Crypto.Cipher import AES as PyCryptoAES
         from Crypto.Random import get_random_bytes as crypto_random
+
         USING_HARDWARE_AES = True
         logger.info("✅ Hardware AES-NI acceleration enabled (pycryptodome)")
     except ImportError:
@@ -123,6 +121,7 @@ if HAS_AES_NI:
 else:
     logger.info("ℹ️ AES-NI not detected, using software AES (cryptography)")
     USING_HARDWARE_AES = False
+
 
 class EncryptionService:
     """
@@ -151,7 +150,9 @@ class EncryptionService:
         self.using_hardware = USING_HARDWARE_AES
 
     # ---- Internal Helpers for Hardware/Software AES ----
-    def _encrypt_gcm_hardware(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes = None) -> bytes:
+    def _encrypt_gcm_hardware(
+        self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes = None
+    ) -> bytes:
         """Encrypt using pycryptodome (hardware AES-NI)."""
         cipher = PyCryptoAES.new(key, PyCryptoAES.MODE_GCM, nonce=nonce)
         if aad:
@@ -159,7 +160,9 @@ class EncryptionService:
         ciphertext, tag = cipher.encrypt_and_digest(plaintext)
         return ciphertext + tag  # AES-GCM tag is 16 bytes
 
-    def _decrypt_gcm_hardware(self, key: bytes, nonce: bytes, ciphertext_with_tag: bytes, aad: bytes = None) -> bytes:
+    def _decrypt_gcm_hardware(
+        self, key: bytes, nonce: bytes, ciphertext_with_tag: bytes, aad: bytes = None
+    ) -> bytes:
         """Decrypt using pycryptodome (hardware AES-NI)."""
         ciphertext = ciphertext_with_tag[:-16]
         tag = ciphertext_with_tag[-16:]
@@ -168,11 +171,15 @@ class EncryptionService:
             cipher.update(aad)
         return cipher.decrypt_and_verify(ciphertext, tag)
 
-    def _encrypt_gcm_software(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes = None) -> bytes:
+    def _encrypt_gcm_software(
+        self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes = None
+    ) -> bytes:
         """Encrypt using cryptography library (software AES)."""
         return AESGCM(key).encrypt(nonce, plaintext, aad)
 
-    def _decrypt_gcm_software(self, key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes = None) -> bytes:
+    def _decrypt_gcm_software(
+        self, key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes = None
+    ) -> bytes:
         """Decrypt using cryptography library (software AES)."""
         return AESGCM(key).decrypt(nonce, ciphertext, aad)
 
@@ -247,7 +254,9 @@ class EncryptionService:
             return self._decrypt_gcm_software(file_key, nonce, ct, None)
 
     # ---- Chunk-level encryption (uses AAD) ----
-    def encrypt_chunk(self, chunk_data: bytes, file_key: Union[bytes, str], chunk_index: int) -> bytes:
+    def encrypt_chunk(
+        self, chunk_data: bytes, file_key: Union[bytes, str], chunk_index: int
+    ) -> bytes:
         """
         Encrypt a chunk and bind its chunk_index as AAD. Returned: nonce + ciphertext.
 
@@ -265,7 +274,7 @@ class EncryptionService:
                 raise ValueError(f"Invalid file key: expected 32 bytes, got {len(file_key)}")
 
         # Use Rust-compatible AAD format: little-endian 8 bytes
-        aad = chunk_index.to_bytes(8, 'little')
+        aad = chunk_index.to_bytes(8, "little")
         nonce = os.urandom(NONCE_SIZE)
 
         if self.using_hardware:
@@ -275,7 +284,9 @@ class EncryptionService:
 
         return nonce + ct
 
-    def decrypt_chunk(self, encrypted_chunk: bytes, file_key: Union[bytes, str], chunk_index: int) -> bytes:
+    def decrypt_chunk(
+        self, encrypted_chunk: bytes, file_key: Union[bytes, str], chunk_index: int
+    ) -> bytes:
         """
         Decrypt a chunk encrypted with encrypt_chunk. Verifies chunk_index via AAD.
 
@@ -295,7 +306,7 @@ class EncryptionService:
         # AAD format: Try Rust format (little-endian 8 bytes) first, fall back to legacy string format
         # Rust uses: chunk_index.to_le_bytes() (8 bytes binary)
         # Legacy Python uses: str(chunk_index).encode() (ASCII string)
-        aad_rust = chunk_index.to_bytes(8, 'little')
+        aad_rust = chunk_index.to_bytes(8, "little")
 
         nonce = encrypted_chunk[:NONCE_SIZE]
         ct = encrypted_chunk[NONCE_SIZE:]
@@ -336,10 +347,12 @@ class EncryptionService:
         return {
             "hardware_acceleration": self.using_hardware,
             "aes_ni_detected": HAS_AES_NI,
-            "implementation": "pycryptodome (AES-NI)" if self.using_hardware else "cryptography (software)",
+            "implementation": (
+                "pycryptodome (AES-NI)" if self.using_hardware else "cryptography (software)"
+            ),
             "expected_speedup": "10-20x faster" if self.using_hardware else "baseline",
             "platform": platform.system(),
-            "mode": "AES-256-GCM"
+            "mode": "AES-256-GCM",
         }
 
 

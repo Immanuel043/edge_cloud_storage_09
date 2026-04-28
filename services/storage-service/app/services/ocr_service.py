@@ -2,16 +2,17 @@
 OCR Service for extracting text from images and PDFs
 Supports multiple OCR engines: Tesseract, EasyOCR
 """
+
+import asyncio
 import io
 import logging
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-from PIL import Image
 import fitz  # PyMuPDF
 import pdfplumber
+from PIL import Image
 from PyPDF2 import PdfReader
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class OCRService:
         # Try to import OCR libraries
         try:
             import pytesseract
+
             self.tesseract_available = True
             self.pytesseract = pytesseract
             logger.info("Tesseract OCR initialized")
@@ -39,6 +41,7 @@ class OCRService:
 
         try:
             import easyocr
+
             # Lazy load EasyOCR reader (heavy model)
             self.easyocr_module = easyocr
             self.easyocr_available = True
@@ -50,14 +53,11 @@ class OCRService:
         """Lazy load EasyOCR reader"""
         if self.easyocr_reader is None and self.easyocr_available:
             logger.info("Loading EasyOCR models...")
-            self.easyocr_reader = self.easyocr_module.Reader(['en'], gpu=False)
+            self.easyocr_reader = self.easyocr_module.Reader(["en"], gpu=False)
         return self.easyocr_reader
 
     async def extract_text_from_image(
-        self,
-        image_data: bytes,
-        engine: str = "tesseract",
-        languages: List[str] = ['eng']
+        self, image_data: bytes, engine: str = "tesseract", languages: List[str] = ["eng"]
     ) -> Dict:
         """
         Extract text from image using OCR
@@ -75,30 +75,18 @@ class OCRService:
             image = Image.open(io.BytesIO(image_data))
 
             # Convert to RGB if necessary
-            if image.mode not in ('RGB', 'L'):
-                image = image.convert('RGB')
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
 
             # Run OCR in thread pool (CPU intensive)
             loop = asyncio.get_event_loop()
 
             if engine == "easyocr" and self.easyocr_available:
-                result = await loop.run_in_executor(
-                    executor,
-                    self._run_easyocr,
-                    image
-                )
+                result = await loop.run_in_executor(executor, self._run_easyocr, image)
             elif self.tesseract_available:
-                result = await loop.run_in_executor(
-                    executor,
-                    self._run_tesseract,
-                    image,
-                    languages
-                )
+                result = await loop.run_in_executor(executor, self._run_tesseract, image, languages)
             else:
-                return {
-                    "success": False,
-                    "error": "No OCR engine available"
-                }
+                return {"success": False, "error": "No OCR engine available"}
 
             return {
                 "success": True,
@@ -106,35 +94,31 @@ class OCRService:
                 "confidence": result.get("confidence", 0),
                 "word_count": len(result["text"].split()),
                 "engine": engine,
-                "languages": languages
+                "languages": languages,
             }
 
         except Exception as e:
             logger.error(f"OCR failed: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": str(e)}
 
     def _run_tesseract(self, image: Image.Image, languages: List[str]) -> Dict:
         """Run Tesseract OCR (blocking)"""
-        lang_str = '+'.join(languages)
+        lang_str = "+".join(languages)
 
         # Extract text
         text = self.pytesseract.image_to_string(image, lang=lang_str)
 
         # Get confidence data
         try:
-            data = self.pytesseract.image_to_data(image, lang=lang_str, output_type=self.pytesseract.Output.DICT)
-            confidences = [int(conf) for conf in data['conf'] if conf != '-1']
+            data = self.pytesseract.image_to_data(
+                image, lang=lang_str, output_type=self.pytesseract.Output.DICT
+            )
+            confidences = [int(conf) for conf in data["conf"] if conf != "-1"]
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0
         except:
             avg_confidence = 0
 
-        return {
-            "text": text.strip(),
-            "confidence": avg_confidence
-        }
+        return {"text": text.strip(), "confidence": avg_confidence}
 
     def _run_easyocr(self, image: Image.Image) -> Dict:
         """Run EasyOCR (blocking)"""
@@ -142,6 +126,7 @@ class OCRService:
 
         # Convert PIL image to numpy array
         import numpy as np
+
         image_np = np.array(image)
 
         # Run OCR
@@ -151,16 +136,13 @@ class OCRService:
         text_parts = []
         confidences = []
 
-        for (bbox, text, confidence) in results:
+        for bbox, text, confidence in results:
             text_parts.append(text)
             confidences.append(confidence)
 
         avg_confidence = sum(confidences) / len(confidences) * 100 if confidences else 0
 
-        return {
-            "text": " ".join(text_parts),
-            "confidence": avg_confidence
-        }
+        return {"text": " ".join(text_parts), "confidence": avg_confidence}
 
     async def extract_text_from_pdf(self, pdf_data: bytes) -> Dict:
         """
@@ -185,11 +167,13 @@ class OCRService:
                         text_parts.append(page_text)
 
                 if text_parts:
-                    text_results.append({
-                        "method": "pymupdf",
-                        "text": "\n\n".join(text_parts),
-                        "page_count": len(doc)
-                    })
+                    text_results.append(
+                        {
+                            "method": "pymupdf",
+                            "text": "\n\n".join(text_parts),
+                            "page_count": len(doc),
+                        }
+                    )
                 doc.close()
             except Exception as e:
                 logger.warning(f"PyMuPDF extraction failed: {e}")
@@ -205,11 +189,13 @@ class OCRService:
                                 text_parts.append(page_text)
 
                         if text_parts:
-                            text_results.append({
-                                "method": "pdfplumber",
-                                "text": "\n\n".join(text_parts),
-                                "page_count": len(pdf.pages)
-                            })
+                            text_results.append(
+                                {
+                                    "method": "pdfplumber",
+                                    "text": "\n\n".join(text_parts),
+                                    "page_count": len(pdf.pages),
+                                }
+                            )
                 except Exception as e:
                     logger.warning(f"pdfplumber extraction failed: {e}")
 
@@ -218,12 +204,14 @@ class OCRService:
                 logger.info("PDF appears to be scanned, attempting OCR...")
                 ocr_result = await self._ocr_pdf_pages(pdf_data)
                 if ocr_result["success"]:
-                    text_results.append({
-                        "method": "ocr",
-                        "text": ocr_result["text"],
-                        "page_count": ocr_result.get("page_count", 0),
-                        "confidence": ocr_result.get("confidence", 0)
-                    })
+                    text_results.append(
+                        {
+                            "method": "ocr",
+                            "text": ocr_result["text"],
+                            "page_count": ocr_result.get("page_count", 0),
+                            "confidence": ocr_result.get("confidence", 0),
+                        }
+                    )
 
             if text_results:
                 best_result = max(text_results, key=lambda x: len(x["text"]))
@@ -233,20 +221,14 @@ class OCRService:
                     "word_count": len(best_result["text"].split()),
                     "page_count": best_result.get("page_count", 0),
                     "method": best_result["method"],
-                    "confidence": best_result.get("confidence", 100)
+                    "confidence": best_result.get("confidence", 100),
                 }
             else:
-                return {
-                    "success": False,
-                    "error": "Could not extract text from PDF"
-                }
+                return {"success": False, "error": "Could not extract text from PDF"}
 
         except Exception as e:
             logger.error(f"PDF text extraction failed: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": str(e)}
 
     async def _ocr_pdf_pages(self, pdf_data: bytes, max_pages: int = 10) -> Dict:
         """
@@ -288,15 +270,12 @@ class OCRService:
                 "success": True,
                 "text": "\n\n".join(text_parts),
                 "page_count": pages_to_process,
-                "confidence": avg_confidence
+                "confidence": avg_confidence,
             }
 
         except Exception as e:
             logger.error(f"PDF OCR failed: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": str(e)}
 
     async def extract_text(self, file_data: bytes, mime_type: str) -> Dict:
         """
@@ -310,34 +289,31 @@ class OCRService:
             Dict with extraction results
         """
         # Image files
-        if mime_type.startswith('image/'):
+        if mime_type.startswith("image/"):
             return await self.extract_text_from_image(file_data)
 
         # PDF files
-        elif mime_type == 'application/pdf':
+        elif mime_type == "application/pdf":
             return await self.extract_text_from_pdf(file_data)
 
         # Plain text files
-        elif mime_type.startswith('text/'):
+        elif mime_type.startswith("text/"):
             try:
-                text = file_data.decode('utf-8')
+                text = file_data.decode("utf-8")
                 return {
                     "success": True,
                     "text": text,
                     "word_count": len(text.split()),
                     "method": "direct",
-                    "confidence": 100
+                    "confidence": 100,
                 }
             except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"Failed to decode text: {e}"
-                }
+                return {"success": False, "error": f"Failed to decode text: {e}"}
 
         else:
             return {
                 "success": False,
-                "error": f"Unsupported file type for text extraction: {mime_type}"
+                "error": f"Unsupported file type for text extraction: {mime_type}",
             }
 
 

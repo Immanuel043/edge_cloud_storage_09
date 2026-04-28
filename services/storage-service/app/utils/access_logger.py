@@ -1,14 +1,15 @@
 """Fire-and-forget share access logging for audit trail + owner notifications."""
 
 import logging
-from uuid import UUID
 from typing import Optional
+from uuid import UUID
+
 from fastapi import Request
 from slowapi.util import get_remote_address
 from sqlalchemy import select
 
 from ..database import AsyncSessionLocal, get_redis
-from ..models.database import ShareAccessLog, ShareLink, ShareBundle, User
+from ..models.database import ShareAccessLog, ShareBundle, ShareLink, User
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ async def _maybe_notify_owner(
 
         # Send notification
         from ..services.email_service import email_service
+
         await email_service.send_email(
             to_email=owner_email,
             subject=f"Someone accessed {item_name}",

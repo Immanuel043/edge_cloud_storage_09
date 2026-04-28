@@ -7,20 +7,19 @@ Background worker that runs daily to:
 - Track usage history for ML training
 """
 
-import logging
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from uuid import uuid4
 
-from ..models.database import (
-    User, Object, StorageUsageHistory, QuotaPrediction, QuotaAlert
-)
-from ..services.quota_predictor import quota_predictor
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..database import async_session, get_redis
+from ..models.database import Object, QuotaAlert, QuotaPrediction, StorageUsageHistory, User
 from ..monitoring.metrics import metrics_collector
+from ..services.quota_predictor import quota_predictor
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +37,9 @@ class QuotaPredictionWorker:
 
     # Alert thresholds
     ALERT_THRESHOLDS = {
-        '70_percent': 0.70,
-        '85_percent': 0.85,
-        '95_percent': 0.95,
+        "70_percent": 0.70,
+        "85_percent": 0.85,
+        "95_percent": 0.95,
     }
 
     # Days to predict ahead for depletion warnings
@@ -97,11 +96,11 @@ class QuotaPredictionWorker:
                         await db.rollback()
 
                 # Update metrics
-                metrics_collector.increment_counter('quota_prediction_worker_cycles_total')
+                metrics_collector.increment_counter("quota_prediction_worker_cycles_total")
 
             except Exception as e:
                 logger.error(f"Fatal error in quota prediction worker: {e}", exc_info=True)
-                metrics_collector.increment_counter('quota_prediction_worker_errors_total')
+                metrics_collector.increment_counter("quota_prediction_worker_errors_total")
 
             # Sleep until next cycle
             if self.is_running:
@@ -116,9 +115,7 @@ class QuotaPredictionWorker:
         logger.info("Recording usage history for all users")
 
         # Get all active users
-        result = await db.execute(
-            select(User).where(User.is_active == True)
-        )
+        result = await db.execute(select(User).where(User.is_active == True))
         users = result.scalars().all()
 
         today = datetime.utcnow().date()
@@ -130,7 +127,7 @@ class QuotaPredictionWorker:
                 existing = await db.execute(
                     select(StorageUsageHistory).where(
                         StorageUsageHistory.user_id == user.id,
-                        func.date(StorageUsageHistory.date) == today
+                        func.date(StorageUsageHistory.date) == today,
                     )
                 )
                 if existing.scalar_one_or_none():
@@ -138,12 +135,9 @@ class QuotaPredictionWorker:
 
                 # Calculate storage distribution by tier
                 tier_usage = await db.execute(
-                    select(
-                        Object.storage_tier,
-                        func.sum(Object.file_size).label('total')
-                    ).where(
-                        Object.user_id == user.id
-                    ).group_by(Object.storage_tier)
+                    select(Object.storage_tier, func.sum(Object.file_size).label("total"))
+                    .where(Object.user_id == user.id)
+                    .group_by(Object.storage_tier)
                 )
                 tier_usage_dict = {row[0]: row[1] for row in tier_usage.all()}
 
@@ -158,10 +152,10 @@ class QuotaPredictionWorker:
                     user_id=user.id,
                     date=datetime.utcnow(),
                     storage_used=user.storage_used or 0,
-                    cache_used=tier_usage_dict.get('cache', 0),
-                    warm_used=tier_usage_dict.get('warm', 0),
-                    cold_used=tier_usage_dict.get('cold', 0),
-                    file_count=total_files
+                    cache_used=tier_usage_dict.get("cache", 0),
+                    warm_used=tier_usage_dict.get("warm", 0),
+                    cold_used=tier_usage_dict.get("cold", 0),
+                    file_count=total_files,
                 )
                 db.add(history)
                 recorded_count += 1
@@ -172,7 +166,7 @@ class QuotaPredictionWorker:
 
         await db.flush()
         logger.info(f"Recorded usage history for {recorded_count} users")
-        metrics_collector.increment_counter('quota_usage_history_recorded_total', recorded_count)
+        metrics_collector.increment_counter("quota_usage_history_recorded_total", recorded_count)
 
     async def _generate_predictions(self, db: AsyncSession):
         """
@@ -191,34 +185,36 @@ class QuotaPredictionWorker:
                     # Delete old predictions for this user
                     await db.execute(
                         select(QuotaPrediction).where(
-                            QuotaPrediction.user_id == pred_data['user_id']
+                            QuotaPrediction.user_id == pred_data["user_id"]
                         )
                     )
                     # Note: We keep old predictions for audit trail, just mark as superseded
                     # For simplicity, we'll just add new ones
 
                     prediction = QuotaPrediction(
-                        user_id=pred_data['user_id'],
-                        predicted_7d=pred_data.get('predicted_7d'),
-                        predicted_14d=pred_data.get('predicted_14d'),
-                        predicted_30d=pred_data.get('predicted_30d'),
-                        confidence_7d=pred_data.get('confidence_7d'),
-                        confidence_14d=pred_data.get('confidence_14d'),
-                        confidence_30d=pred_data.get('confidence_30d'),
-                        days_until_full=pred_data.get('days_until_full'),
-                        model_type=pred_data.get('model_type'),
-                        prediction_date=datetime.utcnow()
+                        user_id=pred_data["user_id"],
+                        predicted_7d=pred_data.get("predicted_7d"),
+                        predicted_14d=pred_data.get("predicted_14d"),
+                        predicted_30d=pred_data.get("predicted_30d"),
+                        confidence_7d=pred_data.get("confidence_7d"),
+                        confidence_14d=pred_data.get("confidence_14d"),
+                        confidence_30d=pred_data.get("confidence_30d"),
+                        days_until_full=pred_data.get("days_until_full"),
+                        model_type=pred_data.get("model_type"),
+                        prediction_date=datetime.utcnow(),
                     )
                     db.add(prediction)
                     saved_count += 1
 
                 except Exception as e:
-                    logger.error(f"Failed to save prediction for user {pred_data.get('user_id')}: {e}")
+                    logger.error(
+                        f"Failed to save prediction for user {pred_data.get('user_id')}: {e}"
+                    )
                     continue
 
             await db.flush()
             logger.info(f"Saved {saved_count} quota predictions")
-            metrics_collector.increment_counter('quota_predictions_generated_total', saved_count)
+            metrics_collector.increment_counter("quota_predictions_generated_total", saved_count)
 
         except Exception as e:
             logger.error(f"Failed to generate predictions: {e}", exc_info=True)
@@ -237,16 +233,16 @@ class QuotaPredictionWorker:
         logger.info("Generating quota alerts")
 
         # Get all active users with their latest predictions
-        result = await db.execute(
-            select(User).where(User.is_active == True)
-        )
+        result = await db.execute(select(User).where(User.is_active == True))
         users = result.scalars().all()
 
         alert_count = 0
 
         for user in users:
             try:
-                usage_percent = (user.storage_used / user.storage_quota) if user.storage_quota > 0 else 0.0
+                usage_percent = (
+                    (user.storage_used / user.storage_quota) if user.storage_quota > 0 else 0.0
+                )
 
                 # Check percentage thresholds
                 for alert_type, threshold in self.ALERT_THRESHOLDS.items():
@@ -256,7 +252,7 @@ class QuotaPredictionWorker:
                             select(QuotaAlert).where(
                                 QuotaAlert.user_id == user.id,
                                 QuotaAlert.alert_type == alert_type,
-                                QuotaAlert.is_dismissed == False
+                                QuotaAlert.is_dismissed == False,
                             )
                         )
                         if existing.scalar_one_or_none():
@@ -269,11 +265,13 @@ class QuotaPredictionWorker:
                             current_usage_bytes=user.storage_used,
                             quota_bytes=user.storage_quota,
                             usage_percent=usage_percent,
-                            threshold_percent=threshold
+                            threshold_percent=threshold,
                         )
                         db.add(alert)
                         alert_count += 1
-                        logger.info(f"Created {alert_type} alert for user {user.id} (usage: {usage_percent:.1%})")
+                        logger.info(
+                            f"Created {alert_type} alert for user {user.id} (usage: {usage_percent:.1%})"
+                        )
 
                 # Check predicted depletion
                 latest_prediction = await db.execute(
@@ -290,18 +288,18 @@ class QuotaPredictionWorker:
                         existing = await db.execute(
                             select(QuotaAlert).where(
                                 QuotaAlert.user_id == user.id,
-                                QuotaAlert.alert_type == 'predicted_full',
-                                QuotaAlert.is_dismissed == False
+                                QuotaAlert.alert_type == "predicted_full",
+                                QuotaAlert.is_dismissed == False,
                             )
                         )
                         if not existing.scalar_one_or_none():
                             alert = QuotaAlert(
                                 user_id=user.id,
-                                alert_type='predicted_full',
+                                alert_type="predicted_full",
                                 current_usage_bytes=user.storage_used,
                                 quota_bytes=user.storage_quota,
                                 usage_percent=usage_percent,
-                                predicted_days_remaining=prediction.days_until_full
+                                predicted_days_remaining=prediction.days_until_full,
                             )
                             db.add(alert)
                             alert_count += 1
@@ -316,7 +314,7 @@ class QuotaPredictionWorker:
 
         await db.flush()
         logger.info(f"Generated {alert_count} quota alerts")
-        metrics_collector.increment_counter('quota_alerts_generated_total', alert_count)
+        metrics_collector.increment_counter("quota_alerts_generated_total", alert_count)
 
     async def run_once(self):
         """

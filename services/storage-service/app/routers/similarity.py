@@ -2,14 +2,16 @@
 File Similarity API Router
 Endpoints for finding similar files and duplicates
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import List, Optional
+
 import logging
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_current_user, get_db
-from ..models.database import User, Object, FileHash
+from ..models.database import FileHash, Object, User
 from ..services.similarity_service import similarity_service
 from ..services.storage import storage_service
 
@@ -24,7 +26,7 @@ async def find_similar_files(
     threshold: int = Query(10, ge=0, le=64, description="Hamming distance threshold"),
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Find files similar to the given file
@@ -37,10 +39,7 @@ async def find_similar_files(
     """
     # Verify file ownership and get file
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -48,61 +47,49 @@ async def find_similar_files(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Only works for images
-    if not file_obj.mime_type.startswith('image/'):
+    if not file_obj.mime_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Similarity search only supported for images")
 
     # Get hash for this file
-    result = await db.execute(
-        select(FileHash).filter(FileHash.file_id == file_id)
-    )
+    result = await db.execute(select(FileHash).filter(FileHash.file_id == file_id))
     file_hash = result.scalar_one_or_none()
 
     if not file_hash:
         raise HTTPException(
             status_code=404,
-            detail="Perceptual hash not found. Run analysis first (/files/{file_id}/analyze)"
+            detail="Perceptual hash not found. Run analysis first (/files/{file_id}/analyze)",
         )
 
     # Get all hashes for user's images
     result = await db.execute(
-        select(Object, FileHash).join(
-            FileHash, Object.id == FileHash.file_id
-        ).filter(
+        select(Object, FileHash)
+        .join(FileHash, Object.id == FileHash.file_id)
+        .filter(
             Object.user_id == current_user.id,
-            Object.mime_type.like('image/%'),
-            Object.id != file_id  # Exclude the query file itself
+            Object.mime_type.like("image/%"),
+            Object.id != file_id,  # Exclude the query file itself
         )
     )
 
     all_hashes = []
     for obj, hash_obj in result.all():
-        all_hashes.append({
-            "file_id": str(obj.id),
-            "filename": obj.file_name,
-            "phash": hash_obj.phash,
-            "dhash": hash_obj.dhash,
-            "whash": hash_obj.whash
-        })
+        all_hashes.append(
+            {
+                "file_id": str(obj.id),
+                "filename": obj.file_name,
+                "phash": hash_obj.phash,
+                "dhash": hash_obj.dhash,
+                "whash": hash_obj.whash,
+            }
+        )
 
     if not all_hashes:
-        return {
-            "file_id": file_id,
-            "similar_files": [],
-            "count": 0
-        }
+        return {"file_id": file_id, "similar_files": [], "count": 0}
 
     # Compare with all hashes
-    query_hashes = {
-        "phash": file_hash.phash,
-        "dhash": file_hash.dhash,
-        "whash": file_hash.whash
-    }
+    query_hashes = {"phash": file_hash.phash, "dhash": file_hash.dhash, "whash": file_hash.whash}
 
-    similar_files = similarity_service._find_similar_sync(
-        query_hashes,
-        all_hashes,
-        threshold
-    )
+    similar_files = similarity_service._find_similar_sync(query_hashes, all_hashes, threshold)
 
     # Limit results
     similar_files = similar_files[:limit]
@@ -111,7 +98,7 @@ async def find_similar_files(
         "file_id": file_id,
         "threshold": threshold,
         "similar_files": similar_files,
-        "count": len(similar_files)
+        "count": len(similar_files),
     }
 
 
@@ -119,7 +106,7 @@ async def find_similar_files(
 async def find_duplicate_files(
     threshold: int = Query(5, ge=0, le=20, description="Hamming distance threshold for duplicates"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Find groups of duplicate/near-duplicate images
@@ -128,12 +115,9 @@ async def find_duplicate_files(
     """
     # Get all image hashes for user
     result = await db.execute(
-        select(Object, FileHash).join(
-            FileHash, Object.id == FileHash.file_id
-        ).filter(
-            Object.user_id == current_user.id,
-            Object.mime_type.like('image/%')
-        )
+        select(Object, FileHash)
+        .join(FileHash, Object.id == FileHash.file_id)
+        .filter(Object.user_id == current_user.id, Object.mime_type.like("image/%"))
     )
 
     all_hashes = []
@@ -141,16 +125,18 @@ async def find_duplicate_files(
 
     for obj, hash_obj in result.all():
         file_id = str(obj.id)
-        all_hashes.append({
-            "file_id": file_id,
-            "phash": hash_obj.phash,
-            "dhash": hash_obj.dhash,
-            "whash": hash_obj.whash
-        })
+        all_hashes.append(
+            {
+                "file_id": file_id,
+                "phash": hash_obj.phash,
+                "dhash": hash_obj.dhash,
+                "whash": hash_obj.whash,
+            }
+        )
         file_info[file_id] = {
             "name": obj.file_name,
             "size": obj.file_size,
-            "created_at": obj.created_at.isoformat()
+            "created_at": obj.created_at.isoformat(),
         }
 
     if len(all_hashes) < 2:
@@ -158,7 +144,7 @@ async def find_duplicate_files(
             "duplicate_groups": [],
             "total_groups": 0,
             "total_duplicates": 0,
-            "potential_savings": 0
+            "potential_savings": 0,
         }
 
     # Find duplicates
@@ -174,17 +160,19 @@ async def find_duplicate_files(
         group_sizes = []
 
         for item in group:
-            file_id = item['file_id']
+            file_id = item["file_id"]
             info = file_info.get(file_id, {})
-            group_sizes.append(info.get('size', 0))
+            group_sizes.append(info.get("size", 0))
 
-            enriched_group.append({
-                "file_id": file_id,
-                "name": info.get('name'),
-                "size": info.get('size'),
-                "created_at": info.get('created_at'),
-                "phash": item['phash']
-            })
+            enriched_group.append(
+                {
+                    "file_id": file_id,
+                    "name": info.get("name"),
+                    "size": info.get("size"),
+                    "created_at": info.get("created_at"),
+                    "phash": item["phash"],
+                }
+            )
 
         enriched_groups.append(enriched_group)
         total_duplicates += len(group) - 1  # All except one
@@ -198,7 +186,7 @@ async def find_duplicate_files(
         "total_groups": len(enriched_groups),
         "total_duplicates": total_duplicates,
         "potential_savings_bytes": potential_savings,
-        "potential_savings_mb": round(potential_savings / (1024 * 1024), 2)
+        "potential_savings_mb": round(potential_savings / (1024 * 1024), 2),
     }
 
 
@@ -207,14 +195,13 @@ async def compare_files(
     file_id: str,
     other_file_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Compare two files in detail"""
     # Verify both files exist and belong to user
     result = await db.execute(
         select(Object).filter(
-            Object.id.in_([file_id, other_file_id]),
-            Object.user_id == current_user.id
+            Object.id.in_([file_id, other_file_id]), Object.user_id == current_user.id
         )
     )
     files = result.scalars().all()
@@ -233,8 +220,7 @@ async def compare_files(
 
     if not hash1 or not hash2:
         raise HTTPException(
-            status_code=404,
-            detail="Perceptual hashes not found. Run analysis first."
+            status_code=404, detail="Perceptual hashes not found. Run analysis first."
         )
 
     # Calculate distances
@@ -256,11 +242,14 @@ async def compare_files(
         "dhash_distance": dhash_dist,
         "whash_distance": whash_dist,
         "verdict": (
-            "near_identical" if avg_distance <= 5 else
-            "very_similar" if avg_distance <= 10 else
-            "similar" if avg_distance <= 20 else
-            "different"
-        )
+            "near_identical"
+            if avg_distance <= 5
+            else (
+                "very_similar"
+                if avg_distance <= 10
+                else "similar" if avg_distance <= 20 else "different"
+            )
+        ),
     }
 
 
@@ -268,19 +257,17 @@ async def compare_files(
 async def search_in_ocr_text(
     q: str = Query(..., min_length=1, description="Search query"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Search within OCR extracted text across all files"""
     from ..models.database import FileOCR
 
     # Search in OCR text
     result = await db.execute(
-        select(Object, FileOCR).join(
-            FileOCR, Object.id == FileOCR.file_id
-        ).filter(
-            Object.user_id == current_user.id,
-            FileOCR.extracted_text.ilike(f'%{q}%')
-        ).limit(50)
+        select(Object, FileOCR)
+        .join(FileOCR, Object.id == FileOCR.file_id)
+        .filter(Object.user_id == current_user.id, FileOCR.extracted_text.ilike(f"%{q}%"))
+        .limit(50)
     )
 
     matches = []
@@ -304,18 +291,16 @@ async def search_in_ocr_text(
         else:
             snippet = text[:200]
 
-        matches.append({
-            "file_id": str(obj.id),
-            "filename": obj.file_name,
-            "mime_type": obj.mime_type,
-            "snippet": snippet,
-            "word_count": ocr.word_count,
-            "confidence": ocr.confidence,
-            "created_at": obj.created_at
-        })
+        matches.append(
+            {
+                "file_id": str(obj.id),
+                "filename": obj.file_name,
+                "mime_type": obj.mime_type,
+                "snippet": snippet,
+                "word_count": ocr.word_count,
+                "confidence": ocr.confidence,
+                "created_at": obj.created_at,
+            }
+        )
 
-    return {
-        "query": q,
-        "count": len(matches),
-        "matches": matches
-    }
+    return {"query": q, "count": len(matches), "matches": matches}

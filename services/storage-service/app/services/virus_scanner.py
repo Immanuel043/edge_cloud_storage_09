@@ -6,12 +6,12 @@ Features: batched streaming, retry with backoff, circuit breaker for scale.
 """
 
 import asyncio
+import logging
+import os
 import socket
 import struct
-import os
-from typing import AsyncIterator, Awaitable, Callable, Dict, Optional, Tuple
 from datetime import datetime
-import logging
+from typing import AsyncIterator, Awaitable, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +77,12 @@ class VirusScanResult:
 
     def to_dict(self) -> Dict:
         return {
-            'is_infected': self.is_infected,
-            'scan_status': self.scan_status,
-            'virus_name': self.virus_name,
-            'scan_time': self.scan_time,
-            'scanned_at': self.scanned_at.isoformat(),
-            'error': self.error,
+            "is_infected": self.is_infected,
+            "scan_status": self.scan_status,
+            "virus_name": self.virus_name,
+            "scan_time": self.scan_time,
+            "scanned_at": self.scanned_at.isoformat(),
+            "error": self.error,
         }
 
 
@@ -129,7 +129,7 @@ class ScannerCircuitBreaker:
 class VirusScanner:
     """ClamAV virus scanner integration with retry and circuit breaker"""
 
-    def __init__(self, host: str = 'clamav', port: int = 3310):
+    def __init__(self, host: str = "clamav", port: int = 3310):
         self.host = host
         self.port = port
         self.chunk_size = 65536  # 64KB chunks for efficient streaming
@@ -142,18 +142,17 @@ class VirusScanner:
         """Check if ClamAV daemon is available"""
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=5
+                asyncio.open_connection(self.host, self.port), timeout=5
             )
 
-            writer.write(b'PING\n')
+            writer.write(b"PING\n")
             await writer.drain()
 
             response = await asyncio.wait_for(reader.read(100), timeout=5)
             writer.close()
             await writer.wait_closed()
 
-            return response.strip() == b'PONG'
+            return response.strip() == b"PONG"
         except Exception as e:
             logger.warning(f"ClamAV ping failed: {e}")
             return False
@@ -162,52 +161,38 @@ class VirusScanner:
         """Get ClamAV version"""
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=5
+                asyncio.open_connection(self.host, self.port), timeout=5
             )
 
-            writer.write(b'VERSION\n')
+            writer.write(b"VERSION\n")
             await writer.drain()
 
             response = await asyncio.wait_for(reader.read(200), timeout=5)
             writer.close()
             await writer.wait_closed()
 
-            return response.decode('utf-8').strip()
+            return response.decode("utf-8").strip()
         except Exception as e:
             logger.error(f"Failed to get ClamAV version: {e}")
             return None
 
     def _parse_response(self, response_str: str, scan_time: float) -> VirusScanResult:
         """Parse ClamAV response into a VirusScanResult"""
-        if 'FOUND' in response_str:
-            virus_name = response_str.split(':')[1].replace('FOUND', '').strip()
+        if "FOUND" in response_str:
+            virus_name = response_str.split(":")[1].replace("FOUND", "").strip()
             logger.warning(f"Virus detected: {virus_name}")
-            return VirusScanResult(
-                is_infected=True,
-                virus_name=virus_name,
-                scan_time=scan_time
-            )
-        elif 'OK' in response_str:
+            return VirusScanResult(is_infected=True, virus_name=virus_name, scan_time=scan_time)
+        elif "OK" in response_str:
             logger.info(f"File clean (scanned in {scan_time:.2f}s)")
-            return VirusScanResult(
-                is_infected=False,
-                scan_time=scan_time
-            )
-        elif 'ERROR' in response_str:
-            error_msg = response_str.split(':')[1].strip() if ':' in response_str else response_str
+            return VirusScanResult(is_infected=False, scan_time=scan_time)
+        elif "ERROR" in response_str:
+            error_msg = response_str.split(":")[1].strip() if ":" in response_str else response_str
             logger.error(f"ClamAV scan error: {error_msg}")
-            return VirusScanResult(
-                is_infected=False,
-                error=error_msg,
-                scan_time=scan_time
-            )
+            return VirusScanResult(is_infected=False, error=error_msg, scan_time=scan_time)
         else:
             logger.error(f"Unknown ClamAV response: {response_str}")
             return VirusScanResult(
-                is_infected=False,
-                error=f"Unknown response: {response_str}",
-                scan_time=scan_time
+                is_infected=False, error=f"Unknown response: {response_str}", scan_time=scan_time
             )
 
     async def _run_instream(
@@ -232,7 +217,7 @@ class VirusScanner:
 
             # nCMD prefix: tells ClamAV to use newline-terminated command mode.
             # Plain "INSTREAM\n" returns "UNKNOWN COMMAND" on modern clamd builds.
-            writer.write(b'nINSTREAM\n')
+            writer.write(b"nINSTREAM\n")
             await writer.drain()
 
             drain_state = _DrainState()
@@ -242,7 +227,7 @@ class VirusScanner:
                 await writer.drain()
 
             # Zero-length chunk terminates the stream.
-            writer.write(struct.pack('!L', 0))
+            writer.write(struct.pack("!L", 0))
             await writer.drain()
 
             response = await asyncio.wait_for(reader.read(4096), timeout=self.timeout)
@@ -250,7 +235,7 @@ class VirusScanner:
             await writer.wait_closed()
 
             scan_time = asyncio.get_event_loop().time() - start_time
-            return self._parse_response(response.decode('utf-8').strip(), scan_time)
+            return self._parse_response(response.decode("utf-8").strip(), scan_time)
 
         except asyncio.TimeoutError:
             scan_time = asyncio.get_event_loop().time() - start_time
@@ -276,7 +261,7 @@ class VirusScanner:
         payload: bytes,
     ) -> None:
         """Write one INSTREAM frame and drain on the configured boundary."""
-        writer.write(struct.pack('!L', len(payload)))
+        writer.write(struct.pack("!L", len(payload)))
         writer.write(payload)
         drain_state.bytes_since_drain += len(payload) + 4
         if drain_state.bytes_since_drain >= self.drain_threshold:
@@ -290,7 +275,7 @@ class VirusScanner:
             offset = 0
             data_size = len(data)
             while offset < data_size:
-                chunk = data[offset:offset + self.chunk_size]
+                chunk = data[offset : offset + self.chunk_size]
                 await self._write_frame(writer, drain_state, chunk)
                 offset += len(chunk)
 
@@ -310,8 +295,7 @@ class VirusScanner:
         if not self.circuit_breaker.can_attempt():
             logger.warning("ClamAV circuit breaker OPEN, skipping scan")
             return VirusScanResult(
-                is_infected=False,
-                error="Circuit breaker open: ClamAV temporarily unavailable"
+                is_infected=False, error="Circuit breaker open: ClamAV temporarily unavailable"
             )
 
         last_result = None
@@ -327,7 +311,7 @@ class VirusScanner:
 
             # Retry on transient errors
             if attempt < self.max_retries - 1:
-                wait = 2 ** attempt  # 1s, 2s, 4s
+                wait = 2**attempt  # 1s, 2s, 4s
                 logger.warning(
                     f"ClamAV scan attempt {attempt + 1}/{self.max_retries} failed: {result.error}, "
                     f"retrying in {wait}s"
@@ -357,21 +341,18 @@ class VirusScanner:
                 logger.info(f"Large file ({file_size} bytes), scanning in chunks")
                 return await self._scan_large_file(file_path)
             else:
-                with open(file_path, 'rb') as f:
+                with open(file_path, "rb") as f:
                     data = f.read()
                 return await self.scan_bytes(data)
         except Exception as e:
             logger.error(f"Failed to scan file {file_path}: {e}")
-            return VirusScanResult(
-                is_infected=False,
-                error=f"Failed to read file: {e}"
-            )
+            return VirusScanResult(is_infected=False, error=f"Failed to read file: {e}")
 
     async def _scan_large_file_once(self, file_path: str) -> VirusScanResult:
         """Single attempt to scan a large file by streaming chunks"""
 
         async def produce(writer: asyncio.StreamWriter, drain_state: "_DrainState") -> None:
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 while True:
                     chunk = f.read(self.chunk_size)
                     if not chunk:
@@ -380,9 +361,7 @@ class VirusScanner:
 
         return await self._run_instream(produce)
 
-    async def _scan_stream_once(
-        self, chunks: AsyncIterator[bytes]
-    ) -> VirusScanResult:
+    async def _scan_stream_once(self, chunks: AsyncIterator[bytes]) -> VirusScanResult:
         """Single attempt to scan an async iterator of plaintext chunks.
 
         Each yielded chunk is sent as one INSTREAM frame as-is — clamd accepts
@@ -425,6 +404,7 @@ class VirusScanner:
         # tests that construct VirusScanner directly don't need the env loaded.
         if max_bytes is None:
             from ..config import settings
+
             max_bytes = settings.MAX_INSTREAM_BYTES
 
         if total_size > max_bytes:
@@ -461,8 +441,7 @@ class VirusScanner:
         if not self.circuit_breaker.can_attempt():
             logger.warning("ClamAV circuit breaker OPEN, skipping large file scan")
             return VirusScanResult(
-                is_infected=False,
-                error="Circuit breaker open: ClamAV temporarily unavailable"
+                is_infected=False, error="Circuit breaker open: ClamAV temporarily unavailable"
             )
 
         last_result = None
@@ -476,7 +455,7 @@ class VirusScanner:
             last_result = result
 
             if attempt < self.max_retries - 1:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 logger.warning(
                     f"ClamAV large file scan attempt {attempt + 1}/{self.max_retries} failed: {result.error}, "
                     f"retrying in {wait}s"
@@ -484,18 +463,21 @@ class VirusScanner:
                 await asyncio.sleep(wait)
 
         self.circuit_breaker.record_failure()
-        logger.error(f"ClamAV large file scan failed after {self.max_retries} attempts: {last_result.error}")
+        logger.error(
+            f"ClamAV large file scan failed after {self.max_retries} attempts: {last_result.error}"
+        )
         return last_result
 
 
 # Singleton instance
 _scanner = None
 
+
 def get_virus_scanner() -> VirusScanner:
     """Get or create virus scanner singleton"""
     global _scanner
     if _scanner is None:
-        host = os.getenv('CLAMAV_HOST', 'clamav')
-        port = int(os.getenv('CLAMAV_PORT', '3310'))
+        host = os.getenv("CLAMAV_HOST", "clamav")
+        port = int(os.getenv("CLAMAV_PORT", "3310"))
         _scanner = VirusScanner(host=host, port=port)
     return _scanner

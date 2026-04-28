@@ -1,26 +1,31 @@
 # services/storage-service/app/routers/favorites.py
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
-from typing import List
 from datetime import datetime, timedelta
+from typing import List
 
-from ..dependencies import get_db, get_current_user
-from ..models.database import User, Object, Favorite
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import and_, desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_current_user, get_db
+from ..models.database import Favorite, Object, User
 from ..models.schemas import FileResponse
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 
 router = APIRouter(prefix="/api/v1", tags=["favorites"])
 
 
-@router.get("/files/recents", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/files/recents",
+    response_model=List[FileResponse],
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_recent_files(
     request: Request,
     days: int = 30,
     limit: int = 50,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get recently accessed files for the current user.
@@ -45,12 +50,7 @@ async def get_recent_files(
     # Query recent files
     result = await db.execute(
         select(Object)
-        .filter(
-            and_(
-                Object.user_id == current_user.id,
-                Object.last_accessed >= cutoff_date
-            )
-        )
+        .filter(and_(Object.user_id == current_user.id, Object.last_accessed >= cutoff_date))
         .order_by(desc(Object.last_accessed))
         .limit(limit)
     )
@@ -63,23 +63,27 @@ async def get_recent_files(
             id=str(file.id),
             name=file.file_name,
             size=file.file_size,
-            mime_type=file.mime_type or 'application/octet-stream',
+            mime_type=file.mime_type or "application/octet-stream",
             created_at=file.created_at,
             updated_at=file.updated_at,
             last_accessed=file.last_accessed,
             tier=file.storage_tier,
-            path=file.object_path or '/',
-            is_favorite=await _is_favorite(db, current_user.id, file.id)
+            path=file.object_path or "/",
+            is_favorite=await _is_favorite(db, current_user.id, file.id),
         )
         for file in files
     ]
 
 
-@router.get("/files/favorites", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/files/favorites",
+    response_model=List[FileResponse],
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_favorites(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get all favorited files for the current user.
@@ -89,7 +93,7 @@ async def get_favorites(
     """
     # Query favorites with joined file data
     result = await db.execute(
-        select(Object, Favorite.created_at.label('favorited_at'))
+        select(Object, Favorite.created_at.label("favorited_at"))
         .join(Favorite, Favorite.file_id == Object.id)
         .filter(Favorite.user_id == current_user.id)
         .order_by(desc(Favorite.created_at))
@@ -103,25 +107,28 @@ async def get_favorites(
             id=str(file.id),
             name=file.file_name,
             size=file.file_size,
-            mime_type=file.mime_type or 'application/octet-stream',
+            mime_type=file.mime_type or "application/octet-stream",
             created_at=file.created_at,
             updated_at=file.updated_at,
             last_accessed=file.last_accessed,
             tier=file.storage_tier,
-            path=file.object_path or '/',
+            path=file.object_path or "/",
             is_favorite=True,
-            favorited_at=favorited_at
+            favorited_at=favorited_at,
         )
         for file, favorited_at in files_with_favorite_date
     ]
 
 
-@router.post("/files/{file_id}/favorite", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.post(
+    "/files/{file_id}/favorite",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def toggle_favorite(
     file_id: str,
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Toggle favorite status for a file.
@@ -134,13 +141,7 @@ async def toggle_favorite(
     """
     # Verify file exists and belongs to user
     result = await db.execute(
-        select(Object)
-        .filter(
-            and_(
-                Object.id == file_id,
-                Object.user_id == current_user.id
-            )
-        )
+        select(Object).filter(and_(Object.id == file_id, Object.user_id == current_user.id))
     )
     file = result.scalar_one_or_none()
 
@@ -149,12 +150,8 @@ async def toggle_favorite(
 
     # Check if already favorited
     result = await db.execute(
-        select(Favorite)
-        .filter(
-            and_(
-                Favorite.user_id == current_user.id,
-                Favorite.file_id == file_id
-            )
+        select(Favorite).filter(
+            and_(Favorite.user_id == current_user.id, Favorite.file_id == file_id)
         )
     )
     favorite = result.scalar_one_or_none()
@@ -163,30 +160,24 @@ async def toggle_favorite(
         # Unfavorite - remove from favorites
         await db.delete(favorite)
         await db.commit()
-        return {
-            "favorited": False,
-            "message": "File removed from favorites"
-        }
+        return {"favorited": False, "message": "File removed from favorites"}
     else:
         # Favorite - add to favorites
-        new_favorite = Favorite(
-            user_id=current_user.id,
-            file_id=file_id
-        )
+        new_favorite = Favorite(user_id=current_user.id, file_id=file_id)
         db.add(new_favorite)
         await db.commit()
-        return {
-            "favorited": True,
-            "message": "File added to favorites"
-        }
+        return {"favorited": True, "message": "File added to favorites"}
 
 
-@router.delete("/files/{file_id}/favorite", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.delete(
+    "/files/{file_id}/favorite",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def remove_favorite(
     file_id: str,
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Remove a file from favorites (explicit delete endpoint).
@@ -199,12 +190,8 @@ async def remove_favorite(
     """
     # Check if favorited
     result = await db.execute(
-        select(Favorite)
-        .filter(
-            and_(
-                Favorite.user_id == current_user.id,
-                Favorite.file_id == file_id
-            )
+        select(Favorite).filter(
+            and_(Favorite.user_id == current_user.id, Favorite.file_id == file_id)
         )
     )
     favorite = result.scalar_one_or_none()
@@ -222,12 +209,6 @@ async def remove_favorite(
 async def _is_favorite(db: AsyncSession, user_id: str, file_id: str) -> bool:
     """Check if a file is favorited by the user"""
     result = await db.execute(
-        select(Favorite)
-        .filter(
-            and_(
-                Favorite.user_id == user_id,
-                Favorite.file_id == file_id
-            )
-        )
+        select(Favorite).filter(and_(Favorite.user_id == user_id, Favorite.file_id == file_id))
     )
     return result.scalar_one_or_none() is not None

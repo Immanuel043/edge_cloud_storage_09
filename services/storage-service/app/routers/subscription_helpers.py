@@ -4,20 +4,25 @@ Subscription UI Helper Endpoints
 Provides convenient endpoints specifically designed for frontend consumption.
 These endpoints combine data from multiple sources to reduce frontend API calls.
 """
+
 import logging
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from pydantic import BaseModel, Field
-
-from shared_billing import BillingService, SubscriptionPlan, UserSubscription, SubscriptionNotFoundError
+from shared_billing import (
+    BillingService,
+    SubscriptionNotFoundError,
+    SubscriptionPlan,
+    UserSubscription,
+)
 from shared_billing.schemas import SubscriptionPlanSchema, UserSubscriptionSchema
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, get_current_user
+from ..dependencies import get_current_user, get_db
 from ..models.database import User
 
 logger = logging.getLogger(__name__)
@@ -26,8 +31,10 @@ router = APIRouter(prefix="/api/v1/subscription-ui", tags=["subscription-ui"])
 
 # ===== Response Models =====
 
+
 class PlanFeature(BaseModel):
     """Individual plan feature for display."""
+
     name: str
     description: str
     available: bool
@@ -36,6 +43,7 @@ class PlanFeature(BaseModel):
 
 class PlanCard(BaseModel):
     """Plan information formatted for UI card display."""
+
     plan_code: str
     display_name: str
     tier_name: str
@@ -73,6 +81,7 @@ class PlanCard(BaseModel):
 
 class UserSubscriptionStatus(BaseModel):
     """Current user subscription status with usage info."""
+
     # Subscription info
     plan_code: str
     plan_name: str
@@ -121,6 +130,7 @@ class UserSubscriptionStatus(BaseModel):
 
 class SubscriptionDashboard(BaseModel):
     """Complete dashboard data in single response."""
+
     # Frontend expects 'current_subscription' field name
     current_subscription: UserSubscriptionStatus
     available_plans: List[PlanCard]
@@ -131,127 +141,144 @@ class SubscriptionDashboard(BaseModel):
 
 # ===== Helper Functions =====
 
-def format_plan_features(plan: SubscriptionPlan, service_type: str = 'normal') -> List[PlanFeature]:
+
+def format_plan_features(plan: SubscriptionPlan, service_type: str = "normal") -> List[PlanFeature]:
     """Convert plan features dict to structured list for UI."""
     features = []
 
     # Storage
     storage_gb = plan.storage_bytes / (1024**3)
-    features.append(PlanFeature(
-        name="Storage",
-        description=f"{storage_gb:.0f} GB cloud storage",
-        available=True,
-        tooltip="Total file storage capacity"
-    ))
+    features.append(
+        PlanFeature(
+            name="Storage",
+            description=f"{storage_gb:.0f} GB cloud storage",
+            available=True,
+            tooltip="Total file storage capacity",
+        )
+    )
 
     # Bandwidth
-    features.append(PlanFeature(
-        name="Bandwidth",
-        description=f"{plan.bandwidth_mbps} Mbps transfer speed",
-        available=True,
-        tooltip="Upload/download speed limit"
-    ))
+    features.append(
+        PlanFeature(
+            name="Bandwidth",
+            description=f"{plan.bandwidth_mbps} Mbps transfer speed",
+            available=True,
+            tooltip="Upload/download speed limit",
+        )
+    )
 
     # Concurrent streams
-    features.append(PlanFeature(
-        name="Concurrent Uploads",
-        description=f"{plan.max_concurrent_streams} simultaneous transfers",
-        available=True,
-        tooltip="Number of files you can upload at once"
-    ))
+    features.append(
+        PlanFeature(
+            name="Concurrent Uploads",
+            description=f"{plan.max_concurrent_streams} simultaneous transfers",
+            available=True,
+            tooltip="Number of files you can upload at once",
+        )
+    )
 
     # Parse features from JSONB
     if plan.features:
         # Support type
-        if 'support' in plan.features:
-            support_type = plan.features['support']
+        if "support" in plan.features:
+            support_type = plan.features["support"]
             support_map = {
-                'community': ('Community Support', 'Forum and documentation', False),
-                'email': ('Email Support', '24/7 email support', True),
-                'priority': ('Priority Support', 'Priority email + chat', True),
-                'dedicated': ('Dedicated Support', 'Dedicated support engineer', True),
+                "community": ("Community Support", "Forum and documentation", False),
+                "email": ("Email Support", "24/7 email support", True),
+                "priority": ("Priority Support", "Priority email + chat", True),
+                "dedicated": ("Dedicated Support", "Dedicated support engineer", True),
             }
             if support_type in support_map:
                 name, desc, avail = support_map[support_type]
-                features.append(PlanFeature(
-                    name=name,
-                    description=desc,
-                    available=avail
-                ))
+                features.append(PlanFeature(name=name, description=desc, available=avail))
 
         # Versioning
-        if plan.features.get('versioning'):
-            features.append(PlanFeature(
-                name="File Versioning",
-                description="Keep previous versions of files",
-                available=True,
-                tooltip="Restore old versions of your files"
-            ))
+        if plan.features.get("versioning"):
+            features.append(
+                PlanFeature(
+                    name="File Versioning",
+                    description="Keep previous versions of files",
+                    available=True,
+                    tooltip="Restore old versions of your files",
+                )
+            )
 
         # AI Features
-        if plan.features.get('ai_features'):
-            features.append(PlanFeature(
-                name="AI Features",
-                description="Smart search and auto-tagging",
-                available=True,
-                tooltip="AI-powered file organization"
-            ))
+        if plan.features.get("ai_features"):
+            features.append(
+                PlanFeature(
+                    name="AI Features",
+                    description="Smart search and auto-tagging",
+                    available=True,
+                    tooltip="AI-powered file organization",
+                )
+            )
 
         # Team Sharing
-        if plan.features.get('team_sharing'):
-            features.append(PlanFeature(
-                name="Team Sharing",
-                description="Collaborate with team members",
-                available=True
-            ))
+        if plan.features.get("team_sharing"):
+            features.append(
+                PlanFeature(
+                    name="Team Sharing", description="Collaborate with team members", available=True
+                )
+            )
 
         # ZK-specific features (service_type allows ZK dashboard to get ZK plan features)
-        if service_type == 'zk':
-            if 'hardware_keys' in plan.features:
-                num_keys = plan.features['hardware_keys']
-                features.append(PlanFeature(
-                    name="Hardware Keys",
-                    description=f"Up to {num_keys} security keys",
-                    available=True,
-                    tooltip="WebAuthn/FIDO2 hardware security keys"
-                ))
+        if service_type == "zk":
+            if "hardware_keys" in plan.features:
+                num_keys = plan.features["hardware_keys"]
+                features.append(
+                    PlanFeature(
+                        name="Hardware Keys",
+                        description=f"Up to {num_keys} security keys",
+                        available=True,
+                        tooltip="WebAuthn/FIDO2 hardware security keys",
+                    )
+                )
 
-            if plan.features.get('webauthn'):
-                features.append(PlanFeature(
-                    name="WebAuthn",
-                    description="Biometric & security key login",
-                    available=True
-                ))
+            if plan.features.get("webauthn"):
+                features.append(
+                    PlanFeature(
+                        name="WebAuthn",
+                        description="Biometric & security key login",
+                        available=True,
+                    )
+                )
 
-            if plan.features.get('audit_logs'):
-                features.append(PlanFeature(
-                    name="Audit Logs",
-                    description="Complete access history",
-                    available=True
-                ))
+            if plan.features.get("audit_logs"):
+                features.append(
+                    PlanFeature(
+                        name="Audit Logs", description="Complete access history", available=True
+                    )
+                )
 
         # Video Optimization (plan-gated)
-        video_opt = plan.features.get('video_optimization', False)
-        if video_opt == 'optimized':
-            features.append(PlanFeature(
-                name="Video Optimization",
-                description="Automatic video optimization for playback",
-                available=True,
-                tooltip="Videos are transcoded to H.264 MP4 for instant browser playback"
-            ))
-        elif video_opt == 'keep_both':
-            features.append(PlanFeature(
-                name="Video Optimization",
-                description="Automatic video optimization for playback",
-                available=True,
-                tooltip="Videos are transcoded to H.264 MP4 for instant browser playback"
-            ))
-            features.append(PlanFeature(
-                name="Keep Both Video Versions",
-                description="Download original or play optimized",
-                available=True,
-                tooltip="Access both the original file and the optimized playback version"
-            ))
+        video_opt = plan.features.get("video_optimization", False)
+        if video_opt == "optimized":
+            features.append(
+                PlanFeature(
+                    name="Video Optimization",
+                    description="Automatic video optimization for playback",
+                    available=True,
+                    tooltip="Videos are transcoded to H.264 MP4 for instant browser playback",
+                )
+            )
+        elif video_opt == "keep_both":
+            features.append(
+                PlanFeature(
+                    name="Video Optimization",
+                    description="Automatic video optimization for playback",
+                    available=True,
+                    tooltip="Videos are transcoded to H.264 MP4 for instant browser playback",
+                )
+            )
+            features.append(
+                PlanFeature(
+                    name="Keep Both Video Versions",
+                    description="Download original or play optimized",
+                    available=True,
+                    tooltip="Access both the original file and the optimized playback version",
+                )
+            )
 
     return features
 
@@ -260,22 +287,22 @@ def get_plan_badge(plan: SubscriptionPlan) -> Optional[str]:
     """Determine if plan should have a badge."""
     # Use is_most_popular flag from database
     if plan.is_most_popular:
-        return 'Most Popular'
+        return "Most Popular"
 
     # Legacy fallback for specific plans
     legacy_badges = {
-        'normal_pro': 'Best Value',
-        'zk_business': 'Best Value',
+        "normal_pro": "Best Value",
+        "zk_business": "Best Value",
     }
     return legacy_badges.get(plan.plan_code)
 
 
 # ===== Endpoints =====
 
+
 @router.get("/dashboard", response_model=SubscriptionDashboard)
 async def get_subscription_dashboard(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get complete subscription dashboard in a single request.
@@ -286,21 +313,23 @@ async def get_subscription_dashboard(
     - Usage warnings
     - Upgrade recommendations
     """
-    billing = BillingService(db, service_type='normal')
+    billing = BillingService(db, service_type="normal")
 
     # Get user's subscription
     try:
         subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
     except SubscriptionNotFoundError:
         # Create free tier if none exists
-        subscription = await billing.create_subscription(current_user.id, 'normal_free')
+        subscription = await billing.create_subscription(current_user.id, "normal_free")
 
     plan = subscription.plan
 
     # Calculate usage percentages
     storage_used_gb = current_user.storage_used / (1024**3)
     storage_quota_gb = plan.storage_bytes / (1024**3)
-    storage_percent = (current_user.storage_used / plan.storage_bytes * 100) if plan.storage_bytes > 0 else 0
+    storage_percent = (
+        (current_user.storage_used / plan.storage_bytes * 100) if plan.storage_bytes > 0 else 0
+    )
 
     # Format price display
     if plan.price_monthly is None or plan.price_monthly == 0:
@@ -323,12 +352,12 @@ async def get_subscription_dashboard(
     storage_remaining_display = f"{storage_remaining_gb:.1f} GB remaining"
 
     # Derive next invoice amount from plan pricing based on billing cycle
-    billing_cycle = getattr(subscription, 'billing_cycle', None)
+    billing_cycle = getattr(subscription, "billing_cycle", None)
     next_invoice_amount = None
     if billing_cycle and plan.price_monthly:
-        if billing_cycle == 'yearly' and plan.price_yearly:
+        if billing_cycle == "yearly" and plan.price_yearly:
             next_invoice_amount = float(plan.price_yearly)
-        elif billing_cycle == 'six_months' and plan.price_six_months:
+        elif billing_cycle == "six_months" and plan.price_six_months:
             next_invoice_amount = float(plan.price_six_months)
         else:
             next_invoice_amount = float(plan.price_monthly)
@@ -346,20 +375,30 @@ async def get_subscription_dashboard(
         storage_quota_gb=round(storage_quota_gb, 2),
         storage_percent=round(storage_percent, 1),
         bandwidth_quota_mbps=plan.bandwidth_mbps,
-        is_past_due=(subscription.status == 'past_due'),
-        is_cancelled=(subscription.status == 'cancelled'),
+        is_past_due=(subscription.status == "past_due"),
+        is_cancelled=(subscription.status == "cancelled"),
         days_until_renewal=days_until_renewal,
         billing_cycle=billing_cycle,
-        current_period_start=subscription.current_period_start.isoformat() if subscription.current_period_start else None,
-        current_period_end=subscription.current_period_end.isoformat() if subscription.current_period_end else None,
+        current_period_start=(
+            subscription.current_period_start.isoformat()
+            if subscription.current_period_start
+            else None
+        ),
+        current_period_end=(
+            subscription.current_period_end.isoformat() if subscription.current_period_end else None
+        ),
         storage_remaining_gb=storage_remaining_gb,
         storage_remaining_display=storage_remaining_display,
         next_invoice_amount=next_invoice_amount,
-        payment_gateway=getattr(subscription, 'payment_gateway', None),
-        last_payment_at=subscription.last_payment_at.isoformat() if getattr(subscription, 'last_payment_at', None) else None,
+        payment_gateway=getattr(subscription, "payment_gateway", None),
+        last_payment_at=(
+            subscription.last_payment_at.isoformat()
+            if getattr(subscription, "last_payment_at", None)
+            else None
+        ),
         can_upgrade=(plan.sort_order < 3),
         can_downgrade=(plan.sort_order > 0),
-        can_cancel=(subscription.status == 'active')
+        can_cancel=(subscription.status == "active"),
     )
 
     # Get all available plans
@@ -368,9 +407,9 @@ async def get_subscription_dashboard(
     plan_cards = []
     for p in all_plans:
         # Determine relationship to current plan
-        is_current = (p.plan_code == plan.plan_code)
-        is_upgrade = (p.sort_order > plan.sort_order)
-        is_downgrade = (p.sort_order < plan.sort_order)
+        is_current = p.plan_code == plan.plan_code
+        is_upgrade = p.sort_order > plan.sort_order
+        is_downgrade = p.sort_order < plan.sort_order
 
         # Format price display
         if p.price_monthly is None or p.price_monthly == 0:
@@ -390,7 +429,7 @@ async def get_subscription_dashboard(
             storage_gb=round(p.storage_bytes / (1024**3), 0),
             bandwidth_mbps=p.bandwidth_mbps,
             max_streams=p.max_concurrent_streams,
-            features=format_plan_features(p, 'normal'),
+            features=format_plan_features(p, "normal"),
             is_current=is_current,
             is_upgrade=is_upgrade,
             is_downgrade=is_downgrade,
@@ -399,31 +438,37 @@ async def get_subscription_dashboard(
             category=p.category,  # NEW
             is_most_popular=p.is_most_popular,  # NEW
             badge=get_plan_badge(p),  # Use new function signature
-            highlight=(p.is_most_popular or p.plan_code == 'normal_basic')  # Highlight most popular plans
+            highlight=(
+                p.is_most_popular or p.plan_code == "normal_basic"
+            ),  # Highlight most popular plans
         )
         plan_cards.append(plan_card)
 
     # Usage warnings
     warnings = []
     if storage_percent > 80:
-        warnings.append({
-            "type": "storage",
-            "severity": "high" if storage_percent > 95 else "medium",
-            "message": f"You've used {storage_percent:.1f}% of your storage",
-            "action": "Consider upgrading to get more space"
-        })
+        warnings.append(
+            {
+                "type": "storage",
+                "severity": "high" if storage_percent > 95 else "medium",
+                "message": f"You've used {storage_percent:.1f}% of your storage",
+                "action": "Consider upgrading to get more space",
+            }
+        )
 
     # Recommendations
     recommendations = []
     if storage_percent > 80 and plan.sort_order < 3:
         next_plan = next((p for p in all_plans if p.sort_order == plan.sort_order + 1), None)
         if next_plan:
-            recommendations.append({
-                "type": "upgrade",
-                "plan_code": next_plan.plan_code,
-                "message": f"Upgrade to {next_plan.display_name} for {next_plan.storage_bytes / (1024**3):.0f}GB",
-                "benefit": f"Get {(next_plan.storage_bytes - plan.storage_bytes) / (1024**3):.0f}GB more storage"
-            })
+            recommendations.append(
+                {
+                    "type": "upgrade",
+                    "plan_code": next_plan.plan_code,
+                    "message": f"Upgrade to {next_plan.display_name} for {next_plan.storage_bytes / (1024**3):.0f}GB",
+                    "benefit": f"Get {(next_plan.storage_bytes - plan.storage_bytes) / (1024**3):.0f}GB more storage",
+                }
+            )
 
     # Build usage dictionary matching frontend expectation
     usage_dict = {
@@ -436,7 +481,7 @@ async def get_subscription_dashboard(
         "storage_remaining_gb": storage_remaining_gb,
         "storage_remaining_display": storage_remaining_display,
         "bandwidth_quota_mbps": plan.bandwidth_mbps,
-        "bandwidth_quota_display": f"{plan.bandwidth_mbps} Mbps"
+        "bandwidth_quota_display": f"{plan.bandwidth_mbps} Mbps",
     }
 
     return SubscriptionDashboard(
@@ -444,7 +489,7 @@ async def get_subscription_dashboard(
         available_plans=plan_cards,
         usage=usage_dict,
         warnings=warnings,
-        recommendations=recommendations
+        recommendations=recommendations,
     )
 
 
@@ -452,7 +497,7 @@ async def get_subscription_dashboard(
 async def compare_plans(
     plan_codes: str,  # Comma-separated plan codes
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Compare multiple plans side-by-side.
@@ -463,9 +508,9 @@ async def compare_plans(
     Returns:
         Detailed comparison table data
     """
-    codes = [code.strip() for code in plan_codes.split(',')]
+    codes = [code.strip() for code in plan_codes.split(",")]
 
-    billing = BillingService(db, service_type='normal')
+    billing = BillingService(db, service_type="normal")
     plans = []
 
     for code in codes:
@@ -493,10 +538,16 @@ async def compare_plans(
             "storage": [f"{p.storage_bytes / (1024**3):.0f} GB" for p in plans],
             "bandwidth": [f"{p.bandwidth_mbps} Mbps" for p in plans],
             "max_streams": [str(p.max_concurrent_streams) for p in plans],
-            "support": [p.features.get('support', 'community') if p.features else 'community' for p in plans],
-            "versioning": [p.features.get('versioning', False) if p.features else False for p in plans],
-            "ai_features": [p.features.get('ai_features', False) if p.features else False for p in plans],
-        }
+            "support": [
+                p.features.get("support", "community") if p.features else "community" for p in plans
+            ],
+            "versioning": [
+                p.features.get("versioning", False) if p.features else False for p in plans
+            ],
+            "ai_features": [
+                p.features.get("ai_features", False) if p.features else False for p in plans
+            ],
+        },
     }
 
     return comparison
@@ -504,24 +555,25 @@ async def compare_plans(
 
 @router.get("/usage/summary")
 async def get_usage_summary(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get usage summary optimized for progress bars and charts.
     """
-    billing = BillingService(db, service_type='normal')
+    billing = BillingService(db, service_type="normal")
 
     try:
         subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
     except SubscriptionNotFoundError:
-        subscription = await billing.create_subscription(current_user.id, 'normal_free')
+        subscription = await billing.create_subscription(current_user.id, "normal_free")
 
     plan = subscription.plan
 
     storage_used_bytes = current_user.storage_used
     storage_quota_bytes = plan.storage_bytes
-    storage_percent = (storage_used_bytes / storage_quota_bytes * 100) if storage_quota_bytes > 0 else 0
+    storage_percent = (
+        (storage_used_bytes / storage_quota_bytes * 100) if storage_quota_bytes > 0 else 0
+    )
 
     # Determine progress bar color
     if storage_percent < 50:
@@ -539,16 +591,12 @@ async def get_usage_summary(
             "quota_gb": round(storage_quota_bytes / (1024**3), 2),
             "percent": round(storage_percent, 1),
             "color": storage_color,
-            "display": f"{storage_used_bytes / (1024**3):.1f} GB / {storage_quota_bytes / (1024**3):.0f} GB"
+            "display": f"{storage_used_bytes / (1024**3):.1f} GB / {storage_quota_bytes / (1024**3):.0f} GB",
         },
         "bandwidth": {
             "quota_mbps": plan.bandwidth_mbps,
             "burst_mbps": plan.bandwidth_burst_mbps,
-            "max_streams": plan.max_concurrent_streams
+            "max_streams": plan.max_concurrent_streams,
         },
-        "plan": {
-            "code": plan.plan_code,
-            "name": plan.display_name,
-            "tier": plan.tier_name
-        }
+        "plan": {"code": plan.plan_code, "name": plan.display_name, "tier": plan.tier_name},
     }

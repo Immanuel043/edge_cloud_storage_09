@@ -10,23 +10,52 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from .config import settings
-from .database import init_redis, close_redis, engine, get_redis
+from .database import close_redis, engine, get_redis, init_redis
 from .monitoring.metrics import metrics_collector
 
 # Import routers
-from .routers import auth, files, folders, upload, storage, websocket, deduplication, sharing, versions, search, file_analysis, similarity, security, url_upload, folder_upload, quota_analytics, storage_optimization, auto_organization, recommendations, favorites, oauth, gdpr, audit, performance, share_bundles, billing_v2, subscription_helpers
+from .routers import (
+    audit,
+    auth,
+    auto_organization,
+    billing_v2,
+    deduplication,
+    favorites,
+    file_analysis,
+    files,
+    folder_upload,
+    folders,
+    gdpr,
+    oauth,
+    performance,
+    quota_analytics,
+    recommendations,
+    search,
+    security,
+    share_bundles,
+    sharing,
+    similarity,
+    storage,
+    storage_optimization,
+    subscription_helpers,
+    upload,
+    url_upload,
+    versions,
+    websocket,
+)
 
 # Import background services
 from .routers.background_deduplication import background_dedup_service
 from .services.cold_storage_tiering import cold_storage_service  # ENABLED
 from .services.search_service import search_service
+from .workers.orphan_cleanup_worker import orphan_cleanup_worker
 from .workers.quota_prediction_worker import quota_prediction_worker
 from .workers.storage_optimization_worker import storage_optimization_worker
 from .workers.video_processing_worker import VideoProcessingWorker
-from .workers.orphan_cleanup_worker import orphan_cleanup_worker
 
 # Initialize video processing worker
 video_processing_worker = VideoProcessingWorker()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,6 +84,7 @@ async def lifespan(app: FastAPI):
     # memory telemetry) away from sessions and upload state on DB 0.
     try:
         from fastapi_limiter import FastAPILimiter
+
         from .database import get_redis_ratelimit
         from .middleware.rate_limiter import RateLimiter
 
@@ -86,7 +116,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Database connection failed: {e}")
 
-    print(f"WORKER_MODE={settings.WORKER_MODE} (api={settings.is_api_mode}, worker={settings.is_worker_mode})")
+    print(
+        f"WORKER_MODE={settings.WORKER_MODE} (api={settings.is_api_mode}, worker={settings.is_worker_mode})"
+    )
 
     # === API-coupled services (start in "all" and "api" modes) ===
     if settings.is_api_mode:
@@ -121,6 +153,7 @@ async def lifespan(app: FastAPI):
         # Start WebSocket preview notification listener (Redis Pub/Sub -> WS push)
         try:
             from .routers.websocket import _listen_preview_notifications
+
             asyncio.create_task(_listen_preview_notifications())
             print("Preview notification WebSocket listener started")
         except Exception as e:
@@ -128,6 +161,7 @@ async def lifespan(app: FastAPI):
 
         # Event loop lag monitor -- early warning for event loop starvation
         import logging as _logging
+
         _lag_logger = _logging.getLogger("app.eventloop_monitor")
 
         async def _monitor_event_loop_lag():
@@ -184,8 +218,10 @@ async def lifespan(app: FastAPI):
                     break
                 except Exception as e:
                     retries += 1
-                    backoff = min(2 ** retries, 60)
-                    print(f"Video processing worker crashed (attempt {retries}/{max_retries}): {e}. Restarting in {backoff}s...")
+                    backoff = min(2**retries, 60)
+                    print(
+                        f"Video processing worker crashed (attempt {retries}/{max_retries}): {e}. Restarting in {backoff}s..."
+                    )
                     await asyncio.sleep(backoff)
             if retries >= max_retries:
                 print("Video processing worker exceeded max retries, giving up")
@@ -207,6 +243,7 @@ async def lifespan(app: FastAPI):
         # Close FastAPILimiter
         try:
             from fastapi_limiter import FastAPILimiter
+
             await FastAPILimiter.close()
             print("FastAPILimiter closed")
         except Exception as e:
@@ -235,6 +272,7 @@ async def lifespan(app: FastAPI):
         # Stop Kafka producer (flush buffered messages before shutdown)
         try:
             from .routers.upload import kafka_producer as _kafka_producer
+
             if _kafka_producer is not None:
                 await _kafka_producer.stop()
                 print("Kafka producer stopped")
@@ -298,7 +336,14 @@ except Exception as e:
 # Add rate limiting
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from .utils.rate_limiter import limiter, share_limiter, rate_limit_exceeded_handler as custom_rate_limit_handler
+
+from .utils.rate_limiter import (
+    limiter,
+)
+from .utils.rate_limiter import rate_limit_exceeded_handler as custom_rate_limit_handler
+from .utils.rate_limiter import (
+    share_limiter,
+)
 
 app.state.limiter = limiter
 app.state.share_limiter = share_limiter
@@ -315,6 +360,7 @@ if settings.ENABLE_HTTPS:
 # inside the middleware module; see request_timeout.py.
 try:
     from .middleware.request_timeout import RequestTimeoutMiddleware
+
     app.add_middleware(RequestTimeoutMiddleware)
     print("Request timeout middleware enabled")
 except Exception as e:
@@ -350,7 +396,8 @@ app.add_middleware(
 
 # Add Security Headers Middleware
 try:
-    from .middleware.security_headers import SecurityHeadersMiddleware, CORSSecurityMiddleware
+    from .middleware.security_headers import CORSSecurityMiddleware, SecurityHeadersMiddleware
+
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(CORSSecurityMiddleware)
     print("Security headers middleware enabled")
@@ -360,10 +407,8 @@ except Exception as e:
 # Add Performance Monitoring Middleware
 try:
     from .middleware.performance import PerformanceMiddleware
-    app.add_middleware(
-        PerformanceMiddleware,
-        slow_threshold=0.5
-    )
+
+    app.add_middleware(PerformanceMiddleware, slow_threshold=0.5)
     print("Performance monitoring enabled")
 except ImportError:
     print("Performance middleware not found")
@@ -399,11 +444,8 @@ app.include_router(subscription_helpers.router)  # Subscription UI helpers
 
 # Internal API for cross-service communication
 from .routers import internal
-app.include_router(
-    internal.router,
-    prefix="/api/v1/auth/internal",
-    tags=["Internal"]
-)
+
+app.include_router(internal.router, prefix="/api/v1/auth/internal", tags=["Internal"])
 
 
 # Helper functions
@@ -469,18 +511,28 @@ async def health_check():
     # Background services check (safely check for worker_task attribute)
     def check_worker_status(service, service_name):
         try:
-            worker_task = getattr(service, 'worker_task', None)
+            worker_task = getattr(service, "worker_task", None)
             if worker_task and not worker_task.done():
                 return "running"
             return "stopped"
         except Exception:
             return "unknown"
 
-    health_status["checks"]["background_dedup"] = check_worker_status(background_dedup_service, "background_dedup")
-    health_status["checks"]["cold_storage_tiering"] = check_worker_status(cold_storage_service, "cold_storage")
-    health_status["checks"]["quota_prediction"] = check_worker_status(quota_prediction_worker, "quota_prediction")
-    health_status["checks"]["storage_optimization"] = check_worker_status(storage_optimization_worker, "storage_optimization")
-    health_status["checks"]["orphan_cleanup"] = check_worker_status(orphan_cleanup_worker, "orphan_cleanup")
+    health_status["checks"]["background_dedup"] = check_worker_status(
+        background_dedup_service, "background_dedup"
+    )
+    health_status["checks"]["cold_storage_tiering"] = check_worker_status(
+        cold_storage_service, "cold_storage"
+    )
+    health_status["checks"]["quota_prediction"] = check_worker_status(
+        quota_prediction_worker, "quota_prediction"
+    )
+    health_status["checks"]["storage_optimization"] = check_worker_status(
+        storage_optimization_worker, "storage_optimization"
+    )
+    health_status["checks"]["orphan_cleanup"] = check_worker_status(
+        orphan_cleanup_worker, "orphan_cleanup"
+    )
 
     # Storage directories check
     storage_status = {}
@@ -523,7 +575,7 @@ async def get_service_stats():
             "enabled": cold_storage_service.is_running,
             "cache_to_warm_days": cold_storage_service.cache_to_warm_days,
             "warm_to_cold_days": cold_storage_service.warm_to_cold_days,
-        }
+        },
     }
 
 
@@ -586,7 +638,7 @@ async def internal_error(request: Request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",

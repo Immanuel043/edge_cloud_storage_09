@@ -1,14 +1,16 @@
 """OAuth authentication endpoints for social login"""
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+
 import logging
 
-from ..dependencies import get_db, get_current_user
-from ..services.oauth_service import oauth, oauth_service
-from ..services.auth import auth_service
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..config import settings
+from ..dependencies import get_current_user, get_db
 from ..models.database import User
+from ..services.auth import auth_service
+from ..services.oauth_service import oauth, oauth_service
 
 router = APIRouter(prefix="/api/v1/auth/oauth", tags=["oauth"])
 logger = logging.getLogger(__name__)
@@ -19,18 +21,13 @@ async def get_available_providers():
     """Get list of configured OAuth providers"""
     providers = []
 
-    for provider in ['google', 'github', 'microsoft']:
+    for provider in ["google", "github", "microsoft"]:
         if oauth_service.is_provider_configured(provider):
-            providers.append({
-                'name': provider,
-                'display_name': provider.capitalize(),
-                'enabled': True
-            })
+            providers.append(
+                {"name": provider, "display_name": provider.capitalize(), "enabled": True}
+            )
 
-    return {
-        "providers": providers,
-        "count": len(providers)
-    }
+    return {"providers": providers, "count": len(providers)}
 
 
 @router.get("/{provider}/login")
@@ -50,7 +47,7 @@ async def oauth_login(provider: str, request: Request):
     if not oauth_service.is_provider_configured(provider):
         raise HTTPException(
             status_code=400,
-            detail=f"{provider.capitalize()} OAuth is not configured. Please contact administrator."
+            detail=f"{provider.capitalize()} OAuth is not configured. Please contact administrator.",
         )
 
     try:
@@ -66,11 +63,7 @@ async def oauth_login(provider: str, request: Request):
 
 
 @router.get("/{provider}/callback")
-async def oauth_callback(
-    provider: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
+async def oauth_callback(provider: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Handle OAuth callback from provider
 
@@ -100,8 +93,8 @@ async def oauth_callback(
         oauth_profile = await oauth_service.get_oauth_user(provider, token)
 
         # Add tokens to profile for storage
-        oauth_profile['access_token'] = token.get('access_token')
-        oauth_profile['refresh_token'] = token.get('refresh_token')
+        oauth_profile["access_token"] = token.get("access_token")
+        oauth_profile["refresh_token"] = token.get("refresh_token")
 
         # Create or update user
         user = await oauth_service.create_or_update_user(db, oauth_profile, provider)
@@ -132,7 +125,7 @@ async def link_oauth_account(
     provider: str,
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Link OAuth account to existing authenticated user
@@ -151,8 +144,7 @@ async def link_oauth_account(
 
     if not oauth_service.is_provider_configured(provider):
         raise HTTPException(
-            status_code=400,
-            detail=f"{provider.capitalize()} OAuth is not configured"
+            status_code=400, detail=f"{provider.capitalize()} OAuth is not configured"
         )
 
     try:
@@ -166,21 +158,18 @@ async def link_oauth_account(
         oauth_profile = await oauth_service.get_oauth_user(provider, token)
 
         # Add tokens to profile
-        oauth_profile['access_token'] = token.get('access_token')
-        oauth_profile['refresh_token'] = token.get('refresh_token')
+        oauth_profile["access_token"] = token.get("access_token")
+        oauth_profile["refresh_token"] = token.get("refresh_token")
 
         # Link OAuth account to current user
         await oauth_service.link_oauth_to_existing_user(
-            db,
-            str(current_user.id),
-            oauth_profile,
-            provider
+            db, str(current_user.id), oauth_profile, provider
         )
 
         return {
             "message": f"{provider.capitalize()} account linked successfully",
             "provider": provider,
-            "email": oauth_profile.get('email')
+            "email": oauth_profile.get("email"),
         }
 
     except HTTPException:
@@ -194,7 +183,7 @@ async def link_oauth_account(
 async def unlink_oauth_account(
     provider: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Unlink OAuth account from user
@@ -207,8 +196,9 @@ async def unlink_oauth_account(
     Returns:
         Success message
     """
+    from sqlalchemy import and_, select
+
     from ..models.database import OAuthAccount
-    from sqlalchemy import select, and_
 
     if provider not in oauth_service.SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unsupported OAuth provider: {provider}")
@@ -216,25 +206,19 @@ async def unlink_oauth_account(
     # Find OAuth account
     result = await db.execute(
         select(OAuthAccount).filter(
-            and_(
-                OAuthAccount.user_id == current_user.id,
-                OAuthAccount.provider == provider
-            )
+            and_(OAuthAccount.user_id == current_user.id, OAuthAccount.provider == provider)
         )
     )
     oauth_account = result.scalar_one_or_none()
 
     if not oauth_account:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No {provider} account linked to this user"
-        )
+        raise HTTPException(status_code=404, detail=f"No {provider} account linked to this user")
 
     # Check if user has password (can't unlink if it's the only auth method)
     if not current_user.password_hash and len(current_user.oauth_accounts) == 1:
         raise HTTPException(
             status_code=400,
-            detail="Cannot unlink last authentication method. Please set a password first."
+            detail="Cannot unlink last authentication method. Please set a password first.",
         )
 
     # Delete OAuth account
@@ -245,14 +229,13 @@ async def unlink_oauth_account(
 
     return {
         "message": f"{provider.capitalize()} account unlinked successfully",
-        "provider": provider
+        "provider": provider,
     }
 
 
 @router.get("/linked-accounts")
 async def get_linked_accounts(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get list of OAuth accounts linked to current user
@@ -264,22 +247,36 @@ async def get_linked_accounts(
     Returns:
         List of linked OAuth providers
     """
-    await db.refresh(current_user, ['oauth_accounts'])
+    await db.refresh(current_user, ["oauth_accounts"])
 
     linked_accounts = []
     for oauth_account in current_user.oauth_accounts:
-        linked_accounts.append({
-            'provider': oauth_account.provider,
-            'email': oauth_account.profile_data.get('email') if oauth_account.profile_data else None,
-            'linked_at': oauth_account.created_at.isoformat() if oauth_account.created_at else None,
-            'profile': {
-                'name': oauth_account.profile_data.get('name') if oauth_account.profile_data else None,
-                'picture': oauth_account.profile_data.get('picture') if oauth_account.profile_data else None,
+        linked_accounts.append(
+            {
+                "provider": oauth_account.provider,
+                "email": (
+                    oauth_account.profile_data.get("email") if oauth_account.profile_data else None
+                ),
+                "linked_at": (
+                    oauth_account.created_at.isoformat() if oauth_account.created_at else None
+                ),
+                "profile": {
+                    "name": (
+                        oauth_account.profile_data.get("name")
+                        if oauth_account.profile_data
+                        else None
+                    ),
+                    "picture": (
+                        oauth_account.profile_data.get("picture")
+                        if oauth_account.profile_data
+                        else None
+                    ),
+                },
             }
-        })
+        )
 
     return {
         "linked_accounts": linked_accounts,
         "count": len(linked_accounts),
-        "has_password": bool(current_user.password_hash)
+        "has_password": bool(current_user.password_hash),
     }

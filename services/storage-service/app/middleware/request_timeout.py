@@ -20,6 +20,7 @@ WebSocket upgrades use a different ASGI scope ("websocket") and are not
 dispatched through `BaseHTTPMiddleware`, so WS connections are naturally
 exempt from this timeout.
 """
+
 import asyncio
 import logging
 from typing import Dict, Tuple

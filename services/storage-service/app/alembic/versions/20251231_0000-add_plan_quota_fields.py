@@ -11,13 +11,13 @@ Adds columns for plan-based split storage quotas and admin bandwidth overrides:
 - User.bandwidth_burst_mbps: Admin override for burst bandwidth (NULL = use plan default)
 - User.max_concurrent_streams: Admin override for max streams (NULL = use plan default)
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '20251231_0000'
-down_revision = '20251224_0000'
+revision = "20251231_0000"
+down_revision = "20251224_0000"
 branch_labels = None
 depends_on = None
 

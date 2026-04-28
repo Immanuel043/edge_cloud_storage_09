@@ -4,16 +4,18 @@ Verification Code Service
 
 Handles generation, storage, and validation of email verification codes.
 """
-import secrets
+
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..models.database import User
 from ..database import get_redis
+from ..models.database import User
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +40,7 @@ class VerificationService:
         code = secrets.randbelow(900000) + 100000
         return str(code)
 
-    async def store_verification_code(
-        self,
-        db: AsyncSession,
-        user: User,
-        code: str
-    ) -> bool:
+    async def store_verification_code(self, db: AsyncSession, user: User, code: str) -> bool:
         """
         Store verification code in database with expiry time.
 
@@ -64,7 +61,7 @@ class VerificationService:
                 .values(
                     verification_code=code,
                     verification_code_expires_at=expiry_time,
-                    verification_code_attempts=0
+                    verification_code_attempts=0,
                 )
             )
             await db.commit()
@@ -77,12 +74,7 @@ class VerificationService:
             await db.rollback()
             return False
 
-    async def verify_code(
-        self,
-        db: AsyncSession,
-        user: User,
-        code: str
-    ) -> tuple[bool, str]:
+    async def verify_code(self, db: AsyncSession, user: User, code: str) -> tuple[bool, str]:
         """
         Verify the provided code against stored code.
 
@@ -99,7 +91,9 @@ class VerificationService:
             return False, "No verification code found. Please request a new code."
 
         # Check if code has expired
-        if user.verification_code_expires_at and user.verification_code_expires_at < datetime.now(timezone.utc):
+        if user.verification_code_expires_at and user.verification_code_expires_at < datetime.now(
+            timezone.utc
+        ):
             return False, "Verification code has expired. Please request a new code."
 
         # Check if max attempts exceeded
@@ -113,9 +107,7 @@ class VerificationService:
             await db.execute(
                 update(User)
                 .where(User.id == user.id)
-                .values(
-                    verification_code_attempts=new_attempts
-                )
+                .values(verification_code_attempts=new_attempts)
             )
             await db.commit()
 
@@ -130,7 +122,7 @@ class VerificationService:
                 email_verified=True,
                 verification_code=None,
                 verification_code_expires_at=None,
-                verification_code_attempts=0
+                verification_code_attempts=0,
             )
         )
         await db.commit()
@@ -165,7 +157,9 @@ class VerificationService:
                     return False, f"Please wait {remaining} seconds before requesting a new code."
 
             # Update last sent time
-            await redis_client.setex(key, self.resend_cooldown, str(datetime.now(timezone.utc).timestamp()))
+            await redis_client.setex(
+                key, self.resend_cooldown, str(datetime.now(timezone.utc).timestamp())
+            )
             return True, None
 
         except Exception as e:
@@ -173,11 +167,7 @@ class VerificationService:
             # Fail open - allow resend if Redis check fails
             return True, None
 
-    async def get_user_by_email(
-        self,
-        db: AsyncSession,
-        email: str
-    ) -> Optional[User]:
+    async def get_user_by_email(self, db: AsyncSession, email: str) -> Optional[User]:
         """
         Get user by email address.
 
@@ -188,16 +178,10 @@ class VerificationService:
         Returns:
             User object or None
         """
-        result = await db.execute(
-            select(User).where(User.email == email)
-        )
+        result = await db.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
 
-    async def create_temp_user(
-        self,
-        db: AsyncSession,
-        email: str
-    ) -> User:
+    async def create_temp_user(self, db: AsyncSession, email: str) -> User:
         """
         Create a temporary user record for email verification.
         User will be activated after verification and password setup.
@@ -220,7 +204,7 @@ class VerificationService:
             username=email.split("@")[0],  # Temporary username
             password_hash="",  # Will be set during registration completion
             email_verified=False,
-            is_active=False  # Inactive until email verified and password set
+            is_active=False,  # Inactive until email verified and password set
         )
 
         db.add(user)
@@ -233,4 +217,3 @@ class VerificationService:
 
 # Global service instance
 verification_service = VerificationService()
-

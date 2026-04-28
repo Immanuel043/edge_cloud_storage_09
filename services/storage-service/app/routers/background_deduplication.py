@@ -7,25 +7,26 @@ Uses SmartDeduplicationQueue for priority-based processing with backpressure.
 """
 
 import asyncio
-import mmap
-import time
-from typing import Dict, Optional
-from datetime import datetime
 import json
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-import aiofiles
+import logging
+import mimetypes
+import mmap
 import os
+import time
+from datetime import datetime
+from typing import Dict, Optional
 
-from ..models.database import Object, User
-from ..services.encryption import encryption_service
-from ..services.deduplication_enhanced import enhanced_dedup_service
-from ..services.dedup_queue import smart_dedup_queue
+import aiofiles
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..database import get_db, get_redis
+from ..models.database import Object, User
+from ..services.dedup_queue import smart_dedup_queue
+from ..services.deduplication_enhanced import enhanced_dedup_service
+from ..services.encryption import encryption_service
 from ..utils.chunk_lifecycle import wait_for_cleanup_ready
 from ..utils.executors import run_in_heavy_pool
-import mimetypes
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +67,9 @@ class BackgroundDeduplicationService:
             except asyncio.CancelledError:
                 pass
             logger.info("Garbage collection worker stopped")
-    
+
     async def enqueue_for_dedup(
-        self,
-        file_id: str,
-        upload_id: str,
-        user_id: str,
-        session_data: Dict,
-        priority: int = 2
+        self, file_id: str, upload_id: str, user_id: str, session_data: Dict, priority: int = 2
     ):
         """
         Add file to smart deduplication queue with priority
@@ -90,7 +86,7 @@ class BackgroundDeduplicationService:
             "upload_id": upload_id,
             "user_id": user_id,
             "session": session_data,
-            "enqueued_at": datetime.utcnow().isoformat()
+            "enqueued_at": datetime.utcnow().isoformat(),
         }
 
         # Enqueue with priority and backpressure checks
@@ -107,30 +103,32 @@ class BackgroundDeduplicationService:
             await redis_client.setex(
                 f"dedup:job:{file_id}",
                 7200,
-                json.dumps({
-                    "status": "queued",
-                    "priority": priority,
-                    "queue_position": result["queue_position"],
-                    "estimated_wait": result["estimated_wait"],
-                    "enqueued_at": job["enqueued_at"]
-                })
+                json.dumps(
+                    {
+                        "status": "queued",
+                        "priority": priority,
+                        "queue_position": result["queue_position"],
+                        "estimated_wait": result["estimated_wait"],
+                        "enqueued_at": job["enqueued_at"],
+                    }
+                ),
             )
         else:
-            logger.warning(
-                f"⚠️ Failed to enqueue {session_data['name']}: {result['reason']}"
-            )
+            logger.warning(f"⚠️ Failed to enqueue {session_data['name']}: {result['reason']}")
 
             # Store rejection in Redis
             redis_client = await get_redis()
             await redis_client.setex(
                 f"dedup:job:{file_id}",
                 7200,
-                json.dumps({
-                    "status": "rejected",
-                    "reason": result["reason"],
-                    "message": result["message"],
-                    "rejected_at": datetime.utcnow().isoformat()
-                })
+                json.dumps(
+                    {
+                        "status": "rejected",
+                        "reason": result["reason"],
+                        "message": result["message"],
+                        "rejected_at": datetime.utcnow().isoformat(),
+                    }
+                ),
             )
 
         return result
@@ -147,11 +145,11 @@ class BackgroundDeduplicationService:
 
         if not lock.try_acquire():
             # Another worker (video) is active on this file — defer without blocking
-            job['_defer_count'] = job.get('_defer_count', 0) + 1
+            job["_defer_count"] = job.get("_defer_count", 0) + 1
             logger.info(
-                "⏳ Deferring dedup for %s: file locked by another worker "
-                "(attempt %d)",
-                file_id, job['_defer_count'],
+                "⏳ Deferring dedup for %s: file locked by another worker " "(attempt %d)",
+                file_id,
+                job["_defer_count"],
             )
             return "deferred"
 
@@ -167,17 +165,14 @@ class BackgroundDeduplicationService:
                 await redis_client.setex(
                     f"dedup:job:{file_id}",
                     7200,
-                    json.dumps({
-                        "status": "processing",
-                        "started_at": datetime.utcnow().isoformat()
-                    })
+                    json.dumps(
+                        {"status": "processing", "started_at": datetime.utcnow().isoformat()}
+                    ),
                 )
 
                 # Get database session
                 async for db in get_db():
-                    result = await db.execute(
-                        select(Object).where(Object.id == file_id)
-                    )
+                    result = await db.execute(select(Object).where(Object.id == file_id))
                     file_obj = result.scalar_one_or_none()
 
                     if not file_obj:
@@ -198,33 +193,37 @@ class BackgroundDeduplicationService:
                         user_id=job["user_id"],
                         db=db,
                         metadata={
-                            'mime_type': mimetypes.guess_type(session["name"])[0],
-                            'folder_id': session.get("folder")
+                            "mime_type": mimetypes.guess_type(session["name"])[0],
+                            "folder_id": session.get("folder"),
                         },
                         encrypt=True,
-                        existing_object=file_obj  # Pass existing object to update in-place
+                        existing_object=file_obj,  # Pass existing object to update in-place
                     )
 
                     # If dedup was skipped (file too large), just keep the original storage
                     if dedup_result is None:
-                        print(f"Deduplication skipped for {session['name']} - file too large, keeping original storage")
+                        print(
+                            f"Deduplication skipped for {session['name']} - file too large, keeping original storage"
+                        )
                         await redis_client.setex(
                             f"dedup:job:{file_id}",
                             7200,
-                            json.dumps({
-                                "status": "skipped",
-                                "reason": "file_too_large",
-                                "completed_at": datetime.utcnow().isoformat()
-                            })
+                            json.dumps(
+                                {
+                                    "status": "skipped",
+                                    "reason": "file_too_large",
+                                    "completed_at": datetime.utcnow().isoformat(),
+                                }
+                            ),
                         )
                         self.active_jobs.pop(file_id, None)
                         return
 
                     # Update storage usage
-                    if dedup_result['status'] in ['stored_with_dedup', 'full_duplicate']:
-                        actual_saved = dedup_result.get('saved_size', 0)
+                    if dedup_result["status"] in ["stored_with_dedup", "full_duplicate"]:
+                        actual_saved = dedup_result.get("saved_size", 0)
 
-                        if dedup_result['status'] == 'full_duplicate':
+                        if dedup_result["status"] == "full_duplicate":
                             actual_saved = session["size"]
 
                         # No need to delete old object - it was updated in-place
@@ -251,41 +250,46 @@ class BackgroundDeduplicationService:
 
                         # Fire cleanup as background task — grace period wait
                         # (up to 5 min) must not block the serial dedup queue.
-                        asyncio.create_task(
-                            self._cleanup_original_storage(file_obj, session)
-                        )
+                        asyncio.create_task(self._cleanup_original_storage(file_obj, session))
 
-                        print(f"Deduplication successful: {session['name']} - Saved {actual_saved/1024/1024:.1f}MB")
+                        print(
+                            f"Deduplication successful: {session['name']} - Saved {actual_saved/1024/1024:.1f}MB"
+                        )
 
                         await redis_client.setex(
                             f"dedup:job:{file_id}",
                             7200,
-                            json.dumps({
-                                "status": "completed",
-                                "completed_at": datetime.utcnow().isoformat(),
-                                "saved_size": actual_saved,
-                                "dedup_ratio": dedup_result.get('dedup_ratio', 0)
-                            })
+                            json.dumps(
+                                {
+                                    "status": "completed",
+                                    "completed_at": datetime.utcnow().isoformat(),
+                                    "saved_size": actual_saved,
+                                    "dedup_ratio": dedup_result.get("dedup_ratio", 0),
+                                }
+                            ),
                         )
 
                     break
 
                 self.active_jobs.pop(file_id, None)
-            
+
             except Exception as e:
                 print(f"Deduplication failed for {file_id}: {e}")
                 import traceback
+
                 traceback.print_exc()
 
                 self.active_jobs[file_id] = "failed"
                 await redis_client.setex(
                     f"dedup:job:{file_id}",
                     7200,
-                    json.dumps({
-                        "status": "failed",
-                        "error": str(e),
-                        "failed_at": datetime.utcnow().isoformat()
-                    })
+                    json.dumps(
+                        {
+                            "status": "failed",
+                            "error": str(e),
+                            "failed_at": datetime.utcnow().isoformat(),
+                        }
+                    ),
                 )
         finally:
             if lock_held:
@@ -300,14 +304,19 @@ class BackgroundDeduplicationService:
         """
         try:
             file_key = await run_in_heavy_pool(
-                encryption_service.decrypt_key, file_obj.encryption_key,
+                encryption_service.decrypt_key,
+                file_obj.encryption_key,
             )
             storage_strategy = session.get("strategy", "single")
             compress = session.get("compress", False)
 
             # --- Try Rust bulk-decrypt first ---
             rust_result = await self._get_file_data_rust(
-                file_obj, session, file_key, storage_strategy, compress,
+                file_obj,
+                session,
+                file_key,
+                storage_strategy,
+                compress,
             )
             if rust_result is not None:
                 return rust_result
@@ -321,18 +330,22 @@ class BackgroundDeduplicationService:
                 if not exists:
                     return None
 
-                async with aiofiles.open(storage_path, 'rb') as f:
+                async with aiofiles.open(storage_path, "rb") as f:
                     encrypted_data = await f.read()
 
                 def _decrypt_single(enc, key, do_decompress):
                     data = encryption_service.decrypt_file(enc, key)
                     if do_decompress:
                         from ..utils.compression import compressor
+
                         data = compressor.decompress(data)
                     return data
 
                 return await run_in_heavy_pool(
-                    _decrypt_single, encrypted_data, file_key, compress,
+                    _decrypt_single,
+                    encrypted_data,
+                    file_key,
+                    compress,
                 )
 
             elif storage_strategy == "chunked":
@@ -362,22 +375,26 @@ class BackgroundDeduplicationService:
                 # Read all encrypted chunks via async I/O
                 encrypted_chunks = []
                 for chunk_path in chunk_paths:
-                    async with aiofiles.open(chunk_path, 'rb') as f:
+                    async with aiofiles.open(chunk_path, "rb") as f:
                         encrypted_chunks.append(await f.read())
 
                 # Decrypt + decompress all chunks in one heavy pool call
                 def _decrypt_all(enc_chunks, key, do_decompress):
                     from ..utils.compression import compressor as _comp
+
                     parts = []
                     for idx, enc in enumerate(enc_chunks):
                         dec = encryption_service.decrypt_chunk(enc, key, idx)
                         if do_decompress:
                             dec = _comp.decompress(dec)
                         parts.append(dec)
-                    return b''.join(parts)
+                    return b"".join(parts)
 
                 return await run_in_heavy_pool(
-                    _decrypt_all, encrypted_chunks, file_key, compress,
+                    _decrypt_all,
+                    encrypted_chunks,
+                    file_key,
+                    compress,
                 )
 
             return None
@@ -396,11 +413,13 @@ class BackgroundDeduplicationService:
     ) -> Optional[bytes]:
         """Attempt decryption via Rust /bulk-decrypt. Returns None to signal fallback."""
         from ..config import settings
+
         if not getattr(settings, "RUST_DATAPLANE_ENABLED", False):
             return None
 
         try:
             from ..services.rust_dataplane_client import get_rust_client
+
             rust_client = get_rust_client()
             if not await rust_client.is_available():
                 return None
@@ -436,8 +455,10 @@ class BackgroundDeduplicationService:
             if total_bytes <= DECRYPT_SUB_BATCH_BYTES:
                 # Small file: single call (unchanged)
                 plaintext = await rust_client.bulk_decrypt_chunks(
-                    chunks=chunks, file_key=file_key,
-                    was_compressed=compress, chunk_size=chunk_size,
+                    chunks=chunks,
+                    file_key=file_key,
+                    was_compressed=compress,
+                    chunk_size=chunk_size,
                 )
                 batch_count = 1
             else:
@@ -448,7 +469,8 @@ class BackgroundDeduplicationService:
                 if alloc_ms > 100:
                     logger.warning(
                         "Dedup buffer alloc %dMB took %.0fms",
-                        file_obj.file_size >> 20, alloc_ms,
+                        file_obj.file_size >> 20,
+                        alloc_ms,
                     )
                 view = memoryview(plaintext)
                 write_offset = 0
@@ -456,21 +478,29 @@ class BackgroundDeduplicationService:
                 sub_bytes = 0
                 batch_num = 0
 
-                COPY_SLICE = 1_048_576  # 1MB — small enough to keep GIL hold <15ms under Docker page faults
+                COPY_SLICE = (
+                    1_048_576  # 1MB — small enough to keep GIL hold <15ms under Docker page faults
+                )
 
                 async def _flush(batch, batch_idx):
                     nonlocal write_offset, view, plaintext
                     t0 = time.monotonic()
                     try:
                         bytes_written = await rust_client.bulk_decrypt_into(
-                            chunks=batch, file_key=file_key,
-                            was_compressed=compress, chunk_size=chunk_size,
-                            target=view, target_offset=write_offset,
+                            chunks=batch,
+                            file_key=file_key,
+                            was_compressed=compress,
+                            chunk_size=chunk_size,
+                            target=view,
+                            target_offset=write_offset,
                         )
                         elapsed = time.monotonic() - t0
                         logger.info(
                             "Dedup sub-decrypt %d: chunks=%d bytes=%d elapsed=%.1fs (direct)",
-                            batch_idx, len(batch), bytes_written, elapsed,
+                            batch_idx,
+                            len(batch),
+                            bytes_written,
+                            elapsed,
                         )
                         write_offset += bytes_written
                     except ValueError as exc:
@@ -480,11 +510,15 @@ class BackgroundDeduplicationService:
                         logger.error(
                             "Dedup sub-decrypt %d rejected after %.1fs: %s — "
                             "falling back to bulk_decrypt_chunks",
-                            batch_idx, elapsed, exc,
+                            batch_idx,
+                            elapsed,
+                            exc,
                         )
                         part = await rust_client.bulk_decrypt_chunks(
-                            chunks=batch, file_key=file_key,
-                            was_compressed=compress, chunk_size=chunk_size,
+                            chunks=batch,
+                            file_key=file_key,
+                            was_compressed=compress,
+                            chunk_size=chunk_size,
                         )
                         n = len(part)
                         if write_offset + n > len(plaintext):
@@ -513,7 +547,9 @@ class BackgroundDeduplicationService:
                             copied = 0
                             while copied < n:
                                 end = min(copied + COPY_SLICE, n)
-                                view[write_offset + copied:write_offset + end] = part_mv[copied:end]
+                                view[write_offset + copied : write_offset + end] = part_mv[
+                                    copied:end
+                                ]
                                 copied = end
                                 if copied < n:
                                     await asyncio.sleep(0)
@@ -525,7 +561,8 @@ class BackgroundDeduplicationService:
                 await asyncio.sleep(0)  # yield after alloc before first decrypt
                 logger.info(
                     "Dedup decrypt setup complete: chunks=%d alloc=%dMB",
-                    len(chunks), file_obj.file_size >> 20,
+                    len(chunks),
+                    file_obj.file_size >> 20,
                 )
 
                 for c in chunks:
@@ -548,7 +585,8 @@ class BackgroundDeduplicationService:
                     logger.error(
                         "Dedup trim needed: write_offset=%d < alloc=%d — "
                         "file_size metadata is inconsistent",
-                        write_offset, len(plaintext),
+                        write_offset,
+                        len(plaintext),
                     )
                     trimmed = bytearray(plaintext[:write_offset])
                     if isinstance(plaintext, mmap.mmap):
@@ -559,17 +597,21 @@ class BackgroundDeduplicationService:
 
             logger.info(
                 "Dedup decrypt via Rust bulk-decrypt: file=%s size=%d chunks=%d batches=%d",
-                file_obj.id, len(plaintext), len(chunks), batch_count,
+                file_obj.id,
+                len(plaintext),
+                len(chunks),
+                batch_count,
             )
             return plaintext
 
         except Exception as e:
             logger.warning(
                 "Rust bulk-decrypt failed for %s, falling back to Python: %s",
-                file_obj.id, e,
+                file_obj.id,
+                e,
             )
             return None
-    
+
     async def _cleanup_original_storage(self, file_obj: Object, session: Dict):
         """Remove original encrypted files after deduplication.
 
@@ -584,11 +626,10 @@ class BackgroundDeduplicationService:
             # Wait for preview workers to finish reading these chunks
             if upload_id and upload_completed_at:
                 redis_client = await get_redis()
-                await wait_for_cleanup_ready(
-                    redis_client, upload_id, upload_completed_at
-                )
+                await wait_for_cleanup_ready(redis_client, upload_id, upload_completed_at)
 
             if storage_strategy == "single" and file_obj.object_path:
+
                 def _remove_single(path):
                     if os.path.exists(path):
                         os.remove(path)
@@ -621,7 +662,7 @@ class BackgroundDeduplicationService:
 
         except Exception as e:
             print(f"Cleanup error: {e}")
-    
+
     async def get_job_status(self, file_id: str) -> Optional[Dict]:
         """Get status of a deduplication job"""
         redis_client = await get_redis()
@@ -645,6 +686,7 @@ class BackgroundDeduplicationService:
 
                 async for db in get_db():
                     from ..services.deduplication_enhanced import enhanced_dedup_service
+
                     result = await enhanced_dedup_service.garbage_collect(db)
                     print(f"Garbage collection: {result['deleted_blocks']} orphan blocks cleaned")
                     break
@@ -655,6 +697,7 @@ class BackgroundDeduplicationService:
             except Exception as e:
                 print(f"Garbage collection error: {e}")
                 import traceback
+
                 traceback.print_exc()
                 await asyncio.sleep(60)  # Wait 1 minute before retry
 

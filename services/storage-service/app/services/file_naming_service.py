@@ -4,18 +4,24 @@ Smart file naming service.
 Detects generic filenames and generates meaningful alternatives from
 OCR title, AI tags, EXIF date, audio metadata, or LLM.
 """
+
 import logging
 import os
 import re
 from datetime import datetime
 from uuid import uuid4
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.database import (
-    Object, FileOCR, FileMetadata, FileTag, FileNameSuggestion,
-)
 from ..config import settings
+from ..models.database import (
+    FileMetadata,
+    FileNameSuggestion,
+    FileOCR,
+    FileTag,
+    Object,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,27 +30,27 @@ _MAX_NAME_LENGTH = 255
 
 # Patterns that indicate a generic/camera-generated filename
 _GENERIC_PATTERNS = [
-    re.compile(r'^IMG[-_]?\d+', re.IGNORECASE),
-    re.compile(r'^DSC[-_]?\d+', re.IGNORECASE),
-    re.compile(r'^DCIM[-_]?\d+', re.IGNORECASE),
-    re.compile(r'^P\d{8}[-_]\d+', re.IGNORECASE),
-    re.compile(r'^Screenshot[-_ ]\d{4}', re.IGNORECASE),
-    re.compile(r'^Screen[-_ ]?Shot', re.IGNORECASE),
-    re.compile(r'^Photo[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^image[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^video[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^audio[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^recording[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^VID[-_]?\d+', re.IGNORECASE),
-    re.compile(r'^MOV[-_]?\d+', re.IGNORECASE),
-    re.compile(r'^document[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^scan[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^file[-_ ]?\d', re.IGNORECASE),
-    re.compile(r'^Untitled', re.IGNORECASE),
-    re.compile(r'^New[-_ ]?File', re.IGNORECASE),
-    re.compile(r'^Copy[-_ ]of', re.IGNORECASE),
-    re.compile(r'^\d{8}[-_]\d{6}'),  # Timestamp-only names like 20260324_120000
-    re.compile(r'^[0-9a-f]{8,}', re.IGNORECASE),  # Hash-like names
+    re.compile(r"^IMG[-_]?\d+", re.IGNORECASE),
+    re.compile(r"^DSC[-_]?\d+", re.IGNORECASE),
+    re.compile(r"^DCIM[-_]?\d+", re.IGNORECASE),
+    re.compile(r"^P\d{8}[-_]\d+", re.IGNORECASE),
+    re.compile(r"^Screenshot[-_ ]\d{4}", re.IGNORECASE),
+    re.compile(r"^Screen[-_ ]?Shot", re.IGNORECASE),
+    re.compile(r"^Photo[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^image[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^video[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^audio[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^recording[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^VID[-_]?\d+", re.IGNORECASE),
+    re.compile(r"^MOV[-_]?\d+", re.IGNORECASE),
+    re.compile(r"^document[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^scan[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^file[-_ ]?\d", re.IGNORECASE),
+    re.compile(r"^Untitled", re.IGNORECASE),
+    re.compile(r"^New[-_ ]?File", re.IGNORECASE),
+    re.compile(r"^Copy[-_ ]of", re.IGNORECASE),
+    re.compile(r"^\d{8}[-_]\d{6}"),  # Timestamp-only names like 20260324_120000
+    re.compile(r"^[0-9a-f]{8,}", re.IGNORECASE),  # Hash-like names
 ]
 
 # Characters not allowed in filenames
@@ -60,9 +66,9 @@ def is_generic_name(filename: str) -> bool:
 def _sanitize_name(name: str, extension: str) -> str:
     """Sanitize and truncate a suggested name to ≤255 chars, preserving extension."""
     # Remove invalid characters
-    name = _INVALID_CHARS.sub('', name).strip()
+    name = _INVALID_CHARS.sub("", name).strip()
     # Remove leading/trailing dots and spaces
-    name = name.strip('. ')
+    name = name.strip(". ")
 
     if not name:
         return ""
@@ -89,35 +95,35 @@ async def _generate_name_from_metadata(
     extension = os.path.splitext(file_obj.file_name)[1]
 
     # 1. Try OCR title (first line of extracted text, if it looks like a title)
-    result = await db.execute(
-        select(FileOCR).filter(FileOCR.file_id == str(file_obj.id))
-    )
+    result = await db.execute(select(FileOCR).filter(FileOCR.file_id == str(file_obj.id)))
     ocr = result.scalar_one_or_none()
     if ocr and ocr.extracted_text:
-        first_line = ocr.extracted_text.strip().split('\n')[0].strip()
+        first_line = ocr.extracted_text.strip().split("\n")[0].strip()
         # Use first line as title if it's reasonably short and text-like
-        if 3 <= len(first_line) <= 120 and not first_line.startswith('{'):
+        if 3 <= len(first_line) <= 120 and not first_line.startswith("{"):
             name = _sanitize_name(first_line, extension)
             if name:
-                return name, f"Based on document title: \"{first_line[:80]}\"", "ocr_title"
+                return name, f'Based on document title: "{first_line[:80]}"', "ocr_title"
 
     # 2. Try metadata title (from EXIF/audio metadata)
-    result = await db.execute(
-        select(FileMetadata).filter(FileMetadata.file_id == str(file_obj.id))
-    )
+    result = await db.execute(select(FileMetadata).filter(FileMetadata.file_id == str(file_obj.id)))
     metadata = result.scalar_one_or_none()
     if metadata:
         # Audio/video title
         if metadata.title and len(metadata.title) >= 3:
             name = _sanitize_name(metadata.title, extension)
             if name:
-                reason = f"Based on media title: \"{metadata.title[:80]}\""
+                reason = f'Based on media title: "{metadata.title[:80]}"'
                 return name, reason, "metadata_title"
 
         # EXIF date for images
         if metadata.date_taken:
             try:
-                dt = metadata.date_taken if isinstance(metadata.date_taken, datetime) else datetime.fromisoformat(str(metadata.date_taken))
+                dt = (
+                    metadata.date_taken
+                    if isinstance(metadata.date_taken, datetime)
+                    else datetime.fromisoformat(str(metadata.date_taken))
+                )
                 date_str = dt.strftime("%Y-%m-%d_%H%M")
                 camera = ""
                 if metadata.camera_make:
@@ -137,7 +143,7 @@ async def _generate_name_from_metadata(
     )
     tags = result.scalars().all()
     if tags:
-        tag_words = [t.tag.replace(' ', '_') for t in tags]
+        tag_words = [t.tag.replace(" ", "_") for t in tags]
         combined = "_".join(tag_words)
         name = _sanitize_name(combined, extension)
         if name:
@@ -147,6 +153,7 @@ async def _generate_name_from_metadata(
     if settings.LLM_ENABLED and ocr and ocr.extracted_text:
         try:
             from .llm_client import llm_client
+
             if await llm_client.is_available():
                 prompt = (
                     f"Based on this document text, suggest a concise, descriptive filename "
@@ -158,7 +165,7 @@ async def _generate_name_from_metadata(
                     prompt,
                     max_tokens=30,
                 )
-                suggested = suggested.strip().strip('"\'')
+                suggested = suggested.strip().strip("\"'")
                 if suggested and 3 <= len(suggested) <= 120:
                     name = _sanitize_name(suggested, extension)
                     if name:

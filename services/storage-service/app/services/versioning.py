@@ -1,56 +1,53 @@
 # services/storage-service/app/services/versioning.py
 
-from typing import Optional, List
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from ..models.database import Object, FileVersion
-from ..services.storage import storage_service
 import json
+from typing import List, Optional
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.database import FileVersion, Object
+from ..services.storage import storage_service
+
 
 class VersioningService:
-    
+
     async def create_version(
         self,
         db: AsyncSession,
         file_id: str,
         new_content: bytes,
         user_id: str,
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
     ) -> FileVersion:
         """Create a new version of a file"""
-        
+
         # Get current file
-        result = await db.execute(
-            select(Object).filter(Object.id == file_id)
-        )
+        result = await db.execute(select(Object).filter(Object.id == file_id))
         current_file = result.scalar_one_or_none()
-        
+
         if not current_file:
             raise ValueError(f"File {file_id} not found")
-        
+
         if not current_file.versioning_enabled:
             raise ValueError(f"Versioning disabled for file {file_id}")
-        
+
         # Save current version as history before updating
         await self._archive_current_version(db, current_file)
-        
+
         # Process new content
         content_hash = hashlib.sha256(new_content).hexdigest()
-        
+
         # Store new version data
         if len(new_content) < 1048576:  # 1MB - inline
             storage_info = await storage_service.store_inline(
-                new_content,
-                {"user_id": str(user_id)},
-                current_file.encryption_key
+                new_content, {"user_id": str(user_id)}, current_file.encryption_key
             )
         else:
             storage_info = await storage_service.store_single(
-                new_content,
-                {"user_id": str(user_id)},
-                current_file.encryption_key
+                new_content, {"user_id": str(user_id)}, current_file.encryption_key
             )
-        
+
         # Create version record
         new_version_number = current_file.current_version + 1
         version = FileVersion(
@@ -58,12 +55,12 @@ class VersioningService:
             version_number=new_version_number,
             file_size=len(new_content),
             content_hash=content_hash,
-            storage_path=storage_info.get('path') or storage_info.get('storage_key'),
+            storage_path=storage_info.get("path") or storage_info.get("storage_key"),
             chunk_info=storage_info,
             created_by=user_id,
-            comment=comment
+            comment=comment,
         )
-        
+
         # Capture old hash BEFORE mutation for preview invalidation
         old_content_hash = current_file.content_hash
 
@@ -78,26 +75,27 @@ class VersioningService:
 
         # Invalidate stale previews BEFORE commit
         if old_content_hash and old_content_hash != content_hash:
-            from .preview_storage import invalidate_preview
             from ..database import get_redis
+            from .preview_storage import invalidate_preview
+
             redis_client = await get_redis()
             await invalidate_preview(str(file_id), old_content_hash, redis_client, db)
 
         await db.commit()
-        
+
         return version
-    
+
     async def _archive_current_version(self, db: AsyncSession, file_obj: Object):
         """Archive the current version before creating new one"""
-        
+
         # Check if current version already archived
         existing = await db.execute(
             select(FileVersion).filter(
                 FileVersion.file_id == file_obj.id,
-                FileVersion.version_number == file_obj.current_version
+                FileVersion.version_number == file_obj.current_version,
             )
         )
-        
+
         if not existing.scalar_one_or_none():
             # Create archive entry for current version
             archive = FileVersion(
@@ -108,67 +106,52 @@ class VersioningService:
                 storage_path=file_obj.object_path or file_obj.storage_key,
                 chunk_info=file_obj.chunk_info,
                 created_by=file_obj.user_id,
-                created_at=file_obj.created_at
+                created_at=file_obj.created_at,
             )
             db.add(archive)
-    
-    async def get_version(
-        self,
-        db: AsyncSession,
-        file_id: str,
-        version_number: int
-    ) -> FileVersion:
+
+    async def get_version(self, db: AsyncSession, file_id: str, version_number: int) -> FileVersion:
         """Get specific version of a file"""
-        
+
         result = await db.execute(
             select(FileVersion).filter(
-                FileVersion.file_id == file_id,
-                FileVersion.version_number == version_number
+                FileVersion.file_id == file_id, FileVersion.version_number == version_number
             )
         )
         return result.scalar_one_or_none()
-    
+
     async def list_versions(
-        self,
-        db: AsyncSession,
-        file_id: str,
-        include_deleted: bool = False
+        self, db: AsyncSession, file_id: str, include_deleted: bool = False
     ) -> List[FileVersion]:
         """List all versions of a file"""
-        
+
         query = select(FileVersion).filter(FileVersion.file_id == file_id)
-        
+
         if not include_deleted:
             query = query.filter(FileVersion.is_deleted == False)
-        
+
         query = query.order_by(FileVersion.version_number.desc())
-        
+
         result = await db.execute(query)
         return result.scalars().all()
-    
+
     async def restore_version(
-        self,
-        db: AsyncSession,
-        file_id: str,
-        version_number: int,
-        user_id: str
+        self, db: AsyncSession, file_id: str, version_number: int, user_id: str
     ) -> Object:
         """Restore a specific version as the current version"""
-        
+
         # Get the version to restore
         version = await self.get_version(db, file_id, version_number)
         if not version:
             raise ValueError(f"Version {version_number} not found")
-        
+
         # Get current file
-        result = await db.execute(
-            select(Object).filter(Object.id == file_id)
-        )
+        result = await db.execute(select(Object).filter(Object.id == file_id))
         current_file = result.scalar_one_or_none()
-        
+
         # Archive current version
         await self._archive_current_version(db, current_file)
-        
+
         # Capture old hash BEFORE mutation for preview invalidation
         old_content_hash = current_file.content_hash
 
@@ -184,7 +167,7 @@ class VersioningService:
             storage_path=version.storage_path,
             chunk_info=version.chunk_info,
             created_by=user_id,
-            comment=f"Restored from version {version_number}"
+            comment=f"Restored from version {version_number}",
         )
 
         # Update main file
@@ -197,30 +180,27 @@ class VersioningService:
 
         # Invalidate stale previews BEFORE commit
         if old_content_hash and old_content_hash != version.content_hash:
-            from .preview_storage import invalidate_preview
             from ..database import get_redis
+            from .preview_storage import invalidate_preview
+
             redis_client = await get_redis()
             await invalidate_preview(str(file_id), old_content_hash, redis_client, db)
 
         await db.commit()
-        
+
         return current_file
-    
+
     async def diff_versions(
-        self,
-        db: AsyncSession,
-        file_id: str,
-        version1: int,
-        version2: int
+        self, db: AsyncSession, file_id: str, version1: int, version2: int
     ) -> dict:
         """Compare two versions"""
-        
+
         v1 = await self.get_version(db, file_id, version1)
         v2 = await self.get_version(db, file_id, version2)
-        
+
         if not v1 or not v2:
             raise ValueError("One or both versions not found")
-        
+
         return {
             "version1": version1,
             "version2": version2,
@@ -231,14 +211,15 @@ class VersioningService:
                 "size": v1.file_size,
                 "hash": v1.content_hash,
                 "created": v1.created_at.isoformat(),
-                "created_by": str(v1.created_by)
+                "created_by": str(v1.created_by),
             },
             "v2_info": {
                 "size": v2.file_size,
                 "hash": v2.content_hash,
                 "created": v2.created_at.isoformat(),
-                "created_by": str(v2.created_by)
-            }
+                "created_by": str(v2.created_by),
+            },
         }
+
 
 versioning_service = VersioningService()

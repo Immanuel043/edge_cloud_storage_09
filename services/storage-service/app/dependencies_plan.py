@@ -15,12 +15,12 @@ The feature keys match the JSONB shape already returned by shared_billing
 and already referenced from ``subscription_helpers.format_plan_features``:
 ``ai_features``, ``versioning``, ``team_sharing``, ``audit_logs``, etc.
 """
+
 import logging
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from shared_billing import BillingService, SubscriptionNotFoundError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .dependencies import get_current_user, get_db
 from .models.database import User
@@ -43,9 +43,7 @@ def require_plan_feature(feature_key: str):
     ) -> User:
         billing = BillingService(db, service_type="normal")
         try:
-            sub = await billing.get_user_subscription(
-                current_user.id, include_plan=True
-            )
+            sub = await billing.get_user_subscription(current_user.id, include_plan=True)
         except SubscriptionNotFoundError:
             # Parity with subscription_helpers — missing subscription => free.
             sub = await billing.create_subscription(current_user.id, "normal_free")

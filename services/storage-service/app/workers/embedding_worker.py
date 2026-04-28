@@ -17,35 +17,34 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import signal
+import sys
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from aiokafka import AIOKafkaConsumer
 import redis.asyncio as aioredis
+from aiokafka import AIOKafkaConsumer
 
 # Add parent path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.embedding_service import embedding_service
-from app.database import async_session, get_redis, init_redis
-from app.models.database import Object, FileEmbedding
 from app.config import settings
+from app.database import async_session, get_redis, init_redis
+from app.models.database import FileEmbedding, Object
+from app.services.embedding_service import embedding_service
 from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 # Configuration
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
-KAFKA_TOPIC = 'embedding-processing'
-KAFKA_GROUP_ID = 'embedding-processors'
-MAX_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE', '10'))
-PROCESSING_INTERVAL = float(os.getenv('EMBEDDING_PROCESSING_INTERVAL', '1.0'))
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_TOPIC = "embedding-processing"
+KAFKA_GROUP_ID = "embedding-processors"
+MAX_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
+PROCESSING_INTERVAL = float(os.getenv("EMBEDDING_PROCESSING_INTERVAL", "1.0"))
 
 
 class EmbeddingWorker:
@@ -83,6 +82,7 @@ class EmbeddingWorker:
             # Pre-load the embedding model (takes a few seconds)
             logger.info("Loading embedding model (this may take a moment)...")
             from app.services.embedding_service import get_embedding_model
+
             model = await get_embedding_model()
             if model:
                 self.model_loaded = True
@@ -100,11 +100,11 @@ class EmbeddingWorker:
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
-                auto_offset_reset='earliest',
+                auto_offset_reset="earliest",
                 enable_auto_commit=False,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                 max_poll_records=MAX_BATCH_SIZE,
-                fetch_max_wait_ms=1000
+                fetch_max_wait_ms=1000,
             )
 
             await self.consumer.start()
@@ -152,8 +152,7 @@ class EmbeddingWorker:
             try:
                 # Fetch batch of messages
                 messages = await self.consumer.getmany(
-                    timeout_ms=int(PROCESSING_INTERVAL * 1000),
-                    max_records=MAX_BATCH_SIZE
+                    timeout_ms=int(PROCESSING_INTERVAL * 1000), max_records=MAX_BATCH_SIZE
                 )
 
                 if not messages:
@@ -168,12 +167,11 @@ class EmbeddingWorker:
                     continue
 
                 # Sort by timestamp DESC (LIFO - newest first)
-                all_msgs.sort(
-                    key=lambda m: m.value.get('timestamp', ''),
-                    reverse=True
-                )
+                all_msgs.sort(key=lambda m: m.value.get("timestamp", ""), reverse=True)
 
-                logger.info(f"Processing batch of {len(all_msgs)} embedding requests (newest first)")
+                logger.info(
+                    f"Processing batch of {len(all_msgs)} embedding requests (newest first)"
+                )
 
                 # Process batch. On unrecoverable batch failure, route each
                 # message to the DLQ and still commit so the partition
@@ -207,16 +205,18 @@ class EmbeddingWorker:
         # Collect file IDs to process
         file_data_list = []
         for data in messages:
-            file_id = data.get('file_id')
+            file_id = data.get("file_id")
             if file_id:
-                file_data_list.append({
-                    'file_id': file_id,
-                    'file_name': data.get('file_name', ''),
-                    'user_id': data.get('user_id'),
-                    'tags': data.get('tags', []),
-                    'description': data.get('description', ''),
-                    'ai_tags': data.get('ai_tags', [])
-                })
+                file_data_list.append(
+                    {
+                        "file_id": file_id,
+                        "file_name": data.get("file_name", ""),
+                        "user_id": data.get("user_id"),
+                        "tags": data.get("tags", []),
+                        "description": data.get("description", ""),
+                        "ai_tags": data.get("ai_tags", []),
+                    }
+                )
 
         if not file_data_list:
             return
@@ -228,10 +228,10 @@ class EmbeddingWorker:
                 valid_items = []
                 for item in file_data_list:
                     text = embedding_service.build_searchable_text(
-                        file_name=item['file_name'],
-                        tags=item.get('tags'),
-                        description=item.get('description'),
-                        ai_tags=item.get('ai_tags')
+                        file_name=item["file_name"],
+                        tags=item.get("tags"),
+                        description=item.get("description"),
+                        ai_tags=item.get("ai_tags"),
                     )
                     if text:
                         texts.append(text)
@@ -251,8 +251,17 @@ class EmbeddingWorker:
                     if embedding is not None:
                         try:
                             from uuid import UUID
-                            file_id = UUID(item['file_id']) if isinstance(item['file_id'], str) else item['file_id']
-                            user_id = UUID(item['user_id']) if isinstance(item['user_id'], str) else item['user_id']
+
+                            file_id = (
+                                UUID(item["file_id"])
+                                if isinstance(item["file_id"], str)
+                                else item["file_id"]
+                            )
+                            user_id = (
+                                UUID(item["user_id"])
+                                if isinstance(item["user_id"], str)
+                                else item["user_id"]
+                            )
 
                             await embedding_service.store_embedding(
                                 db=db,
@@ -260,7 +269,7 @@ class EmbeddingWorker:
                                 user_id=user_id,
                                 embedding=embedding,
                                 source_text=texts[valid_items.index(item)],
-                                source_type='combined'
+                                source_type="combined",
                             )
                             success_count += 1
                         except Exception as e:

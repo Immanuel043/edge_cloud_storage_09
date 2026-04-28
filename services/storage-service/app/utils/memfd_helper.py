@@ -5,14 +5,14 @@ Provides secure file descriptor passing for encryption keys over Unix sockets.
 Supports both Linux (memfd_create) and macOS (shm_open).
 """
 
+import ctypes
 import itertools
+import logging
 import os
 import secrets
-import sys
-import ctypes
 import socket
 import struct
-import logging
+import sys
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -26,8 +26,8 @@ class MemfdHelper:
     """Cross-platform memfd creation and SCM_RIGHTS passing for secure key transfer"""
 
     # Platform detection
-    IS_LINUX = sys.platform.startswith('linux')
-    IS_MACOS = sys.platform == 'darwin'
+    IS_LINUX = sys.platform.startswith("linux")
+    IS_MACOS = sys.platform == "darwin"
 
     # Constants for memfd_create (Linux)
     MFD_CLOEXEC = 0x0001
@@ -93,18 +93,16 @@ class MemfdHelper:
         # memfd_create syscall number (319 on x86_64)
         SYS_memfd_create = 319
 
-        name_bytes = name.encode('utf-8')
-        fd = libc.syscall(
-            SYS_memfd_create,
-            name_bytes,
-            cls.MFD_CLOEXEC | cls.MFD_ALLOW_SEALING
-        )
+        name_bytes = name.encode("utf-8")
+        fd = libc.syscall(SYS_memfd_create, name_bytes, cls.MFD_CLOEXEC | cls.MFD_ALLOW_SEALING)
 
         if fd < 0:
             errno = ctypes.get_errno()
             if errno in (38, 1):  # ENOSYS or EPERM — permanent, cache it
                 cls._memfd_supported = False
-                logger.info("memfd_create not supported (errno %d), using shm_open permanently", errno)
+                logger.info(
+                    "memfd_create not supported (errno %d), using shm_open permanently", errno
+                )
                 return cls._create_shm_linux(key, name)
             # Transient errors (EMFILE, ENOMEM, etc.) — do NOT cache
             raise OSError(errno, f"memfd_create failed: {os.strerror(errno)}")
@@ -141,9 +139,9 @@ class MemfdHelper:
         shm_name = f"/{name}_{os.getpid()}_{_shm_nonce}_{next(_shm_id_gen)}"
 
         fd = libc.shm_open(
-            shm_name.encode('utf-8'),
+            shm_name.encode("utf-8"),
             O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
-            0o600  # Owner read/write only
+            0o600,  # Owner read/write only
         )
 
         if fd < 0:
@@ -152,7 +150,7 @@ class MemfdHelper:
 
         try:
             # Immediately unlink so it's cleaned up when closed
-            libc.shm_unlink(shm_name.encode('utf-8'))
+            libc.shm_unlink(shm_name.encode("utf-8"))
 
             # Set size
             os.ftruncate(fd, len(key))
@@ -186,9 +184,9 @@ class MemfdHelper:
         shm_name = f"/{name}_{os.getpid()}_{_shm_nonce}_{next(_shm_id_gen)}"
 
         fd = libc.shm_open(
-            shm_name.encode('utf-8'),
+            shm_name.encode("utf-8"),
             O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
-            0o600  # Owner read/write only
+            0o600,  # Owner read/write only
         )
 
         if fd < 0:
@@ -197,7 +195,7 @@ class MemfdHelper:
 
         try:
             # Unlink immediately (file descriptor keeps it alive)
-            libc.shm_unlink(shm_name.encode('utf-8'))
+            libc.shm_unlink(shm_name.encode("utf-8"))
 
             # Set size
             if libc.ftruncate(fd, len(key)) != 0:
@@ -235,11 +233,9 @@ class MemfdHelper:
             # Build ancillary data with SCM_RIGHTS control message
             # Format: (level, type, data)
             # level = SOL_SOCKET, type = SCM_RIGHTS, data = array of FDs
-            ancillary = [(
-                socket.SOL_SOCKET,
-                socket.SCM_RIGHTS,
-                struct.pack("i", fd)  # Pack FD as int
-            )]
+            ancillary = [
+                (socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", fd))  # Pack FD as int
+            ]
 
             # Send data + FD via sendmsg
             sent = sock.sendmsg([data], ancillary)
@@ -254,7 +250,9 @@ class MemfdHelper:
             raise
 
     @staticmethod
-    def recv_fd_from_socket(sock: socket.socket, max_data_size: int = 4096) -> tuple[bytes, Optional[int]]:
+    def recv_fd_from_socket(
+        sock: socket.socket, max_data_size: int = 4096
+    ) -> tuple[bytes, Optional[int]]:
         """
         Receive file descriptor via SCM_RIGHTS ancillary data.
 
@@ -271,8 +269,7 @@ class MemfdHelper:
         try:
             # Receive data + ancillary data
             data, ancdata, flags, addr = sock.recvmsg(
-                max_data_size,
-                socket.CMSG_SPACE(struct.calcsize("i"))  # Space for one FD
+                max_data_size, socket.CMSG_SPACE(struct.calcsize("i"))  # Space for one FD
             )
 
             # Extract FD from ancillary data
@@ -280,7 +277,7 @@ class MemfdHelper:
             for cmsg_level, cmsg_type, cmsg_data in ancdata:
                 if cmsg_level == socket.SOL_SOCKET and cmsg_type == socket.SCM_RIGHTS:
                     # Unpack FD from control message
-                    fds = struct.unpack("i", cmsg_data[:struct.calcsize("i")])
+                    fds = struct.unpack("i", cmsg_data[: struct.calcsize("i")])
                     fd = fds[0]
                     logger.debug(f"Received FD {fd} via SCM_RIGHTS")
                     break
@@ -329,6 +326,7 @@ class MemfdHelper:
 
 
 # Module-level convenience functions
+
 
 def create_key_fd(key: bytes) -> int:
     """

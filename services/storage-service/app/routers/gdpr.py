@@ -17,25 +17,25 @@ Features:
 - Compliance reporting
 """
 
-import logging
-import json
-import zipfile
-import io
 import asyncio
-from typing import Dict, List, Optional
+import io
+import json
+import logging
+import zipfile
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
 from pydantic import BaseModel
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, get_current_user
-from ..models.database import User, Object, ActivityLog, Folder, ShareLink, Favorite
+from ..dependencies import get_current_user, get_db
+from ..models.database import ActivityLog, Favorite, Folder, Object, ShareLink, User
 from ..services.encryption import encryption_service
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 
 router = APIRouter(prefix="/api/v1/gdpr", tags=["gdpr-compliance"])
 logger = logging.getLogger(__name__)
@@ -43,8 +43,10 @@ logger = logging.getLogger(__name__)
 
 # ===== Request/Response Models =====
 
+
 class DataExportRequest(BaseModel):
     """Request for data export"""
+
     include_files: bool = True
     include_metadata: bool = True
     include_activity_logs: bool = True
@@ -54,6 +56,7 @@ class DataExportRequest(BaseModel):
 
 class DataExportResponse(BaseModel):
     """Response for data export initiation"""
+
     export_id: str
     status: str
     message: str
@@ -63,12 +66,14 @@ class DataExportResponse(BaseModel):
 
 class AccountDeletionRequest(BaseModel):
     """Request for account deletion"""
+
     confirmation: str  # Must be "DELETE MY ACCOUNT"
     feedback: Optional[str] = None  # Optional feedback on why deleting
 
 
 class AccountDeletionResponse(BaseModel):
     """Response for account deletion"""
+
     status: str
     message: str
     scheduled_deletion_date: Optional[str] = None
@@ -78,20 +83,24 @@ class AccountDeletionResponse(BaseModel):
 
 class DataPortabilityRequest(BaseModel):
     """Request for data portability export"""
+
     destination: str  # "download", "email", or external service
     format: str = "json"  # json, csv, xml
 
 
 # ===== Endpoints =====
 
-@router.get("/export/data", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
+
+@router.get(
+    "/export/data", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))]
+)
 async def export_user_data(
     request: Request,
     include_files: bool = True,
     include_metadata: bool = True,
     include_activity: bool = True,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Export all personal data (GDPR Article 15 - Right to Access)
@@ -113,7 +122,7 @@ async def export_user_data(
             "user_id": str(current_user.id),
             "export_date": datetime.utcnow().isoformat(),
             "export_version": "1.0",
-            "gdpr_article": "Article 15 - Right to Access"
+            "gdpr_article": "Article 15 - Right to Access",
         }
     }
 
@@ -125,17 +134,19 @@ async def export_user_data(
         "plan_type": current_user.plan_type,
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
         "theme_preference": current_user.theme_preference,
-        "storage_quota_gb": current_user.storage_quota / (1024**3) if current_user.storage_quota else 0,
-        "storage_used_gb": current_user.storage_used / (1024**3) if current_user.storage_used else 0,
-        "is_active": current_user.is_active
+        "storage_quota_gb": (
+            current_user.storage_quota / (1024**3) if current_user.storage_quota else 0
+        ),
+        "storage_used_gb": (
+            current_user.storage_used / (1024**3) if current_user.storage_used else 0
+        ),
+        "is_active": current_user.is_active,
     }
 
     # 2. Files and Folders (metadata only, not actual file content)
     if include_metadata:
         # Get folders
-        folder_result = await db.execute(
-            select(Folder).filter(Folder.user_id == current_user.id)
-        )
+        folder_result = await db.execute(select(Folder).filter(Folder.user_id == current_user.id))
         folders = folder_result.scalars().all()
 
         export_data["folders"] = [
@@ -144,15 +155,13 @@ async def export_user_data(
                 "name": f.name,
                 "path": f.path,
                 "parent_id": str(f.parent_id) if f.parent_id else None,
-                "created_at": f.created_at.isoformat() if f.created_at else None
+                "created_at": f.created_at.isoformat() if f.created_at else None,
             }
             for f in folders
         ]
 
         # Get files
-        file_result = await db.execute(
-            select(Object).filter(Object.user_id == current_user.id)
-        )
+        file_result = await db.execute(select(Object).filter(Object.user_id == current_user.id))
         files = file_result.scalars().all()
 
         export_data["files"] = [
@@ -163,9 +172,11 @@ async def export_user_data(
                 "mime_type": f.mime_type,
                 "folder_id": str(f.folder_id) if f.folder_id else None,
                 "storage_tier": f.storage_tier,
-                "created_at": f.created_at.isoformat() if hasattr(f, 'created_at') and f.created_at else None,
+                "created_at": (
+                    f.created_at.isoformat() if hasattr(f, "created_at") and f.created_at else None
+                ),
                 "last_accessed": f.last_accessed.isoformat() if f.last_accessed else None,
-                "path": f.path if hasattr(f, 'path') else None
+                "path": f.path if hasattr(f, "path") else None,
             }
             for f in files
         ]
@@ -188,21 +199,19 @@ async def export_user_data(
                 "timestamp": log.timestamp.isoformat() if log.timestamp else None,
                 "ip_address": log.ip_address,
                 "user_agent": log.user_agent,
-                "metadata": log.meta_data
+                "metadata": log.meta_data,
             }
             for log in logs
         ]
 
     # 4. Favorites
-    favorite_result = await db.execute(
-        select(Favorite).filter(Favorite.user_id == current_user.id)
-    )
+    favorite_result = await db.execute(select(Favorite).filter(Favorite.user_id == current_user.id))
     favorites = favorite_result.scalars().all()
 
     export_data["favorites"] = [
         {
             "file_id": str(fav.file_id),
-            "favorited_at": fav.created_at.isoformat() if fav.created_at else None
+            "favorited_at": fav.created_at.isoformat() if fav.created_at else None,
         }
         for fav in favorites
     ]
@@ -221,7 +230,7 @@ async def export_user_data(
                 "share_token": link.share_token,
                 "expires_at": link.expires_at.isoformat() if link.expires_at else None,
                 "created_at": link.created_at.isoformat() if link.created_at else None,
-                "access_count": link.access_count if hasattr(link, 'access_count') else 0
+                "access_count": link.access_count if hasattr(link, "access_count") else 0,
             }
             for link in share_links
         ]
@@ -236,7 +245,9 @@ async def export_user_data(
         "total_favorites": len(export_data.get("favorites", [])),
         "total_share_links": len(export_data.get("share_links", [])),
         "total_activity_logs": len(export_data.get("activity_logs", [])),
-        "storage_used_gb": round(current_user.storage_used / (1024**3), 2) if current_user.storage_used else 0
+        "storage_used_gb": (
+            round(current_user.storage_used / (1024**3), 2) if current_user.storage_used else 0
+        ),
     }
 
     logger.info(
@@ -249,11 +260,15 @@ async def export_user_data(
     return export_data
 
 
-@router.post("/export/download", response_class=StreamingResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
+@router.post(
+    "/export/download",
+    response_class=StreamingResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))],
+)
 async def download_user_data_archive(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Download complete data archive as ZIP file
@@ -270,7 +285,7 @@ async def download_user_data_archive(
     # Create in-memory ZIP file
     zip_buffer = io.BytesIO()
 
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         # 1. Add metadata JSON
         export_response = await export_user_data(
             request=request,
@@ -278,7 +293,7 @@ async def download_user_data_archive(
             include_metadata=True,
             include_activity=True,
             current_user=current_user,
-            db=db
+            db=db,
         )
 
         metadata_json = json.dumps(export_response, indent=2)
@@ -315,24 +330,28 @@ Note: File content is encrypted. Use the provided decryption keys to access.
 
     zip_buffer.seek(0)
 
-    filename = f"edge_storage_export_{current_user.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip"
+    filename = (
+        f"edge_storage_export_{current_user.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip"
+    )
 
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
-@router.post("/delete/account", response_model=AccountDeletionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.post(
+    "/delete/account",
+    response_model=AccountDeletionResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def delete_user_account(
     request: Request,
     deletion_request: AccountDeletionRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete user account and all associated data (GDPR Article 17 - Right to Erasure)
@@ -354,8 +373,7 @@ async def delete_user_account(
     # Validate confirmation
     if deletion_request.confirmation != "DELETE MY ACCOUNT":
         raise HTTPException(
-            status_code=400,
-            detail="Invalid confirmation. Please type 'DELETE MY ACCOUNT' exactly."
+            status_code=400, detail="Invalid confirmation. Please type 'DELETE MY ACCOUNT' exactly."
         )
 
     logger.warning(
@@ -379,34 +397,27 @@ async def delete_user_account(
     # Delete in order (respecting foreign keys)
 
     # 1. Delete favorites
-    await db.execute(
-        delete(Favorite).filter(Favorite.user_id == current_user.id)
-    )
+    await db.execute(delete(Favorite).filter(Favorite.user_id == current_user.id))
 
     # 2. Delete share links (if exists)
     try:
-        await db.execute(
-            delete(ShareLink).filter(ShareLink.user_id == current_user.id)
-        )
+        await db.execute(delete(ShareLink).filter(ShareLink.user_id == current_user.id))
     except Exception as e:
         logger.warning(f"Could not delete share links: {e}")
 
     # 3. Delete activity logs
-    await db.execute(
-        delete(ActivityLog).filter(ActivityLog.user_id == current_user.id)
-    )
+    await db.execute(delete(ActivityLog).filter(ActivityLog.user_id == current_user.id))
 
     # 4. Delete file objects
     # Note: This should also trigger cleanup of physical files
     # In production, you'd want to queue this for background processing
-    file_result = await db.execute(
-        select(Object).filter(Object.user_id == current_user.id)
-    )
+    file_result = await db.execute(select(Object).filter(Object.user_id == current_user.id))
     files = file_result.scalars().all()
 
     for file in files:
         # Delete physical file if it exists
         import os
+
         if file.object_path and os.path.exists(file.object_path):
             try:
                 os.remove(file.object_path)
@@ -417,16 +428,13 @@ async def delete_user_account(
         await db.delete(file)
 
     # 5. Delete folders
-    await db.execute(
-        delete(Folder).filter(Folder.user_id == current_user.id)
-    )
+    await db.execute(delete(Folder).filter(Folder.user_id == current_user.id))
 
     # 6. Delete OAuth accounts (if exists)
     try:
         from ..models.database import OAuthAccount
-        await db.execute(
-            delete(OAuthAccount).filter(OAuthAccount.user_id == current_user.id)
-        )
+
+        await db.execute(delete(OAuthAccount).filter(OAuthAccount.user_id == current_user.id))
     except Exception as e:
         logger.warning(f"Could not delete OAuth accounts: {e}")
 
@@ -450,14 +458,16 @@ async def delete_user_account(
         message="Your account and all associated data have been permanently deleted.",
         scheduled_deletion_date=None,
         objects_deleted=file_count,
-        storage_freed_mb=round(storage_mb, 2)
+        storage_freed_mb=round(storage_mb, 2),
     )
 
 
-@router.get("/rectification/profile", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/rectification/profile",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_profile_for_rectification(
-    request: Request,
-    current_user: User = Depends(get_current_user)
+    request: Request, current_user: User = Depends(get_current_user)
 ):
     """
     Get user profile for rectification (GDPR Article 16 - Right to Rectification)
@@ -471,15 +481,17 @@ async def get_profile_for_rectification(
         "plan_type": current_user.plan_type,
         "theme_preference": current_user.theme_preference,
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
-        "is_active": current_user.is_active
+        "is_active": current_user.is_active,
     }
 
 
-@router.get("/compliance/report", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/compliance/report", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))]
+)
 async def get_gdpr_compliance_report(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get GDPR compliance report for the user
@@ -504,30 +516,30 @@ async def get_gdpr_compliance_report(
             "user_profile": {
                 "purpose": "Account management and authentication",
                 "legal_basis": "Contract performance (Terms of Service)",
-                "retention_period": "Until account deletion"
+                "retention_period": "Until account deletion",
             },
             "files": {
                 "count": file_count,
                 "purpose": "Cloud storage service provision",
                 "legal_basis": "Contract performance",
-                "retention_period": "Until user deletion"
+                "retention_period": "Until user deletion",
             },
             "activity_logs": {
                 "count": log_count,
                 "purpose": "Security, fraud prevention, service improvement",
                 "legal_basis": "Legitimate interest",
-                "retention_period": "90 days (then anonymized)"
-            }
+                "retention_period": "90 days (then anonymized)",
+            },
         },
         "your_rights": {
             "right_to_access": "GET /api/v1/gdpr/export/data",
             "right_to_rectification": "PUT /api/v1/users/profile (update your data)",
             "right_to_erasure": "POST /api/v1/gdpr/delete/account",
             "right_to_data_portability": "POST /api/v1/gdpr/export/download",
-            "right_to_object": "Contact: privacy@edgecloudstorage.com"
+            "right_to_object": "Contact: privacy@edgecloudstorage.com",
         },
         "data_protection_officer": {
             "email": "dpo@edgecloudstorage.com",
-            "response_time": "30 days"
-        }
+            "response_time": "30 days",
+        },
     }

@@ -1,7 +1,9 @@
 """Security headers middleware for comprehensive HTTP security"""
-from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi import Request, Response
+
 import logging
+
+from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import settings
 
@@ -27,9 +29,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Check if this is inline content (PDFs, videos for embedding)
         is_inline_content = (
-            (request.url.path.startswith("/api/v1/files/") and "/download" in request.url.path and request.query_params.get("inline") == "true")
-            or (request.url.path.startswith("/api/v1/share/") and "/stream" in request.url.path)
-        )
+            request.url.path.startswith("/api/v1/files/")
+            and "/download" in request.url.path
+            and request.query_params.get("inline") == "true"
+        ) or (request.url.path.startswith("/api/v1/share/") and "/stream" in request.url.path)
 
         # 1. HSTS - Force HTTPS (only in production)
         if settings.ENABLE_HTTPS or settings.is_production:
@@ -85,7 +88,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "object-src 'none'",
             # Frames: Allow framing from frontend for inline content, otherwise disallow
             # Include common dev ports (5173 for Vite, 3000, 3001)
-            f"frame-ancestors 'self' {settings.FRONTEND_URL} {request_origin} http://localhost:5173 http://localhost:3000 http://localhost:3001" if is_inline_content else "frame-ancestors 'none'",
+            (
+                f"frame-ancestors 'self' {settings.FRONTEND_URL} {request_origin} http://localhost:5173 http://localhost:3000 http://localhost:3001"
+                if is_inline_content
+                else "frame-ancestors 'none'"
+            ),
             # Base URI: Restrict to self
             "base-uri 'self'",
             # Form actions: Restrict to self
@@ -103,30 +110,30 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # For inline content (PDFs in iframes), allow fullscreen from any origin
         fullscreen_policy = "fullscreen=(*)" if is_inline_content else "fullscreen=(self)"
         permissions = [
-            "accelerometer=()",      # No accelerometer access
+            "accelerometer=()",  # No accelerometer access
             "ambient-light-sensor=()",
-            "autoplay=()",           # No autoplay
-            "battery=()",            # No battery status
-            "camera=()",             # No camera access
+            "autoplay=()",  # No autoplay
+            "battery=()",  # No battery status
+            "camera=()",  # No camera access
             "cross-origin-isolated=()",
             "display-capture=()",
             "document-domain=()",
             "encrypted-media=()",
             "execution-while-not-rendered=()",
             "execution-while-out-of-viewport=()",
-            fullscreen_policy,       # Allow fullscreen (relaxed for inline content)
-            "geolocation=()",        # No geolocation
-            "gyroscope=()",          # No gyroscope
-            "magnetometer=()",       # No magnetometer
-            "microphone=()",         # No microphone access
+            fullscreen_policy,  # Allow fullscreen (relaxed for inline content)
+            "geolocation=()",  # No geolocation
+            "gyroscope=()",  # No gyroscope
+            "magnetometer=()",  # No magnetometer
+            "microphone=()",  # No microphone access
             "midi=()",
             "navigation-override=()",
-            "payment=()",            # No payment API
+            "payment=()",  # No payment API
             "picture-in-picture=()",
             "publickey-credentials-get=()",
             "screen-wake-lock=()",
             "sync-xhr=()",
-            "usb=()",                # No USB access
+            "usb=()",  # No USB access
             "web-share=()",
             "xr-spatial-tracking=()",
         ]
@@ -160,9 +167,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Log security headers applied (debug mode only)
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                f"Security headers applied to {request.method} {request.url.path}"
-            )
+            logger.debug(f"Security headers applied to {request.method} {request.url.path}")
 
         return response
 
@@ -191,8 +196,7 @@ class CORSSecurityMiddleware(BaseHTTPMiddleware):
             if origin not in self.ALLOWED_ORIGINS:
                 # Log potential CORS attack
                 logger.warning(
-                    f"Rejected request from unauthorized origin: {origin} "
-                    f"to {request.url.path}"
+                    f"Rejected request from unauthorized origin: {origin} " f"to {request.url.path}"
                 )
 
         response = await call_next(request)
@@ -200,4 +204,4 @@ class CORSSecurityMiddleware(BaseHTTPMiddleware):
 
 
 # Export middleware classes
-__all__ = ['SecurityHeadersMiddleware', 'CORSSecurityMiddleware']
+__all__ = ["SecurityHeadersMiddleware", "CORSSecurityMiddleware"]

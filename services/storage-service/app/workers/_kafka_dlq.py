@@ -176,7 +176,9 @@ class KafkaDLQProducer:
             "error_type": type(error).__name__,
             "traceback": "".join(
                 traceback.format_exception(type(error), error, error.__traceback__)
-            )[-4000:],  # cap at 4KB
+            )[
+                -4000:
+            ],  # cap at 4KB
             "value": _safe_value(getattr(msg, "value", None)),
         }
 
@@ -193,8 +195,7 @@ class KafkaDLQProducer:
             )
         except Exception as pub_err:
             logger.error(
-                "DLQ publish FAILED for %s (worker=%s offset=%s): %s. "
-                "Original error was: %s",
+                "DLQ publish FAILED for %s (worker=%s offset=%s): %s. " "Original error was: %s",
                 dlq_topic,
                 worker,
                 payload["offset"],

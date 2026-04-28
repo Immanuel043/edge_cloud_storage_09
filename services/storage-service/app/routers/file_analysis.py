@@ -2,25 +2,33 @@
 File Analysis API Router
 Endpoints for OCR, metadata extraction, and AI tagging
 """
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, insert, delete
-from typing import List, Optional
+
 import logging
+from typing import List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import delete, insert, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_current_user, get_db
 from ..models.database import (
-    User, Object, FileOCR, FileMetadata, FileTag, FileHash,
-    FileSummary, FileNameSuggestion,
+    FileHash,
+    FileMetadata,
+    FileNameSuggestion,
+    FileOCR,
+    FileSummary,
+    FileTag,
+    Object,
+    User,
 )
-from ..services.ocr_service import ocr_service
-from ..services.metadata_service import metadata_service
 from ..services.ai_tagging_service import ai_tagging_service
+from ..services.encryption import encryption_service
+from ..services.metadata_service import metadata_service
+from ..services.ocr_service import ocr_service
+from ..services.search_service import search_service
 from ..services.similarity_service import similarity_service
 from ..services.storage import storage_service
-from ..services.search_service import search_service
 from ..services.summarization_service import generate_summary, summarize_if_eligible
-from ..services.encryption import encryption_service
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +39,13 @@ router = APIRouter(prefix="/api/v1/files", tags=["file-analysis"])
 # OCR Endpoints
 # ============================================================================
 
+
 @router.post("/{file_id}/analyze")
 async def analyze_file(
     file_id: str,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Trigger complete file analysis (OCR + metadata + hashing + AI tags)
@@ -44,10 +53,7 @@ async def analyze_file(
     """
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -60,29 +66,20 @@ async def analyze_file(
         file_id=file_id,
         user_id=str(current_user.id),
         mime_type=file_obj.mime_type,
-        filename=file_obj.file_name
+        filename=file_obj.file_name,
     )
 
-    return {
-        "success": True,
-        "message": "File analysis started",
-        "file_id": file_id
-    }
+    return {"success": True, "message": "File analysis started", "file_id": file_id}
 
 
 @router.get("/{file_id}/ocr")
 async def get_file_ocr(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Get OCR extracted text for a file"""
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -90,9 +87,7 @@ async def get_file_ocr(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Get OCR data
-    result = await db.execute(
-        select(FileOCR).filter(FileOCR.file_id == file_id)
-    )
+    result = await db.execute(select(FileOCR).filter(FileOCR.file_id == file_id))
     ocr_data = result.scalar_one_or_none()
 
     if not ocr_data:
@@ -107,23 +102,18 @@ async def get_file_ocr(
         "languages": ocr_data.languages,
         "page_count": ocr_data.page_count,
         "extraction_method": ocr_data.extraction_method,
-        "created_at": ocr_data.created_at
+        "created_at": ocr_data.created_at,
     }
 
 
 @router.post("/{file_id}/ocr/extract")
 async def extract_ocr_now(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Force OCR extraction immediately (synchronous)"""
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -131,7 +121,7 @@ async def extract_ocr_now(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Check if file type supports OCR
-    if not (file_obj.mime_type.startswith('image/') or file_obj.mime_type == 'application/pdf'):
+    if not (file_obj.mime_type.startswith("image/") or file_obj.mime_type == "application/pdf"):
         raise HTTPException(status_code=400, detail="File type does not support OCR")
 
     # Decrypt file key and load file data
@@ -141,24 +131,22 @@ async def extract_ocr_now(
     # Extract text
     ocr_result = await ocr_service.extract_text(file_data, file_obj.mime_type)
 
-    if not ocr_result['success']:
+    if not ocr_result["success"]:
         raise HTTPException(status_code=500, detail=f"OCR failed: {ocr_result.get('error')}")
 
     # Save to database
-    await db.execute(
-        delete(FileOCR).where(FileOCR.file_id == file_id)
-    )
+    await db.execute(delete(FileOCR).where(FileOCR.file_id == file_id))
 
     await db.execute(
         insert(FileOCR).values(
             file_id=file_id,
-            extracted_text=ocr_result['text'],
-            word_count=ocr_result.get('word_count', 0),
-            confidence=int(ocr_result.get('confidence', 0)),
-            ocr_engine=ocr_result.get('engine', 'tesseract'),
-            languages=ocr_result.get('languages', ['eng']),
-            page_count=ocr_result.get('page_count', 1),
-            extraction_method=ocr_result.get('method', 'ocr')
+            extracted_text=ocr_result["text"],
+            word_count=ocr_result.get("word_count", 0),
+            confidence=int(ocr_result.get("confidence", 0)),
+            ocr_engine=ocr_result.get("engine", "tesseract"),
+            languages=ocr_result.get("languages", ["eng"]),
+            page_count=ocr_result.get("page_count", 1),
+            extraction_method=ocr_result.get("method", "ocr"),
         )
     )
 
@@ -166,16 +154,16 @@ async def extract_ocr_now(
 
     # Index in Elasticsearch
     try:
-        await search_service.update_file_text(file_id, ocr_result['text'])
+        await search_service.update_file_text(file_id, ocr_result["text"])
     except Exception as e:
         logger.error(f"Failed to index OCR text: {e}")
 
     return {
         "success": True,
         "file_id": file_id,
-        "text": ocr_result['text'],
-        "word_count": ocr_result.get('word_count', 0),
-        "confidence": ocr_result.get('confidence', 0)
+        "text": ocr_result["text"],
+        "word_count": ocr_result.get("word_count", 0),
+        "confidence": ocr_result.get("confidence", 0),
     }
 
 
@@ -183,19 +171,15 @@ async def extract_ocr_now(
 # Metadata Endpoints
 # ============================================================================
 
+
 @router.get("/{file_id}/metadata")
 async def get_file_metadata(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Get extended metadata for a file"""
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -203,9 +187,7 @@ async def get_file_metadata(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Get metadata
-    result = await db.execute(
-        select(FileMetadata).filter(FileMetadata.file_id == file_id)
-    )
+    result = await db.execute(select(FileMetadata).filter(FileMetadata.file_id == file_id))
     metadata = result.scalar_one_or_none()
 
     if not metadata:
@@ -231,7 +213,7 @@ async def get_file_metadata(
         "bitrate": metadata.bitrate,
         "author": metadata.author,
         "word_count": metadata.word_count,
-        "created_at": metadata.created_at
+        "created_at": metadata.created_at,
     }
 
 
@@ -239,19 +221,15 @@ async def get_file_metadata(
 # Tags Endpoints
 # ============================================================================
 
+
 @router.get("/{file_id}/tags")
 async def get_file_tags(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Get all tags for a file"""
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -271,10 +249,10 @@ async def get_file_tags(
                 "tag": tag.tag,
                 "confidence": tag.confidence,
                 "source": tag.source,
-                "created_at": tag.created_at
+                "created_at": tag.created_at,
             }
             for tag in tags
-        ]
+        ],
     }
 
 
@@ -283,15 +261,12 @@ async def add_file_tag(
     file_id: str,
     tag: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Add a manual tag to a file"""
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -305,8 +280,8 @@ async def add_file_tag(
                 file_id=file_id,
                 tag=tag.lower().strip(),
                 confidence=100,
-                source='manual',
-                created_by=current_user.id
+                source="manual",
+                created_by=current_user.id,
             )
         )
         await db.commit()
@@ -318,19 +293,13 @@ async def add_file_tag(
     # Update tags in Elasticsearch (partial update — preserves OCR/description)
     if search_service.connected:
         try:
-            tags_result = await db.execute(
-                select(FileTag.tag).filter(FileTag.file_id == file_id)
-            )
+            tags_result = await db.execute(select(FileTag.tag).filter(FileTag.file_id == file_id))
             current_tags = [row[0] for row in tags_result.fetchall()]
             await search_service.update_file_tags(str(file_id), current_tags)
         except Exception as e:
             logger.warning(f"Failed to update search index after adding tag: {e}")
 
-    return {
-        "success": True,
-        "file_id": file_id,
-        "tag": tag
-    }
+    return {"success": True, "file_id": file_id, "tag": tag}
 
 
 @router.delete("/{file_id}/tags/{tag}")
@@ -338,15 +307,12 @@ async def remove_file_tag(
     file_id: str,
     tag: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Remove a tag from a file"""
     # Verify file ownership
     result = await db.execute(
-        select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id
-        )
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
 
@@ -355,69 +321,54 @@ async def remove_file_tag(
 
     # Delete tag
     await db.execute(
-        delete(FileTag).where(
-            FileTag.file_id == file_id,
-            FileTag.tag == tag.lower().strip()
-        )
+        delete(FileTag).where(FileTag.file_id == file_id, FileTag.tag == tag.lower().strip())
     )
     await db.commit()
 
     # Update tags in Elasticsearch (partial update — preserves OCR/description)
     if search_service.connected:
         try:
-            tags_result = await db.execute(
-                select(FileTag.tag).filter(FileTag.file_id == file_id)
-            )
+            tags_result = await db.execute(select(FileTag.tag).filter(FileTag.file_id == file_id))
             current_tags = [row[0] for row in tags_result.fetchall()]
             await search_service.update_file_tags(str(file_id), current_tags)
         except Exception as e:
             logger.warning(f"Failed to update search index after removing tag: {e}")
 
-    return {
-        "success": True,
-        "file_id": file_id,
-        "tag": tag
-    }
+    return {"success": True, "file_id": file_id, "tag": tag}
 
 
 @router.get("/search/tags/{tag}")
 async def search_by_tag(
-    tag: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    tag: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Find all files with a specific tag"""
     result = await db.execute(
-        select(Object, FileTag).join(
-            FileTag, Object.id == FileTag.file_id
-        ).filter(
-            Object.user_id == current_user.id,
-            FileTag.tag == tag.lower().strip()
-        )
+        select(Object, FileTag)
+        .join(FileTag, Object.id == FileTag.file_id)
+        .filter(Object.user_id == current_user.id, FileTag.tag == tag.lower().strip())
     )
 
     files = []
     for file_obj, file_tag in result.all():
-        files.append({
-            "id": str(file_obj.id),
-            "name": file_obj.file_name,
-            "size": file_obj.file_size,
-            "mime_type": file_obj.mime_type,
-            "tag_confidence": file_tag.confidence,
-            "tag_source": file_tag.source,
-            "created_at": file_obj.created_at
-        })
+        files.append(
+            {
+                "id": str(file_obj.id),
+                "name": file_obj.file_name,
+                "size": file_obj.file_size,
+                "mime_type": file_obj.mime_type,
+                "tag_confidence": file_tag.confidence,
+                "tag_source": file_tag.source,
+                "created_at": file_obj.created_at,
+            }
+        )
 
-    return {
-        "tag": tag,
-        "count": len(files),
-        "files": files
-    }
+    return {"tag": tag, "count": len(files), "files": files}
 
 
 # ============================================================================
 # Summary Endpoints
 # ============================================================================
+
 
 @router.get("/{file_id}/summary")
 async def get_file_summary(
@@ -433,9 +384,7 @@ async def get_file_summary(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="File not found")
 
-    result = await db.execute(
-        select(FileSummary).filter(FileSummary.file_id == file_id)
-    )
+    result = await db.execute(select(FileSummary).filter(FileSummary.file_id == file_id))
     summary = result.scalar_one_or_none()
     if not summary:
         raise HTTPException(status_code=404, detail="Summary not found. Generate one first.")
@@ -501,6 +450,7 @@ async def regenerate_file_summary(
 # Name Suggestion Endpoints
 # ============================================================================
 
+
 @router.get("/{file_id}/name-suggestion")
 async def get_name_suggestion(
     file_id: str,
@@ -561,9 +511,8 @@ async def accept_name_suggestion(
 
     # Use the shared rename helper from files.py
     from .files import perform_rename
-    file_obj = await perform_rename(
-        file_obj, suggestion.suggested_name, current_user.id, db
-    )
+
+    file_obj = await perform_rename(file_obj, suggestion.suggested_name, current_user.id, db)
 
     # perform_rename already marks suggestion as accepted via stale-suggestion cleanup
     return {
@@ -607,6 +556,7 @@ async def dismiss_name_suggestion(
 # Analysis Status & Pending Suggestions Endpoints
 # ============================================================================
 
+
 @router.get("/{file_id}/analysis-status")
 async def get_analysis_status(
     file_id: str,
@@ -622,7 +572,9 @@ async def get_analysis_status(
 
     try:
         import json
+
         from ..database import redis_client
+
         if redis_client:
             data = await redis_client.get(f"analysis:status:{file_id}")
             if data:
@@ -665,6 +617,7 @@ async def get_pending_suggestions(
 
     # Verify ownership and get pending suggestions in one query
     from sqlalchemy import and_
+
     result = await db.execute(
         select(FileNameSuggestion, Object)
         .join(Object, FileNameSuggestion.file_id == Object.id)
@@ -690,6 +643,7 @@ async def get_pending_suggestions(
 # Background Processing
 # ============================================================================
 
+
 async def process_file_analysis(file_id: str, user_id: str, mime_type: str, filename: str):
     """Background task to process file analysis"""
     from ..database import async_session
@@ -697,9 +651,7 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
     async with async_session() as db:
         try:
             # Get file object
-            result = await db.execute(
-                select(Object).filter(Object.id == file_id)
-            )
+            result = await db.execute(select(Object).filter(Object.id == file_id))
             file_obj = result.scalar_one_or_none()
 
             if not file_obj:
@@ -712,16 +664,18 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
                 try:
                     import json
                     from datetime import datetime, timezone
+
                     from ..database import redis_client
+
                     if redis_client:
-                        status_data = json.dumps({
-                            "status": "skipped",
-                            "reason": "chunked",
-                            "completed_at": datetime.now(timezone.utc).isoformat(),
-                        })
-                        await redis_client.setex(
-                            f"analysis:status:{file_id}", 86400, status_data
+                        status_data = json.dumps(
+                            {
+                                "status": "skipped",
+                                "reason": "chunked",
+                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                            }
                         )
+                        await redis_client.setex(f"analysis:status:{file_id}", 86400, status_data)
                 except Exception as e:
                     logger.warning(f"Failed to write skipped Redis status for {file_id}: {e}")
                 logger.info(f"Skipping analysis for chunked file {file_id}")
@@ -729,14 +683,24 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
 
             # Decrypt file key and load file data
             file_key = encryption_service.decrypt_key(file_obj.encryption_key)
-            if file_obj.storage_type == "inline" and file_obj.storage_key and len(file_obj.storage_key) > 200:
+            if (
+                file_obj.storage_type == "inline"
+                and file_obj.storage_key
+                and len(file_obj.storage_key) > 200
+            ):
                 # Inline files: encrypted data is base64-encoded in storage_key column
                 import base64
+
                 encrypted_data = base64.b64decode(file_obj.storage_key)
                 file_data = encryption_service.decrypt_file(encrypted_data, file_key)
                 # Handle compression
-                if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
+                if (
+                    file_obj.file_metadata
+                    and isinstance(file_obj.file_metadata, dict)
+                    and file_obj.file_metadata.get("compressed", False)
+                ):
                     from ..utils.compression import compressor
+
                     file_data = compressor.decompress(file_data)
             else:
                 file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
@@ -747,50 +711,51 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
 
             # Save metadata (sanitize null bytes that break PostgreSQL JSONB)
             import json as _json
-            sanitized_metadata = _json.loads(_json.dumps(metadata).replace('\\u0000', ''))
+
+            sanitized_metadata = _json.loads(_json.dumps(metadata).replace("\\u0000", ""))
             await db.execute(delete(FileMetadata).where(FileMetadata.file_id == file_id))
             await db.execute(
                 insert(FileMetadata).values(
                     file_id=file_id,
-                    metadata_type=metadata.get('type', 'unknown'),
+                    metadata_type=metadata.get("type", "unknown"),
                     raw_metadata=sanitized_metadata,
-                    width=metadata.get('width'),
-                    height=metadata.get('height'),
-                    duration=metadata.get('duration'),
-                    page_count=metadata.get('page_count'),
-                    camera_make=metadata.get('camera_make'),
-                    camera_model=metadata.get('camera_model'),
-                    date_taken=metadata.get('date_taken'),
-                    artist=metadata.get('artist'),
-                    album=metadata.get('album'),
-                    title=metadata.get('title'),
-                    genre=metadata.get('genre'),
-                    bitrate=metadata.get('bitrate'),
-                    author=metadata.get('author'),
-                    word_count=metadata.get('word_count')
+                    width=metadata.get("width"),
+                    height=metadata.get("height"),
+                    duration=metadata.get("duration"),
+                    page_count=metadata.get("page_count"),
+                    camera_make=metadata.get("camera_make"),
+                    camera_model=metadata.get("camera_model"),
+                    date_taken=metadata.get("date_taken"),
+                    artist=metadata.get("artist"),
+                    album=metadata.get("album"),
+                    title=metadata.get("title"),
+                    genre=metadata.get("genre"),
+                    bitrate=metadata.get("bitrate"),
+                    author=metadata.get("author"),
+                    word_count=metadata.get("word_count"),
                 )
             )
 
             # 2. OCR if applicable
             ocr_text = None
-            if mime_type.startswith('image/') or mime_type == 'application/pdf':
+            if mime_type.startswith("image/") or mime_type == "application/pdf":
                 logger.info(f"Extracting OCR for {file_id}")
                 ocr_result = await ocr_service.extract_text(file_data, mime_type)
 
-                if ocr_result['success']:
-                    ocr_text = ocr_result['text']
+                if ocr_result["success"]:
+                    ocr_text = ocr_result["text"]
 
                     await db.execute(delete(FileOCR).where(FileOCR.file_id == file_id))
                     await db.execute(
                         insert(FileOCR).values(
                             file_id=file_id,
                             extracted_text=ocr_text,
-                            word_count=ocr_result.get('word_count', 0),
-                            confidence=int(ocr_result.get('confidence', 0)),
-                            ocr_engine=ocr_result.get('engine', 'tesseract'),
-                            languages=ocr_result.get('languages', ['eng']),
-                            page_count=ocr_result.get('page_count', 1),
-                            extraction_method=ocr_result.get('method', 'ocr')
+                            word_count=ocr_result.get("word_count", 0),
+                            confidence=int(ocr_result.get("confidence", 0)),
+                            ocr_engine=ocr_result.get("engine", "tesseract"),
+                            languages=ocr_result.get("languages", ["eng"]),
+                            page_count=ocr_result.get("page_count", 1),
+                            extraction_method=ocr_result.get("method", "ocr"),
                         )
                     )
 
@@ -801,41 +766,41 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
                         logger.error(f"Failed to index OCR: {e}")
 
             # 3. Compute perceptual hashes (for images)
-            if mime_type.startswith('image/'):
+            if mime_type.startswith("image/"):
                 logger.info(f"Computing hashes for {file_id}")
                 hashes = await similarity_service.compute_image_hashes(file_data)
 
-                if hashes.get('success'):
+                if hashes.get("success"):
                     await db.execute(delete(FileHash).where(FileHash.file_id == file_id))
                     await db.execute(
                         insert(FileHash).values(
                             file_id=file_id,
-                            phash=hashes.get('phash'),
-                            dhash=hashes.get('dhash'),
-                            whash=hashes.get('whash'),
-                            average_hash=hashes.get('average_hash'),
-                            colorhash=hashes.get('colorhash')
+                            phash=hashes.get("phash"),
+                            dhash=hashes.get("dhash"),
+                            whash=hashes.get("whash"),
+                            average_hash=hashes.get("average_hash"),
+                            colorhash=hashes.get("colorhash"),
                         )
                     )
 
             # 4. Generate AI tags
             logger.info(f"Generating tags for {file_id}")
             tags = await ai_tagging_service.generate_smart_tags(
-                file_data, mime_type, filename,
-                extracted_text=ocr_text,
-                metadata=metadata
+                file_data, mime_type, filename, extracted_text=ocr_text, metadata=metadata
             )
 
             # Save tags
-            await db.execute(delete(FileTag).where(FileTag.file_id == file_id, FileTag.source != 'manual'))
+            await db.execute(
+                delete(FileTag).where(FileTag.file_id == file_id, FileTag.source != "manual")
+            )
             for tag_data in tags:
                 try:
                     await db.execute(
                         insert(FileTag).values(
                             file_id=file_id,
-                            tag=tag_data['tag'],
-                            confidence=int(tag_data['confidence']),
-                            source=tag_data['source']
+                            tag=tag_data["tag"],
+                            confidence=int(tag_data["confidence"]),
+                            source=tag_data["source"],
                         )
                     )
                 except:
@@ -852,6 +817,7 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
             # 6. Smart naming (best-effort) — added in Feature 2
             try:
                 from ..services.file_naming_service import suggest_name_if_eligible
+
                 await suggest_name_if_eligible(file_id, db)
             except ImportError:
                 pass  # Feature 2 not yet implemented
@@ -862,7 +828,9 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
             try:
                 import json
                 from datetime import datetime, timezone
+
                 from ..database import redis_client
+
                 if redis_client:
                     # Check for name suggestion
                     ns_result = await db.execute(
@@ -874,17 +842,17 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
                     )
                     has_suggestion = ns_result.scalar_one_or_none() is not None
 
-                    status_data = json.dumps({
-                        "status": "completed",
-                        "completed_at": datetime.now(timezone.utc).isoformat(),
-                        "has_ocr": ocr_text is not None,
-                        "has_metadata": True,
-                        "tag_count": len(tags),
-                        "has_suggestion": has_suggestion,
-                    })
-                    await redis_client.setex(
-                        f"analysis:status:{file_id}", 86400, status_data
+                    status_data = json.dumps(
+                        {
+                            "status": "completed",
+                            "completed_at": datetime.now(timezone.utc).isoformat(),
+                            "has_ocr": ocr_text is not None,
+                            "has_metadata": True,
+                            "tag_count": len(tags),
+                            "has_suggestion": has_suggestion,
+                        }
                     )
+                    await redis_client.setex(f"analysis:status:{file_id}", 86400, status_data)
             except Exception as e:
                 logger.warning(f"Failed to write Redis status for {file_id}: {e}")
 

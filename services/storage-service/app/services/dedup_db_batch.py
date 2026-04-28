@@ -13,10 +13,11 @@ Performance:
 - Safe for PostgreSQL max_locks_per_transaction limit
 """
 
-from typing import List, Dict
+import logging
+from typing import Dict, List
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,7 @@ class BatchedDeduplicationWriter:
 
     BATCH_SIZE = 10_000  # Write 10k chunks at a time
 
-    async def store_chunks_batched(
-        self,
-        chunks: List[Dict],
-        file_id: str,
-        db: AsyncSession
-    ) -> int:
+    async def store_chunks_batched(self, chunks: List[Dict], file_id: str, db: AsyncSession) -> int:
         """
         Store chunks in batches to avoid lock exhaustion.
         Caller must commit/rollback the transaction.
@@ -55,8 +51,7 @@ class BatchedDeduplicationWriter:
         total_batches = (len(chunks) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
 
         logger.info(
-            f"Storing {len(chunks)} chunks in {total_batches} batches "
-            f"for file {file_id}"
+            f"Storing {len(chunks)} chunks in {total_batches} batches " f"for file {file_id}"
         )
 
         # Create staging table once, bounded to the current transaction.
@@ -78,7 +73,7 @@ class BatchedDeduplicationWriter:
         """))
 
         for batch_idx in range(0, len(chunks), self.BATCH_SIZE):
-            batch = chunks[batch_idx:batch_idx + self.BATCH_SIZE]
+            batch = chunks[batch_idx : batch_idx + self.BATCH_SIZE]
             batch_num = (batch_idx // self.BATCH_SIZE) + 1
 
             # Clear staging for this batch
@@ -87,11 +82,11 @@ class BatchedDeduplicationWriter:
             # Populate staging
             values = [
                 {
-                    'block_hash': c['hash'],
-                    'file_id': file_id,
-                    'block_size': c['size'],
-                    'block_offset': c['offset'],
-                    'block_index': c['block_index']
+                    "block_hash": c["hash"],
+                    "file_id": file_id,
+                    "block_size": c["size"],
+                    "block_offset": c["offset"],
+                    "block_index": c["block_index"],
                 }
                 for c in batch
             ]
@@ -100,7 +95,7 @@ class BatchedDeduplicationWriter:
                     INSERT INTO chunk_staging (block_hash, file_id, block_size, block_offset, block_index)
                     VALUES (:block_hash, :file_id, :block_size, :block_offset, :block_index)
                 """),
-                values
+                values,
             )
 
             # Merge blocks (no file_id, no reference_count)
@@ -128,18 +123,12 @@ class BatchedDeduplicationWriter:
                 f"{len(batch)} chunks ({total_stored}/{len(chunks)} total)"
             )
 
-        logger.info(
-            f"Successfully stored {total_stored} chunks in {total_batches} batches"
-        )
+        logger.info(f"Successfully stored {total_stored} chunks in {total_batches} batches")
         # No commit here — caller owns the transaction
         return total_stored
 
     async def store_chunks_safe(
-        self,
-        chunks: List[Dict],
-        file_id: str,
-        db: AsyncSession,
-        timeout_seconds: int = 60
+        self, chunks: List[Dict], file_id: str, db: AsyncSession, timeout_seconds: int = 60
     ) -> int:
         """
         Store chunks with timeout protection.

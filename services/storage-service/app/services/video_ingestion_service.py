@@ -24,14 +24,14 @@ import logging
 import os
 import shutil
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from aiokafka import AIOKafkaProducer
 
 logger = logging.getLogger(__name__)
 
 
-def _check_disk_space(required_bytes: int, path: str = '/tmp') -> bool:
+def _check_disk_space(required_bytes: int, path: str = "/tmp") -> bool:
     """Check if sufficient disk space is available for a temp file download."""
     try:
         usage = shutil.disk_usage(path)
@@ -52,17 +52,25 @@ class VideoIngestionService:
     4. Updating database status throughout
     """
 
-    KAFKA_TOPIC = 'video-processing'
-    OPTIMIZED_DIR = '/app/storage/optimized'
+    KAFKA_TOPIC = "video-processing"
+    OPTIMIZED_DIR = "/app/storage/optimized"
 
     # Size limits
-    MAX_TRANSCODE_SIZE_GB = float(os.getenv('MAX_TRANSCODE_SIZE_GB', '2'))
-    MAX_DURATION_MINUTES = int(os.getenv('MAX_TRANSCODE_DURATION_MINUTES', '30'))
+    MAX_TRANSCODE_SIZE_GB = float(os.getenv("MAX_TRANSCODE_SIZE_GB", "2"))
+    MAX_DURATION_MINUTES = int(os.getenv("MAX_TRANSCODE_DURATION_MINUTES", "30"))
 
     VIDEO_MIMETYPES = {
-        'video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
-        'video/webm', 'video/x-m4v', 'video/3gpp', 'video/3gpp2',
-        'video/hevc', 'video/mpeg', 'video/ogg'
+        "video/mp4",
+        "video/quicktime",
+        "video/x-msvideo",
+        "video/x-matroska",
+        "video/webm",
+        "video/x-m4v",
+        "video/3gpp",
+        "video/3gpp2",
+        "video/hevc",
+        "video/mpeg",
+        "video/ogg",
     }
 
     def __init__(self):
@@ -73,13 +81,26 @@ class VideoIngestionService:
         if mime_type and mime_type.lower() in self.VIDEO_MIMETYPES:
             return True
 
-        if mime_type and mime_type.lower().startswith('video/'):
+        if mime_type and mime_type.lower().startswith("video/"):
             return True
 
         if file_name:
             ext = os.path.splitext(file_name)[1].lower()
-            video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v',
-                         '.3gp', '.3g2', '.hevc', '.mpeg', '.mpg', '.ogv', '.wmv'}
+            video_exts = {
+                ".mp4",
+                ".mov",
+                ".avi",
+                ".mkv",
+                ".webm",
+                ".m4v",
+                ".3gp",
+                ".3g2",
+                ".hevc",
+                ".mpeg",
+                ".mpg",
+                ".ogv",
+                ".wmv",
+            }
             if ext in video_exts:
                 return True
 
@@ -92,7 +113,7 @@ class VideoIngestionService:
         file_name: str,
         file_size: int,
         mime_type: Optional[str],
-        kafka_producer: Optional[AIOKafkaProducer] = None
+        kafka_producer: Optional[AIOKafkaProducer] = None,
     ) -> Dict[str, Any]:
         """
         Main entry point - called immediately after successful upload.
@@ -117,47 +138,42 @@ class VideoIngestionService:
         """
         # Check if this is a video file
         if not self.is_video(mime_type, file_name):
-            return {
-                'queued': False,
-                'reason': 'not_video',
-                'file_id': file_id
-            }
+            return {"queued": False, "reason": "not_video", "file_id": file_id}
 
         # Check user's video optimization preference
         # (This will be checked in the worker, but we can skip early if disabled)
         # For now, we always queue - worker will check preference
 
         # Check size limits
-        file_size_gb = file_size / (1024 ** 3)
+        file_size_gb = file_size / (1024**3)
         if file_size_gb > self.MAX_TRANSCODE_SIZE_GB:
             logger.info(
                 f"Video {file_name} ({file_size_gb:.1f}GB) exceeds transcode limit "
                 f"({self.MAX_TRANSCODE_SIZE_GB}GB), skipping optimization"
             )
             return {
-                'queued': False,
-                'reason': 'too_large',
-                'file_id': file_id,
-                'size_gb': file_size_gb,
-                'limit_gb': self.MAX_TRANSCODE_SIZE_GB
+                "queued": False,
+                "reason": "too_large",
+                "file_id": file_id,
+                "size_gb": file_size_gb,
+                "limit_gb": self.MAX_TRANSCODE_SIZE_GB,
             }
 
         # Queue for background processing via Kafka
         if kafka_producer:
             try:
                 message = {
-                    'file_id': file_id,
-                    'user_id': user_id,
-                    'file_name': file_name,
-                    'file_size': file_size,
-                    'mime_type': mime_type,
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'priority': self._calculate_priority(file_size)
+                    "file_id": file_id,
+                    "user_id": user_id,
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "mime_type": mime_type,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "priority": self._calculate_priority(file_size),
                 }
 
                 await kafka_producer.send_and_wait(
-                    self.KAFKA_TOPIC,
-                    json.dumps(message).encode('utf-8')
+                    self.KAFKA_TOPIC, json.dumps(message).encode("utf-8")
                 )
 
                 logger.info(
@@ -166,29 +182,23 @@ class VideoIngestionService:
                 )
 
                 return {
-                    'queued': True,
-                    'reason': 'queued_for_processing',
-                    'file_id': file_id,
-                    'kafka_topic': self.KAFKA_TOPIC
+                    "queued": True,
+                    "reason": "queued_for_processing",
+                    "file_id": file_id,
+                    "kafka_topic": self.KAFKA_TOPIC,
                 }
 
             except Exception as e:
                 logger.error(f"Failed to queue video for processing: {e}")
                 return {
-                    'queued': False,
-                    'reason': 'kafka_error',
-                    'file_id': file_id,
-                    'error': str(e)
+                    "queued": False,
+                    "reason": "kafka_error",
+                    "file_id": file_id,
+                    "error": str(e),
                 }
         else:
-            logger.warning(
-                f"Kafka producer not available, cannot queue video: {file_name}"
-            )
-            return {
-                'queued': False,
-                'reason': 'kafka_unavailable',
-                'file_id': file_id
-            }
+            logger.warning(f"Kafka producer not available, cannot queue video: {file_name}")
+            return {"queued": False, "reason": "kafka_unavailable", "file_id": file_id}
 
     def _calculate_priority(self, file_size: int) -> int:
         """
@@ -220,19 +230,14 @@ class VideoIngestionService:
     def _get_optimization_mode(self, plan_features: dict | None) -> str:
         """Determine video optimization mode from plan features."""
         if not plan_features:
-            return 'no_optimization'
-        mode = plan_features.get('video_optimization', False)
-        if mode in ('optimized', 'keep_both'):
+            return "no_optimization"
+        mode = plan_features.get("video_optimization", False)
+        if mode in ("optimized", "keep_both"):
             return mode
-        return 'no_optimization'
+        return "no_optimization"
 
     async def process_video(
-        self,
-        file_obj,
-        user,
-        encryption_service,
-        db_session,
-        plan_features: dict | None = None
+        self, file_obj, user, encryption_service, db_session, plan_features: dict | None = None
     ) -> Dict[str, Any]:
         """
         Background processor - called by Kafka consumer worker.
@@ -261,19 +266,19 @@ class VideoIngestionService:
                 'error': str (if failed)
             }
         """
-        from .video_transcoder import video_transcoder, TranscodePolicy, VideoTranscodeError
-        from .video_optimizer import video_optimizer
-        from .preview_optimizer import preview_optimizer
         from .preview_generator import preview_generator
+        from .preview_optimizer import preview_optimizer
+        from .video_optimizer import video_optimizer
+        from .video_transcoder import TranscodePolicy, VideoTranscodeError, video_transcoder
 
         file_id = str(file_obj.id)
         result = {
-            'success': False,
-            'action': 'pending',
-            'file_id': file_id,
-            'optimized_path': None,
-            'optimized_size': None,
-            'duration_seconds': 0
+            "success": False,
+            "action": "pending",
+            "file_id": file_id,
+            "optimized_path": None,
+            "optimized_size": None,
+            "duration_seconds": 0,
         }
 
         start_time = datetime.utcnow()
@@ -281,12 +286,14 @@ class VideoIngestionService:
         try:
             # Check plan-derived optimization mode
             optimization_mode = self._get_optimization_mode(plan_features)
-            if optimization_mode == 'no_optimization':
-                logger.info(f"User {user.id} has video optimization disabled, skipping {file_obj.file_name}")
-                file_obj.video_processing_status = 'skipped'
+            if optimization_mode == "no_optimization":
+                logger.info(
+                    f"User {user.id} has video optimization disabled, skipping {file_obj.file_name}"
+                )
+                file_obj.video_processing_status = "skipped"
                 await db_session.commit()
-                result['action'] = 'skipped'
-                result['success'] = True
+                result["action"] = "skipped"
+                result["success"] = True
                 return result
 
             # Per-file lock: exclude concurrent dedup on the same file
@@ -300,14 +307,18 @@ class VideoIngestionService:
                 await db_session.refresh(file_obj)
 
                 # Update status to processing
-                file_obj.video_processing_status = 'processing'
+                file_obj.video_processing_status = "processing"
                 file_obj.video_processing_progress = 0
                 await db_session.commit()
 
-                logger.info(f"Processing video: {file_obj.file_name} ({file_obj.file_size / (1024*1024):.1f}MB)")
+                logger.info(
+                    f"Processing video: {file_obj.file_name} ({file_obj.file_size / (1024*1024):.1f}MB)"
+                )
 
                 # Step 1: Probe file to get codec info
-                probe_data = await video_transcoder._probe_file_metadata(file_obj, encryption_service)
+                probe_data = await video_transcoder._probe_file_metadata(
+                    file_obj, encryption_service
+                )
 
                 # Step 2: Determine action
                 decision = video_transcoder._needs_transcode(file_obj, probe_data)
@@ -319,13 +330,16 @@ class VideoIngestionService:
                 # Step 3: Execute based on decision
                 target_path = os.path.join(self.OPTIMIZED_DIR, f"{file_id}.mp4")
 
-                if decision == 'skip':
-                    result['action'] = 'skipped'
-                    moov_at_end = probe_data.get('moov_at_end', False) if probe_data else False
-                    is_fragmented = probe_data.get('is_fragmented', False) if probe_data else False
+                if decision == "skip":
+                    result["action"] = "skipped"
+                    moov_at_end = probe_data.get("moov_at_end", False) if probe_data else False
+                    is_fragmented = probe_data.get("is_fragmented", False) if probe_data else False
 
-                    if (not moov_at_end and not is_fragmented
-                            and file_obj.storage_type in ('chunked', 'content_addressed')):
+                    if (
+                        not moov_at_end
+                        and not is_fragmented
+                        and file_obj.storage_type in ("chunked", "content_addressed")
+                    ):
                         # ---- OPTIMIZED PATH: moov-at-front + non-fMP4 + chunked/CAS ----
                         # Lightweight partial download (~64MB) for thumbnails only.
                         # No faststart needed (moov already at front).
@@ -333,22 +347,34 @@ class VideoIngestionService:
                         partial_path = f"/tmp/skip_thumb_{file_id}.partial"
                         try:
                             built = await video_transcoder._build_thumbnail_probe_file(
-                                file_obj, encryption_service, probe_data, partial_path,
+                                file_obj,
+                                encryption_service,
+                                probe_data,
+                                partial_path,
                             )
                             if built:
                                 try:
-                                    sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
-                                        file_id, partial_path,
-                                        source_hash=getattr(file_obj, 'content_hash', None),
-                                        user_id=str(file_obj.user_id),
+                                    sizes_cached = (
+                                        await video_transcoder._generate_thumbnails_for_transcoded(
+                                            file_id,
+                                            partial_path,
+                                            source_hash=getattr(file_obj, "content_hash", None),
+                                            user_id=str(file_obj.user_id),
+                                        )
                                     )
                                     if sizes_cached > 0:
                                         file_obj.preview_generated_at = datetime.utcnow()
-                                        file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                                        file_obj.preview_content_hash = getattr(
+                                            file_obj, "content_hash", None
+                                        )
                                 except Exception as e:
-                                    logger.warning(f"Thumbnail generation from partial failed for {file_id}: {e}")
+                                    logger.warning(
+                                        f"Thumbnail generation from partial failed for {file_id}: {e}"
+                                    )
                             else:
-                                logger.warning(f"Could not build partial probe for {file_id}, thumbnails deferred")
+                                logger.warning(
+                                    f"Could not build partial probe for {file_id}, thumbnails deferred"
+                                )
                         finally:
                             if os.path.exists(partial_path):
                                 os.remove(partial_path)
@@ -363,13 +389,13 @@ class VideoIngestionService:
                                 # Reactive path returns None for skip, so without faststart
                                 # the user would have to buffer the entire file. Fail so the
                                 # job can be retried when disk space is available.
-                                result['action'] = 'failed'
-                                result['error'] = (
+                                result["action"] = "failed"
+                                result["error"] = (
                                     f"Insufficient disk space for required faststart "
                                     f"({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
                                 )
-                                file_obj.video_processing_status = 'failed'
-                                file_obj.video_processing_error = result['error']
+                                file_obj.video_processing_status = "failed"
+                                file_obj.video_processing_error = result["error"]
                                 await db_session.commit()
                                 return result
                             # moov-at-front / fMP4 / single: video is still playable
@@ -382,20 +408,29 @@ class VideoIngestionService:
                                 # Apply faststart if moov at end (uses probe flag, not buggy detect_moov)
                                 if moov_at_end:
                                     try:
-                                        success, optimized_path = await video_optimizer.apply_faststart(
-                                            temp_path, target_path
+                                        success, optimized_path = (
+                                            await video_optimizer.apply_faststart(
+                                                temp_path, target_path
+                                            )
                                         )
                                         if success:
-                                            result['action'] = 'faststart'
-                                            result['optimized_path'] = optimized_path
-                                            result['optimized_size'] = os.path.getsize(optimized_path)
+                                            result["action"] = "faststart"
+                                            result["optimized_path"] = optimized_path
+                                            result["optimized_size"] = os.path.getsize(
+                                                optimized_path
+                                            )
                                     except Exception as e:
-                                        logger.warning(f"Faststart failed for {file_obj.file_name}: {e}")
+                                        logger.warning(
+                                            f"Faststart failed for {file_obj.file_name}: {e}"
+                                        )
 
                                 # If faststart produced a separate optimized file, delete the
                                 # source temp file now — thumbnails use optimized_path.
                                 # Saves ~1.7GB of temp disk during thumbnail generation.
-                                if result.get('optimized_path') and temp_path != result['optimized_path']:
+                                if (
+                                    result.get("optimized_path")
+                                    and temp_path != result["optimized_path"]
+                                ):
                                     if os.path.exists(temp_path):
                                         os.remove(temp_path)
                                         logger.info(
@@ -404,33 +439,40 @@ class VideoIngestionService:
                                         )
 
                                 # Generate thumbnails from best available path
-                                thumb_path = result.get('optimized_path') or temp_path
+                                thumb_path = result.get("optimized_path") or temp_path
                                 if os.path.exists(thumb_path):
                                     try:
                                         sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
-                                            file_id, thumb_path,
-                                            source_hash=getattr(file_obj, 'content_hash', None),
+                                            file_id,
+                                            thumb_path,
+                                            source_hash=getattr(file_obj, "content_hash", None),
                                             user_id=str(file_obj.user_id),
                                         )
                                         if sizes_cached > 0:
                                             file_obj.preview_generated_at = datetime.utcnow()
-                                            file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                                            file_obj.preview_content_hash = getattr(
+                                                file_obj, "content_hash", None
+                                            )
                                     except Exception as e:
-                                        logger.warning(f"Thumbnail generation failed for {file_id}: {e}")
+                                        logger.warning(
+                                            f"Thumbnail generation failed for {file_id}: {e}"
+                                        )
                             finally:
                                 if os.path.exists(temp_path):
                                     os.remove(temp_path)
 
-                elif decision == 'remux':
+                elif decision == "remux":
                     # Fast container remux (H.264+AAC in wrong container)
                     file_obj.video_processing_progress = 20
                     await db_session.commit()
 
                     if not _check_disk_space(file_obj.file_size or 0):
-                        result['action'] = 'failed'
-                        result['error'] = f"Insufficient disk space for remux ({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
-                        file_obj.video_processing_status = 'failed'
-                        file_obj.video_processing_error = result['error']
+                        result["action"] = "failed"
+                        result["error"] = (
+                            f"Insufficient disk space for remux ({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
+                        )
+                        file_obj.video_processing_status = "failed"
+                        file_obj.video_processing_error = result["error"]
                         await db_session.commit()
                         return result
 
@@ -441,23 +483,25 @@ class VideoIngestionService:
                         await video_transcoder._remux_without_transcode(
                             temp_path, target_path, file_id
                         )
-                        result['action'] = 'remux'
-                        result['optimized_path'] = target_path
-                        result['optimized_size'] = os.path.getsize(target_path)
+                        result["action"] = "remux"
+                        result["optimized_path"] = target_path
+                        result["optimized_size"] = os.path.getsize(target_path)
                     finally:
                         if os.path.exists(temp_path):
                             os.remove(temp_path)
 
-                elif decision == 'transcode':
+                elif decision == "transcode":
                     # Full re-encoding needed
                     file_obj.video_processing_progress = 20
                     await db_session.commit()
 
                     if not _check_disk_space(file_obj.file_size or 0):
-                        result['action'] = 'failed'
-                        result['error'] = f"Insufficient disk space for transcode ({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
-                        file_obj.video_processing_status = 'failed'
-                        file_obj.video_processing_error = result['error']
+                        result["action"] = "failed"
+                        result["error"] = (
+                            f"Insufficient disk space for transcode ({(file_obj.file_size or 0) / (1024**3):.1f}GB)"
+                        )
+                        file_obj.video_processing_status = "failed"
+                        file_obj.video_processing_error = result["error"]
                         await db_session.commit()
                         return result
 
@@ -469,17 +513,15 @@ class VideoIngestionService:
                         file_obj, encryption_service, db=db_session
                     )
                     try:
-                        await video_transcoder._run_ffmpeg(
-                            temp_path, target_path, policy, file_id
-                        )
-                        result['action'] = 'transcode'
-                        result['optimized_path'] = target_path
-                        result['optimized_size'] = os.path.getsize(target_path)
+                        await video_transcoder._run_ffmpeg(temp_path, target_path, policy, file_id)
+                        result["action"] = "transcode"
+                        result["optimized_path"] = target_path
+                        result["optimized_size"] = os.path.getsize(target_path)
                     finally:
                         if os.path.exists(temp_path):
                             os.remove(temp_path)
 
-                elif decision == 'reject':
+                elif decision == "reject":
                     # Reject-by-policy: transcode is genuinely skipped, but a
                     # poster-frame thumbnail is still feasible for chunked/CAS
                     # storage with moov-at-front. Ordering matters: attempt the
@@ -500,13 +542,14 @@ class VideoIngestionService:
                         f"(max {reject_max_size_gb}GB or {reject_max_duration_min} minutes). "
                         f"Download to play full video."
                     )
-                    result['action'] = 'rejected'
-                    result['error'] = reject_msg
+                    result["action"] = "rejected"
+                    result["error"] = reject_msg
 
                     # Seed preview:status='processing' so the preview endpoint
                     # returns 202 during the poster-frame attempt. Never
                     # downgrade an existing 'ready' written elsewhere.
                     from ..database import get_redis
+
                     redis = await get_redis()
                     try:
                         existing = await redis.get(f"preview:status:{file_id}")
@@ -516,16 +559,19 @@ class VideoIngestionService:
                                 prev_status = json.loads(
                                     existing if isinstance(existing, str) else existing.decode()
                                 )
-                                already_ready = prev_status.get('status') == 'ready'
+                                already_ready = prev_status.get("status") == "ready"
                             except (json.JSONDecodeError, ValueError):
                                 pass
                         if not already_ready:
                             await redis.setex(
-                                f"preview:status:{file_id}", 3600,
-                                json.dumps({
-                                    'status': 'processing',
-                                    'updated_at': datetime.utcnow().isoformat(),
-                                }),
+                                f"preview:status:{file_id}",
+                                3600,
+                                json.dumps(
+                                    {
+                                        "status": "processing",
+                                        "updated_at": datetime.utcnow().isoformat(),
+                                    }
+                                ),
                             )
                     except Exception as e:
                         logger.warning(f"Failed to seed preview:status for {file_id}: {e}")
@@ -534,18 +580,26 @@ class VideoIngestionService:
                     thumb_built = False
                     try:
                         built = await video_transcoder._build_thumbnail_probe_file(
-                            file_obj, encryption_service, probe_data or {}, partial_path,
+                            file_obj,
+                            encryption_service,
+                            probe_data or {},
+                            partial_path,
                         )
                         if built:
                             try:
-                                sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
-                                    file_id, partial_path,
-                                    source_hash=getattr(file_obj, 'content_hash', None),
-                                    user_id=str(file_obj.user_id),
+                                sizes_cached = (
+                                    await video_transcoder._generate_thumbnails_for_transcoded(
+                                        file_id,
+                                        partial_path,
+                                        source_hash=getattr(file_obj, "content_hash", None),
+                                        user_id=str(file_obj.user_id),
+                                    )
                                 )
                                 if sizes_cached > 0:
                                     file_obj.preview_generated_at = datetime.utcnow()
-                                    file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                                    file_obj.preview_content_hash = getattr(
+                                        file_obj, "content_hash", None
+                                    )
                                     thumb_built = True
                                     logger.info(
                                         f"Reject-path poster thumbnail generated for "
@@ -568,7 +622,7 @@ class VideoIngestionService:
                                 pass
 
                     # Commit terminal DB state now that the thumbnail attempt is done.
-                    file_obj.video_processing_status = 'rejected'
+                    file_obj.video_processing_status = "rejected"
                     file_obj.video_processing_error = reject_msg
                     await db_session.commit()
 
@@ -579,13 +633,16 @@ class VideoIngestionService:
                     if not thumb_built:
                         try:
                             await redis.setex(
-                                f"preview:status:{file_id}", 3600,
-                                json.dumps({
-                                    'status': 'failed',
-                                    'error': reject_msg,
-                                    'retryable': False,
-                                    'updated_at': datetime.utcnow().isoformat(),
-                                }),
+                                f"preview:status:{file_id}",
+                                3600,
+                                json.dumps(
+                                    {
+                                        "status": "failed",
+                                        "error": reject_msg,
+                                        "retryable": False,
+                                        "updated_at": datetime.utcnow().isoformat(),
+                                    }
+                                ),
                             )
                         except Exception as e:
                             logger.warning(
@@ -595,10 +652,10 @@ class VideoIngestionService:
                     return result
 
                 else:
-                    result['action'] = 'failed'
-                    result['error'] = f"Unknown transcode decision: {decision}"
-                    file_obj.video_processing_status = 'failed'
-                    file_obj.video_processing_error = result['error']
+                    result["action"] = "failed"
+                    result["error"] = f"Unknown transcode decision: {decision}"
+                    file_obj.video_processing_status = "failed"
+                    file_obj.video_processing_error = result["error"]
                     await db_session.commit()
                     return result
 
@@ -607,15 +664,16 @@ class VideoIngestionService:
 
                 # Step 4: Generate thumbnails
                 try:
-                    if result['optimized_path'] and os.path.exists(result['optimized_path']):
+                    if result["optimized_path"] and os.path.exists(result["optimized_path"]):
                         sizes_cached = await video_transcoder._generate_thumbnails_for_transcoded(
-                            file_id, result['optimized_path'],
-                            source_hash=getattr(file_obj, 'content_hash', None),
+                            file_id,
+                            result["optimized_path"],
+                            source_hash=getattr(file_obj, "content_hash", None),
                             user_id=str(file_obj.user_id),
                         )
                         if sizes_cached > 0:
                             file_obj.preview_generated_at = datetime.utcnow()
-                            file_obj.preview_content_hash = getattr(file_obj, 'content_hash', None)
+                            file_obj.preview_content_hash = getattr(file_obj, "content_hash", None)
                 except Exception as e:
                     logger.warning(f"Thumbnail generation failed for {file_id}: {e}")
 
@@ -629,17 +687,17 @@ class VideoIngestionService:
                 # Step 6: Update final status
                 end_time = datetime.utcnow()
                 duration = (end_time - start_time).total_seconds()
-                result['duration_seconds'] = duration
+                result["duration_seconds"] = duration
 
-                file_obj.video_processing_status = 'ready'
+                file_obj.video_processing_status = "ready"
                 file_obj.video_processing_progress = 100
                 file_obj.video_processing_error = None
-                file_obj.optimized_path = result['optimized_path']
-                file_obj.optimized_size = result['optimized_size']
+                file_obj.optimized_path = result["optimized_path"]
+                file_obj.optimized_size = result["optimized_size"]
                 file_obj.video_processed_at = end_time
                 await db_session.commit()
 
-                result['success'] = True
+                result["success"] = True
 
                 logger.info(
                     f"Video optimization complete: {file_obj.file_name} "
@@ -651,10 +709,10 @@ class VideoIngestionService:
 
         except VideoTranscodeError as e:
             logger.error(f"VideoTranscodeError for {file_obj.file_name}: {e.message}")
-            result['action'] = 'failed'
-            result['error'] = e.message
+            result["action"] = "failed"
+            result["error"] = e.message
 
-            file_obj.video_processing_status = 'failed'
+            file_obj.video_processing_status = "failed"
             file_obj.video_processing_error = e.message
             file_obj.video_processing_progress = None
             await db_session.commit()
@@ -663,10 +721,10 @@ class VideoIngestionService:
 
         except Exception as e:
             logger.exception(f"Unexpected error processing video {file_obj.file_name}: {e}")
-            result['action'] = 'failed'
-            result['error'] = str(e)
+            result["action"] = "failed"
+            result["error"] = str(e)
 
-            file_obj.video_processing_status = 'failed'
+            file_obj.video_processing_status = "failed"
             file_obj.video_processing_error = str(e)[:500]  # Truncate long errors
             file_obj.video_processing_progress = None
             await db_session.commit()
@@ -690,13 +748,15 @@ class VideoIngestionService:
         status = file_obj.video_processing_status
 
         return {
-            'status': status,
-            'progress': file_obj.video_processing_progress or 0,
-            'optimized_ready': status == 'ready' and file_obj.optimized_path is not None,
-            'optimized_path': file_obj.optimized_path if status == 'ready' else None,
-            'optimized_size': file_obj.optimized_size,
-            'processed_at': file_obj.video_processed_at.isoformat() if file_obj.video_processed_at else None,
-            'error': file_obj.video_processing_error if status in ('failed', 'rejected') else None
+            "status": status,
+            "progress": file_obj.video_processing_progress or 0,
+            "optimized_ready": status == "ready" and file_obj.optimized_path is not None,
+            "optimized_path": file_obj.optimized_path if status == "ready" else None,
+            "optimized_size": file_obj.optimized_size,
+            "processed_at": (
+                file_obj.video_processed_at.isoformat() if file_obj.video_processed_at else None
+            ),
+            "error": file_obj.video_processing_error if status in ("failed", "rejected") else None,
         }
 
 

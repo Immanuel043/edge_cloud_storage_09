@@ -9,16 +9,22 @@ Orchestrates file organization using ML clustering and rule-based systems:
 """
 
 import logging
-from typing import List, Dict, Optional, Tuple
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from uuid import UUID
-from datetime import datetime
 import re
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+from uuid import UUID
+
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.database import (
-    User, Object, Folder, OrganizationCluster, FileClusterAssignment,
-    OrganizationRule, OrganizationSession
+    FileClusterAssignment,
+    Folder,
+    Object,
+    OrganizationCluster,
+    OrganizationRule,
+    OrganizationSession,
+    User,
 )
 from .file_clustering_service import file_clustering_service
 
@@ -37,7 +43,7 @@ class AutoOrganizerService:
         num_clusters: Optional[int],
         min_files: int,
         preview_only: bool,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> OrganizationSession:
         """
         Create a new organization session
@@ -54,11 +60,11 @@ class AutoOrganizerService:
         """
         session = OrganizationSession(
             user_id=user_id,
-            session_type='ml_clustering',
+            session_type="ml_clustering",
             algorithm=algorithm,
             num_clusters=num_clusters,
             min_files=min_files,
-            status='pending'
+            status="pending",
         )
 
         db.add(session)
@@ -68,9 +74,7 @@ class AutoOrganizerService:
         return session
 
     async def run_ml_organization(
-        self,
-        session: OrganizationSession,
-        db: AsyncSession
+        self, session: OrganizationSession, db: AsyncSession
     ) -> Tuple[List[OrganizationCluster], List[FileClusterAssignment]]:
         """
         Run ML-based clustering organization
@@ -79,14 +83,12 @@ class AutoOrganizerService:
             Tuple of (clusters, file_assignments)
         """
         try:
-            session.status = 'running'
+            session.status = "running"
             session.started_at = datetime.utcnow()
             await db.flush()
 
             # Get user's files
-            result = await db.execute(
-                select(Object).where(Object.user_id == session.user_id)
-            )
+            result = await db.execute(select(Object).where(Object.user_id == session.user_id))
             files = result.scalars().all()
 
             if len(files) < session.min_files:
@@ -97,12 +99,11 @@ class AutoOrganizerService:
             logger.info(f"Running {session.algorithm} clustering on {len(files)} files")
 
             # Run clustering
-            if session.algorithm == 'kmeans':
+            if session.algorithm == "kmeans":
                 clustering_result = file_clustering_service.cluster_kmeans(
-                    files,
-                    n_clusters=session.num_clusters
+                    files, n_clusters=session.num_clusters
                 )
-            elif session.algorithm == 'dbscan':
+            elif session.algorithm == "dbscan":
                 clustering_result = file_clustering_service.cluster_dbscan(files)
             else:
                 raise ValueError(f"Unknown algorithm: {session.algorithm}")
@@ -111,23 +112,23 @@ class AutoOrganizerService:
             clusters = []
             file_assignments = []
 
-            for cluster_data in clustering_result['clusters']:
+            for cluster_data in clustering_result["clusters"]:
                 # Create cluster object
                 cluster = OrganizationCluster(
                     user_id=session.user_id,
-                    cluster_id=cluster_data['cluster_id'],
-                    cluster_name=cluster_data['cluster_name'],
-                    cluster_description=cluster_data['cluster_description'],
+                    cluster_id=cluster_data["cluster_id"],
+                    cluster_name=cluster_data["cluster_name"],
+                    cluster_description=cluster_data["cluster_description"],
                     algorithm=session.algorithm,
-                    num_files=cluster_data['num_files'],
-                    total_size=cluster_data['total_size'],
-                    top_keywords=cluster_data['top_keywords'],
-                    common_extensions=cluster_data['common_extensions'],
-                    date_range_start=cluster_data['date_range_start'],
-                    date_range_end=cluster_data['date_range_end'],
-                    silhouette_score=clustering_result['silhouette_score'],
-                    cohesion_score=cluster_data['cohesion_score'],
-                    suggested_folder_path=cluster_data['suggested_folder_path']
+                    num_files=cluster_data["num_files"],
+                    total_size=cluster_data["total_size"],
+                    top_keywords=cluster_data["top_keywords"],
+                    common_extensions=cluster_data["common_extensions"],
+                    date_range_start=cluster_data["date_range_start"],
+                    date_range_end=cluster_data["date_range_end"],
+                    silhouette_score=clustering_result["silhouette_score"],
+                    cohesion_score=cluster_data["cohesion_score"],
+                    suggested_folder_path=cluster_data["suggested_folder_path"],
                 )
 
                 db.add(cluster)
@@ -136,33 +137,32 @@ class AutoOrganizerService:
                 clusters.append(cluster)
 
                 # Create file assignments
-                for file_id in cluster_data['file_ids']:
+                for file_id in cluster_data["file_ids"]:
                     assignment = FileClusterAssignment(
                         file_id=UUID(file_id),
                         cluster_id=cluster.id,
                         user_id=session.user_id,
-                        confidence_score=1.0  # Default confidence
+                        confidence_score=1.0,  # Default confidence
                     )
                     db.add(assignment)
                     file_assignments.append(assignment)
 
             # Update session results
             session.clusters_created = len(clusters)
-            session.avg_silhouette_score = clustering_result['silhouette_score']
-            session.status = 'completed'
+            session.avg_silhouette_score = clustering_result["silhouette_score"]
+            session.status = "completed"
             session.completed_at = datetime.utcnow()
 
             await db.flush()
 
             logger.info(
-                f"Organization session {session.id} completed: "
-                f"{len(clusters)} clusters created"
+                f"Organization session {session.id} completed: " f"{len(clusters)} clusters created"
             )
 
             return clusters, file_assignments
 
         except Exception as e:
-            session.status = 'failed'
+            session.status = "failed"
             session.error_message = str(e)
             session.completed_at = datetime.utcnow()
             await db.flush()
@@ -171,11 +171,7 @@ class AutoOrganizerService:
             raise
 
     async def apply_cluster_organization(
-        self,
-        cluster_id: UUID,
-        target_folder_path: Optional[str],
-        user_id: UUID,
-        db: AsyncSession
+        self, cluster_id: UUID, target_folder_path: Optional[str], user_id: UUID, db: AsyncSession
     ) -> Dict:
         """
         Apply cluster organization by moving files to target folder
@@ -193,8 +189,7 @@ class AutoOrganizerService:
             # Get cluster
             result = await db.execute(
                 select(OrganizationCluster).where(
-                    OrganizationCluster.id == cluster_id,
-                    OrganizationCluster.user_id == user_id
+                    OrganizationCluster.id == cluster_id, OrganizationCluster.user_id == user_id
                 )
             )
             cluster = result.scalar_one_or_none()
@@ -209,17 +204,11 @@ class AutoOrganizerService:
             folder_path = target_folder_path or cluster.suggested_folder_path
 
             # Get or create target folder
-            target_folder = await self._get_or_create_folder(
-                folder_path,
-                user_id,
-                db
-            )
+            target_folder = await self._get_or_create_folder(folder_path, user_id, db)
 
             # Get file assignments
             assignments_result = await db.execute(
-                select(FileClusterAssignment).where(
-                    FileClusterAssignment.cluster_id == cluster_id
-                )
+                select(FileClusterAssignment).where(FileClusterAssignment.cluster_id == cluster_id)
             )
             assignments = assignments_result.scalars().all()
 
@@ -243,15 +232,14 @@ class AutoOrganizerService:
             await db.flush()
 
             logger.info(
-                f"Applied cluster {cluster_id}: moved {files_moved} files "
-                f"to {folder_path}"
+                f"Applied cluster {cluster_id}: moved {files_moved} files " f"to {folder_path}"
             )
 
             return {
-                'cluster_id': str(cluster_id),
-                'folder_path': folder_path,
-                'files_moved': files_moved,
-                'status': 'success'
+                "cluster_id": str(cluster_id),
+                "folder_path": folder_path,
+                "files_moved": files_moved,
+                "status": "success",
             }
 
         except Exception as e:
@@ -272,7 +260,7 @@ class AutoOrganizerService:
         create_subfolder_by_date: bool,
         auto_apply: bool,
         priority: int,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> OrganizationRule:
         """
         Create organization rule
@@ -293,7 +281,7 @@ class AutoOrganizerService:
             create_subfolder_by_date=create_subfolder_by_date,
             auto_apply=auto_apply,
             priority=priority,
-            source='user'
+            source="user",
         )
 
         db.add(rule)
@@ -303,10 +291,7 @@ class AutoOrganizerService:
         return rule
 
     async def apply_rules(
-        self,
-        user_id: UUID,
-        db: AsyncSession,
-        rule_ids: Optional[List[UUID]] = None
+        self, user_id: UUID, db: AsyncSession, rule_ids: Optional[List[UUID]] = None
     ) -> Dict:
         """
         Apply organization rules to files
@@ -322,8 +307,7 @@ class AutoOrganizerService:
         try:
             # Get rules
             query = select(OrganizationRule).where(
-                OrganizationRule.user_id == user_id,
-                OrganizationRule.is_active == True
+                OrganizationRule.user_id == user_id, OrganizationRule.is_active == True
             )
 
             if rule_ids:
@@ -336,9 +320,7 @@ class AutoOrganizerService:
             rules = result.scalars().all()
 
             # Get user's files
-            files_result = await db.execute(
-                select(Object).where(Object.user_id == user_id)
-            )
+            files_result = await db.execute(select(Object).where(Object.user_id == user_id))
             files = files_result.scalars().all()
 
             total_organized = 0
@@ -353,16 +335,10 @@ class AutoOrganizerService:
                 # Get or create target folder
                 for file_obj in matched_files:
                     target_path = self._get_target_path_for_file(
-                        rule.target_folder_path,
-                        file_obj,
-                        rule.create_subfolder_by_date
+                        rule.target_folder_path, file_obj, rule.create_subfolder_by_date
                     )
 
-                    target_folder = await self._get_or_create_folder(
-                        target_path,
-                        user_id,
-                        db
-                    )
+                    target_folder = await self._get_or_create_folder(target_path, user_id, db)
 
                     # Move file
                     file_obj.folder_id = target_folder.id
@@ -380,20 +356,16 @@ class AutoOrganizerService:
             )
 
             return {
-                'rules_applied': len(rules),
-                'files_organized': total_organized,
-                'status': 'success'
+                "rules_applied": len(rules),
+                "files_organized": total_organized,
+                "status": "success",
             }
 
         except Exception as e:
             logger.error(f"Failed to apply rules for user {user_id}: {e}", exc_info=True)
             raise
 
-    def _match_files_to_rule(
-        self,
-        files: List[Object],
-        rule: OrganizationRule
-    ) -> List[Object]:
+    def _match_files_to_rule(self, files: List[Object], rule: OrganizationRule) -> List[Object]:
         """
         Match files against organization rule
 
@@ -416,7 +388,9 @@ class AutoOrganizerService:
 
         # Extension matching
         if rule.file_extensions:
-            file_ext = file_obj.file_name.rsplit('.', 1)[-1].lower() if '.' in file_obj.file_name else ''
+            file_ext = (
+                file_obj.file_name.rsplit(".", 1)[-1].lower() if "." in file_obj.file_name else ""
+            )
             if file_ext not in rule.file_extensions:
                 return False
 
@@ -429,12 +403,13 @@ class AutoOrganizerService:
         # Date matching
         if rule.date_range_days:
             from datetime import timedelta
+
             cutoff_date = datetime.utcnow() - timedelta(days=rule.date_range_days)
 
-            if rule.date_field == 'created_at':
+            if rule.date_field == "created_at":
                 if not file_obj.created_at or file_obj.created_at < cutoff_date:
                     return False
-            elif rule.date_field == 'modified_at':
+            elif rule.date_field == "modified_at":
                 if not file_obj.updated_at or file_obj.updated_at < cutoff_date:
                     return False
 
@@ -443,14 +418,11 @@ class AutoOrganizerService:
     def _matches_pattern(self, filename: str, pattern: str) -> bool:
         """Check if filename matches wildcard pattern"""
         # Convert wildcard pattern to regex
-        regex_pattern = pattern.replace('*', '.*').replace('?', '.')
+        regex_pattern = pattern.replace("*", ".*").replace("?", ".")
         return re.match(regex_pattern, filename, re.IGNORECASE) is not None
 
     def _get_target_path_for_file(
-        self,
-        base_path: str,
-        file_obj: Object,
-        create_subfolder_by_date: bool
+        self, base_path: str, file_obj: Object, create_subfolder_by_date: bool
     ) -> str:
         """
         Get target folder path for file
@@ -468,10 +440,7 @@ class AutoOrganizerService:
         return f"{base_path}/{year}/{month}"
 
     async def _get_or_create_folder(
-        self,
-        folder_path: str,
-        user_id: UUID,
-        db: AsyncSession
+        self, folder_path: str, user_id: UUID, db: AsyncSession
     ) -> Folder:
         """
         Get existing folder or create new one
@@ -479,14 +448,11 @@ class AutoOrganizerService:
         Handles nested paths like /Work/Reports/2024
         """
         # Normalize path
-        folder_path = folder_path.strip('/')
+        folder_path = folder_path.strip("/")
 
         # Check if folder exists
         result = await db.execute(
-            select(Folder).where(
-                Folder.user_id == user_id,
-                Folder.path == folder_path
-            )
+            select(Folder).where(Folder.user_id == user_id, Folder.path == folder_path)
         )
         existing_folder = result.scalar_one_or_none()
 
@@ -494,8 +460,8 @@ class AutoOrganizerService:
             return existing_folder
 
         # Create folder (and parent folders if needed)
-        parts = folder_path.split('/')
-        current_path = ''
+        parts = folder_path.split("/")
+        current_path = ""
         parent_id = None
 
         for part in parts:
@@ -503,20 +469,14 @@ class AutoOrganizerService:
 
             # Check if this level exists
             level_result = await db.execute(
-                select(Folder).where(
-                    Folder.user_id == user_id,
-                    Folder.path == current_path
-                )
+                select(Folder).where(Folder.user_id == user_id, Folder.path == current_path)
             )
             level_folder = level_result.scalar_one_or_none()
 
             if not level_folder:
                 # Create this level
                 level_folder = Folder(
-                    user_id=user_id,
-                    folder_name=part,
-                    path=current_path,
-                    parent_id=parent_id
+                    user_id=user_id, folder_name=part, path=current_path, parent_id=parent_id
                 )
                 db.add(level_folder)
                 await db.flush()

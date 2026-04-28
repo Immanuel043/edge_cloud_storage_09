@@ -116,8 +116,7 @@ async def wait_for_cleanup_ready(
             last_status = status
         else:
             logger.debug(
-                f"Still waiting ({status}): {upload_id} "
-                f"(elapsed={time.time() - start:.0f}s)"
+                f"Still waiting ({status}): {upload_id} " f"(elapsed={time.time() - start:.0f}s)"
             )
 
         await asyncio.sleep(POLL_INTERVAL_SECONDS)

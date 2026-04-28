@@ -1,24 +1,41 @@
 # services/storage-service/app/routers/auth.py
-from fastapi import APIRouter, Depends, HTTPException, Form, Request, Response, Body, Query
-from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import timedelta
 import logging
-from ..dependencies import get_db, log_activity, get_current_user
+from datetime import timedelta
+
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import settings
+from ..dependencies import get_current_user, get_db, log_activity
+from ..models.database import Folder, User
+from ..models.schemas import (
+    ForgotPasswordRequest,
+    ForgotPasswordResetRequest,
+    ForgotPasswordVerifyRequest,
+    RegisterCompleteRequest,
+    RegisterInitRequest,
+    RegisterVerifyRequest,
+    ResendCodeRequest,
+    ThemeUpdate,
+    Token,
+    UserResponse,
+    VerificationResponse,
+)
+from ..services.audit_logging_service import (
+    AuditEventType,
+    AuditSeverity,
+)
+from ..services.audit_logging_service import audit_service as audit_logging_service
 from ..services.auth import auth_service
-from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType, AuditSeverity
 from ..services.email_service import email_service
 from ..services.verification_service import verification_service
-from ..models.database import User, Folder
-from ..models.schemas import (
-    Token, UserResponse, ThemeUpdate,
-    RegisterInitRequest, RegisterVerifyRequest, RegisterCompleteRequest,
-    ResendCodeRequest, VerificationResponse,
-    ForgotPasswordRequest, ForgotPasswordVerifyRequest, ForgotPasswordResetRequest,
+from ..utils.rate_limiter_v2 import (
+    auth_login_limiter,
+    auth_password_reset_limiter,
+    auth_register_limiter,
 )
-from ..config import settings
-from ..utils.rate_limiter_v2 import auth_login_limiter, auth_register_limiter, auth_password_reset_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +51,7 @@ COOKIE_SAMESITE = "strict"  # CSRF protection - strict prevents cross-origin coo
 
 @router.get("/plans", response_model=dict)
 async def get_public_plans(
-    service_type: str = Query('normal', description="'normal' or 'zk'"),
+    service_type: str = Query("normal", description="'normal' or 'zk'"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -64,19 +81,16 @@ async def get_public_plans(
             "tier_name": p.tier_name,
             "category": p.category,
             "service_type": p.service_type,
-
             # Storage and bandwidth
             "storage_gb": float(p.storage_bytes / (1024**3)),
             "storage_bytes": p.storage_bytes,
             "bandwidth_mbps": p.bandwidth_mbps,
             "bandwidth_burst_mbps": p.bandwidth_burst_mbps,
             "max_concurrent_streams": p.max_concurrent_streams,
-
             # Pricing (in rupees/dollars as stored in database)
             "price_monthly": int(float(p.price_monthly)) if p.price_monthly else None,
             "price_six_months": int(float(p.price_six_months)) if p.price_six_months else None,
             "price_yearly": int(float(p.price_yearly)) if p.price_yearly else None,
-
             # Metadata
             "features": p.features or {},
             "is_most_popular": p.is_most_popular,
@@ -86,10 +100,7 @@ async def get_public_plans(
 
         categorized[p.category].append(plan_data)
 
-    return {
-        "service_type": service_type,
-        "plans": categorized
-    }
+    return {"service_type": service_type, "plans": categorized}
 
 
 @router.post("/login", response_model=Token, dependencies=[Depends(auth_login_limiter())])
@@ -103,12 +114,15 @@ async def login(
     result = await db.execute(select(User).filter(User.email == email))
     user = result.scalar_one_or_none()
 
-    password_valid = await auth_service.async_verify_password(password, user.password_hash) if user else False
+    password_valid = (
+        await auth_service.async_verify_password(password, user.password_hash) if user else False
+    )
     if not user or not password_valid:
         # Audit: login failure (best-effort)
         try:
             await audit_logging_service.log_event(
-                db, AuditEventType.LOGIN_FAILURE,
+                db,
+                AuditEventType.LOGIN_FAILURE,
                 user_id=user.id if user else None,
                 action="login",
                 result="failure",
@@ -130,7 +144,7 @@ async def login(
     if not user.email_verified:
         raise HTTPException(
             status_code=403,
-            detail="Please verify your email before logging in. Check your inbox for the verification code."
+            detail="Please verify your email before logging in. Check your inbox for the verification code.",
         )
 
     await log_activity(db, user.id, "user_login", request=request)
@@ -138,7 +152,8 @@ async def login(
     # Audit: login success (best-effort)
     try:
         await audit_logging_service.log_event(
-            db, AuditEventType.LOGIN_SUCCESS,
+            db,
+            AuditEventType.LOGIN_SUCCESS,
             user_id=user.id,
             action="login",
             result="success",
@@ -154,7 +169,8 @@ async def login(
 
     # Get plan limits from database for bandwidth info
     from shared_billing import BillingService
-    billing = BillingService(db, service_type='normal')
+
+    billing = BillingService(db, service_type="normal")
 
     try:
         plan_code = f"normal_{user.plan_type}"
@@ -187,7 +203,7 @@ async def login(
         httponly=COOKIE_HTTPONLY,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
-        path="/"
+        path="/",
     )
 
     return response
@@ -217,7 +233,7 @@ async def logout(request: Request = None):
         path="/",
         httponly=COOKIE_HTTPONLY,
         secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE
+        samesite=COOKIE_SAMESITE,
     )
 
     return response
@@ -233,12 +249,13 @@ async def session_token(current_user: User = Depends(get_current_user)):
     """
     access_token = auth_service.create_access_token(
         {"sub": str(current_user.id), "email": current_user.email, "type": "download"},
-        expires_delta=timedelta(minutes=5)
+        expires_delta=timedelta(minutes=5),
     )
     return {"access_token": access_token}
 
 
 # ========== EMAIL VERIFICATION REGISTRATION ENDPOINTS ==========
+
 
 @router.post("/register/init", dependencies=[Depends(auth_register_limiter())])
 async def register_init(
@@ -248,7 +265,7 @@ async def register_init(
 ):
     """
     Start registration - send verification code to email.
-    
+
     This is the first step in the 3-step registration process:
     1. Init (this endpoint) - sends verification code
     2. Verify - validates the code
@@ -258,12 +275,13 @@ async def register_init(
 
     # Check if email exists on ZK service
     from ..services.internal_client import InternalServiceClient
+
     internal_client = InternalServiceClient()
     if await internal_client.check_email_exists_on_zk_service(email):
         raise HTTPException(
             status_code=400,
             detail="This email is already registered with ZK Encrypted Storage. "
-                   "Please log in using ZK mode, or use a different email."
+            "Please log in using ZK mode, or use a different email.",
         )
 
     # Check if user already exists and is verified
@@ -289,14 +307,10 @@ async def register_init(
     email_sent = await email_service.send_verification_code(email, code)
     if not email_sent:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to send verification email. Please try again later."
+            status_code=500, detail="Failed to send verification email. Please try again later."
         )
 
-    return {
-        "message": "Verification code sent to your email",
-        "email": email
-    }
+    return {"message": "Verification code sent to your email", "email": email}
 
 
 @router.post("/register/verify", response_model=VerificationResponse)
@@ -307,7 +321,7 @@ async def register_verify(
 ):
     """
     Verify email code - second step in registration.
-    
+
     Validates the verification code and returns a temporary token
     that must be used in the complete step.
     """
@@ -317,7 +331,9 @@ async def register_verify(
     # Get user
     user = await verification_service.get_user_by_email(db, email)
     if not user:
-        raise HTTPException(status_code=404, detail="Registration not found. Please start registration again.")
+        raise HTTPException(
+            status_code=404, detail="Registration not found. Please start registration again."
+        )
 
     # Verify code
     is_valid, message = await verification_service.verify_code(db, user, code)
@@ -327,17 +343,17 @@ async def register_verify(
     # Create temporary token for registration completion (expires in 10 minutes)
     verification_token = auth_service.create_access_token(
         {"sub": str(user.id), "email": email, "type": "registration"},
-        expires_delta=timedelta(minutes=10)
+        expires_delta=timedelta(minutes=10),
     )
 
     return VerificationResponse(
-        verified=True,
-        token=verification_token,
-        message="Email verified successfully"
+        verified=True, token=verification_token, message="Email verified successfully"
     )
 
 
-@router.post("/register/complete", response_model=Token, dependencies=[Depends(auth_register_limiter())])
+@router.post(
+    "/register/complete", response_model=Token, dependencies=[Depends(auth_register_limiter())]
+)
 async def register_complete(
     request: Request,
     payload: RegisterCompleteRequest = Body(...),
@@ -345,7 +361,7 @@ async def register_complete(
 ):
     """
     Complete registration - final step.
-    
+
     Creates the user account with username and password.
     Requires the verification token from the verify step.
     """
@@ -356,19 +372,18 @@ async def register_complete(
 
     # Verify the temporary token
     try:
-        from jose import jwt, JWTError
+        from jose import JWTError, jwt
+
         payload_data = jwt.decode(
-            verification_token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
+            verification_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
-        
+
         if payload_data.get("type") != "registration":
             raise HTTPException(status_code=400, detail="Invalid verification token")
-        
+
         user_id = payload_data.get("sub")
         token_email = payload_data.get("email")
-        
+
         if token_email != email:
             raise HTTPException(status_code=400, detail="Email mismatch")
     except JWTError:
@@ -393,7 +408,8 @@ async def register_complete(
     # Validate plan_code early (before any commits)
     from shared_billing import BillingService, InvalidPlanChangeError
     from sqlalchemy import update
-    billing = BillingService(db, service_type='normal')
+
+    billing = BillingService(db, service_type="normal")
 
     plan_code = payload.plan_code or "normal_free"
     try:
@@ -402,8 +418,10 @@ async def register_complete(
         raise HTTPException(status_code=400, detail=f"Invalid plan code: {plan_code}")
 
     # Reject ZK plans — registration only supports normal storage
-    if plan.service_type != 'normal':
-        raise HTTPException(status_code=400, detail="ZK plans are not supported for standard registration")
+    if plan.service_type != "normal":
+        raise HTTPException(
+            status_code=400, detail="ZK plans are not supported for standard registration"
+        )
 
     # Determine if plan requires payment
     billing_cycle = payload.billing_cycle if payload.billing_cycle else None
@@ -433,9 +451,7 @@ async def register_complete(
     # Step 2: Create root folder (idempotent — safe on retry)
     existing_root = await db.execute(
         select(Folder).where(
-            Folder.user_id == user.id,
-            Folder.parent_id == None,
-            Folder.path == "/"
+            Folder.user_id == user.id, Folder.parent_id == None, Folder.path == "/"
         )
     )
     if not existing_root.scalar_one_or_none():
@@ -446,8 +462,9 @@ async def register_complete(
     # Step 3: Create subscription (retry-safe — reuses matching existing subscription)
     try:
         subscription = await billing.create_subscription(
-            user.id, actual_plan_code,
-            billing_cycle=billing_cycle if not pending_upgrade else 'monthly'
+            user.id,
+            actual_plan_code,
+            billing_cycle=billing_cycle if not pending_upgrade else "monthly",
         )
     except InvalidPlanChangeError:
         # Retry path: subscription already exists from a previous attempt
@@ -456,7 +473,7 @@ async def register_complete(
             raise HTTPException(
                 status_code=409,
                 detail=f"User already has an active subscription ({subscription.plan.plan_code}), "
-                       f"cannot create {actual_plan_code}"
+                f"cannot create {actual_plan_code}",
             )
 
     # Step 4: Sync plan-derived fields from subscription
@@ -477,9 +494,15 @@ async def register_complete(
 
     # Log activity
     await log_activity(
-        db, user.id, "user_registered",
-        metadata={"plan_code": plan_code, "actual_plan_code": actual_plan_code, "billing_cycle": payload.billing_cycle},
-        request=request
+        db,
+        user.id,
+        "user_registered",
+        metadata={
+            "plan_code": plan_code,
+            "actual_plan_code": actual_plan_code,
+            "billing_cycle": payload.billing_cycle,
+        },
+        request=request,
     )
 
     # Create access token
@@ -497,7 +520,7 @@ async def register_complete(
             "storage_quota": user.storage_quota,
             "storage_used": 0,
             "bandwidth_limit_mbps": user.bandwidth_limit_mbps,
-            "theme": "light"
+            "theme": "light",
         },
         "pending_upgrade": pending_upgrade,
     }
@@ -511,7 +534,7 @@ async def register_complete(
         httponly=COOKIE_HTTPONLY,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
-        path="/"
+        path="/",
     )
 
     return response
@@ -525,7 +548,7 @@ async def resend_verification_code(
 ):
     """
     Resend verification code.
-    
+
     Allows users to request a new verification code if they didn't receive
     the first one or it expired. Rate limited to prevent abuse.
     """
@@ -539,7 +562,9 @@ async def resend_verification_code(
     # Get user
     user = await verification_service.get_user_by_email(db, email)
     if not user:
-        raise HTTPException(status_code=404, detail="Registration not found. Please start registration again.")
+        raise HTTPException(
+            status_code=404, detail="Registration not found. Please start registration again."
+        )
 
     # Check if already verified
     if user.email_verified:
@@ -555,17 +580,14 @@ async def resend_verification_code(
     email_sent = await email_service.send_verification_code(email, code)
     if not email_sent:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to send verification email. Please try again later."
+            status_code=500, detail="Failed to send verification email. Please try again later."
         )
 
-    return {
-        "message": "Verification code resent to your email",
-        "email": email
-    }
+    return {"message": "Verification code resent to your email", "email": email}
 
 
 # ========== PASSWORD RESET ENDPOINTS ==========
+
 
 @router.post("/forgot-password", dependencies=[Depends(auth_password_reset_limiter())])
 async def forgot_password(
@@ -579,9 +601,10 @@ async def forgot_password(
     Detects account type (normal, ZK, OAuth-only) and sends appropriate email.
     Always returns a generic message to prevent email enumeration.
     """
-    from ..services.internal_client import InternalServiceClient
-    from ..database import redis_client as _redis
     from datetime import datetime, timezone
+
+    from ..database import redis_client as _redis
+    from ..services.internal_client import InternalServiceClient
 
     email = payload.email.lower().strip()
 
@@ -596,7 +619,7 @@ async def forgot_password(
                     remaining = int(settings.RESEND_CODE_COOLDOWN_SECONDS - time_since)
                     raise HTTPException(
                         status_code=429,
-                        detail=f"Please wait {remaining} seconds before requesting again."
+                        detail=f"Please wait {remaining} seconds before requesting again.",
                     )
         except HTTPException:
             raise
@@ -647,7 +670,8 @@ async def forgot_password(
     # Audit log (best-effort)
     try:
         await audit_logging_service.log_event(
-            db, AuditEventType.PASSWORD_RESET,
+            db,
+            AuditEventType.PASSWORD_RESET,
             user_id=user.id if user else None,
             action="forgot_password_requested",
             result="initiated",
@@ -676,8 +700,9 @@ async def forgot_password_verify(
     Does NOT use verification_service.verify_code (which sets email_verified=True).
     Instead verifies code inline with password-reset semantics.
     """
-    from sqlalchemy import update
     from datetime import datetime, timezone
+
+    from sqlalchemy import update
 
     email = payload.email.lower().strip()
     code = payload.code
@@ -697,40 +722,41 @@ async def forgot_password_verify(
 
     # Check code exists
     if not user.verification_code:
-        raise HTTPException(status_code=400, detail="No reset code found. Please request a new one.")
+        raise HTTPException(
+            status_code=400, detail="No reset code found. Please request a new one."
+        )
 
     # Check expiry
-    if (
-        user.verification_code_expires_at
-        and user.verification_code_expires_at < datetime.now(timezone.utc)
+    if user.verification_code_expires_at and user.verification_code_expires_at < datetime.now(
+        timezone.utc
     ):
-        raise HTTPException(status_code=400, detail="Reset code has expired. Please request a new one.")
+        raise HTTPException(
+            status_code=400, detail="Reset code has expired. Please request a new one."
+        )
 
     # Check max attempts
     if user.verification_code_attempts >= settings.MAX_VERIFICATION_ATTEMPTS:
         raise HTTPException(
-            status_code=400,
-            detail="Maximum attempts exceeded. Please request a new code."
+            status_code=400, detail="Maximum attempts exceeded. Please request a new code."
         )
 
     # Verify code
     if user.verification_code != code:
         new_attempts = user.verification_code_attempts + 1
         await db.execute(
-            update(User).where(User.id == user.id).values(
-                verification_code_attempts=new_attempts
-            )
+            update(User).where(User.id == user.id).values(verification_code_attempts=new_attempts)
         )
         await db.commit()
         remaining = settings.MAX_VERIFICATION_ATTEMPTS - new_attempts
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid code. {remaining} attempts remaining."
+            status_code=400, detail=f"Invalid code. {remaining} attempts remaining."
         )
 
     # Code matches — clear code fields
     await db.execute(
-        update(User).where(User.id == user.id).values(
+        update(User)
+        .where(User.id == user.id)
+        .values(
             verification_code=None,
             verification_code_expires_at=None,
             verification_code_attempts=0,
@@ -759,10 +785,13 @@ async def forgot_password_reset(
     The reset token is single-use (jti is blocklisted after use).
     All existing sessions are invalidated via pwd_reset_at Redis key.
     """
-    from jose import jwt as jose_jwt, JWTError
-    from sqlalchemy import update
-    from ..database import redis_client as _redis
     import time
+
+    from jose import JWTError
+    from jose import jwt as jose_jwt
+    from sqlalchemy import update
+
+    from ..database import redis_client as _redis
 
     email = payload.email.lower().strip()
     reset_token = payload.reset_token
@@ -798,9 +827,7 @@ async def forgot_password_reset(
 
     # Hash and update password
     new_hash = await auth_service.async_get_password_hash(payload.new_password)
-    await db.execute(
-        update(User).where(User.id == user.id).values(password_hash=new_hash)
-    )
+    await db.execute(update(User).where(User.id == user.id).values(password_hash=new_hash))
     await db.commit()
 
     # S3: Blocklist the reset token (single-use)
@@ -820,7 +847,8 @@ async def forgot_password_reset(
     # Audit log
     try:
         await audit_logging_service.log_event(
-            db, AuditEventType.PASSWORD_RESET,
+            db,
+            AuditEventType.PASSWORD_RESET,
             user_id=user.id,
             action="password_reset_completed",
             result="success",

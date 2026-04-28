@@ -1,20 +1,23 @@
 """
 Search API Router - Full-Text Search with Elasticsearch + Semantic Search
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from typing import Optional, List
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, func
-from app.services.search_service import search_service
-from app.services.embedding_service import embedding_service
-from app.models.database import User, Object, FileEmbedding, Folder, FileTag
-from app.dependencies import get_current_user, get_db
-from app.database import get_redis
-from app.config import settings
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
-from shared_billing import BillingService, SubscriptionNotFoundError
+
 import logging
+from typing import List, Optional
+
+from app.config import settings
+from app.database import get_redis
+from app.dependencies import get_current_user, get_db
+from app.models.database import FileEmbedding, FileTag, Folder, Object, User
+from app.services.embedding_service import embedding_service
+from app.services.search_service import search_service
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel
+from shared_billing import BillingService, SubscriptionNotFoundError
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -25,74 +28,76 @@ def safe_isoformat(dt):
     """Safely convert datetime to ISO format string, handling both datetime objects and strings."""
     if dt is None:
         return None
-    if hasattr(dt, 'isoformat'):
+    if hasattr(dt, "isoformat"):
         return dt.isoformat()
     return str(dt)
 
 
 async def database_fallback_search(
-    db: AsyncSession,
-    user_id: str,
-    query: str,
-    size: int = 20,
-    offset: int = 0
+    db: AsyncSession, user_id: str, query: str, size: int = 20, offset: int = 0
 ) -> dict:
     """
     Fallback search using database ILIKE when Elasticsearch is unavailable.
     Searches by filename pattern matching.
     """
     search_pattern = f"%{query}%"
-    
+
     # Search files - Object model uses file_name not name
-    files_query = select(Object).where(
-        Object.user_id == user_id,
-        Object.is_deleted == False,
-        or_(
-            Object.file_name.ilike(search_pattern),
-            Object.mime_type.ilike(search_pattern)
+    files_query = (
+        select(Object)
+        .where(
+            Object.user_id == user_id,
+            Object.is_deleted == False,
+            or_(Object.file_name.ilike(search_pattern), Object.mime_type.ilike(search_pattern)),
         )
-    ).order_by(Object.created_at.desc()).limit(size).offset(offset)
-    
+        .order_by(Object.created_at.desc())
+        .limit(size)
+        .offset(offset)
+    )
+
     files_result = await db.execute(files_query)
     files = files_result.scalars().all()
-    
+
     # Count total files
-    count_query = select(func.count()).select_from(Object).where(
-        Object.user_id == user_id,
-        Object.is_deleted == False,
-        or_(
-            Object.file_name.ilike(search_pattern),
-            Object.mime_type.ilike(search_pattern)
+    count_query = (
+        select(func.count())
+        .select_from(Object)
+        .where(
+            Object.user_id == user_id,
+            Object.is_deleted == False,
+            or_(Object.file_name.ilike(search_pattern), Object.mime_type.ilike(search_pattern)),
         )
     )
     total_files = await db.scalar(count_query) or 0
-    
+
     # Search folders - Folder model uses name
-    folders_query = select(Folder).where(
-        Folder.user_id == user_id,
-        Folder.name.ilike(search_pattern)
-    ).limit(size).offset(offset)
-    
+    folders_query = (
+        select(Folder)
+        .where(Folder.user_id == user_id, Folder.name.ilike(search_pattern))
+        .limit(size)
+        .offset(offset)
+    )
+
     folders_result = await db.execute(folders_query)
     folders = folders_result.scalars().all()
-    
+
     # Batch fetch tags for matched files
     tags_by_file: dict = {}
     if files:
         try:
             fids = [f.id for f in files]
-            tags_result = await db.execute(
-                select(FileTag).filter(FileTag.file_id.in_(fids))
-            )
+            tags_result = await db.execute(select(FileTag).filter(FileTag.file_id.in_(fids)))
             for tag in tags_result.scalars().all():
                 fid = str(tag.file_id)
                 if fid not in tags_by_file:
                     tags_by_file[fid] = []
-                tags_by_file[fid].append({
-                    'tag': tag.tag,
-                    'source': tag.source,
-                    'confidence': tag.confidence,
-                })
+                tags_by_file[fid].append(
+                    {
+                        "tag": tag.tag,
+                        "source": tag.source,
+                        "confidence": tag.confidence,
+                    }
+                )
         except Exception:
             pass
 
@@ -107,13 +112,15 @@ async def database_fallback_search(
                     "mime_type": f.mime_type,
                     "created_at": safe_isoformat(f.created_at),
                     "storage_tier": f.storage_tier,
-                    "is_encrypted": f.encryption_mode != 'none' if hasattr(f, 'encryption_mode') else False,
+                    "is_encrypted": (
+                        f.encryption_mode != "none" if hasattr(f, "encryption_mode") else False
+                    ),
                     "score": 1.0,
                     "source": "database",
                     "tags": tags_by_file.get(str(f.id), []),
                 }
                 for f in files
-            ]
+            ],
         },
         "folders": {
             "total": len(folders),
@@ -123,12 +130,13 @@ async def database_fallback_search(
                     "name": f.name,
                     "created_at": safe_isoformat(f.created_at),
                     "score": 1.0,
-                    "source": "database"
+                    "source": "database",
                 }
                 for f in folders
-            ]
-        }
+            ],
+        },
     }
+
 
 class SearchFilters(BaseModel):
     mime_type: Optional[str] = None
@@ -138,6 +146,7 @@ class SearchFilters(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
 
+
 class SearchRequest(BaseModel):
     query: str
     filters: Optional[SearchFilters] = None
@@ -145,12 +154,13 @@ class SearchRequest(BaseModel):
     page: int = 1
     fuzzy: bool = True
 
+
 @router.post("/", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.SEARCH))])
 async def search_files_and_folders(
     http_request: Request,
     request: SearchRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Full-text search across files and folders
@@ -173,21 +183,23 @@ async def search_files_and_folders(
             filters=filters_dict,
             size=request.size,
             from_=from_,
-            fuzzy=request.fuzzy
+            fuzzy=request.fuzzy,
         )
 
         # If Elasticsearch returned no results or isn't connected, try database fallback
         es_file_count = results.get("files", {}).get("total", 0)
         es_folder_count = results.get("folders", {}).get("total", 0)
-        
+
         if es_file_count == 0 and es_folder_count == 0:
-            logger.info(f"Elasticsearch returned no results for '{request.query}', trying database fallback")
+            logger.info(
+                f"Elasticsearch returned no results for '{request.query}', trying database fallback"
+            )
             results = await database_fallback_search(
                 db=db,
                 user_id=str(current_user.id),
                 query=request.query,
                 size=request.size,
-                offset=from_
+                offset=from_,
             )
             results["search_source"] = "database"
         else:
@@ -198,7 +210,7 @@ async def search_files_and_folders(
             "query": request.query,
             "page": request.page,
             "size": request.size,
-            "results": results
+            "results": results,
         }
     except Exception as e:
         logger.error(f"Search failed: {e}")
@@ -210,7 +222,7 @@ async def search_files_and_folders(
                 user_id=str(current_user.id),
                 query=request.query,
                 size=request.size,
-                offset=from_
+                offset=from_,
             )
             results["search_source"] = "database_fallback"
             return {
@@ -218,11 +230,12 @@ async def search_files_and_folders(
                 "query": request.query,
                 "page": request.page,
                 "size": request.size,
-                "results": results
+                "results": results,
             }
         except Exception as fallback_error:
             logger.error(f"Database fallback also failed: {fallback_error}")
         raise HTTPException(status_code=500, detail="Search failed")
+
 
 @router.get("/autocomplete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.SEARCH))])
 async def autocomplete_search(
@@ -230,7 +243,7 @@ async def autocomplete_search(
     q: str = Query(..., min_length=2, description="Search query (min 2 characters)"),
     size: int = Query(5, ge=1, le=10, description="Number of suggestions"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get autocomplete suggestions as user types.
@@ -238,52 +251,49 @@ async def autocomplete_search(
     """
     try:
         suggestions = await search_service.autocomplete(
-            query=q,
-            user_id=str(current_user.id),
-            size=size
+            query=q, user_id=str(current_user.id), size=size
         )
 
         # Database fallback if Elasticsearch returns no suggestions
         if not suggestions:
             search_pattern = f"{q}%"
-            files_query = select(Object.file_name).where(
-                Object.user_id == current_user.id,
-                Object.is_deleted == False,
-                Object.file_name.ilike(search_pattern)
-            ).limit(size)
+            files_query = (
+                select(Object.file_name)
+                .where(
+                    Object.user_id == current_user.id,
+                    Object.is_deleted == False,
+                    Object.file_name.ilike(search_pattern),
+                )
+                .limit(size)
+            )
             result = await db.execute(files_query)
             suggestions = [row[0] for row in result.fetchall()]
 
-        return {
-            "success": True,
-            "query": q,
-            "suggestions": suggestions
-        }
+        return {"success": True, "query": q, "suggestions": suggestions}
     except Exception as e:
         logger.error(f"Autocomplete failed: {e}")
         # Try database fallback on error
         try:
             search_pattern = f"{q}%"
-            files_query = select(Object.file_name).where(
-                Object.user_id == current_user.id,
-                Object.is_deleted == False,
-                Object.file_name.ilike(search_pattern)
-            ).limit(size)
+            files_query = (
+                select(Object.file_name)
+                .where(
+                    Object.user_id == current_user.id,
+                    Object.is_deleted == False,
+                    Object.file_name.ilike(search_pattern),
+                )
+                .limit(size)
+            )
             result = await db.execute(files_query)
             suggestions = [row[0] for row in result.fetchall()]
-            return {
-                "success": True,
-                "query": q,
-                "suggestions": suggestions
-            }
+            return {"success": True, "query": q, "suggestions": suggestions}
         except Exception as fallback_error:
             logger.error(f"Autocomplete database fallback failed: {fallback_error}")
             raise HTTPException(status_code=500, detail="Autocomplete failed")
 
+
 @router.get("/filters/options")
-async def get_filter_options(
-    current_user: User = Depends(get_current_user)
-):
+async def get_filter_options(current_user: User = Depends(get_current_user)):
     """
     Get available filter options for the search UI
     """
@@ -298,16 +308,16 @@ async def get_filter_options(
                 {"value": "video/mp4", "label": "MP4 Videos"},
                 {"value": "video/quicktime", "label": "MOV Videos"},
                 {"value": "application/zip", "label": "ZIP Archives"},
-                {"value": "text/plain", "label": "Text Files"}
+                {"value": "text/plain", "label": "Text Files"},
             ],
             "size_ranges": [
                 {"label": "< 1 MB", "max": 1048576},
                 {"label": "1 MB - 10 MB", "min": 1048576, "max": 10485760},
                 {"label": "10 MB - 100 MB", "min": 10485760, "max": 104857600},
                 {"label": "100 MB - 1 GB", "min": 104857600, "max": 1073741824},
-                {"label": "> 1 GB", "min": 1073741824}
-            ]
-        }
+                {"label": "> 1 GB", "min": 1073741824},
+            ],
+        },
     }
 
 
@@ -315,8 +325,10 @@ async def get_filter_options(
 # SMART SEARCH - AI-Powered Semantic Search
 # ============================================================================
 
+
 class SmartSearchRequest(BaseModel):
     """Request model for smart search"""
+
     query: str
     filters: Optional[SearchFilters] = None
     size: int = 20
@@ -326,6 +338,7 @@ class SmartSearchRequest(BaseModel):
 
 class SmartSearchResponse(BaseModel):
     """Response model for smart search"""
+
     success: bool
     query: str
     mode: str
@@ -341,7 +354,7 @@ async def smart_search(
     http_request: Request,
     request: SmartSearchRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     AI-Powered Smart Search with Semantic Understanding
@@ -378,19 +391,14 @@ async def smart_search(
             try:
                 billing = BillingService(db, service_type="normal")
                 try:
-                    sub = await billing.get_user_subscription(
-                        current_user.id, include_plan=True
-                    )
+                    sub = await billing.get_user_subscription(current_user.id, include_plan=True)
                 except SubscriptionNotFoundError:
-                    sub = await billing.create_subscription(
-                        current_user.id, "normal_free"
-                    )
+                    sub = await billing.create_subscription(current_user.id, "normal_free")
                 features = getattr(sub.plan, "features", None) or {}
                 if not features.get("ai_features"):
                     semantic_enabled = False
                     logger.debug(
-                        "smart_search semantic disabled for user=%s "
-                        "(plan=%s lacks ai_features)",
+                        "smart_search semantic disabled for user=%s " "(plan=%s lacks ai_features)",
                         current_user.id,
                         getattr(sub.plan, "plan_code", "?"),
                     )
@@ -398,8 +406,7 @@ async def smart_search(
                 # Never fail the search over a billing lookup hiccup — just
                 # fall through to keyword (conservative default).
                 logger.warning(
-                    "smart_search plan check failed for user=%s: %s — "
-                    "falling back to keyword",
+                    "smart_search plan check failed for user=%s: %s — " "falling back to keyword",
                     current_user.id,
                     plan_exc,
                 )
@@ -419,11 +426,11 @@ async def smart_search(
                 query=request.query,
                 user_id=current_user.id,
                 top_k=request.size + from_,  # Get enough for pagination
-                min_score=settings.SEMANTIC_MIN_SCORE
+                min_score=settings.SEMANTIC_MIN_SCORE,
             )
 
             # Paginate results
-            paginated = semantic_results[from_:from_ + request.size]
+            paginated = semantic_results[from_ : from_ + request.size]
 
             # Enrich with file metadata
             results = await _enrich_results_with_metadata(db, paginated, current_user.id)
@@ -437,24 +444,26 @@ async def smart_search(
                 filters=filters_dict,
                 size=request.size,
                 from_=from_,
-                fuzzy=True
+                fuzzy=True,
             )
 
-            results = es_results.get('files', {}).get('hits', [])
-            total = es_results.get('files', {}).get('total', 0)
-            
+            results = es_results.get("files", {}).get("hits", [])
+            total = es_results.get("files", {}).get("total", 0)
+
             # Database fallback if Elasticsearch returns no results
             if total == 0:
-                logger.info(f"Elasticsearch returned no results for smart search '{request.query}', trying database")
+                logger.info(
+                    f"Elasticsearch returned no results for smart search '{request.query}', trying database"
+                )
                 db_results = await database_fallback_search(
                     db=db,
                     user_id=str(current_user.id),
                     query=request.query,
                     size=request.size,
-                    offset=from_
+                    offset=from_,
                 )
-                results = db_results.get('files', {}).get('hits', [])
-                total = db_results.get('files', {}).get('total', 0)
+                results = db_results.get("files", {}).get("hits", [])
+                total = db_results.get("files", {}).get("total", 0)
 
         else:
             # Hybrid search (default)
@@ -465,33 +474,37 @@ async def smart_search(
                 filters=filters_dict,
                 size=settings.SEMANTIC_SEARCH_TOP_K,  # Get more for hybrid
                 from_=0,
-                fuzzy=True
+                fuzzy=True,
             )
 
-            keyword_hits = es_results.get('files', {}).get('hits', [])
+            keyword_hits = es_results.get("files", {}).get("hits", [])
 
             # Database fallback if Elasticsearch returns no keyword results
             if not keyword_hits:
-                logger.info(f"Elasticsearch returned no keyword results for '{request.query}', using database")
+                logger.info(
+                    f"Elasticsearch returned no keyword results for '{request.query}', using database"
+                )
                 db_results = await database_fallback_search(
                     db=db,
                     user_id=str(current_user.id),
                     query=request.query,
                     size=request.size,
-                    offset=from_
+                    offset=from_,
                 )
-                results = db_results.get('files', {}).get('hits', [])
-                total = db_results.get('files', {}).get('total', 0)
+                results = db_results.get("files", {}).get("hits", [])
+                total = db_results.get("files", {}).get("total", 0)
             else:
                 # Optimization: Skip semantic search if we have high-confidence keyword matches
                 # High score (>5.0) indicates exact/near-exact filename match
-                top_score = keyword_hits[0].get('score', 0) if keyword_hits else 0
+                top_score = keyword_hits[0].get("score", 0) if keyword_hits else 0
                 skip_semantic = top_score > 5.0 and len(keyword_hits) <= 10
 
                 if skip_semantic:
                     # Fast path: Use keyword results directly (exact match found)
-                    logger.info(f"High-confidence keyword match (score={top_score}), skipping semantic search")
-                    paginated = keyword_hits[from_:from_ + request.size]
+                    logger.info(
+                        f"High-confidence keyword match (score={top_score}), skipping semantic search"
+                    )
+                    paginated = keyword_hits[from_ : from_ + request.size]
                     results = paginated
                     total = len(keyword_hits)
                 else:
@@ -501,11 +514,11 @@ async def smart_search(
                         keyword_results=keyword_hits,
                         query=request.query,
                         user_id=current_user.id,
-                        top_k=settings.SEMANTIC_SEARCH_TOP_K
+                        top_k=settings.SEMANTIC_SEARCH_TOP_K,
                     )
 
                     # Paginate hybrid results
-                    paginated = hybrid_results[from_:from_ + request.size]
+                    paginated = hybrid_results[from_ : from_ + request.size]
 
                     # Enrich with metadata if needed
                     results = await _enrich_results_with_metadata(db, paginated, current_user.id)
@@ -519,7 +532,7 @@ async def smart_search(
             "size": request.size,
             "total": total,
             "results": results,
-            "semantic_enabled": semantic_enabled
+            "semantic_enabled": semantic_enabled,
         }
 
     except Exception as e:
@@ -529,8 +542,7 @@ async def smart_search(
 
 @router.get("/smart/status")
 async def smart_search_status(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get status of semantic search for current user
@@ -544,18 +556,14 @@ async def smart_search_status(
     try:
         # Count total files
         total_result = await db.execute(
-            select(Object).filter(
-                Object.user_id == current_user.id,
-                Object.is_deleted == False
-            )
+            select(Object).filter(Object.user_id == current_user.id, Object.is_deleted == False)
         )
         total_files = len(total_result.scalars().all())
 
         # Count files with embeddings
         embedding_result = await db.execute(
             select(FileEmbedding).filter(
-                FileEmbedding.user_id == current_user.id,
-                FileEmbedding.status == 'completed'
+                FileEmbedding.user_id == current_user.id, FileEmbedding.status == "completed"
             )
         )
         embedded_files = len(embedding_result.scalars().all())
@@ -571,8 +579,8 @@ async def smart_search_status(
             "coverage_percent": round(coverage, 1),
             "weights": {
                 "keyword": settings.HYBRID_KEYWORD_WEIGHT,
-                "semantic": settings.HYBRID_SEMANTIC_WEIGHT
-            }
+                "semantic": settings.HYBRID_SEMANTIC_WEIGHT,
+            },
         }
     except Exception as e:
         logger.error(f"Failed to get smart search status: {e}")
@@ -580,9 +588,7 @@ async def smart_search_status(
 
 
 async def _enrich_results_with_metadata(
-    db: AsyncSession,
-    results: List[dict],
-    user_id
+    db: AsyncSession, results: List[dict], user_id
 ) -> List[dict]:
     """
     Enrich search results with full file metadata from database.
@@ -597,7 +603,7 @@ async def _enrich_results_with_metadata(
     file_ids = []
     results_by_id = {}
     for r in results:
-        file_id = r.get('id') or r.get('file_id')
+        file_id = r.get("id") or r.get("file_id")
         if file_id:
             try:
                 if isinstance(file_id, str):
@@ -613,10 +619,7 @@ async def _enrich_results_with_metadata(
     # Batch fetch all files in a single query
     try:
         batch_result = await db.execute(
-            select(Object).filter(
-                Object.id.in_(file_ids),
-                Object.user_id == user_id
-            )
+            select(Object).filter(Object.id.in_(file_ids), Object.user_id == user_id)
         )
         files = {str(f.id): f for f in batch_result.scalars().all()}
     except Exception as e:
@@ -626,25 +629,25 @@ async def _enrich_results_with_metadata(
     # Batch fetch tags for all file IDs
     tags_by_file: dict = {}
     try:
-        tags_result = await db.execute(
-            select(FileTag).filter(FileTag.file_id.in_(file_ids))
-        )
+        tags_result = await db.execute(select(FileTag).filter(FileTag.file_id.in_(file_ids)))
         for tag in tags_result.scalars().all():
             fid = str(tag.file_id)
             if fid not in tags_by_file:
                 tags_by_file[fid] = []
-            tags_by_file[fid].append({
-                'tag': tag.tag,
-                'source': tag.source,
-                'confidence': tag.confidence,
-            })
+            tags_by_file[fid].append(
+                {
+                    "tag": tag.tag,
+                    "source": tag.source,
+                    "confidence": tag.confidence,
+                }
+            )
     except Exception as e:
         logger.debug(f"Tag fetch failed (non-critical): {e}")
 
     # Enrich results in original order
     enriched = []
     for r in results:
-        file_id = r.get('id') or r.get('file_id')
+        file_id = r.get("id") or r.get("file_id")
         if not file_id:
             enriched.append(r)
             continue
@@ -654,14 +657,14 @@ async def _enrich_results_with_metadata(
 
         if file_obj:
             enriched_result = {
-                'id': str(file_obj.id),
-                'name': file_obj.file_name,
-                'mime_type': file_obj.mime_type,
-                'size': file_obj.file_size,
-                'created_at': safe_isoformat(file_obj.created_at),
-                'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                **{k: v for k, v in r.items() if k not in ['file_id', 'id']},
-                'tags': tags_by_file.get(file_id_str, []),
+                "id": str(file_obj.id),
+                "name": file_obj.file_name,
+                "mime_type": file_obj.mime_type,
+                "size": file_obj.file_size,
+                "created_at": safe_isoformat(file_obj.created_at),
+                "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                **{k: v for k, v in r.items() if k not in ["file_id", "id"]},
+                "tags": tags_by_file.get(file_id_str, []),
             }
             enriched.append(enriched_result)
         else:
@@ -674,19 +677,19 @@ async def _enrich_results_with_metadata(
 # RE-INDEX ENDPOINT - Rebuild Elasticsearch index for user's files
 # ============================================================================
 
+
 @router.post("/reindex", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
 async def reindex_user_files(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Re-index all files for the current user in Elasticsearch.
-    
+
     This is useful when:
     - Files were uploaded but not indexed
     - Elasticsearch was down during uploads
     - Index got corrupted or out of sync
-    
+
     Returns:
     - Number of files indexed
     - Number of failures
@@ -695,61 +698,62 @@ async def reindex_user_files(
     try:
         # Get all user's files
         result = await db.execute(
-            select(Object).where(
-                Object.user_id == current_user.id,
-                Object.is_deleted == False
-            )
+            select(Object).where(Object.user_id == current_user.id, Object.is_deleted == False)
         )
         files = result.scalars().all()
-        
+
         if not files:
             return {
                 "success": True,
                 "message": "No files to index",
                 "indexed": 0,
                 "failed": 0,
-                "total": 0
+                "total": 0,
             }
-        
+
         indexed_count = 0
         failed_count = 0
-        
+
         for file_obj in files:
             try:
                 file_data = {
-                    'id': str(file_obj.id),
-                    'user_id': str(file_obj.user_id),
-                    'name': file_obj.file_name,
-                    'original_name': file_obj.file_name,
-                    'size': file_obj.file_size,
-                    'mime_type': file_obj.mime_type,
-                    'storage_tier': file_obj.storage_tier or 'cache',
-                    'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                    'created_at': safe_isoformat(file_obj.created_at),
-                    'updated_at': safe_isoformat(file_obj.updated_at),
-                    'is_encrypted': file_obj.encryption_mode != 'none' if hasattr(file_obj, 'encryption_mode') else False,
+                    "id": str(file_obj.id),
+                    "user_id": str(file_obj.user_id),
+                    "name": file_obj.file_name,
+                    "original_name": file_obj.file_name,
+                    "size": file_obj.file_size,
+                    "mime_type": file_obj.mime_type,
+                    "storage_tier": file_obj.storage_tier or "cache",
+                    "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                    "created_at": safe_isoformat(file_obj.created_at),
+                    "updated_at": safe_isoformat(file_obj.updated_at),
+                    "is_encrypted": (
+                        file_obj.encryption_mode != "none"
+                        if hasattr(file_obj, "encryption_mode")
+                        else False
+                    ),
                 }
-                
+
                 success = await search_service.index_file(file_data)
                 if success:
                     indexed_count += 1
                 else:
                     failed_count += 1
-                    
+
             except Exception as e:
                 logger.warning(f"Failed to index file {file_obj.id}: {e}")
                 failed_count += 1
-        
+
         logger.info(f"Re-indexed {indexed_count}/{len(files)} files for user {current_user.id}")
-        
+
         return {
             "success": True,
             "message": f"Re-indexed {indexed_count} files",
             "indexed": indexed_count,
             "failed": failed_count,
-            "total": len(files)
+            "total": len(files),
         }
-        
+
     except Exception as e:
         logger.error(f"Re-index failed: {e}")
         raise HTTPException(status_code=500, detail=f"Re-index failed: {str(e)}")
@@ -757,12 +761,11 @@ async def reindex_user_files(
 
 @router.get("/reindex/status")
 async def get_index_status(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get the indexing status for the current user.
-    
+
     Returns:
     - Total files in database
     - Elasticsearch connection status
@@ -771,44 +774,39 @@ async def get_index_status(
     try:
         # Count total files in database
         result = await db.execute(
-            select(func.count()).select_from(Object).where(
-                Object.user_id == current_user.id,
-                Object.is_deleted == False
-            )
+            select(func.count())
+            .select_from(Object)
+            .where(Object.user_id == current_user.id, Object.is_deleted == False)
         )
         total_files = result.scalar() or 0
-        
+
         # Check Elasticsearch status
         es_connected = search_service.connected
         es_status = "connected" if es_connected else "disconnected"
-        
+
         # Try to get count from Elasticsearch
         es_count = 0
         if es_connected and search_service.client:
             try:
                 es_result = await search_service.client.count(
                     index=search_service.files_index,
-                    body={
-                        "query": {
-                            "term": {"user_id": str(current_user.id)}
-                        }
-                    }
+                    body={"query": {"term": {"user_id": str(current_user.id)}}},
                 )
-                es_count = es_result.get('count', 0)
+                es_count = es_result.get("count", 0)
             except Exception as e:
                 logger.warning(f"Failed to get ES count: {e}")
-        
+
         sync_status = "synced" if es_count == total_files else "out_of_sync"
-        
+
         return {
             "success": True,
             "elasticsearch_status": es_status,
             "database_files": total_files,
             "indexed_files": es_count,
             "sync_status": sync_status,
-            "needs_reindex": es_count < total_files
+            "needs_reindex": es_count < total_files,
         }
-        
+
     except Exception as e:
         logger.error(f"Failed to get index status: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")

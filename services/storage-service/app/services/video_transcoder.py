@@ -1,33 +1,35 @@
 """Video transcoding helper to produce browser-friendly MP4 streams."""
 
-import os
 import asyncio
-import aiofiles
-import logging
-import struct
-import subprocess
 import copy
 import json
+import logging
+import os
 import re
+import struct
+import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Optional, Dict, List, Tuple
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
-from .preview_optimizer import preview_optimizer, _fetch_from_cas
+import aiofiles
+
+from .preview_optimizer import _fetch_from_cas, preview_optimizer
 
 logger = logging.getLogger(__name__)
 
 # Minimal valid ftyp box: tells ffprobe the file is ISO MP4
-_SYNTHETIC_FTYP = b'\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp41'
+_SYNTHETIC_FTYP = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp41"
 _HEAD_PROBE_CHUNKS = 2  # 64MB — covers head-moov MP4s and all non-MP4 formats
 _TAIL_PROBE_CHUNKS = 2  # 64MB — covers moov atoms up to ~64MB (hours of video)
 _THUMBNAIL_PROBE_BYTES = 64 * 1024 * 1024  # 64MB partial download for thumbnail generation
 
 
-def _check_disk_space_simple(required_bytes: int, path: str = '/tmp') -> bool:
+def _check_disk_space_simple(required_bytes: int, path: str = "/tmp") -> bool:
     """Check if sufficient disk space is available (1GB headroom)."""
     import shutil
+
     try:
         usage = shutil.disk_usage(path)
         return usage.free >= (required_bytes + 1024 * 1024 * 1024)
@@ -39,11 +41,11 @@ def _find_moov_atom(data: bytes) -> Optional[Tuple[int, int]]:
     """Find moov atom in raw bytes. Returns (offset, size) or None."""
     search_start = 4  # Need at least 4 bytes before for box size
     while True:
-        idx = data.find(b'moov', search_start)
+        idx = data.find(b"moov", search_start)
         if idx == -1:
             return None
         # Read the 4 bytes before 'moov' as the box size (big-endian uint32)
-        box_size = struct.unpack('>I', data[idx - 4:idx])[0]
+        box_size = struct.unpack(">I", data[idx - 4 : idx])[0]
         box_start = idx - 4
         # Validate: moov box must be >= 8 bytes and fully contained in buffer
         if 8 <= box_size <= len(data) - box_start:
@@ -59,14 +61,14 @@ def _scan_head_atoms(file_path: str, scan_bytes: int = 4 * 1024 * 1024) -> dict:
     since these boxes appear early in the container.
     """
     try:
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             data = f.read(scan_bytes)
         return {
-            'has_moov': b'moov' in data,
-            'is_fragmented': b'moof' in data or b'mfhd' in data,
+            "has_moov": b"moov" in data,
+            "is_fragmented": b"moof" in data or b"mfhd" in data,
         }
     except Exception:
-        return {'has_moov': False, 'is_fragmented': False}
+        return {"has_moov": False, "is_fragmented": False}
 
 
 class VideoTranscodeError(Exception):
@@ -88,14 +90,16 @@ class TranscodePolicy:
     - Tier 2 (<1GB): fast preset, CRF 24, 4M max bitrate
     - Tier 3 (>1GB): ultrafast preset, CRF 25, 5M max bitrate
     """
+
     preset: str
     crf: int
     max_bitrate: Optional[str]
     tier: str
 
     @staticmethod
-    def select(file_size_mb: float, duration_sec: float = 0,
-               resolution: Optional[tuple] = None) -> 'TranscodePolicy':
+    def select(
+        file_size_mb: float, duration_sec: float = 0, resolution: Optional[tuple] = None
+    ) -> "TranscodePolicy":
         """
         Select transcoding policy based on file characteristics.
 
@@ -113,29 +117,14 @@ class TranscodePolicy:
 
         # Tier 1: Small files - prioritize quality
         if file_size_mb < tier1_max:
-            return TranscodePolicy(
-                preset="veryfast",
-                crf=23,
-                max_bitrate=None,
-                tier="tier1"
-            )
+            return TranscodePolicy(preset="veryfast", crf=23, max_bitrate=None, tier="tier1")
 
         # Tier 2: Medium files - balance quality and speed
         if file_size_mb < tier2_max:
-            return TranscodePolicy(
-                preset="fast",
-                crf=24,
-                max_bitrate="4M",
-                tier="tier2"
-            )
+            return TranscodePolicy(preset="fast", crf=24, max_bitrate="4M", tier="tier2")
 
         # Tier 3: Large files - prioritize speed
-        return TranscodePolicy(
-            preset=tier3_preset,
-            crf=25,
-            max_bitrate="5M",
-            tier="tier3"
-        )
+        return TranscodePolicy(preset=tier3_preset, crf=25, max_bitrate="5M", tier="tier3")
 
     def to_ffmpeg_args(self, include_streaming_flags: bool = True) -> List[str]:
         """
@@ -149,16 +138,16 @@ class TranscodePolicy:
         Returns:
             List of ffmpeg command-line arguments for video encoding.
         """
-        args = ['-preset', self.preset, '-crf', str(self.crf)]
+        args = ["-preset", self.preset, "-crf", str(self.crf)]
 
         # Add streaming optimization flags by default
         # -pix_fmt yuv420p: Ensures color compatibility across all browsers
         # -movflags +faststart: Moves moov atom to front for instant playback
         if include_streaming_flags:
-            args.extend(['-pix_fmt', 'yuv420p', '-movflags', '+faststart'])
+            args.extend(["-pix_fmt", "yuv420p", "-movflags", "+faststart"])
 
         if self.max_bitrate:
-            args.extend(['-maxrate', self.max_bitrate, '-bufsize', self.max_bitrate])
+            args.extend(["-maxrate", self.max_bitrate, "-bufsize", self.max_bitrate])
 
         return args
 
@@ -174,13 +163,13 @@ class VideoTranscoder:
     - Serve cached artifact for future requests
     """
 
-    INCOMPATIBLE_EXTS = {'.mov', '.qt', '.m4v', '.3gp', '.3g2', '.hevc'}
+    INCOMPATIBLE_EXTS = {".mov", ".qt", ".m4v", ".3gp", ".3g2", ".hevc"}
     INCOMPATIBLE_MIMES = {
-        'video/quicktime',
-        'video/x-m4v',
-        'video/3gpp',
-        'video/3gpp2',
-        'video/hevc'
+        "video/quicktime",
+        "video/x-m4v",
+        "video/3gpp",
+        "video/3gpp2",
+        "video/hevc",
     }
     OUTPUT_DIR = "/app/storage/transcoded"
     MAX_TRANSCODE_SIZE = 5 * 1024 * 1024 * 1024  # 5GB safety limit
@@ -227,53 +216,59 @@ class VideoTranscoder:
         max_size_gb = float(os.getenv("TRANSCODE_MAX_SIZE_GB", "2"))
         max_duration_min = int(os.getenv("TRANSCODE_MAX_DURATION_MINUTES", "30"))
 
-        file_size_gb = (file_obj.file_size or 0) / (1024 ** 3)
+        file_size_gb = (file_obj.file_size or 0) / (1024**3)
         if file_size_gb > max_size_gb:
-            return 'reject'
+            return "reject"
 
         if probe_data:
-            duration_min = probe_data.get('duration', 0) / 60
+            duration_min = probe_data.get("duration", 0) / 60
             if duration_min > max_duration_min:
-                return 'reject'
+                return "reject"
 
             # Check if codecs are compatible (h264+aac)
             # Handle None values safely - video might not have audio track
-            codec = (probe_data.get('codec_name') or '').lower()
-            audio_codec = (probe_data.get('audio_codec') or '').lower()
+            codec = (probe_data.get("codec_name") or "").lower()
+            audio_codec = (probe_data.get("audio_codec") or "").lower()
 
             # Video-only files (no audio) with h264 are also compatible
             # Empty string means no audio track detected
-            if codec == 'h264' and audio_codec in ('aac', 'mp4a', ''):
+            if codec == "h264" and audio_codec in ("aac", "mp4a", ""):
                 # Check if remux optimization is enabled
                 enable_remux = os.getenv("ENABLE_REMUX_OPTIMIZATION", "true").lower() == "true"
 
                 # Check container format
-                ext = os.path.splitext(file_obj.file_name or '')[1].lower()
-                mime = (file_obj.mime_type or '').lower()
+                ext = os.path.splitext(file_obj.file_name or "")[1].lower()
+                mime = (file_obj.mime_type or "").lower()
 
                 # If compatible codecs but incompatible container, use fast remux
-                if enable_remux and (ext in self.INCOMPATIBLE_EXTS or mime in self.INCOMPATIBLE_MIMES):
-                    logger.info(f"⚡ Fast remux for {file_obj.file_name} - h264+aac in {ext} container")
-                    return 'remux'
+                if enable_remux and (
+                    ext in self.INCOMPATIBLE_EXTS or mime in self.INCOMPATIBLE_MIMES
+                ):
+                    logger.info(
+                        f"⚡ Fast remux for {file_obj.file_name} - h264+aac in {ext} container"
+                    )
+                    return "remux"
 
                 # Already in compatible format (MP4 with h264+aac)
-                logger.info(f"✓ Skipping transcode for {file_obj.file_name} - already MP4 with h264+aac")
-                return 'skip'
+                logger.info(
+                    f"✓ Skipping transcode for {file_obj.file_name} - already MP4 with h264+aac"
+                )
+                return "skip"
 
         # Fallback to extension/MIME check (existing logic)
-        mime = (file_obj.mime_type or '').lower()
-        ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+        mime = (file_obj.mime_type or "").lower()
+        ext = os.path.splitext(file_obj.file_name or "")[1].lower()
 
         # If probe failed (probe_data is None) for video files,
         # transcode for safety since we don't know the codec
-        if probe_data is None and mime.startswith('video/'):
+        if probe_data is None and mime.startswith("video/"):
             logger.info(f"⚠️  Probe failed for {file_obj.file_name} - transcoding for safety")
-            return 'transcode'
+            return "transcode"
 
         if mime in self.INCOMPATIBLE_MIMES or ext in self.INCOMPATIBLE_EXTS:
-            return 'transcode'
+            return "transcode"
 
-        return 'skip'
+        return "skip"
 
     def _snapshot(self, file_obj):
         return SimpleNamespace(
@@ -287,7 +282,7 @@ class VideoTranscoder:
             chunk_info=copy.deepcopy(file_obj.chunk_info),
             file_metadata=copy.deepcopy(file_obj.file_metadata),
             object_path=file_obj.object_path,
-            content_hash=getattr(file_obj, 'content_hash', None),
+            content_hash=getattr(file_obj, "content_hash", None),
         )
 
     async def _run_ffprobe_async(self, probe_path: str, label: str) -> Optional[Dict]:
@@ -297,11 +292,13 @@ class VideoTranscoder:
         blocked (unlike the old ``subprocess.run`` approach).
         """
         cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-print_format', 'json',
-            '-show_format',
-            '-show_streams',
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
             probe_path,
         ]
 
@@ -312,7 +309,8 @@ class VideoTranscoder:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=5,
+                proc.communicate(),
+                timeout=5,
             )
         except asyncio.TimeoutError:
             try:
@@ -332,50 +330,55 @@ class VideoTranscoder:
             return None
 
         stdout_text = (stdout_bytes or b"").decode(errors="replace")
-        if not stdout_text or stdout_text.strip() == '{}':
+        if not stdout_text or stdout_text.strip() == "{}":
             logger.debug(f"ffprobe returned empty output for {label}")
             return None
 
         data = json.loads(stdout_text)
         video_stream = next(
-            (s for s in data.get('streams', []) if s.get('codec_type') == 'video'), None
+            (s for s in data.get("streams", []) if s.get("codec_type") == "video"), None
         )
         audio_stream = next(
-            (s for s in data.get('streams', []) if s.get('codec_type') == 'audio'), None
+            (s for s in data.get("streams", []) if s.get("codec_type") == "audio"), None
         )
-        format_info = data.get('format', {})
+        format_info = data.get("format", {})
 
         if not video_stream:
             logger.debug(f"No video stream found in {label}")
             return None
 
         return {
-            'codec_name': video_stream.get('codec_name'),
-            'audio_codec': audio_stream.get('codec_name') if audio_stream else None,
-            'duration': float(format_info.get('duration', 0)),
-            'width': video_stream.get('width'),
-            'height': video_stream.get('height'),
-            'bitrate': int(format_info.get('bit_rate', 0))
+            "codec_name": video_stream.get("codec_name"),
+            "audio_codec": audio_stream.get("codec_name") if audio_stream else None,
+            "duration": float(format_info.get("duration", 0)),
+            "width": video_stream.get("width"),
+            "height": video_stream.get("height"),
+            "bitrate": int(format_info.get("bit_rate", 0)),
         }
 
     @staticmethod
-    def _build_probe_file(chunk_paths, encryption_service, file_key, chunk_indices, was_compressed, output_path):
+    def _build_probe_file(
+        chunk_paths, encryption_service, file_key, chunk_indices, was_compressed, output_path
+    ):
         """Sync helper: read, decrypt, decompress chunks and write to *output_path*.
 
         Returns total bytes written.  Runs in a thread so the event loop is
         never blocked by disk I/O or AES decryption.
         """
         from ..utils.compression import compressor as _compressor
+
         total_bytes = 0
-        with open(output_path, 'wb') as out:
+        with open(output_path, "wb") as out:
             for i in chunk_indices:
                 chunk_path = chunk_paths.get(str(i))
                 if not chunk_path or not os.path.exists(chunk_path):
                     logger.warning(f"Chunk {i} not found during probe build")
                     continue
-                with open(chunk_path, 'rb') as f:
+                with open(chunk_path, "rb") as f:
                     encrypted_chunk = f.read()
-                decrypted = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
+                decrypted = encryption_service.decrypt_chunk(
+                    encrypted_chunk, file_key, chunk_index=i
+                )
                 if was_compressed:
                     decrypted = _compressor.decompress(decrypted)
                 out.write(decrypted)
@@ -383,19 +386,22 @@ class VideoTranscoder:
         return total_bytes
 
     @staticmethod
-    def _read_tail_bytes(chunk_paths, encryption_service, file_key, tail_start, total_chunks, was_compressed):
+    def _read_tail_bytes(
+        chunk_paths, encryption_service, file_key, tail_start, total_chunks, was_compressed
+    ):
         """Sync helper: read and decrypt tail chunks into a bytearray.
 
         Runs in a thread so the event loop is never blocked.
         """
         from ..utils.compression import compressor as _compressor
+
         tail_bytes = bytearray()
         for i in range(tail_start, total_chunks):
             chunk_path = chunk_paths.get(str(i))
             if not chunk_path or not os.path.exists(chunk_path):
                 logger.warning(f"Tail chunk {i} not found during probe")
                 continue
-            with open(chunk_path, 'rb') as f:
+            with open(chunk_path, "rb") as f:
                 encrypted_chunk = f.read()
             decrypted = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
             if was_compressed:
@@ -404,54 +410,84 @@ class VideoTranscoder:
         return tail_bytes
 
     async def _build_probe_file_with_rust(
-        self, chunk_paths, file_key, chunk_indices, was_compressed, output_path, encryption_service,
+        self,
+        chunk_paths,
+        file_key,
+        chunk_indices,
+        was_compressed,
+        output_path,
+        encryption_service,
     ) -> int:
         """Try Rust bulk-decrypt for head probe, fall back to Python."""
         from ..utils.executors import run_in_heavy_pool
 
         rust_data = await self._rust_bulk_decrypt(
-            chunk_paths, file_key, chunk_indices, was_compressed,
+            chunk_paths,
+            file_key,
+            chunk_indices,
+            was_compressed,
         )
         if rust_data is not None:
+
             def _write(path, data):
-                with open(path, 'wb') as f:
+                with open(path, "wb") as f:
                     f.write(data)
                 return len(data)
+
             return await asyncio.to_thread(_write, output_path, rust_data)
 
         return await run_in_heavy_pool(
             self._build_probe_file,
-            chunk_paths, encryption_service, file_key,
-            chunk_indices, was_compressed, output_path,
+            chunk_paths,
+            encryption_service,
+            file_key,
+            chunk_indices,
+            was_compressed,
+            output_path,
         )
 
     async def _read_tail_bytes_with_rust(
-        self, chunk_paths, file_key, tail_start, total_chunks, was_compressed, encryption_service,
+        self,
+        chunk_paths,
+        file_key,
+        tail_start,
+        total_chunks,
+        was_compressed,
+        encryption_service,
     ) -> bytearray:
         """Try Rust bulk-decrypt for tail probe, fall back to Python."""
         from ..utils.executors import run_in_heavy_pool
 
         indices = list(range(tail_start, total_chunks))
         rust_data = await self._rust_bulk_decrypt(
-            chunk_paths, file_key, indices, was_compressed,
+            chunk_paths,
+            file_key,
+            indices,
+            was_compressed,
         )
         if rust_data is not None:
             return bytearray(rust_data)
 
         return await run_in_heavy_pool(
             self._read_tail_bytes,
-            chunk_paths, encryption_service, file_key,
-            tail_start, total_chunks, was_compressed,
+            chunk_paths,
+            encryption_service,
+            file_key,
+            tail_start,
+            total_chunks,
+            was_compressed,
         )
 
     @staticmethod
     async def _rust_bulk_decrypt(chunk_paths, file_key, chunk_indices, was_compressed):
         """Call Rust /bulk-decrypt for a set of chunk indices. Returns bytes or None."""
         from ..config import settings
+
         if not getattr(settings, "RUST_DATAPLANE_ENABLED", False):
             return None
         try:
             from ..services.rust_dataplane_client import get_rust_client
+
             rust_client = get_rust_client()
             if not await rust_client.is_available():
                 return None
@@ -472,7 +508,8 @@ class VideoTranscoder:
             )
             logger.info(
                 "Video probe decrypt via Rust: %d chunks, %d bytes",
-                len(chunks), len(result),
+                len(chunks),
+                len(result),
             )
             return result
         except Exception as e:
@@ -508,11 +545,11 @@ class VideoTranscoder:
                     return None
 
                 chunk_info = file_obj.chunk_info
-                chunk_paths = chunk_info.get('paths', {})
+                chunk_paths = chunk_info.get("paths", {})
                 resolved_obj = file_obj
 
                 # Content-addressed storage: use CAS block fetch for head/tail probe
-                if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+                if "blocks" in chunk_info and "stored_blocks" in chunk_info:
                     head_bytes = min(64 * 1024 * 1024, resolved_obj.file_size or 0)
                     if head_bytes <= 0:
                         return None
@@ -529,12 +566,12 @@ class VideoTranscoder:
                     head_result = await self._run_ffprobe_async(probe_path, resolved_obj.file_name)
                     if head_result:
                         atoms = await asyncio.to_thread(_scan_head_atoms, probe_path)
-                        head_result['moov_at_end'] = False
-                        head_result['is_fragmented'] = atoms['is_fragmented']
+                        head_result["moov_at_end"] = False
+                        head_result["is_fragmented"] = atoms["is_fragmented"]
                         return head_result
 
-                    ext = os.path.splitext(resolved_obj.file_name or '')[1].lower()
-                    mp4_exts = {'.mp4', '.m4v', '.mov', '.m4a', '.3gp', '.3g2'}
+                    ext = os.path.splitext(resolved_obj.file_name or "")[1].lower()
+                    mp4_exts = {".mp4", ".m4v", ".mov", ".m4a", ".3gp", ".3g2"}
                     if ext not in mp4_exts:
                         return None
                     tail_size = min(64 * 1024 * 1024, resolved_obj.file_size or 0)
@@ -543,11 +580,13 @@ class VideoTranscoder:
                     tail_start = max(0, (resolved_obj.file_size or 0) - tail_size)
                     tail_probe_file = f"/tmp/probe_{resolved_obj.id}.tail"
                     await _fetch_from_cas(
-                        chunk_info, resolved_obj,
-                        tail_start, (resolved_obj.file_size or 1) - 1,
-                        tail_probe_file
+                        chunk_info,
+                        resolved_obj,
+                        tail_start,
+                        (resolved_obj.file_size or 1) - 1,
+                        tail_probe_file,
                     )
-                    async with aiofiles.open(tail_probe_file, 'rb') as f:
+                    async with aiofiles.open(tail_probe_file, "rb") as f:
                         tail_bytes = await f.read()
                     if os.path.exists(tail_probe_file):
                         try:
@@ -558,11 +597,11 @@ class VideoTranscoder:
                     if not moov:
                         return None
                     moov_offset, moov_size = moov
-                    moov_bytes = bytes(tail_bytes[moov_offset:moov_offset + moov_size])
+                    moov_bytes = bytes(tail_bytes[moov_offset : moov_offset + moov_size])
                     synth_path = f"/tmp/probe_{resolved_obj.id}.synthetic"
 
                     def _write_synth(path: str, ftyp: bytes, moov: bytes):
-                        with open(path, 'wb') as out:
+                        with open(path, "wb") as out:
                             out.write(ftyp)
                             out.write(moov)
 
@@ -576,7 +615,7 @@ class VideoTranscoder:
                         except OSError:
                             pass
                     if tail_result:
-                        tail_result['moov_at_end'] = True
+                        tail_result["moov_at_end"] = True
                     return tail_result
 
                 if not chunk_paths:
@@ -597,8 +636,12 @@ class VideoTranscoder:
                 head_count = min(_HEAD_PROBE_CHUNKS, total_chunks)
 
                 total_bytes = await self._build_probe_file_with_rust(
-                    chunk_paths, file_key, list(range(head_count)),
-                    was_compressed, temp_probe_file, encryption_service,
+                    chunk_paths,
+                    file_key,
+                    list(range(head_count)),
+                    was_compressed,
+                    temp_probe_file,
+                    encryption_service,
                 )
 
                 probe_path = temp_probe_file
@@ -610,8 +653,8 @@ class VideoTranscoder:
                 head_result = await self._run_ffprobe_async(probe_path, file_obj.file_name)
                 if head_result:
                     atoms = await asyncio.to_thread(_scan_head_atoms, probe_path)
-                    head_result['moov_at_end'] = False
-                    head_result['is_fragmented'] = atoms['is_fragmented']
+                    head_result["moov_at_end"] = False
+                    head_result["is_fragmented"] = atoms["is_fragmented"]
                     logger.info(
                         f"🔍 Probed {file_obj.file_name}: "
                         f"{head_result['codec_name']}/{head_result['audio_codec']} "
@@ -620,12 +663,15 @@ class VideoTranscoder:
                     return head_result
 
                 # -------- Pass 2: Tail probe (only for MP4/MOV containers) --------
-                ext = os.path.splitext(file_obj.file_name or '')[1].lower()
-                mime = (file_obj.mime_type or '').lower()
-                mp4_exts = {'.mp4', '.m4v', '.mov', '.m4a', '.3gp', '.3g2'}
+                ext = os.path.splitext(file_obj.file_name or "")[1].lower()
+                mime = (file_obj.mime_type or "").lower()
+                mp4_exts = {".mp4", ".m4v", ".mov", ".m4a", ".3gp", ".3g2"}
                 mp4_mimes = {
-                    'video/mp4', 'video/quicktime', 'video/x-m4v',
-                    'video/3gpp', 'video/3gpp2',
+                    "video/mp4",
+                    "video/quicktime",
+                    "video/x-m4v",
+                    "video/3gpp",
+                    "video/3gpp2",
                 }
 
                 if ext not in mp4_exts and mime not in mp4_mimes:
@@ -647,8 +693,12 @@ class VideoTranscoder:
                 tail_start = total_chunks - tail_count
 
                 tail_bytes = await self._read_tail_bytes_with_rust(
-                    chunk_paths, file_key, tail_start, total_chunks,
-                    was_compressed, encryption_service,
+                    chunk_paths,
+                    file_key,
+                    tail_start,
+                    total_chunks,
+                    was_compressed,
+                    encryption_service,
                 )
 
                 logger.info(
@@ -659,19 +709,17 @@ class VideoTranscoder:
                 # Search for moov atom in tail bytes (offload to avoid blocking event loop)
                 moov = await asyncio.to_thread(_find_moov_atom, bytes(tail_bytes))
                 if not moov:
-                    logger.warning(
-                        f"❌ No moov atom found in tail of {file_obj.file_name}"
-                    )
+                    logger.warning(f"❌ No moov atom found in tail of {file_obj.file_name}")
                     return None
 
                 moov_offset, moov_size = moov
-                moov_bytes = bytes(tail_bytes[moov_offset:moov_offset + moov_size])
+                moov_bytes = bytes(tail_bytes[moov_offset : moov_offset + moov_size])
 
                 # Build synthetic ftyp + moov file for ffprobe (offload sync I/O)
                 tail_probe_file = f"/tmp/probe_{file_obj.id}.synthetic"
 
                 def _write_synth(path: str, ftyp: bytes, moov: bytes):
-                    with open(path, 'wb') as out:
+                    with open(path, "wb") as out:
                         out.write(ftyp)
                         out.write(moov)
 
@@ -688,8 +736,8 @@ class VideoTranscoder:
                 )
                 if tail_result:
                     # Zero out bitrate — meaningless from synthetic file
-                    tail_result['bitrate'] = 0
-                    tail_result['moov_at_end'] = True
+                    tail_result["bitrate"] = 0
+                    tail_result["moov_at_end"] = True
                     logger.info(
                         f"🔍 Tail-probed {file_obj.file_name}: "
                         f"{tail_result['codec_name']}/{tail_result['audio_codec']} "
@@ -697,9 +745,7 @@ class VideoTranscoder:
                     )
                     return tail_result
 
-                logger.warning(
-                    f"❌ Both head and tail probes failed for {file_obj.file_name}"
-                )
+                logger.warning(f"❌ Both head and tail probes failed for {file_obj.file_name}")
                 return None
 
             # For single files, try probing the file directly
@@ -717,8 +763,8 @@ class VideoTranscoder:
                 atoms = await asyncio.to_thread(_scan_head_atoms, probe_path)
                 # Single-file probe reads the full file — if moov is NOT in
                 # the first 4MB, the file is moov-at-end and needs faststart.
-                result['moov_at_end'] = not atoms['has_moov']
-                result['is_fragmented'] = atoms['is_fragmented']
+                result["moov_at_end"] = not atoms["has_moov"]
+                result["is_fragmented"] = atoms["is_fragmented"]
                 logger.info(
                     f"🔍 Probed {file_obj.file_name}: "
                     f"{result['codec_name']}/{result['audio_codec']} "
@@ -730,8 +776,7 @@ class VideoTranscoder:
 
         except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
             logger.warning(
-                f"❌ Probe exception for {file_obj.file_name}: "
-                f"{type(e).__name__}: {e}"
+                f"❌ Probe exception for {file_obj.file_name}: " f"{type(e).__name__}: {e}"
             )
             return None
         finally:
@@ -753,9 +798,9 @@ class VideoTranscoder:
         back to full download.
         """
         try:
-            if file_obj.storage_type not in ('chunked', 'content_addressed'):
+            if file_obj.storage_type not in ("chunked", "content_addressed"):
                 return False
-            if probe_data.get('moov_at_end', True):
+            if probe_data.get("moov_at_end", True):
                 return False
             if not file_obj.chunk_info or not isinstance(file_obj.chunk_info, dict):
                 return False
@@ -767,7 +812,7 @@ class VideoTranscoder:
                 return False
 
             # CAS storage: use byte-range fetch
-            if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+            if "blocks" in chunk_info and "stored_blocks" in chunk_info:
                 written = await _fetch_from_cas(
                     chunk_info, file_obj, 0, fetch_bytes - 1, output_path
                 )
@@ -780,7 +825,7 @@ class VideoTranscoder:
                 return False
 
             # Traditional chunked storage: decrypt first 2 chunks via Rust
-            chunk_paths = chunk_info.get('paths', {})
+            chunk_paths = chunk_info.get("paths", {})
             if not chunk_paths:
                 return False
 
@@ -795,8 +840,12 @@ class VideoTranscoder:
             head_count = min(_HEAD_PROBE_CHUNKS, total_chunks)
 
             total_bytes = await self._build_probe_file_with_rust(
-                chunk_paths, file_key, list(range(head_count)),
-                was_compressed, output_path, encryption_service,
+                chunk_paths,
+                file_key,
+                list(range(head_count)),
+                was_compressed,
+                output_path,
+                encryption_service,
             )
 
             if total_bytes > 1024:
@@ -808,9 +857,7 @@ class VideoTranscoder:
             return False
 
         except Exception as e:
-            logger.warning(
-                f"Failed to build thumbnail probe file for {file_obj.file_name}: {e}"
-            )
+            logger.warning(f"Failed to build thumbnail probe file for {file_obj.file_name}: {e}")
             return False
 
     async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
@@ -824,22 +871,25 @@ class VideoTranscoder:
         # ============ CHECK CACHE FIRST (before any expensive operations) ============
         # If a transcoded version already exists, return it immediately without probing
         if os.path.exists(target_path):
-            logger.info(f"⚡ Using cached compatible stream for {file_obj.file_name} (skipped probe)")
+            logger.info(
+                f"⚡ Using cached compatible stream for {file_obj.file_name} (skipped probe)"
+            )
             return target_path
 
         # ============ PROBE FILE METADATA (with content_hash cache) ============
-        content_hash = getattr(file_obj, 'content_hash', None)
+        content_hash = getattr(file_obj, "content_hash", None)
         probe_cache_path = (
-            os.path.join(self.OUTPUT_DIR, f"probe_{content_hash}.json")
-            if content_hash else None
+            os.path.join(self.OUTPUT_DIR, f"probe_{content_hash}.json") if content_hash else None
         )
 
         probe_data = None
         if probe_cache_path and os.path.exists(probe_cache_path):
             try:
-                async with aiofiles.open(probe_cache_path, 'r') as pf:
+                async with aiofiles.open(probe_cache_path, "r") as pf:
                     probe_data = json.loads(await pf.read())
-                logger.info(f"⚡ Probe cache hit for {file_obj.file_name} (content_hash={content_hash[:12]})")
+                logger.info(
+                    f"⚡ Probe cache hit for {file_obj.file_name} (content_hash={content_hash[:12]})"
+                )
             except Exception:
                 probe_data = None
 
@@ -848,7 +898,7 @@ class VideoTranscoder:
             # Cache probe results for future dedup refs with same content_hash
             if probe_data and probe_cache_path:
                 try:
-                    async with aiofiles.open(probe_cache_path, 'w') as pf:
+                    async with aiofiles.open(probe_cache_path, "w") as pf:
                         await pf.write(json.dumps(probe_data))
                     logger.info(f"Cached probe result for content_hash={content_hash[:12]}")
                 except Exception:
@@ -860,25 +910,25 @@ class VideoTranscoder:
         decision = self._needs_transcode(file_obj, probe_data)
         logger.info(f"🎬 Transcode decision: {decision}")
 
-        if decision == 'skip':
+        if decision == "skip":
             # File is already compatible or doesn't need transcoding
             logger.info(f"✓ Skipping transcode for {file_obj.file_name} - already compatible")
             return None
 
-        if decision == 'reject':
+        if decision == "reject":
             # File exceeds size or duration limits
             max_size_gb = float(os.getenv("TRANSCODE_MAX_SIZE_GB", "2"))
             max_duration_min = int(os.getenv("TRANSCODE_MAX_DURATION_MINUTES", "30"))
             raise VideoTranscodeError(
                 f"Video exceeds transcoding limits (max {max_size_gb}GB, {max_duration_min} minutes). Please download to play.",
-                status_code=413
+                status_code=413,
             )
 
         # decision == 'remux' or 'transcode' - proceed with processing
         if file_obj.file_size and file_obj.file_size > self.MAX_TRANSCODE_SIZE:
             raise VideoTranscodeError(
                 "Video is too large to transcode automatically. Please download to play.",
-                status_code=413
+                status_code=413,
             )
 
         # file_id and target_path already defined at start of function
@@ -899,15 +949,13 @@ class VideoTranscoder:
                         if isinstance(exc, VideoTranscodeError):
                             raise exc
                         raise VideoTranscodeError(
-                            "Failed to prepare compatible video stream.",
-                            status_code=500
+                            "Failed to prepare compatible video stream.", status_code=500
                         )
                     if os.path.exists(target_path):
                         return target_path
                 else:
                     raise VideoTranscodeError(
-                        "Transcoding in progress. Please retry shortly.",
-                        status_code=202
+                        "Transcoding in progress. Please retry shortly.", status_code=202
                     )
 
             # Check if transcode slot is available (non-blocking check)
@@ -919,8 +967,7 @@ class VideoTranscoder:
                 # Check if queue is full
                 if queue_size >= self._queue.maxsize:
                     raise VideoTranscodeError(
-                        "Transcoding system at capacity. Please try again later.",
-                        status_code=429
+                        "Transcoding system at capacity. Please try again later.", status_code=429
                     )
 
                 # Estimate wait time (5 minutes per position)
@@ -930,30 +977,31 @@ class VideoTranscoder:
                     f"Transcoding queue is full. Position: #{position}. "
                     f"Estimated wait: {est_wait_min} minutes. "
                     f"Keep this window open - transcoding will start automatically.",
-                    status_code=202
+                    status_code=202,
                 )
 
             snapshot = self._snapshot(file_obj)
 
             # Log appropriate message based on operation type
-            if decision == 'remux':
+            if decision == "remux":
                 logger.info(f"⚡ Starting async remux for {snapshot.file_name}")
                 user_message = "Fast container conversion started. This should complete in seconds."
             else:
                 logger.info(f"🎬 Starting async transcode for {snapshot.file_name}")
-                user_message = "Transcoding started. This can take a couple of minutes for large HEVC files."
+                user_message = (
+                    "Transcoding started. This can take a couple of minutes for large HEVC files."
+                )
 
             # Create task wrapped with semaphore
             async def transcode_with_semaphore():
                 async with self._transcode_semaphore:
-                    await self._transcode_snapshot(snapshot, encryption_service, target_path, decision)
+                    await self._transcode_snapshot(
+                        snapshot, encryption_service, target_path, decision
+                    )
 
             task = asyncio.create_task(transcode_with_semaphore())
             self._inflight[file_id] = task
-            raise VideoTranscodeError(
-                user_message,
-                status_code=202
-            )
+            raise VideoTranscodeError(user_message, status_code=202)
 
     def _extract_field(self, buffer: str, pattern: str) -> Optional[str]:
         """Extract a field from ffmpeg progress output using regex."""
@@ -963,7 +1011,7 @@ class VideoTranscoder:
     def _parse_time(self, time_str: str) -> float:
         """Parse ffmpeg time format (HH:MM:SS.MS) to seconds."""
         try:
-            parts = time_str.split(':')
+            parts = time_str.split(":")
             if len(parts) == 3:
                 hours, minutes, seconds = parts
                 return float(hours) * 3600 + float(minutes) * 60 + float(seconds)
@@ -991,11 +1039,11 @@ class VideoTranscoder:
                 if not chunk:
                     break
 
-                text = chunk.decode('utf-8', errors='ignore')
+                text = chunk.decode("utf-8", errors="ignore")
                 buffer += text
 
                 # Capture recent lines for error reporting
-                for line in text.split('\n'):
+                for line in text.split("\n"):
                     stripped = line.strip()
                     if stripped:
                         recent_lines.append(stripped)
@@ -1004,9 +1052,9 @@ class VideoTranscoder:
                 now = time.time()
                 if now - last_update > 2:
                     # Extract progress fields
-                    frame = self._extract_field(buffer, r'frame=\s*(\d+)')
-                    fps = self._extract_field(buffer, r'fps=\s*([\d.]+)')
-                    time_str = self._extract_field(buffer, r'time=\s*([\d:\.]+)')
+                    frame = self._extract_field(buffer, r"frame=\s*(\d+)")
+                    fps = self._extract_field(buffer, r"fps=\s*([\d.]+)")
+                    time_str = self._extract_field(buffer, r"time=\s*([\d:\.]+)")
 
                     if frame and time_str:
                         elapsed = self._parse_time(time_str)
@@ -1016,25 +1064,35 @@ class VideoTranscoder:
                         eta_seconds = None
                         if fps and float(fps) > 0 and total_duration > 0:
                             remaining = total_duration - elapsed
-                            eta_seconds = int(remaining / (elapsed / (now - self._progress.get(file_id, {}).get('started_at', now))))
+                            eta_seconds = int(
+                                remaining
+                                / (
+                                    elapsed
+                                    / (now - self._progress.get(file_id, {}).get("started_at", now))
+                                )
+                            )
 
                         # Ensure progress dict exists before updating
                         if file_id in self._progress:
-                            self._progress[file_id].update({
-                                "frame": int(frame) if frame else 0,
-                                "fps": float(fps) if fps else 0,
-                                "elapsed": elapsed,
-                                "percent": percent,
-                                "eta_seconds": eta_seconds,
-                                "status": "transcoding"
-                            })
+                            self._progress[file_id].update(
+                                {
+                                    "frame": int(frame) if frame else 0,
+                                    "fps": float(fps) if fps else 0,
+                                    "elapsed": elapsed,
+                                    "percent": percent,
+                                    "eta_seconds": eta_seconds,
+                                    "status": "transcoding",
+                                }
+                            )
                             last_update = now
-                            logger.debug(f"Progress update for {file_id}: {percent:.1f}%, {fps} fps")
+                            logger.debug(
+                                f"Progress update for {file_id}: {percent:.1f}%, {fps} fps"
+                            )
 
         except Exception as e:
             logger.warning(f"Progress parsing error for {file_id}: {e}")
         finally:
-            self._last_stderr[file_id] = '\n'.join(recent_lines)
+            self._last_stderr[file_id] = "\n".join(recent_lines)
 
     def get_progress(self, file_id: str) -> Optional[dict]:
         """Get current transcoding progress for a file."""
@@ -1053,13 +1111,15 @@ class VideoTranscoder:
         task = self._inflight.get(file_id)
         return task is not None and not task.done()
 
-    async def _transcode_snapshot(self, snapshot, encryption_service, target_path: str, decision: str = 'transcode'):
+    async def _transcode_snapshot(
+        self, snapshot, encryption_service, target_path: str, decision: str = "transcode"
+    ):
         file_id = snapshot.id
         temp_source = None
 
         try:
             # Fast path: Remux (copy codecs, fix container)
-            if decision == 'remux':
+            if decision == "remux":
                 logger.info(f"⚡ Using fast remux path for {snapshot.file_name}")
 
                 if not _check_disk_space_simple(snapshot.file_size or 0):
@@ -1069,12 +1129,17 @@ class VideoTranscoder:
 
                 # Download full file to temp
                 temp_source = await preview_optimizer.download_full_file_for_transcode(
-                    file_obj=snapshot,
-                    encryption_service=encryption_service
+                    file_obj=snapshot, encryption_service=encryption_service
                 )
 
                 # Remux without re-encoding
-                await self._remux_without_transcode(temp_source, target_path, file_id, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id))
+                await self._remux_without_transcode(
+                    temp_source,
+                    target_path,
+                    file_id,
+                    source_hash=snapshot.content_hash,
+                    user_id=str(snapshot.user_id),
+                )
                 logger.info(f"⚡ Compatible MP4 ready via remux for {snapshot.file_name}")
                 return
 
@@ -1091,15 +1156,16 @@ class VideoTranscoder:
             )
 
             # Try streaming if feature flag is enabled and storage type supports it
-            use_streaming = (
-                os.getenv("ENABLE_STREAMING_DECRYPT", "false").lower() == "true"
-                and snapshot.storage_type in ("chunked", "content_addressed")
-            )
+            use_streaming = os.getenv(
+                "ENABLE_STREAMING_DECRYPT", "false"
+            ).lower() == "true" and snapshot.storage_type in ("chunked", "content_addressed")
 
             if use_streaming:
                 try:
                     logger.info(f"🚰 Attempting streaming transcode for {snapshot.file_name}")
-                    await self._transcode_streaming(snapshot, encryption_service, target_path, policy, file_id)
+                    await self._transcode_streaming(
+                        snapshot, encryption_service, target_path, policy, file_id
+                    )
                     logger.info(f"✓ Streaming transcode succeeded for {snapshot.file_name}")
                     return  # Success - exit early
                 except Exception as e:
@@ -1122,49 +1188,65 @@ class VideoTranscoder:
                 )
 
             temp_source = await preview_optimizer.download_full_file_for_transcode(
-                file_obj=snapshot,
-                encryption_service=encryption_service
+                file_obj=snapshot, encryption_service=encryption_service
             )
 
             # Verify the downloaded temp file is valid before transcoding
             temp_file_size = os.path.getsize(temp_source) if os.path.exists(temp_source) else 0
-            logger.info(f"🔍 Downloaded temp file: {temp_source} ({temp_file_size / (1024*1024):.1f}MB)")
+            logger.info(
+                f"🔍 Downloaded temp file: {temp_source} ({temp_file_size / (1024*1024):.1f}MB)"
+            )
 
             # Probe the temp file to verify it's readable by ffmpeg (async, non-blocking)
             try:
                 probe_result = await self._run_ffprobe_async(temp_source, "temp")
                 if probe_result:
-                    v_codec = probe_result.get('codec_name') or 'unknown'
-                    a_codec = probe_result.get('audio_codec') or 'unknown'
-                    duration = probe_result.get('duration', 'unknown')
+                    v_codec = probe_result.get("codec_name") or "unknown"
+                    a_codec = probe_result.get("audio_codec") or "unknown"
+                    duration = probe_result.get("duration", "unknown")
 
-                    logger.info(f"✅ Temp file probe successful: video={v_codec}, audio={a_codec}, duration={duration}s")
+                    logger.info(
+                        f"✅ Temp file probe successful: video={v_codec}, audio={a_codec}, duration={duration}s"
+                    )
 
                     # If already H.264 + AAC, just remux with faststart (very fast, no re-encoding)
-                    if v_codec == 'h264' and a_codec in ('aac', 'unknown', 'none'):
-                        logger.info(f"⚡ Video already H.264+AAC - using fast remux instead of re-encoding")
+                    if v_codec == "h264" and a_codec in ("aac", "unknown", "none"):
+                        logger.info(
+                            f"⚡ Video already H.264+AAC - using fast remux instead of re-encoding"
+                        )
                         await self._remux_with_faststart(temp_source, target_path, file_id)
-                        asyncio.create_task(self._generate_thumbnails_for_transcoded(
-                            file_id, target_path, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id)))
+                        asyncio.create_task(
+                            self._generate_thumbnails_for_transcoded(
+                                file_id,
+                                target_path,
+                                source_hash=snapshot.content_hash,
+                                user_id=str(snapshot.user_id),
+                            )
+                        )
                         logger.info(f"🎬 Compatible MP4 ready via remux for {snapshot.file_name}")
                         return
 
                 else:
                     logger.error("❌ Temp file probe failed: ffprobe returned no result")
                     raise VideoTranscodeError(
-                        "Downloaded temp file is not a valid video file",
-                        status_code=500
+                        "Downloaded temp file is not a valid video file", status_code=500
                     )
             except VideoTranscodeError:
                 raise
             except Exception as e:
                 logger.error(f"❌ Exception probing temp file: {e}")
                 raise VideoTranscodeError(
-                    f"Failed to probe downloaded temp file: {e}",
-                    status_code=500
+                    f"Failed to probe downloaded temp file: {e}", status_code=500
                 )
 
-            await self._run_ffmpeg(temp_source, target_path, policy, file_id, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id))
+            await self._run_ffmpeg(
+                temp_source,
+                target_path,
+                policy,
+                file_id,
+                source_hash=snapshot.content_hash,
+                user_id=str(snapshot.user_id),
+            )
             logger.info(f"🎬 Compatible MP4 ready for file {snapshot.file_name}")
 
         finally:
@@ -1182,12 +1264,15 @@ class VideoTranscoder:
 
         # Just copy streams and add faststart flag
         cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', source_path,
-            '-c', 'copy',  # Copy all streams without re-encoding
-            '-movflags', '+faststart',  # Move moov atom to beginning for streaming
-            target_path
+            "ffmpeg",
+            "-y",
+            "-i",
+            source_path,
+            "-c",
+            "copy",  # Copy all streams without re-encoding
+            "-movflags",
+            "+faststart",  # Move moov atom to beginning for streaming
+            target_path,
         ]
 
         logger.info(f"⚡ Starting ffmpeg remux (copy): {' '.join(cmd)}")
@@ -1198,21 +1283,16 @@ class VideoTranscoder:
             "fps": 0,
             "frame": 0,
             "status": "remuxing",
-            "started_at": time.time()
+            "started_at": time.time(),
         }
 
         try:
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
             # Wait for completion with timeout (remux is usually very fast)
-            returncode = await asyncio.wait_for(
-                process.wait(),
-                timeout=600  # 10 minutes timeout
-            )
+            returncode = await asyncio.wait_for(process.wait(), timeout=600)  # 10 minutes timeout
 
             if returncode != 0:
                 stderr = await process.stderr.read()
@@ -1226,20 +1306,14 @@ class VideoTranscoder:
                         os.remove(target_path)
                     except OSError:
                         pass
-                raise VideoTranscodeError(
-                    "Failed to remux video file",
-                    status_code=500
-                )
+                raise VideoTranscodeError("Failed to remux video file", status_code=500)
 
             # Validate output file
             await self._validate_output(target_path)
 
             # Update progress to 100%
             file_size = os.path.getsize(target_path)
-            self._progress[file_id].update({
-                "percent": 100,
-                "status": "complete"
-            })
+            self._progress[file_id].update({"percent": 100, "status": "complete"})
             logger.info(f"⚡ Remux successful, output size: {file_size / (1024*1024):.1f}MB")
 
         except asyncio.TimeoutError:
@@ -1247,35 +1321,44 @@ class VideoTranscoder:
                 process.kill()
                 await process.wait()
             logger.error(f"ffmpeg remux timed out for {source_path}")
-            raise VideoTranscodeError(
-                "Video remux operation timed out",
-                status_code=500
-            )
+            raise VideoTranscodeError("Video remux operation timed out", status_code=500)
         except VideoTranscodeError:
             raise
         except Exception as exc:
             logger.error(f"Unexpected error during remux: {exc}")
             raise VideoTranscodeError(
-                f"Unexpected error during video remux: {exc}",
-                status_code=500
+                f"Unexpected error during video remux: {exc}", status_code=500
             )
 
-    async def _run_ffmpeg(self, source_path: str, target_path: str,
-                         policy: TranscodePolicy, file_id: str, source_hash: str = None, user_id: str = None):
+    async def _run_ffmpeg(
+        self,
+        source_path: str,
+        target_path: str,
+        policy: TranscodePolicy,
+        file_id: str,
+        source_hash: str = None,
+        user_id: str = None,
+    ):
         """Execute ffmpeg transcode with async subprocess and progress tracking."""
         import time
 
         cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', source_path,
-            '-c:v', 'libx264',
+            "ffmpeg",
+            "-y",
+            "-i",
+            source_path,
+            "-c:v",
+            "libx264",
             *policy.to_ffmpeg_args(),  # Dynamic preset/crf + streaming flags (pix_fmt, movflags)
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-max_muxing_queue_size', '1024',
-            '-progress', 'pipe:2',  # Progress to stderr
-            target_path
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-max_muxing_queue_size",
+            "1024",
+            "-progress",
+            "pipe:2",  # Progress to stderr
+            target_path,
         ]
 
         logger.info(f"🎬 Starting ffmpeg transcode: {' '.join(cmd)}")
@@ -1286,16 +1369,14 @@ class VideoTranscoder:
             "fps": 0,
             "frame": 0,
             "status": "transcoding",
-            "started_at": time.time()
+            "started_at": time.time(),
         }
 
         process = None
         try:
             # Create async subprocess
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
             # Parse progress in background task
@@ -1304,10 +1385,7 @@ class VideoTranscoder:
             )
 
             # Wait for completion with timeout
-            returncode = await asyncio.wait_for(
-                process.wait(),
-                timeout=3600  # 1 hour timeout
-            )
+            returncode = await asyncio.wait_for(process.wait(), timeout=3600)  # 1 hour timeout
 
             # Ensure progress parser finishes
             await parse_task
@@ -1327,8 +1405,7 @@ class VideoTranscoder:
                     except OSError:
                         pass
                 raise VideoTranscodeError(
-                    "Failed to prepare a browser-compatible video stream.",
-                    status_code=500
+                    "Failed to prepare a browser-compatible video stream.", status_code=500
                 )
 
             # Validate output file
@@ -1336,14 +1413,15 @@ class VideoTranscoder:
 
             # Update progress to 100%
             file_size = os.path.getsize(target_path)
-            self._progress[file_id].update({
-                "percent": 100,
-                "status": "complete"
-            })
+            self._progress[file_id].update({"percent": 100, "status": "complete"})
             logger.info(f"🎬 Transcoding successful, output size: {file_size / (1024*1024):.1f}MB")
 
             # Auto-generate thumbnails in background (don't block transcoding completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash, user_id=user_id))
+            asyncio.create_task(
+                self._generate_thumbnails_for_transcoded(
+                    file_id, target_path, source_hash=source_hash, user_id=user_id
+                )
+            )
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg timeout after 1 hour for {source_path}")
@@ -1356,8 +1434,7 @@ class VideoTranscoder:
                 except OSError:
                     pass
             raise VideoTranscodeError(
-                "Video transcoding timed out. File may be too large or complex.",
-                status_code=413
+                "Video transcoding timed out. File may be too large or complex.", status_code=413
             )
 
         finally:
@@ -1371,8 +1448,7 @@ class VideoTranscoder:
         # Check file exists
         if not os.path.exists(target_path):
             raise VideoTranscodeError(
-                "Transcoding completed but output file is missing.",
-                status_code=500
+                "Transcoding completed but output file is missing.", status_code=500
             )
 
         # Check file size
@@ -1380,10 +1456,7 @@ class VideoTranscoder:
         if file_size < 1024:  # Less than 1KB is definitely corrupt
             logger.error(f"Transcoded file too small ({file_size} bytes), likely corrupt")
             os.remove(target_path)
-            raise VideoTranscodeError(
-                "Transcoding produced invalid output file.",
-                status_code=500
-            )
+            raise VideoTranscodeError("Transcoding produced invalid output file.", status_code=500)
 
         # Verify moov atom using ffprobe (async, non-blocking)
         verify_result = await self._run_ffprobe_async(target_path, "validate")
@@ -1391,11 +1464,17 @@ class VideoTranscoder:
             logger.error("Transcoded file validation failed: ffprobe returned no result")
             os.remove(target_path)
             raise VideoTranscodeError(
-                "Transcoding produced corrupted output file.",
-                status_code=500
+                "Transcoding produced corrupted output file.", status_code=500
             )
 
-    async def _remux_without_transcode(self, source_path: str, target_path: str, file_id: str, source_hash: str = None, user_id: str = None):
+    async def _remux_without_transcode(
+        self,
+        source_path: str,
+        target_path: str,
+        file_id: str,
+        source_hash: str = None,
+        user_id: str = None,
+    ):
         """
         Fast container remux without re-encoding (2-5 seconds for 400MB).
 
@@ -1405,13 +1484,17 @@ class VideoTranscoder:
         import time
 
         cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', source_path,
-            '-c:v', 'copy',  # Copy video stream without re-encoding
-            '-c:a', 'copy',  # Copy audio stream without re-encoding
-            '-movflags', '+faststart',  # Enable streaming
-            target_path
+            "ffmpeg",
+            "-y",
+            "-i",
+            source_path,
+            "-c:v",
+            "copy",  # Copy video stream without re-encoding
+            "-c:a",
+            "copy",  # Copy audio stream without re-encoding
+            "-movflags",
+            "+faststart",  # Enable streaming
+            target_path,
         ]
 
         logger.info(f"⚡ Starting fast remux (copy mode): {' '.join(cmd)}")
@@ -1422,22 +1505,19 @@ class VideoTranscoder:
             "fps": 0,
             "frame": 0,
             "status": "remuxing",
-            "started_at": time.time()
+            "started_at": time.time(),
         }
 
         process = None
         try:
             # Create async subprocess
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
             # Wait for completion with timeout (remux should be very fast)
             returncode = await asyncio.wait_for(
-                process.wait(),
-                timeout=300  # 5 minute timeout (generous for large files)
+                process.wait(), timeout=300  # 5 minute timeout (generous for large files)
             )
 
             if returncode != 0:
@@ -1453,24 +1533,26 @@ class VideoTranscoder:
                     except OSError:
                         pass
                 raise VideoTranscodeError(
-                    "Failed to prepare browser-compatible container.",
-                    status_code=500
+                    "Failed to prepare browser-compatible container.", status_code=500
                 )
 
             # Validate output file
             await self._validate_output(target_path)
 
             # Update progress to 100%
-            elapsed = time.time() - self._progress[file_id]['started_at']
+            elapsed = time.time() - self._progress[file_id]["started_at"]
             file_size = os.path.getsize(target_path)
-            self._progress[file_id].update({
-                "percent": 100,
-                "status": "complete"
-            })
-            logger.info(f"⚡ Remux successful in {elapsed:.1f}s, output size: {file_size / (1024*1024):.1f}MB")
+            self._progress[file_id].update({"percent": 100, "status": "complete"})
+            logger.info(
+                f"⚡ Remux successful in {elapsed:.1f}s, output size: {file_size / (1024*1024):.1f}MB"
+            )
 
             # Auto-generate thumbnails in background (don't block remux completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=source_hash, user_id=user_id))
+            asyncio.create_task(
+                self._generate_thumbnails_for_transcoded(
+                    file_id, target_path, source_hash=source_hash, user_id=user_id
+                )
+            )
 
         except asyncio.TimeoutError:
             logger.error(f"ffmpeg remux timeout after 5 minutes for {source_path}")
@@ -1482,10 +1564,7 @@ class VideoTranscoder:
                     os.remove(target_path)
                 except OSError:
                     pass
-            raise VideoTranscodeError(
-                "Container remux timed out.",
-                status_code=413
-            )
+            raise VideoTranscodeError("Container remux timed out.", status_code=413)
 
         finally:
             # Ensure process is killed on any error
@@ -1493,8 +1572,9 @@ class VideoTranscoder:
                 process.kill()
                 await process.wait()
 
-
-    async def _transcode_streaming(self, snapshot, encryption_service, target_path: str, policy: TranscodePolicy, file_id: str):
+    async def _transcode_streaming(
+        self, snapshot, encryption_service, target_path: str, policy: TranscodePolicy, file_id: str
+    ):
         """
         Stream 32MB chunks directly to ffmpeg stdin (no temp file).
 
@@ -1515,31 +1595,40 @@ class VideoTranscoder:
         chunk_count = chunk_info.get("count", 0)
         chunk_paths = chunk_info.get("paths", {})
 
-        logger.info(f"🚰 Starting streaming transcode for {snapshot.file_name} ({chunk_count} chunks)")
+        logger.info(
+            f"🚰 Starting streaming transcode for {snapshot.file_name} ({chunk_count} chunks)"
+        )
 
         cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', 'pipe:0',  # Read from stdin
-            '-c:v', 'libx264',
+            "ffmpeg",
+            "-y",
+            "-i",
+            "pipe:0",  # Read from stdin
+            "-c:v",
+            "libx264",
             *policy.to_ffmpeg_args(),  # Dynamic preset/crf + streaming flags (pix_fmt, movflags)
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-max_muxing_queue_size', '1024',
-            '-progress', 'pipe:2',
-            target_path
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-max_muxing_queue_size",
+            "1024",
+            "-progress",
+            "pipe:2",
+            target_path,
         ]
 
         logger.info(f"🎬 Starting streaming ffmpeg: {' '.join(cmd)}")
 
         # Initialize progress tracking
         import time
+
         self._progress[file_id] = {
             "percent": 0,
             "fps": 0,
             "frame": 0,
             "status": "transcoding",
-            "started_at": time.time()
+            "started_at": time.time(),
         }
 
         process = None
@@ -1549,7 +1638,7 @@ class VideoTranscoder:
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
 
             # Parse progress in background
@@ -1566,17 +1655,16 @@ class VideoTranscoder:
                     raise ValueError(f"Chunk {chunk_idx} path not found")
 
                 # Load encrypted chunk (32MB)
-                async with aiofiles.open(chunk_path, 'rb') as f:
+                async with aiofiles.open(chunk_path, "rb") as f:
                     encrypted_chunk = await f.read()
 
                 # Decrypt chunk
-                decrypted = encryption_service.decrypt_chunk(
-                    encrypted_chunk, file_key, chunk_idx
-                )
+                decrypted = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_idx)
 
                 # Decompress if needed
                 if was_compressed:
                     from ..utils.compression import compressor
+
                     decrypted = compressor.decompress(decrypted)
 
                 # Write to ffmpeg stdin with back-pressure handling
@@ -1594,10 +1682,7 @@ class VideoTranscoder:
             logger.info(f"✓ Streamed all {chunk_count} chunks to ffmpeg, waiting for completion...")
 
             # Wait for completion with timeout
-            returncode = await asyncio.wait_for(
-                process.wait(),
-                timeout=3600  # 1 hour timeout
-            )
+            returncode = await asyncio.wait_for(process.wait(), timeout=3600)  # 1 hour timeout
 
             # Ensure progress parser finishes
             await parse_task
@@ -1607,8 +1692,7 @@ class VideoTranscoder:
                 # retrieve the captured tail instead (Fix 21).
                 stderr_text = self._last_stderr.pop(file_id, "")
                 raise VideoTranscodeError(
-                    f"Streaming transcode failed: {stderr_text[:500]}",
-                    status_code=500
+                    f"Streaming transcode failed: {stderr_text[:500]}", status_code=500
                 )
 
             # Validate output
@@ -1616,14 +1700,20 @@ class VideoTranscoder:
 
             # Update progress to 100%
             file_size = os.path.getsize(target_path)
-            self._progress[file_id].update({
-                "percent": 100,
-                "status": "complete"
-            })
-            logger.info(f"🚰 Streaming transcode successful, output size: {file_size / (1024*1024):.1f}MB")
+            self._progress[file_id].update({"percent": 100, "status": "complete"})
+            logger.info(
+                f"🚰 Streaming transcode successful, output size: {file_size / (1024*1024):.1f}MB"
+            )
 
             # Auto-generate thumbnails in background (don't block transcoding completion)
-            asyncio.create_task(self._generate_thumbnails_for_transcoded(file_id, target_path, source_hash=snapshot.content_hash, user_id=str(snapshot.user_id)))
+            asyncio.create_task(
+                self._generate_thumbnails_for_transcoded(
+                    file_id,
+                    target_path,
+                    source_hash=snapshot.content_hash,
+                    user_id=str(snapshot.user_id),
+                )
+            )
 
         except asyncio.TimeoutError:
             logger.error(f"Streaming transcode timeout after 1 hour for {snapshot.file_name}")
@@ -1635,17 +1725,17 @@ class VideoTranscoder:
                     os.remove(target_path)
                 except OSError:
                     pass
-            raise VideoTranscodeError(
-                "Video transcoding timed out.",
-                status_code=413
-            )
+            raise VideoTranscodeError("Video transcoding timed out.", status_code=413)
 
         finally:
             # Ensure process is killed on any error
             if process and process.returncode is None:
                 process.kill()
                 await process.wait()
-    async def _generate_thumbnails_for_transcoded(self, file_id: str, transcoded_path: str, source_hash: str = None, user_id: str = None) -> int:
+
+    async def _generate_thumbnails_for_transcoded(
+        self, file_id: str, transcoded_path: str, source_hash: str = None, user_id: str = None
+    ) -> int:
         """
         Auto-generate thumbnails from transcoded MP4 and cache in Redis + disk.
 
@@ -1657,18 +1747,20 @@ class VideoTranscoder:
         Returns the number of sizes successfully cached.
         """
         try:
+            from ..database import get_redis
             from .preview_generator import preview_generator
             from .preview_storage import (
-                save_preview_to_disk, should_persist_preview, preview_cache_ttl,
+                preview_cache_ttl,
+                save_preview_to_disk,
+                should_persist_preview,
             )
-            from ..database import get_redis
 
             logger.info(f"Auto-generating thumbnails for transcoded video {file_id}")
             redis = await get_redis()
-            ttl = preview_cache_ttl('video/mp4')
+            ttl = preview_cache_ttl("video/mp4")
             sizes_cached = 0
 
-            for size in ['small', 'medium', 'large']:
+            for size in ["small", "medium", "large"]:
                 try:
                     # Skip if preview_worker already cached this size
                     cache_key = f"preview:{file_id}:{size}"
@@ -1679,7 +1771,7 @@ class VideoTranscoder:
 
                     preview_bytes, content_type = await preview_generator.generate_preview(
                         file_path=transcoded_path,
-                        mime_type='video/mp4',
+                        mime_type="video/mp4",
                         size=size,
                         file_name=f"{file_id}.mp4",
                         allow_slow_decode=True,
@@ -1700,34 +1792,43 @@ class VideoTranscoder:
                 except Exception as e:
                     logger.warning(f"Failed to generate {size} thumbnail for {file_id}: {e}")
 
-            logger.info(f"Thumbnail auto-generation complete for {file_id} ({sizes_cached}/3 sizes)")
+            logger.info(
+                f"Thumbnail auto-generation complete for {file_id} ({sizes_cached}/3 sizes)"
+            )
 
             # Update preview status and notify frontend
             if sizes_cached > 0 and user_id:
                 # Verify ALL 3 sizes are in Redis before publishing ready
                 all_present = True
-                for check_size in ['small', 'medium', 'large']:
+                for check_size in ["small", "medium", "large"]:
                     if not await redis.exists(f"preview:{file_id}:{check_size}"):
                         all_present = False
                         break
 
                 if all_present:
                     try:
-                        status_data = json.dumps({
-                            'status': 'ready',
-                            'updated_at': datetime.utcnow().isoformat(),
-                        })
+                        status_data = json.dumps(
+                            {
+                                "status": "ready",
+                                "updated_at": datetime.utcnow().isoformat(),
+                            }
+                        )
                         await redis.setex(f"preview:status:{file_id}", 3600, status_data)
                         # Atomic single-notify
                         should_notify = await redis.set(
                             f"preview:notified:{file_id}", "1", nx=True, ex=3600
                         )
                         if should_notify:
-                            await redis.publish('preview_notifications', json.dumps({
-                                'file_id': file_id,
-                                'user_id': user_id,
-                                'status': 'ready',
-                            }))
+                            await redis.publish(
+                                "preview_notifications",
+                                json.dumps(
+                                    {
+                                        "file_id": file_id,
+                                        "user_id": user_id,
+                                        "status": "ready",
+                                    }
+                                ),
+                            )
                         logger.info(
                             f"Preview ready via optimization pipeline for {file_id} "
                             f"(notified={bool(should_notify)})"
@@ -1740,18 +1841,22 @@ class VideoTranscoder:
                     prev_raw = await redis.get(f"preview:status:{file_id}")
                     if prev_raw:
                         try:
-                            prev = json.loads(prev_raw if isinstance(prev_raw, str) else prev_raw.decode())
-                            already_ready = prev.get('status') == 'ready'
+                            prev = json.loads(
+                                prev_raw if isinstance(prev_raw, str) else prev_raw.decode()
+                            )
+                            already_ready = prev.get("status") == "ready"
                         except (json.JSONDecodeError, ValueError):
                             pass
                     if not already_ready:
                         try:
-                            status_data = json.dumps({
-                                'status': 'failed',
-                                'error': f'Partial preview generation ({sizes_cached}/3 sizes)',
-                                'retryable': True,
-                                'updated_at': datetime.utcnow().isoformat(),
-                            })
+                            status_data = json.dumps(
+                                {
+                                    "status": "failed",
+                                    "error": f"Partial preview generation ({sizes_cached}/3 sizes)",
+                                    "retryable": True,
+                                    "updated_at": datetime.utcnow().isoformat(),
+                                }
+                            )
                             await redis.setex(f"preview:status:{file_id}", 3600, status_data)
                             logger.warning(
                                 f"Only {sizes_cached}/3 sizes confirmed in cache for {file_id}, "
@@ -1760,7 +1865,9 @@ class VideoTranscoder:
                         except Exception as e:
                             logger.warning(f"Failed to set partial status for {file_id}: {e}")
                     else:
-                        logger.info(f"Preview already ready for {file_id}, skipping partial downgrade")
+                        logger.info(
+                            f"Preview already ready for {file_id}, skipping partial downgrade"
+                        )
 
             return sizes_cached
 

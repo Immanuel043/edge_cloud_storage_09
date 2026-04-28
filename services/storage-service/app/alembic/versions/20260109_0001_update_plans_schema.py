@@ -7,15 +7,18 @@ Create Date: 2026-01-09 12:00:00.000000
 Adds new columns for 6-month pricing, plan categories, and most popular flags.
 Migrates to new 11-plan structure with updated pricing.
 """
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
-from sqlalchemy import text
+
 from uuid import uuid4
 
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+
 # revision identifiers
-revision = 'update_plans_schema'
-down_revision = 'add_zk_encryption_plans'
+revision = "update_plans_schema"
+down_revision = "add_zk_encryption_plans"
 branch_labels = None
 depends_on = None
 
@@ -25,15 +28,22 @@ def upgrade():
     Add new columns and migrate to new plan structure.
     """
     # Step 1: Add new columns to subscription_plans table (IF NOT EXISTS for idempotent re-runs)
-    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS price_six_months NUMERIC(10, 2)")
-    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS is_most_popular BOOLEAN NOT NULL DEFAULT false")
-    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'individual'")
-    op.execute("ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS stripe_price_id_six_months VARCHAR(255)")
+    op.execute(
+        "ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS price_six_months NUMERIC(10, 2)"
+    )
+    op.execute(
+        "ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS is_most_popular BOOLEAN NOT NULL DEFAULT false"
+    )
+    op.execute(
+        "ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'individual'"
+    )
+    op.execute(
+        "ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS stripe_price_id_six_months VARCHAR(255)"
+    )
 
     # Step 2: SOFT DELETE - Mark old plans as inactive (DON'T DELETE!)
     # This preserves existing user subscriptions and history
-    op.execute(
-        """
+    op.execute("""
             UPDATE subscription_plans
             SET is_active = FALSE,
                 updated_at = NOW()
@@ -41,8 +51,7 @@ def upgrade():
                 'normal_free', 'normal_basic', 'normal_pro', 'normal_team',
                 'zk_free', 'zk_personal', 'zk_business', 'zk_enterprise'
             );
-        """
-    )
+        """)
 
     # Step 3: Migrate existing subscriptions to new plan structure
     # Map old plan codes to new plan codes (will be created below)
@@ -55,8 +64,7 @@ def upgrade():
     ###################
 
     # 1. normal_free (5GB, Free) - upsert so re-runs don't violate unique constraint
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -90,12 +98,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 2. normal_basic (200GB, ₹99/mo, ₹499/6mo, ₹899/yr) - MOST POPULAR
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -129,12 +135,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 3. normal_pro (1TB, ₹199/mo, ₹999/6mo, ₹1799/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -168,12 +172,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 4. normal_pro_plus (2TB, ₹299/mo, ₹1499/6mo, ₹2499/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -207,12 +209,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 5. normal_pro_ultra (3TB, ₹399/mo, ₹1999/6mo, ₹3499/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -246,12 +246,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 6. normal_solo_max (5TB, ₹599/mo, ₹2999/6mo, ₹5499/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -285,16 +283,14 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     ###################
     # NORMAL STORAGE PLANS - Business
     ###################
 
     # 7. normal_team (5TB, ₹799/mo, ₹3999/6mo, ₹6999/yr) - MOST POPULAR
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -328,16 +324,14 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     ###################
     # ZK ENCRYPTION PLANS - Individual
     ###################
 
     # 8. zk_pro (1TB, ₹399/mo, ₹1999/6mo, ₹3499/yr) - MOST POPULAR
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -371,12 +365,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 9. zk_pro_plus (2TB, ₹699/mo, ₹3499/6mo, ₹5999/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -410,12 +402,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 10. zk_ultra (3TB, ₹999/mo, ₹4999/6mo, ₹8999/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -449,12 +439,10 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # 11. zk_max (5TB, ₹1399/mo, ₹6999/6mo, ₹11999/yr)
-    op.execute(
-        """
+    op.execute("""
             INSERT INTO subscription_plans (
                 id, plan_code, service_type, tier_name, display_name, description,
                 price_monthly, price_six_months, price_yearly,
@@ -488,8 +476,7 @@ def upgrade():
                 category = EXCLUDED.category,
                 sort_order = EXCLUDED.sort_order,
                 updated_at = NOW();
-        """
-    )
+        """)
 
     # Step 4: Subscription migration skipped.
     # Plans were upserted in place (same plan_code), so user_subscriptions.plan_id
@@ -501,8 +488,7 @@ def downgrade():
     Rollback changes: remove new columns and restore old plans.
     """
     # Restore old plans (mark as active again)
-    op.execute(
-        """
+    op.execute("""
             UPDATE subscription_plans
             SET is_active = TRUE,
                 updated_at = NOW()
@@ -510,12 +496,10 @@ def downgrade():
                 'normal_free', 'normal_basic', 'normal_pro', 'normal_team',
                 'zk_free', 'zk_personal', 'zk_business', 'zk_enterprise'
             );
-        """
-    )
+        """)
 
     # Soft-delete plans that this migration added/updated (no remap needed; we upserted in place)
-    op.execute(
-        """
+    op.execute("""
             UPDATE subscription_plans
             SET is_active = FALSE,
                 updated_at = NOW()
@@ -523,11 +507,10 @@ def downgrade():
                 'normal_pro_plus', 'normal_pro_ultra', 'normal_solo_max',
                 'zk_pro', 'zk_pro_plus', 'zk_ultra', 'zk_max'
             );
-        """
-    )
+        """)
 
     # Remove new columns
-    op.drop_column('subscription_plans', 'stripe_price_id_six_months')
-    op.drop_column('subscription_plans', 'category')
-    op.drop_column('subscription_plans', 'is_most_popular')
-    op.drop_column('subscription_plans', 'price_six_months')
+    op.drop_column("subscription_plans", "stripe_price_id_six_months")
+    op.drop_column("subscription_plans", "category")
+    op.drop_column("subscription_plans", "is_most_popular")
+    op.drop_column("subscription_plans", "price_six_months")

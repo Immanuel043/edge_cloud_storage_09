@@ -1,10 +1,12 @@
 """Advanced rate limiting with Redis backend using SlowAPI"""
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from fastapi import Request, Response
-from typing import Callable
+
 import logging
+from typing import Callable
+
+from fastapi import Request, Response
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from ..config import settings
 
@@ -16,7 +18,7 @@ limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=settings.REDIS_URL,
     default_limits=["1000/day", "100/hour"],
-    headers_enabled=False  # Disabled to work without response parameter
+    headers_enabled=False,  # Disabled to work without response parameter
 )
 
 
@@ -34,7 +36,7 @@ def get_user_id_from_request(request: Request) -> str:
     """
     try:
         # Try to get user from request state (set by auth middleware)
-        if hasattr(request.state, 'user') and request.state.user:
+        if hasattr(request.state, "user") and request.state.user:
             return f"user:{request.state.user.id}"
     except Exception as e:
         logger.debug(f"Could not extract user from request: {e}")
@@ -48,7 +50,7 @@ def get_user_id_from_request(request: Request) -> str:
 user_limiter = Limiter(
     key_func=get_user_id_from_request,
     storage_uri=settings.REDIS_URL,
-    headers_enabled=False  # Disabled to work without response parameter
+    headers_enabled=False,  # Disabled to work without response parameter
 )
 
 
@@ -85,11 +87,11 @@ class RateLimitConfig:
     SHARE_ACCESS = "1000/hour;10000/day"
 
     # Public share endpoints (unauthenticated, token-based)
-    SHARE_PASSWORD_CHECK = "5/minute"       # Tight — brute-force target
-    SHARE_STREAM = "60/minute"              # Permissive — browsers use range requests
-    SHARE_DOWNLOAD = "10/minute"            # Moderate — heavy operation
-    SHARE_THUMBNAIL = "30/minute"           # Moderate — grid loads multiple
-    SHARE_ZK_CHUNK = "30/minute"            # Moderate — chunked ZK downloads
+    SHARE_PASSWORD_CHECK = "5/minute"  # Tight — brute-force target
+    SHARE_STREAM = "60/minute"  # Permissive — browsers use range requests
+    SHARE_DOWNLOAD = "10/minute"  # Moderate — heavy operation
+    SHARE_THUMBNAIL = "30/minute"  # Moderate — grid loads multiple
+    SHARE_ZK_CHUNK = "30/minute"  # Moderate — chunked ZK downloads
 
     # ML operations (resource-intensive)
     ML_PREDICTION = "100/hour;500/day"
@@ -115,9 +117,7 @@ def get_share_key(request: Request) -> str:
 
 # Share-specific limiter keyed by IP + token
 share_limiter = Limiter(
-    key_func=get_share_key,
-    storage_uri=settings.REDIS_URL,
-    headers_enabled=False
+    key_func=get_share_key, storage_uri=settings.REDIS_URL, headers_enabled=False
 )
 
 
@@ -135,7 +135,7 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
     from fastapi.responses import JSONResponse
 
     # Calculate retry_after
-    retry_after = exc.retry_after if hasattr(exc, 'retry_after') else 60
+    retry_after = exc.retry_after if hasattr(exc, "retry_after") else 60
 
     # Log rate limit hit
     logger.warning(
@@ -148,8 +148,8 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
         "error": "rate_limit_exceeded",
         "message": "Too many requests. Please try again later.",
         "retry_after": retry_after,
-        "limit": getattr(exc, 'limit', None),
-        "window": getattr(exc, 'window', None),
+        "limit": getattr(exc, "limit", None),
+        "window": getattr(exc, "window", None),
     }
 
     return JSONResponse(
@@ -157,18 +157,14 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
         content=response_data,
         headers={
             "Retry-After": str(retry_after),
-            "X-RateLimit-Limit": str(getattr(exc, 'limit', '')),
+            "X-RateLimit-Limit": str(getattr(exc, "limit", "")),
             "X-RateLimit-Remaining": "0",
-            "X-RateLimit-Reset": str(getattr(exc, 'reset', '')),
-        }
+            "X-RateLimit-Reset": str(getattr(exc, "reset", "")),
+        },
     )
 
 
-def create_custom_rate_limiter(
-    rate: str,
-    key_func: Callable = None,
-    scope: str = None
-) -> Callable:
+def create_custom_rate_limiter(rate: str, key_func: Callable = None, scope: str = None) -> Callable:
     """
     Create a custom rate limiter with specific configuration
 
@@ -184,7 +180,7 @@ def create_custom_rate_limiter(
         key_func=key_func or get_remote_address,
         storage_uri=settings.REDIS_URL,
         headers_enabled=True,
-        default_limits=[rate]
+        default_limits=[rate],
     )
 
     return custom_limiter.limit(rate, scope=scope)
@@ -202,11 +198,11 @@ async def should_bypass_rate_limit(request: Request) -> bool:
         True if should bypass, False otherwise
     """
     # Check if user is admin or has special permissions
-    if hasattr(request.state, 'user') and request.state.user:
+    if hasattr(request.state, "user") and request.state.user:
         user = request.state.user
 
         # Admins bypass rate limits
-        if hasattr(user, 'is_admin') and user.is_admin:
+        if hasattr(user, "is_admin") and user.is_admin:
             return True
 
         # Premium users get higher limits (handled separately)
@@ -230,6 +226,7 @@ def check_ip_whitelist(request: Request, allowed_ips: list | None) -> bool:
         return True
 
     import ipaddress
+
     client_ip = get_remote_address(request)
     try:
         client_addr = ipaddress.ip_address(client_ip)
@@ -238,7 +235,7 @@ def check_ip_whitelist(request: Request, allowed_ips: list | None) -> bool:
 
     for entry in allowed_ips:
         try:
-            if '/' in entry:
+            if "/" in entry:
                 if client_addr in ipaddress.ip_network(entry, strict=False):
                     return True
             else:
@@ -252,11 +249,11 @@ def check_ip_whitelist(request: Request, allowed_ips: list | None) -> bool:
 
 # Export commonly used limiters
 __all__ = [
-    'limiter',
-    'user_limiter',
-    'RateLimitConfig',
-    'rate_limit_exceeded_handler',
-    'create_custom_rate_limiter',
-    'should_bypass_rate_limit',
-    'check_ip_whitelist',
+    "limiter",
+    "user_limiter",
+    "RateLimitConfig",
+    "rate_limit_exceeded_handler",
+    "create_custom_rate_limiter",
+    "should_bypass_rate_limit",
+    "check_ip_whitelist",
 ]

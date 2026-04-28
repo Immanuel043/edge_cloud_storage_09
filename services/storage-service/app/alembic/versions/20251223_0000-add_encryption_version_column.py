@@ -7,13 +7,13 @@ Create Date: 2025-12-23
 Adds encryption_version column to track V1 (basic) vs V2 (HKDF+AAD) encryption.
 This enables gradual migration of existing V1 encrypted files to V2.
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '20251223_0000'
-down_revision = '20251216_0000'
+revision = "20251223_0000"
+down_revision = "20251216_0000"
 branch_labels = None
 depends_on = None
 

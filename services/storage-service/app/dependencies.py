@@ -1,29 +1,33 @@
 # services/storage-service/app/dependencies.py
 import logging
 from typing import AsyncGenerator, Optional, Tuple
-from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Request, Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
+
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from sqlalchemy import select
-from .database import AsyncSessionLocal
-from .models.database import User, ActivityLog
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .config import settings
+from .database import AsyncSessionLocal
+from .models.database import ActivityLog, User
 
 logger = logging.getLogger(__name__)
 
 # Security - SECURITY FIX: Made optional to support cookie-based auth
 security = HTTPBearer(auto_error=False)
 
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session"""
     async with AsyncSessionLocal() as session:
         yield session
 
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> User:
     """
     Get the current authenticated user from JWT token
@@ -60,17 +64,21 @@ async def get_current_user(
         jti = payload.get("jti")
         if jti:
             from .services.auth import auth_service
+
             if await auth_service.is_token_blocklisted(jti):
                 raise HTTPException(status_code=401, detail="Token has been revoked")
         # Check password reset invalidation
         from .database import redis_client
+
         if redis_client:
             try:
                 pwd_reset_at = await redis_client.get(f"pwd_reset_at:{user_id}")
                 if pwd_reset_at:
                     iat = payload.get("iat", 0)
                     if int(pwd_reset_at) > iat:
-                        raise HTTPException(status_code=401, detail="Password was reset. Please log in again.")
+                        raise HTTPException(
+                            status_code=401, detail="Password was reset. Please log in again."
+                        )
             except HTTPException:
                 raise
             except Exception:
@@ -89,11 +97,12 @@ async def get_current_user(
 
     return user
 
+
 async def require_admin(
     current_user: User = Depends(get_current_user),
 ) -> User:
     """Require current user to be an admin. Returns the user if admin."""
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
@@ -102,12 +111,13 @@ async def get_current_user_ws(token: str):
     """WebSocket authentication dependency"""
     from .database import get_db
     from .services.auth import auth_service
-    
+
     async with get_db() as db:
         user = await auth_service.get_current_user_from_token(token, db)
         if not user:
             return None
         return user
+
 
 async def log_activity(
     db: AsyncSession,
@@ -131,8 +141,7 @@ async def log_activity(
 
 
 async def get_user_subscription(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get current user's active subscription with plan details.
@@ -148,7 +157,7 @@ async def get_user_subscription(
     """
     from shared_billing import BillingService, SubscriptionNotFoundError
 
-    billing = BillingService(db, service_type='normal')
+    billing = BillingService(db, service_type="normal")
 
     try:
         subscription = await billing.get_user_subscription(current_user.id, include_plan=True)
@@ -156,9 +165,7 @@ async def get_user_subscription(
     except SubscriptionNotFoundError:
         # User doesn't have subscription - create free tier
         subscription = await billing.create_subscription(
-            user_id=current_user.id,
-            plan_code='normal_free',
-            billing_cycle=None
+            user_id=current_user.id, plan_code="normal_free", billing_cycle=None
         )
 
         # Update user's quota
@@ -179,7 +186,7 @@ async def get_plan_quota(user: User, db: AsyncSession) -> Tuple[int, bool]:
     Returns:
         (plan_quota_bytes, did_heal) — caller must commit if did_heal is True.
     """
-    from shared_billing.models import UserSubscription, SubscriptionPlan
+    from shared_billing.models import SubscriptionPlan, UserSubscription
 
     plan_quota = None
     healed = False
@@ -192,8 +199,8 @@ async def get_plan_quota(user: User, db: AsyncSession) -> Tuple[int, bool]:
             .where(
                 UserSubscription.id == user.current_subscription_id,
                 UserSubscription.user_id == user.id,
-                UserSubscription.service_type == 'normal',
-                UserSubscription.status.in_(['active', 'over_quota']),
+                UserSubscription.service_type == "normal",
+                UserSubscription.status.in_(["active", "over_quota"]),
             )
         )
         plan_quota = result.scalar_one_or_none()
@@ -205,8 +212,8 @@ async def get_plan_quota(user: User, db: AsyncSession) -> Tuple[int, bool]:
             .join(UserSubscription, UserSubscription.plan_id == SubscriptionPlan.id)
             .where(
                 UserSubscription.user_id == user.id,
-                UserSubscription.service_type == 'normal',
-                UserSubscription.status.in_(['active', 'over_quota']),
+                UserSubscription.service_type == "normal",
+                UserSubscription.status.in_(["active", "over_quota"]),
             )
             .order_by(UserSubscription.created_at.desc(), UserSubscription.id.desc())
         )
@@ -226,7 +233,7 @@ async def get_plan_quota(user: User, db: AsyncSession) -> Tuple[int, bool]:
             # No active subscription — fall back to free tier quota
             free_result = await db.execute(
                 select(SubscriptionPlan.storage_bytes).where(
-                    SubscriptionPlan.plan_code == 'normal_free'
+                    SubscriptionPlan.plan_code == "normal_free"
                 )
             )
             free_quota = free_result.scalar_one_or_none()

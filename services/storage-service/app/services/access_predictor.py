@@ -7,13 +7,14 @@ Uses Markov chains and basic ML to predict which files a user will access next.
 Enables predictive prefetching from cold storage to warm storage.
 """
 
-import logging
-from typing import List, Dict, Optional, Tuple
-from datetime import datetime, timedelta
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text, func
-from collections import defaultdict
 import asyncio
+import logging
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class AccessPredictor:
         file_id: str,
         access_type: str = "view",
         session_id: Optional[str] = None,
-        duration_ms: Optional[int] = None
+        duration_ms: Optional[int] = None,
     ):
         """
         Record a file access event
@@ -48,18 +49,21 @@ class AccessPredictor:
         This builds the training data for predictions
         """
         try:
-            await db.execute(text("""
+            await db.execute(
+                text("""
                 INSERT INTO file_access_log
                     (user_id, file_id, access_type, session_id, access_duration_ms, accessed_at)
                 VALUES
                     (:user_id, :file_id, :access_type, :session_id, :duration_ms, NOW())
-            """), {
-                "user_id": user_id,
-                "file_id": file_id,
-                "access_type": access_type,
-                "session_id": session_id,
-                "duration_ms": duration_ms
-            })
+            """),
+                {
+                    "user_id": user_id,
+                    "file_id": file_id,
+                    "access_type": access_type,
+                    "session_id": session_id,
+                    "duration_ms": duration_ms,
+                },
+            )
 
             # Update access sequences (Markov chain)
             await self._update_access_sequence(db, user_id, file_id, session_id)
@@ -71,11 +75,7 @@ class AccessPredictor:
             await db.rollback()
 
     async def _update_access_sequence(
-        self,
-        db: AsyncSession,
-        user_id: str,
-        current_file_id: str,
-        session_id: Optional[str]
+        self, db: AsyncSession, user_id: str, current_file_id: str, session_id: Optional[str]
     ):
         """
         Update Markov chain sequences
@@ -86,7 +86,8 @@ class AccessPredictor:
             return
 
         # Get previous file in this session
-        result = await db.execute(text("""
+        result = await db.execute(
+            text("""
             SELECT file_id
             FROM file_access_log
             WHERE user_id = :user_id
@@ -94,11 +95,9 @@ class AccessPredictor:
               AND file_id != :current_file
             ORDER BY accessed_at DESC
             LIMIT 1
-        """), {
-            "user_id": user_id,
-            "session_id": session_id,
-            "current_file": current_file_id
-        })
+        """),
+            {"user_id": user_id, "session_id": session_id, "current_file": current_file_id},
+        )
 
         previous_file = result.scalar_one_or_none()
 
@@ -106,7 +105,8 @@ class AccessPredictor:
             return
 
         # Insert or update sequence
-        await db.execute(text("""
+        await db.execute(
+            text("""
             INSERT INTO file_access_sequences
                 (user_id, file_from, file_to, sequence_count, last_seen)
             VALUES
@@ -115,18 +115,16 @@ class AccessPredictor:
             DO UPDATE SET
                 sequence_count = file_access_sequences.sequence_count + 1,
                 last_seen = NOW()
-        """), {
-            "user_id": user_id,
-            "file_from": previous_file,
-            "file_to": current_file_id
-        })
+        """),
+            {"user_id": user_id, "file_from": previous_file, "file_to": current_file_id},
+        )
 
     async def predict_next_files(
         self,
         db: AsyncSession,
         user_id: str,
         current_file_id: Optional[str] = None,
-        method: str = "markov"
+        method: str = "markov",
     ) -> List[Dict]:
         """
         Predict which files user will access next
@@ -153,17 +151,15 @@ class AccessPredictor:
             return []
 
     async def _predict_markov(
-        self,
-        db: AsyncSession,
-        user_id: str,
-        current_file_id: Optional[str]
+        self, db: AsyncSession, user_id: str, current_file_id: Optional[str]
     ) -> List[Dict]:
         """
         Predict using Markov chain (what file is usually accessed after current file)
         """
         if not current_file_id:
             # No current file - predict most frequently accessed files
-            result = await db.execute(text("""
+            result = await db.execute(
+                text("""
                 SELECT
                     file_id,
                     COUNT(*) as access_count
@@ -173,17 +169,16 @@ class AccessPredictor:
                 GROUP BY file_id
                 ORDER BY access_count DESC
                 LIMIT :max_predictions
-            """), {
-                "user_id": user_id,
-                "max_predictions": self.max_predictions
-            })
+            """),
+                {"user_id": user_id, "max_predictions": self.max_predictions},
+            )
 
             predictions = [
                 {
                     "file_id": str(row.file_id),
                     "confidence": min(0.9, row.access_count / 100.0),
                     "method": "frequency",
-                    "reason": f"Accessed {row.access_count} times in last 30 days"
+                    "reason": f"Accessed {row.access_count} times in last 30 days",
                 }
                 for row in result.fetchall()
             ]
@@ -191,7 +186,8 @@ class AccessPredictor:
             return predictions
 
         # Predict based on access sequences
-        result = await db.execute(text("""
+        result = await db.execute(
+            text("""
             SELECT
                 fas.file_to,
                 fas.sequence_count,
@@ -204,12 +200,14 @@ class AccessPredictor:
               AND fas.probability >= :min_confidence
             ORDER BY fas.probability DESC
             LIMIT :max_predictions
-        """), {
-            "user_id": user_id,
-            "current_file": current_file_id,
-            "min_confidence": self.min_confidence,
-            "max_predictions": self.max_predictions
-        })
+        """),
+            {
+                "user_id": user_id,
+                "current_file": current_file_id,
+                "min_confidence": self.min_confidence,
+                "max_predictions": self.max_predictions,
+            },
+        )
 
         predictions = [
             {
@@ -217,23 +215,20 @@ class AccessPredictor:
                 "file_name": row.file_name,
                 "confidence": float(row.probability or 0),
                 "method": "markov",
-                "reason": f"Accessed after current file {row.sequence_count} times"
+                "reason": f"Accessed after current file {row.sequence_count} times",
             }
             for row in result.fetchall()
         ]
 
         return predictions
 
-    async def _predict_time_pattern(
-        self,
-        db: AsyncSession,
-        user_id: str
-    ) -> List[Dict]:
+    async def _predict_time_pattern(self, db: AsyncSession, user_id: str) -> List[Dict]:
         """
         Predict based on time patterns (files accessed at similar time of day/week)
         """
         # Get current hour and day of week
-        result = await db.execute(text("""
+        result = await db.execute(
+            text("""
             WITH current_time AS (
                 SELECT
                     EXTRACT(HOUR FROM NOW()) as current_hour,
@@ -265,10 +260,9 @@ class AccessPredictor:
                     WHERE fal2.user_id = :user_id
                 )) as confidence
             FROM similar_access
-        """), {
-            "user_id": user_id,
-            "max_predictions": self.max_predictions
-        })
+        """),
+            {"user_id": user_id, "max_predictions": self.max_predictions},
+        )
 
         predictions = [
             {
@@ -276,7 +270,7 @@ class AccessPredictor:
                 "file_name": row.file_name,
                 "confidence": float(row.confidence),
                 "method": "time_pattern",
-                "reason": f"Accessed {row.pattern_count} times at similar time"
+                "reason": f"Accessed {row.pattern_count} times at similar time",
             }
             for row in result.fetchall()
             if row.confidence >= self.min_confidence
@@ -284,11 +278,7 @@ class AccessPredictor:
 
         return predictions
 
-    def _combine_predictions(
-        self,
-        markov_preds: List[Dict],
-        time_preds: List[Dict]
-    ) -> List[Dict]:
+    def _combine_predictions(self, markov_preds: List[Dict], time_preds: List[Dict]) -> List[Dict]:
         """
         Combine predictions from multiple methods
 
@@ -313,11 +303,9 @@ class AccessPredictor:
             combined[file_id]["methods"].append("time_pattern")
 
         # Sort by confidence and return top predictions
-        result = sorted(
-            combined.values(),
-            key=lambda x: x["confidence"],
-            reverse=True
-        )[:self.max_predictions]
+        result = sorted(combined.values(), key=lambda x: x["confidence"], reverse=True)[
+            : self.max_predictions
+        ]
 
         for pred in result:
             pred["method"] = "hybrid"

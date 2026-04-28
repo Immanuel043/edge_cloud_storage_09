@@ -7,15 +7,14 @@ Comprehensive logging of all user actions for security, compliance, and forensic
 import hashlib
 import json
 import logging
-from typing import Optional, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, Optional
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Request
-
-from app.models.database import AuditLog, VirusScanLog, DLPScanLog
 from app.database import async_session
+from app.models.database import AuditLog, DLPScanLog, VirusScanLog
+from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +29,13 @@ class AuditService:
         resource_type: Optional[str] = None,
         resource_id: Optional[UUID] = None,
         resource_name: Optional[str] = None,
-        status: str = 'success',
+        status: str = "success",
         status_code: Optional[int] = None,
         error_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         request: Optional[Request] = None,
         is_suspicious: bool = False,
-        risk_level: str = 'low'
+        risk_level: str = "low",
     ):
         """
         Log an action to the audit trail
@@ -64,7 +63,7 @@ class AuditService:
 
             if request:
                 ip_address = request.client.host if request.client else None
-                user_agent = request.headers.get('user-agent')
+                user_agent = request.headers.get("user-agent")
                 request_method = request.method
                 request_path = str(request.url.path)
 
@@ -75,22 +74,24 @@ class AuditService:
             if metadata:
                 details.update(metadata)
             if status_code is not None:
-                details['status_code'] = status_code
+                details["status_code"] = status_code
             if is_suspicious:
-                details['is_suspicious'] = True
-            if risk_level and risk_level != 'low':
-                details['risk_level'] = risk_level
+                details["is_suspicious"] = True
+            if risk_level and risk_level != "low":
+                details["risk_level"] = risk_level
 
             # event_hash is required (SHA-256 over a canonical string) for
             # tamper-detection per the AuditLog model contract.
-            hash_source = '|'.join([
-                action or '',
-                str(user_id) if user_id else '',
-                str(resource_id) if resource_id else '',
-                status or '',
-                datetime.utcnow().isoformat(),
-            ])
-            event_hash = hashlib.sha256(hash_source.encode('utf-8')).hexdigest()
+            hash_source = "|".join(
+                [
+                    action or "",
+                    str(user_id) if user_id else "",
+                    str(resource_id) if resource_id else "",
+                    status or "",
+                    datetime.utcnow().isoformat(),
+                ]
+            )
+            event_hash = hashlib.sha256(hash_source.encode("utf-8")).hexdigest()
 
             async with async_session() as session:
                 audit_entry = AuditLog(
@@ -125,12 +126,12 @@ class AuditService:
         user_id: UUID,
         is_infected: bool,
         virus_name: Optional[str] = None,
-        scan_engine: str = 'clamav',
+        scan_engine: str = "clamav",
         scan_time: float = 0.0,
         file_size: Optional[int] = None,
         file_hash: Optional[str] = None,
         error_message: Optional[str] = None,
-        action_taken: str = 'allowed'
+        action_taken: str = "allowed",
     ):
         """Log virus scan result"""
         try:
@@ -145,7 +146,7 @@ class AuditService:
                     file_size=file_size,
                     file_hash=file_hash,
                     error_message=error_message,
-                    action_taken=action_taken
+                    action_taken=action_taken,
                 )
 
                 session.add(scan_log)
@@ -169,8 +170,8 @@ class AuditService:
         scan_time: float,
         detected_types: Optional[list] = None,
         file_size: Optional[int] = None,
-        action_taken: str = 'allowed',
-        blocked: bool = False
+        action_taken: str = "allowed",
+        blocked: bool = False,
     ):
         """Log DLP scan result"""
         try:
@@ -190,7 +191,7 @@ class AuditService:
                     detected_types=detected_types_json,
                     file_size=file_size,
                     action_taken=action_taken,
-                    blocked=blocked
+                    blocked=blocked,
                 )
 
                 session.add(dlp_log)
@@ -212,7 +213,7 @@ class AuditService:
         user_id: UUID,
         limit: int = 100,
         action_filter: Optional[str] = None,
-        session: Optional[AsyncSession] = None
+        session: Optional[AsyncSession] = None,
     ) -> list:
         """
         Get audit trail for a user
@@ -226,13 +227,13 @@ class AuditService:
         Returns:
             List of audit log entries
         """
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
 
         async def _query(db_session):
             query = select(AuditLog).where(AuditLog.user_id == user_id)
 
             if action_filter:
-                query = query.where(AuditLog.action.like(f'{action_filter}%'))
+                query = query.where(AuditLog.action.like(f"{action_filter}%"))
 
             query = query.order_by(desc(AuditLog.created_at)).limit(limit)
 
@@ -247,9 +248,7 @@ class AuditService:
 
     @staticmethod
     async def get_suspicious_activity(
-        limit: int = 100,
-        risk_level: Optional[str] = None,
-        session: Optional[AsyncSession] = None
+        limit: int = 100, risk_level: Optional[str] = None, session: Optional[AsyncSession] = None
     ) -> list:
         """
         Get suspicious activity across all users
@@ -262,7 +261,7 @@ class AuditService:
         Returns:
             List of suspicious audit log entries
         """
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
 
         async def _query(db_session):
             query = select(AuditLog).where(AuditLog.is_suspicious == True)
@@ -282,17 +281,17 @@ class AuditService:
                 return await _query(db_session)
 
     @staticmethod
-    async def get_infected_files(
-        limit: int = 100,
-        session: Optional[AsyncSession] = None
-    ) -> list:
+    async def get_infected_files(limit: int = 100, session: Optional[AsyncSession] = None) -> list:
         """Get all files that were flagged as infected"""
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
 
         async def _query(db_session):
-            query = select(VirusScanLog).where(
-                VirusScanLog.is_infected == True
-            ).order_by(desc(VirusScanLog.scanned_at)).limit(limit)
+            query = (
+                select(VirusScanLog)
+                .where(VirusScanLog.is_infected == True)
+                .order_by(desc(VirusScanLog.scanned_at))
+                .limit(limit)
+            )
 
             result = await db_session.execute(query)
             return result.scalars().all()
@@ -305,17 +304,18 @@ class AuditService:
 
     @staticmethod
     async def get_high_risk_files(
-        min_risk_score: float = 70.0,
-        limit: int = 100,
-        session: Optional[AsyncSession] = None
+        min_risk_score: float = 70.0, limit: int = 100, session: Optional[AsyncSession] = None
     ) -> list:
         """Get files with high DLP risk scores"""
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
 
         async def _query(db_session):
-            query = select(DLPScanLog).where(
-                DLPScanLog.risk_score >= min_risk_score
-            ).order_by(desc(DLPScanLog.risk_score)).limit(limit)
+            query = (
+                select(DLPScanLog)
+                .where(DLPScanLog.risk_score >= min_risk_score)
+                .order_by(desc(DLPScanLog.risk_score))
+                .limit(limit)
+            )
 
             result = await db_session.execute(query)
             return result.scalars().all()

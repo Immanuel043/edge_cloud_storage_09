@@ -7,20 +7,21 @@ Background worker that runs daily to:
 - Update analysis results
 """
 
-import logging
 import asyncio
+import logging
 from datetime import datetime
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from uuid import uuid4
 
-from ..models.database import User, StorageAnalysis, OptimizationSuggestion
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import settings
+from ..database import async_session
+from ..models.database import OptimizationSuggestion, StorageAnalysis, User
+from ..monitoring.metrics import metrics_collector
 from ..services.storage_analyzer import storage_analyzer
 from ..services.storage_optimizer import storage_optimizer
-from ..database import async_session
-from ..monitoring.metrics import metrics_collector
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -76,15 +77,17 @@ class StorageOptimizationWorker:
                         logger.info("Storage optimization worker cycle completed")
 
                     except Exception as e:
-                        logger.error(f"Error in storage optimization worker cycle: {e}", exc_info=True)
+                        logger.error(
+                            f"Error in storage optimization worker cycle: {e}", exc_info=True
+                        )
                         await db.rollback()
 
                 # Update metrics
-                metrics_collector.increment_counter('storage_optimization_worker_cycles_total')
+                metrics_collector.increment_counter("storage_optimization_worker_cycles_total")
 
             except Exception as e:
                 logger.error(f"Fatal error in storage optimization worker: {e}", exc_info=True)
-                metrics_collector.increment_counter('storage_optimization_worker_errors_total')
+                metrics_collector.increment_counter("storage_optimization_worker_errors_total")
 
             # Sleep until next cycle
             if self.is_running:
@@ -97,9 +100,7 @@ class StorageOptimizationWorker:
         logger.info("Analyzing storage for all active users")
 
         # Get all active users
-        result = await db.execute(
-            select(User).where(User.is_active == True)
-        )
+        result = await db.execute(select(User).where(User.is_active == True))
         users = result.scalars().all()
 
         analyzed_count = 0
@@ -108,10 +109,7 @@ class StorageOptimizationWorker:
         for user in users:
             try:
                 # Analyze user storage
-                analysis = await storage_analyzer.analyze_user_storage(
-                    user_id=user.id,
-                    db=db
-                )
+                analysis = await storage_analyzer.analyze_user_storage(user_id=user.id, db=db)
 
                 if not analysis:
                     logger.warning(f"Failed to analyze storage for user {user.id}")
@@ -123,10 +121,7 @@ class StorageOptimizationWorker:
                 analyzed_count += 1
 
                 # Generate optimization suggestions
-                suggestions = await storage_optimizer.generate_suggestions(
-                    analysis=analysis,
-                    db=db
-                )
+                suggestions = await storage_optimizer.generate_suggestions(analysis=analysis, db=db)
 
                 # Save suggestions to database
                 for suggestion in suggestions:
@@ -142,10 +137,9 @@ class StorageOptimizationWorker:
                 )
 
                 # Update metrics
-                metrics_collector.increment_counter('storage_analyses_completed_total')
+                metrics_collector.increment_counter("storage_analyses_completed_total")
                 metrics_collector.increment_counter(
-                    'storage_optimization_suggestions_generated_total',
-                    len(suggestions)
+                    "storage_optimization_suggestions_generated_total", len(suggestions)
                 )
 
             except Exception as e:
@@ -172,10 +166,7 @@ class StorageOptimizationWorker:
 
         try:
             # Analyze user storage
-            analysis = await storage_analyzer.analyze_user_storage(
-                user_id=user_id,
-                db=db
-            )
+            analysis = await storage_analyzer.analyze_user_storage(user_id=user_id, db=db)
 
             if not analysis:
                 logger.error(f"Failed to analyze storage for user {user_id}")
@@ -186,10 +177,7 @@ class StorageOptimizationWorker:
             await db.flush()
 
             # Generate suggestions
-            suggestions = await storage_optimizer.generate_suggestions(
-                analysis=analysis,
-                db=db
-            )
+            suggestions = await storage_optimizer.generate_suggestions(analysis=analysis, db=db)
 
             # Save suggestions
             for suggestion in suggestions:
@@ -203,10 +191,9 @@ class StorageOptimizationWorker:
             )
 
             # Update metrics
-            metrics_collector.increment_counter('storage_analyses_completed_total')
+            metrics_collector.increment_counter("storage_analyses_completed_total")
             metrics_collector.increment_counter(
-                'storage_optimization_suggestions_generated_total',
-                len(suggestions)
+                "storage_optimization_suggestions_generated_total", len(suggestions)
             )
 
             return analysis, suggestions

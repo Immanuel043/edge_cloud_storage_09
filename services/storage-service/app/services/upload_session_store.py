@@ -69,24 +69,29 @@ async def save_upload_session(
 
     # Secondary: DB (fire-and-forget is OK here since Redis is the primary)
     try:
-        from ..models.database import UploadSession
         from sqlalchemy import text
         from sqlalchemy.dialects.postgresql import insert
 
+        from ..models.database import UploadSession
+
         expires_at = datetime.utcnow() + timedelta(seconds=REDIS_TTL)
-        stmt = insert(UploadSession).values(
-            upload_id=upload_id,
-            user_id=session_data["user"],
-            session_data=session_data,
-            expires_at=expires_at,
-            updated_at=datetime.utcnow(),
-        ).on_conflict_do_update(
-            index_elements=["upload_id"],
-            set_={
-                "session_data": session_data,
-                "updated_at": datetime.utcnow(),
-                "expires_at": expires_at,
-            },
+        stmt = (
+            insert(UploadSession)
+            .values(
+                upload_id=upload_id,
+                user_id=session_data["user"],
+                session_data=session_data,
+                expires_at=expires_at,
+                updated_at=datetime.utcnow(),
+            )
+            .on_conflict_do_update(
+                index_elements=["upload_id"],
+                set_={
+                    "session_data": session_data,
+                    "updated_at": datetime.utcnow(),
+                    "expires_at": expires_at,
+                },
+            )
         )
         await db.execute(stmt)
         await db.commit()
@@ -112,8 +117,9 @@ async def get_upload_session(
 
     # Fallback: try DB
     try:
-        from ..models.database import UploadSession
         from sqlalchemy import select
+
+        from ..models.database import UploadSession
 
         result = await db.execute(
             select(UploadSession).where(
@@ -128,9 +134,7 @@ async def get_upload_session(
             # Repopulate Redis
             remaining_ttl = int((row.expires_at - datetime.utcnow()).total_seconds())
             if remaining_ttl > 0:
-                await redis_client.setex(
-                    f"up:{upload_id}", remaining_ttl, json.dumps(session)
-                )
+                await redis_client.setex(f"up:{upload_id}", remaining_ttl, json.dumps(session))
             return session
     except Exception as e:
         logger.warning(f"Failed to recover upload session {upload_id} from DB: {e}")
@@ -147,12 +151,11 @@ async def delete_upload_session(
     await redis_client.delete(f"up:{upload_id}")
 
     try:
-        from ..models.database import UploadSession
         from sqlalchemy import delete
 
-        await db.execute(
-            delete(UploadSession).where(UploadSession.upload_id == upload_id)
-        )
+        from ..models.database import UploadSession
+
+        await db.execute(delete(UploadSession).where(UploadSession.upload_id == upload_id))
         await db.commit()
     except Exception as e:
         logger.warning(f"Failed to delete upload session {upload_id} from DB: {e}")
@@ -178,8 +181,13 @@ async def update_upload_session_atomic(
     """
     key = f"up:{upload_id}"
     result = await redis_client.eval(
-        UPDATE_CHUNK_LUA, 1, key,
-        str(chunk_index), chunk_hash, storage_path, str(REDIS_TTL),
+        UPDATE_CHUNK_LUA,
+        1,
+        key,
+        str(chunk_index),
+        chunk_hash,
+        storage_path,
+        str(REDIS_TTL),
     )
     if result is None:
         return None
@@ -196,23 +204,28 @@ async def update_upload_session_atomic(
 
 async def _persist_session_to_db(db, upload_id: str, session_data: dict) -> None:
     """Best-effort persist session to DB."""
-    from ..models.database import UploadSession
     from sqlalchemy.dialects.postgresql import insert
 
+    from ..models.database import UploadSession
+
     expires_at = datetime.utcnow() + timedelta(seconds=REDIS_TTL)
-    stmt = insert(UploadSession).values(
-        upload_id=upload_id,
-        user_id=session_data["user"],
-        session_data=session_data,
-        expires_at=expires_at,
-        updated_at=datetime.utcnow(),
-    ).on_conflict_do_update(
-        index_elements=["upload_id"],
-        set_={
-            "session_data": session_data,
-            "updated_at": datetime.utcnow(),
-            "expires_at": expires_at,
-        },
+    stmt = (
+        insert(UploadSession)
+        .values(
+            upload_id=upload_id,
+            user_id=session_data["user"],
+            session_data=session_data,
+            expires_at=expires_at,
+            updated_at=datetime.utcnow(),
+        )
+        .on_conflict_do_update(
+            index_elements=["upload_id"],
+            set_={
+                "session_data": session_data,
+                "updated_at": datetime.utcnow(),
+                "expires_at": expires_at,
+            },
+        )
     )
     await db.execute(stmt)
     await db.commit()

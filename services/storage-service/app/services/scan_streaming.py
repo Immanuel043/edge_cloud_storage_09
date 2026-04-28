@@ -14,13 +14,11 @@ from typing import Any, AsyncGenerator
 
 import aiofiles
 
-from .encryption import encryption_service
 from ..utils.compression import decompressor
+from .encryption import encryption_service
 
 
-async def iter_decrypted_chunks(
-    file_obj: Any, file_key: bytes
-) -> AsyncGenerator[bytes, None]:
+async def iter_decrypted_chunks(file_obj: Any, file_key: bytes) -> AsyncGenerator[bytes, None]:
     """Yield decrypted (+ optionally decompressed) plaintext bytes per chunk.
 
     Mirrors the loop in `_reassemble_chunked_file_for_scan` but emits chunks
@@ -45,9 +43,7 @@ async def iter_decrypted_chunks(
             shard = upload_id[:2]
             chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
         if not os.path.exists(chunk_path):
-            raise FileNotFoundError(
-                f"Missing chunk {i} for file {file_obj.id} at {chunk_path!r}"
-            )
+            raise FileNotFoundError(f"Missing chunk {i} for file {file_obj.id} at {chunk_path!r}")
         async with aiofiles.open(chunk_path, "rb") as cf:
             encrypted = await cf.read()
         plaintext = await asyncio.to_thread(

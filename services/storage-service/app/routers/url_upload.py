@@ -8,32 +8,29 @@ Endpoints for uploading files from URLs with:
 - Security scanning
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import List
 import logging
 from datetime import datetime
+from typing import List
 
-from ..dependencies import get_db, get_current_user, log_activity, get_plan_quota
-from ..database import get_redis
-from ..models.database import User, Object, URLUploadJob, Folder
-from ..models.schemas import (
-    URLUploadRequest,
-    URLUploadResponse,
-    URLUploadStatusResponse
-)
-from ..services.url_upload_service import url_upload_service, URLUploadError
-from ..services.url_validator import SSRFProtectionError
-from ..services.encryption import encryption_service
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..config import settings
+from ..database import get_redis
+from ..dependencies import get_current_user, get_db, get_plan_quota, log_activity
+from ..models.database import Folder, Object, URLUploadJob, User
+from ..models.schemas import URLUploadRequest, URLUploadResponse, URLUploadStatusResponse
+from ..services.encryption import encryption_service
+from ..services.url_upload_service import URLUploadError, url_upload_service
+from ..services.url_validator import SSRFProtectionError
 
 router = APIRouter(prefix="/api/v1/upload", tags=["url-upload"])
 logger = logging.getLogger(__name__)
 
 # Rate limiting: track concurrent uploads per user
 user_active_uploads = {}  # user_id -> count
-MAX_CONCURRENT_URL_UPLOADS = getattr(settings, 'URL_UPLOAD_CONCURRENT_LIMIT', 5)
+MAX_CONCURRENT_URL_UPLOADS = getattr(settings, "URL_UPLOAD_CONCURRENT_LIMIT", 5)
 
 
 @router.post("/from-url", response_model=URLUploadResponse)
@@ -75,7 +72,7 @@ async def upload_from_url(
     if active_count >= MAX_CONCURRENT_URL_UPLOADS:
         raise HTTPException(
             status_code=429,
-            detail=f"Too many concurrent URL uploads. Maximum: {MAX_CONCURRENT_URL_UPLOADS}"
+            detail=f"Too many concurrent URL uploads. Maximum: {MAX_CONCURRENT_URL_UPLOADS}",
         )
 
     # Validate folder if provided
@@ -83,8 +80,7 @@ async def upload_from_url(
     if request_data.folder_id:
         result = await db.execute(
             select(Folder).where(
-                Folder.id == request_data.folder_id,
-                Folder.user_id == current_user.id
+                Folder.id == request_data.folder_id, Folder.user_id == current_user.id
             )
         )
         folder = result.scalar_one_or_none()
@@ -98,7 +94,7 @@ async def upload_from_url(
         folder_id=folder_id,
         source_url=request_data.url,
         filename=request_data.filename,
-        status='pending'
+        status="pending",
     )
     db.add(job)
     await db.commit()
@@ -108,9 +104,12 @@ async def upload_from_url(
 
     # Log activity
     await log_activity(
-        db, current_user.id, "url_upload_initiated", job_id,
+        db,
+        current_user.id,
+        "url_upload_initiated",
+        job_id,
         {"url": request_data.url, "folder_id": folder_id},
-        request
+        request,
     )
 
     # Start background download
@@ -120,7 +119,7 @@ async def upload_from_url(
         url=request_data.url,
         user_id=user_id_str,
         folder_id=folder_id,
-        override_filename=request_data.filename
+        override_filename=request_data.filename,
     )
 
     # Increment active uploads counter
@@ -132,16 +131,12 @@ async def upload_from_url(
         job_id=job_id,
         status="pending",
         url=request_data.url,
-        message="Download started in background. Use /status endpoint to track progress."
+        message="Download started in background. Use /status endpoint to track progress.",
     )
 
 
 async def process_url_download(
-    job_id: str,
-    url: str,
-    user_id: str,
-    folder_id: str = None,
-    override_filename: str = None
+    job_id: str, url: str, user_id: str, folder_id: str = None, override_filename: str = None
 ):
     """
     Background task to process URL download
@@ -162,44 +157,37 @@ async def process_url_download(
 
         # Update job status to downloading
         async with async_session() as db:
-            result = await db.execute(
-                select(URLUploadJob).where(URLUploadJob.id == job_id)
-            )
+            result = await db.execute(select(URLUploadJob).where(URLUploadJob.id == job_id))
             job = result.scalar_one_or_none()
             if job:
-                job.status = 'downloading'
+                job.status = "downloading"
                 job.started_at = datetime.utcnow()
                 await db.commit()
 
         # Download file
         download_result = await url_upload_service.download_from_url(
-            job_id=job_id,
-            url=url,
-            user_id=user_id,
-            folder_id=folder_id,
-            redis_client=redis_client
+            job_id=job_id, url=url, user_id=user_id, folder_id=folder_id, redis_client=redis_client
         )
 
         # Use override filename if provided
         if override_filename:
-            download_result['filename'] = override_filename
+            download_result["filename"] = override_filename
 
         # Create file record and check quota
         async with async_session() as db:
             # Check quota BEFORE adding file to session
-            user_result = await db.execute(
-                select(User).where(User.id == user_id)
-            )
+            user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
             if user:
                 await get_plan_quota(user, db)
                 available = (user.storage_quota or 0) - (user.storage_used or 0)
-                if download_result['file_size'] > available:
+                if download_result["file_size"] > available:
                     # Over quota — clean up downloaded file and fail
-                    if download_result.get('storage_path'):
+                    if download_result.get("storage_path"):
                         import os
+
                         try:
-                            os.remove(download_result['storage_path'])
+                            os.remove(download_result["storage_path"])
                         except OSError:
                             pass
                     raise URLUploadError(
@@ -209,47 +197,41 @@ async def process_url_download(
 
             # Create Object record (after quota validated)
             file_obj = Object(
-                id=download_result['file_id'],
+                id=download_result["file_id"],
                 user_id=user_id,
                 folder_id=folder_id,
-                file_name=download_result['filename'],
-                file_size=download_result['file_size'],
-                mime_type=download_result['mime_type'],
-                content_hash=download_result['content_hash'],
-                encryption_key=download_result['encryption_key'],
-                storage_type=download_result['storage_type'],
-                object_path=download_result['storage_path'],
-                storage_tier=download_result['storage_tier'],
-                file_metadata={
-                    'source_url': url,
-                    'download_method': 'url_upload'
-                }
+                file_name=download_result["filename"],
+                file_size=download_result["file_size"],
+                mime_type=download_result["mime_type"],
+                content_hash=download_result["content_hash"],
+                encryption_key=download_result["encryption_key"],
+                storage_type=download_result["storage_type"],
+                object_path=download_result["storage_path"],
+                storage_tier=download_result["storage_tier"],
+                file_metadata={"source_url": url, "download_method": "url_upload"},
             )
             db.add(file_obj)
 
             if user:
-                user.storage_used = (user.storage_used or 0) + download_result['file_size']
+                user.storage_used = (user.storage_used or 0) + download_result["file_size"]
 
             # Update job record
-            job_result = await db.execute(
-                select(URLUploadJob).where(URLUploadJob.id == job_id)
-            )
+            job_result = await db.execute(select(URLUploadJob).where(URLUploadJob.id == job_id))
             job = job_result.scalar_one_or_none()
             if job:
-                job.status = 'completed'
-                job.file_id = download_result['file_id']
-                job.filename = download_result['filename']
-                job.mime_type = download_result['mime_type']
-                job.total_size = download_result['file_size']
-                job.downloaded_size = download_result['file_size']
+                job.status = "completed"
+                job.file_id = download_result["file_id"]
+                job.filename = download_result["filename"]
+                job.mime_type = download_result["mime_type"]
+                job.total_size = download_result["file_size"]
+                job.downloaded_size = download_result["file_size"]
                 job.progress = 100
                 job.completed_at = datetime.utcnow()
 
             await db.commit()
 
         logger.info(
-            f"URL download completed for job {job_id}, "
-            f"file {download_result['file_id']}"
+            f"URL download completed for job {job_id}, " f"file {download_result['file_id']}"
         )
 
         # Run virus scan in background (fire and forget)
@@ -279,12 +261,10 @@ async def _mark_job_failed(job_id: str, error_message: str):
 
     try:
         async with async_session() as db:
-            result = await db.execute(
-                select(URLUploadJob).where(URLUploadJob.id == job_id)
-            )
+            result = await db.execute(select(URLUploadJob).where(URLUploadJob.id == job_id))
             job = result.scalar_one_or_none()
             if job:
-                job.status = 'failed'
+                job.status = "failed"
                 job.error_message = error_message
                 job.completed_at = datetime.utcnow()
                 await db.commit()
@@ -313,9 +293,7 @@ async def get_url_upload_status(
         HTTPException: If job not found or unauthorized
     """
     # Get job from database
-    result = await db.execute(
-        select(URLUploadJob).where(URLUploadJob.id == job_id)
-    )
+    result = await db.execute(select(URLUploadJob).where(URLUploadJob.id == job_id))
     job = result.scalar_one_or_none()
 
     if not job:
@@ -335,7 +313,7 @@ async def get_url_upload_status(
         filename=job.filename,
         error=job.error_message,
         created_at=job.created_at,
-        updated_at=job.updated_at
+        updated_at=job.updated_at,
     )
 
 
@@ -358,9 +336,12 @@ async def list_url_upload_jobs(
     Returns:
         List of URLUploadStatusResponse
     """
-    query = select(URLUploadJob).where(
-        URLUploadJob.user_id == current_user.id
-    ).order_by(URLUploadJob.created_at.desc()).limit(limit)
+    query = (
+        select(URLUploadJob)
+        .where(URLUploadJob.user_id == current_user.id)
+        .order_by(URLUploadJob.created_at.desc())
+        .limit(limit)
+    )
 
     if status:
         query = query.where(URLUploadJob.status == status)
@@ -379,7 +360,7 @@ async def list_url_upload_jobs(
             filename=job.filename,
             error=job.error_message,
             created_at=job.created_at,
-            updated_at=job.updated_at
+            updated_at=job.updated_at,
         )
         for job in jobs
     ]
@@ -408,9 +389,7 @@ async def cancel_url_upload(
     Raises:
         HTTPException: If job not found or unauthorized
     """
-    result = await db.execute(
-        select(URLUploadJob).where(URLUploadJob.id == job_id)
-    )
+    result = await db.execute(select(URLUploadJob).where(URLUploadJob.id == job_id))
     job = result.scalar_one_or_none()
 
     if not job:
@@ -425,8 +404,4 @@ async def cancel_url_upload(
 
     logger.info(f"URL upload job {job_id} deleted by user {current_user.id}")
 
-    return {
-        "status": "success",
-        "message": "Job deleted",
-        "job_id": job_id
-    }
+    return {"status": "success", "message": "Job deleted", "job_id": job_id}

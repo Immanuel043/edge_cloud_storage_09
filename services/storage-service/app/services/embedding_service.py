@@ -17,7 +17,7 @@ import json
 import logging
 import struct
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import numpy as np
@@ -25,7 +25,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..models.database import Object, FileEmbedding
+from ..models.database import FileEmbedding, Object
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,9 @@ async def get_embedding_model():
 
             logger.info(f"Loading embedding model: {settings.SEMANTIC_MODEL_NAME}")
             _model = SentenceTransformer(settings.SEMANTIC_MODEL_NAME)
-            logger.info(f"Embedding model loaded successfully (dim={settings.SEMANTIC_EMBEDDING_DIM})")
+            logger.info(
+                f"Embedding model loaded successfully (dim={settings.SEMANTIC_EMBEDDING_DIM})"
+            )
             return _model
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
@@ -103,8 +105,7 @@ class EmbeddingService:
             # Run in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
             embedding = await loop.run_in_executor(
-                None,
-                lambda: model.encode(text, normalize_embeddings=True)
+                None, lambda: model.encode(text, normalize_embeddings=True)
             )
             return embedding
         except Exception as e:
@@ -143,8 +144,7 @@ class EmbeddingService:
             # Generate embeddings in batch
             loop = asyncio.get_event_loop()
             embeddings = await loop.run_in_executor(
-                None,
-                lambda: model.encode(valid_texts, normalize_embeddings=True, batch_size=32)
+                None, lambda: model.encode(valid_texts, normalize_embeddings=True, batch_size=32)
             )
 
             # Map back to original indices
@@ -174,7 +174,7 @@ class EmbeddingService:
     @staticmethod
     def compute_text_hash(text: str) -> str:
         """Compute SHA256 hash of text for change detection"""
-        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     # ========================================================================
     # Database Operations
@@ -187,7 +187,7 @@ class EmbeddingService:
         user_id: UUID,
         embedding: np.ndarray,
         source_text: str,
-        source_type: str = 'filename'
+        source_type: str = "filename",
     ) -> Optional[FileEmbedding]:
         """
         Store embedding in PostgreSQL and cache in Redis.
@@ -210,8 +210,7 @@ class EmbeddingService:
             # Check if embedding already exists
             result = await db.execute(
                 select(FileEmbedding).filter(
-                    FileEmbedding.file_id == file_id,
-                    FileEmbedding.source_type == source_type
+                    FileEmbedding.file_id == file_id, FileEmbedding.source_type == source_type
                 )
             )
             existing = result.scalar_one_or_none()
@@ -221,7 +220,7 @@ class EmbeddingService:
                 existing.embedding = embedding_bytes
                 existing.source_text_hash = text_hash
                 existing.model_name = settings.SEMANTIC_MODEL_NAME
-                existing.status = 'completed'
+                existing.status = "completed"
                 existing.computed_at = datetime.utcnow()
                 existing.error_message = None
                 await db.commit()
@@ -234,11 +233,11 @@ class EmbeddingService:
                     embedding=embedding_bytes,
                     embedding_dim=len(embedding),
                     model_name=settings.SEMANTIC_MODEL_NAME,
-                    model_version='1.0',
+                    model_version="1.0",
                     source_text_hash=text_hash,
                     source_type=source_type,
-                    status='completed',
-                    computed_at=datetime.utcnow()
+                    status="completed",
+                    computed_at=datetime.utcnow(),
                 )
                 db.add(file_embedding)
                 await db.commit()
@@ -255,10 +254,7 @@ class EmbeddingService:
             return None
 
     async def get_embedding(
-        self,
-        db: AsyncSession,
-        file_id: UUID,
-        source_type: str = 'filename'
+        self, db: AsyncSession, file_id: UUID, source_type: str = "filename"
     ) -> Optional[np.ndarray]:
         """
         Get embedding from cache or database.
@@ -282,7 +278,7 @@ class EmbeddingService:
                 select(FileEmbedding).filter(
                     FileEmbedding.file_id == file_id,
                     FileEmbedding.source_type == source_type,
-                    FileEmbedding.status == 'completed'
+                    FileEmbedding.status == "completed",
                 )
             )
             record = result.scalar_one_or_none()
@@ -299,11 +295,7 @@ class EmbeddingService:
             return None
 
     async def get_user_embeddings(
-        self,
-        db: AsyncSession,
-        user_id: UUID,
-        source_type: str = 'filename',
-        limit: int = None
+        self, db: AsyncSession, user_id: UUID, source_type: str = "filename", limit: int = None
     ) -> List[Tuple[UUID, np.ndarray]]:
         """
         Get all embeddings for a user.
@@ -315,7 +307,7 @@ class EmbeddingService:
             query = select(FileEmbedding.file_id, FileEmbedding.embedding).filter(
                 FileEmbedding.user_id == user_id,
                 FileEmbedding.source_type == source_type,
-                FileEmbedding.status == 'completed'
+                FileEmbedding.status == "completed",
             )
 
             if limit:
@@ -372,7 +364,7 @@ class EmbeddingService:
             return
 
         try:
-            for source_type in ['filename', 'tags', 'content', 'combined']:
+            for source_type in ["filename", "tags", "content", "combined"]:
                 cache_key = f"embedding:{file_id}:{source_type}"
                 await self.redis.delete(cache_key)
         except Exception as e:
@@ -411,7 +403,7 @@ class EmbeddingService:
         user_id: UUID,
         top_k: int = None,
         min_score: float = None,
-        source_type: str = 'filename'
+        source_type: str = "filename",
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search across user's files.
@@ -455,13 +447,10 @@ class EmbeddingService:
         results = []
         for file_id, score in zip(file_ids, scores):
             if score >= min_score:
-                results.append({
-                    'file_id': file_id,
-                    'semantic_score': float(score)
-                })
+                results.append({"file_id": file_id, "semantic_score": float(score)})
 
         # Sort by score descending
-        results.sort(key=lambda x: x['semantic_score'], reverse=True)
+        results.sort(key=lambda x: x["semantic_score"], reverse=True)
 
         # Return top-k
         return results[:top_k]
@@ -472,7 +461,7 @@ class EmbeddingService:
         keyword_results: List[Dict[str, Any]],
         query: str,
         user_id: UUID,
-        top_k: int = 20
+        top_k: int = 20,
     ) -> List[Dict[str, Any]]:
         """
         Combine keyword search results with semantic search for hybrid ranking.
@@ -496,16 +485,13 @@ class EmbeddingService:
         )
 
         # Build lookup maps
-        semantic_scores = {
-            str(r['file_id']): r['semantic_score']
-            for r in semantic_results
-        }
+        semantic_scores = {str(r["file_id"]): r["semantic_score"] for r in semantic_results}
 
         keyword_scores = {}
         max_keyword_score = 1.0
         for r in keyword_results:
-            file_id = r.get('id') or str(r.get('file_id', ''))
-            score = r.get('score', 0)
+            file_id = r.get("id") or str(r.get("file_id", ""))
+            score = r.get("score", 0)
             keyword_scores[file_id] = score
             max_keyword_score = max(max_keyword_score, score)
 
@@ -526,28 +512,35 @@ class EmbeddingService:
 
             # Find original result data
             original = next(
-                (r for r in keyword_results if (r.get('id') or str(r.get('file_id', ''))) == file_id),
-                None
+                (
+                    r
+                    for r in keyword_results
+                    if (r.get("id") or str(r.get("file_id", ""))) == file_id
+                ),
+                None,
             )
 
             result = {
-                'id': file_id,
-                'hybrid_score': hybrid_score,
-                'keyword_score': kw_score,
-                'semantic_score': sem_score,
+                "id": file_id,
+                "hybrid_score": hybrid_score,
+                "keyword_score": kw_score,
+                "semantic_score": sem_score,
             }
 
             # Merge with original result data if available
             if original:
-                result.update({
-                    k: v for k, v in original.items()
-                    if k not in ['score', 'hybrid_score', 'keyword_score', 'semantic_score']
-                })
+                result.update(
+                    {
+                        k: v
+                        for k, v in original.items()
+                        if k not in ["score", "hybrid_score", "keyword_score", "semantic_score"]
+                    }
+                )
 
             hybrid_results.append(result)
 
         # Sort by hybrid score
-        hybrid_results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+        hybrid_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
         return hybrid_results[:top_k]
 
@@ -561,7 +554,7 @@ class EmbeddingService:
         tags: List[str] = None,
         description: str = None,
         ocr_text: str = None,
-        ai_tags: List[str] = None
+        ai_tags: List[str] = None,
     ) -> str:
         """
         Build combined searchable text for embedding generation.
@@ -581,7 +574,7 @@ class EmbeddingService:
         # File name (most important)
         if file_name:
             # Remove extension and clean
-            name_clean = file_name.rsplit('.', 1)[0].replace('_', ' ').replace('-', ' ')
+            name_clean = file_name.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
             parts.append(name_clean)
 
         # Tags
@@ -601,7 +594,7 @@ class EmbeddingService:
             ocr_truncated = ocr_text[:1000]  # Limit to first 1000 chars
             parts.append(ocr_truncated)
 
-        return ' '.join(parts)
+        return " ".join(parts)
 
 
 # Global instance

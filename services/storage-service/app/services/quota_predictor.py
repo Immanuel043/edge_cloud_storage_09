@@ -12,21 +12,24 @@ Optimized for AMD Ryzen 9 7950X (16C/32T) with 128GB RAM.
 """
 
 import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple, List
-from datetime import datetime, timedelta
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from ..models.database import StorageUsageHistory, User, QuotaPrediction
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..config import settings
+from ..models.database import QuotaPrediction, StorageUsageHistory, User
 
 logger = logging.getLogger(__name__)
 
 # Configure for multi-core CPU
 import os
-os.environ['OMP_NUM_THREADS'] = '32'
-os.environ['MKL_NUM_THREADS'] = '32'
+
+os.environ["OMP_NUM_THREADS"] = "32"
+os.environ["MKL_NUM_THREADS"] = "32"
 
 
 class QuotaPredictorService:
@@ -49,22 +52,24 @@ class QuotaPredictorService:
     def _check_available_models(self) -> Dict[str, bool]:
         """Check which ML libraries are available"""
         models = {
-            'prophet': False,
-            'linear_regression': False,
-            'moving_average': True,  # Always available (numpy only)
+            "prophet": False,
+            "linear_regression": False,
+            "moving_average": True,  # Always available (numpy only)
         }
 
         try:
             from prophet import Prophet
+
             Prophet()  # Verify CmdStan backend is installed, not just the Python package
-            models['prophet'] = True
+            models["prophet"] = True
             logger.info("Prophet library available")
         except (ImportError, AttributeError, Exception) as e:
             logger.warning(f"Prophet not available (will use fallback methods): {e}")
 
         try:
             from sklearn.linear_model import LinearRegression
-            models['linear_regression'] = True
+
+            models["linear_regression"] = True
             logger.info("sklearn available")
         except ImportError:
             logger.warning("sklearn not available")
@@ -72,10 +77,7 @@ class QuotaPredictorService:
         return models
 
     async def predict_user_quota(
-        self,
-        user_id: str,
-        db: AsyncSession,
-        force_model: Optional[str] = None
+        self, user_id: str, db: AsyncSession, force_model: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Predict quota usage for a single user
@@ -89,9 +91,7 @@ class QuotaPredictorService:
             Dict with predictions or None if insufficient data
         """
         # Get user info
-        user_result = await db.execute(
-            select(User).where(User.id == user_id)
-        )
+        user_result = await db.execute(select(User).where(User.id == user_id))
         user = user_result.scalar_one_or_none()
         if not user:
             logger.error(f"User {user_id} not found")
@@ -113,20 +113,14 @@ class QuotaPredictorService:
             return None
 
         # Convert to DataFrame
-        df = pd.DataFrame([
-            {
-                'date': h.date,
-                'storage_used': h.storage_used
-            }
-            for h in history
-        ])
+        df = pd.DataFrame([{"date": h.date, "storage_used": h.storage_used} for h in history])
 
         # Ensure date is datetime
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date')
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date")
 
         # Try models in order of preference
-        model_order = ['prophet', 'linear_regression', 'moving_average']
+        model_order = ["prophet", "linear_regression", "moving_average"]
         if force_model:
             model_order = [force_model] + [m for m in model_order if m != force_model]
 
@@ -135,13 +129,11 @@ class QuotaPredictorService:
                 continue
 
             try:
-                prediction = await self._predict_with_model(
-                    df, user.storage_quota, model_type
-                )
+                prediction = await self._predict_with_model(df, user.storage_quota, model_type)
                 if prediction:
-                    prediction['user_id'] = str(user_id)
-                    prediction['quota_bytes'] = user.storage_quota
-                    prediction['current_usage_bytes'] = int(df['storage_used'].iloc[-1])
+                    prediction["user_id"] = str(user_id)
+                    prediction["quota_bytes"] = user.storage_quota
+                    prediction["current_usage_bytes"] = int(df["storage_used"].iloc[-1])
                     return prediction
             except Exception as e:
                 logger.error(f"Model {model_type} failed for user {user_id}: {e}")
@@ -151,10 +143,7 @@ class QuotaPredictorService:
         return None
 
     async def _predict_with_model(
-        self,
-        df: pd.DataFrame,
-        quota: int,
-        model_type: str
+        self, df: pd.DataFrame, quota: int, model_type: str
     ) -> Optional[Dict]:
         """
         Make prediction using specified model
@@ -167,30 +156,23 @@ class QuotaPredictorService:
         Returns:
             Dict with predictions or None on failure
         """
-        if model_type == 'prophet':
+        if model_type == "prophet":
             return await self._predict_prophet(df, quota)
-        elif model_type == 'linear_regression':
+        elif model_type == "linear_regression":
             return self._predict_linear_regression(df, quota)
-        elif model_type == 'moving_average':
+        elif model_type == "moving_average":
             return self._predict_moving_average(df, quota)
         else:
             logger.error(f"Unknown model type: {model_type}")
             return None
 
-    async def _predict_prophet(
-        self,
-        df: pd.DataFrame,
-        quota: int
-    ) -> Optional[Dict]:
+    async def _predict_prophet(self, df: pd.DataFrame, quota: int) -> Optional[Dict]:
         """Predict using Facebook Prophet (best for seasonal patterns)"""
         try:
             from prophet import Prophet
 
             # Prepare data for Prophet (needs 'ds' and 'y' columns)
-            prophet_df = pd.DataFrame({
-                'ds': df['date'],
-                'y': df['storage_used']
-            })
+            prophet_df = pd.DataFrame({"ds": df["date"], "y": df["storage_used"]})
 
             # Initialize and fit model
             model = Prophet(
@@ -202,56 +184,51 @@ class QuotaPredictorService:
 
             # Suppress Prophet logging
             import logging as prophet_logging
-            prophet_logging.getLogger('prophet').setLevel(prophet_logging.ERROR)
+
+            prophet_logging.getLogger("prophet").setLevel(prophet_logging.ERROR)
 
             model.fit(prophet_df)
 
             # Make predictions for 7, 14, 30 days
-            future = model.make_future_dataframe(periods=30, freq='D')
+            future = model.make_future_dataframe(periods=30, freq="D")
             forecast = model.predict(future)
 
             # Extract predictions
             last_idx = len(prophet_df)
-            pred_7d = forecast.iloc[last_idx + 6]['yhat']
-            pred_14d = forecast.iloc[last_idx + 13]['yhat']
-            pred_30d = forecast.iloc[last_idx + 29]['yhat']
+            pred_7d = forecast.iloc[last_idx + 6]["yhat"]
+            pred_14d = forecast.iloc[last_idx + 13]["yhat"]
+            pred_30d = forecast.iloc[last_idx + 29]["yhat"]
 
             # Calculate confidence (based on prediction intervals)
             conf_7d = self._calculate_confidence(
-                forecast.iloc[last_idx + 6], prophet_df['y'].values
+                forecast.iloc[last_idx + 6], prophet_df["y"].values
             )
             conf_14d = self._calculate_confidence(
-                forecast.iloc[last_idx + 13], prophet_df['y'].values
+                forecast.iloc[last_idx + 13], prophet_df["y"].values
             )
             conf_30d = self._calculate_confidence(
-                forecast.iloc[last_idx + 29], prophet_df['y'].values
+                forecast.iloc[last_idx + 29], prophet_df["y"].values
             )
 
             # Calculate days until quota exceeded
-            days_until_full = self._calculate_days_until_full(
-                forecast[last_idx:], quota
-            )
+            days_until_full = self._calculate_days_until_full(forecast[last_idx:], quota)
 
             return {
-                'predicted_7d': max(0, int(pred_7d)),
-                'predicted_14d': max(0, int(pred_14d)),
-                'predicted_30d': max(0, int(pred_30d)),
-                'confidence_7d': conf_7d,
-                'confidence_14d': conf_14d,
-                'confidence_30d': conf_30d,
-                'days_until_full': days_until_full,
-                'model_type': 'prophet'
+                "predicted_7d": max(0, int(pred_7d)),
+                "predicted_14d": max(0, int(pred_14d)),
+                "predicted_30d": max(0, int(pred_30d)),
+                "confidence_7d": conf_7d,
+                "confidence_14d": conf_14d,
+                "confidence_30d": conf_30d,
+                "days_until_full": days_until_full,
+                "model_type": "prophet",
             }
 
         except Exception as e:
             logger.error(f"Prophet prediction failed: {e}")
             return None
 
-    def _predict_linear_regression(
-        self,
-        df: pd.DataFrame,
-        quota: int
-    ) -> Optional[Dict]:
+    def _predict_linear_regression(self, df: pd.DataFrame, quota: int) -> Optional[Dict]:
         """Predict using Linear Regression (good for linear growth)"""
         try:
             from sklearn.linear_model import LinearRegression
@@ -259,7 +236,7 @@ class QuotaPredictorService:
 
             # Prepare data
             X = np.arange(len(df)).reshape(-1, 1)  # Days as feature
-            y = df['storage_used'].values
+            y = df["storage_used"].values
 
             # Fit model
             model = LinearRegression()
@@ -292,25 +269,21 @@ class QuotaPredictorService:
                 days_until_full = None  # No growth or declining
 
             return {
-                'predicted_7d': max(0, int(pred_7d)),
-                'predicted_14d': max(0, int(pred_14d)),
-                'predicted_30d': max(0, int(pred_30d)),
-                'confidence_7d': conf_7d,
-                'confidence_14d': conf_14d,
-                'confidence_30d': conf_30d,
-                'days_until_full': days_until_full,
-                'model_type': 'linear_regression'
+                "predicted_7d": max(0, int(pred_7d)),
+                "predicted_14d": max(0, int(pred_14d)),
+                "predicted_30d": max(0, int(pred_30d)),
+                "confidence_7d": conf_7d,
+                "confidence_14d": conf_14d,
+                "confidence_30d": conf_30d,
+                "days_until_full": days_until_full,
+                "model_type": "linear_regression",
             }
 
         except Exception as e:
             logger.error(f"Linear regression prediction failed: {e}")
             return None
 
-    def _predict_moving_average(
-        self,
-        df: pd.DataFrame,
-        quota: int
-    ) -> Dict:
+    def _predict_moving_average(self, df: pd.DataFrame, quota: int) -> Dict:
         """
         Predict using Moving Average (simple but reliable fallback)
 
@@ -318,7 +291,7 @@ class QuotaPredictorService:
         """
         # Calculate growth rate from moving average
         window = min(7, len(df))  # Use last 7 days or all available
-        recent_data = df['storage_used'].values[-window:]
+        recent_data = df["storage_used"].values[-window:]
 
         # Calculate daily growth
         if len(recent_data) > 1:
@@ -354,21 +327,17 @@ class QuotaPredictorService:
             days_until_full = None
 
         return {
-            'predicted_7d': max(0, int(pred_7d)),
-            'predicted_14d': max(0, int(pred_14d)),
-            'predicted_30d': max(0, int(pred_30d)),
-            'confidence_7d': conf_7d,
-            'confidence_14d': conf_14d,
-            'confidence_30d': conf_30d,
-            'days_until_full': days_until_full,
-            'model_type': 'moving_average'
+            "predicted_7d": max(0, int(pred_7d)),
+            "predicted_14d": max(0, int(pred_14d)),
+            "predicted_30d": max(0, int(pred_30d)),
+            "confidence_7d": conf_7d,
+            "confidence_14d": conf_14d,
+            "confidence_30d": conf_30d,
+            "days_until_full": days_until_full,
+            "model_type": "moving_average",
         }
 
-    def _calculate_confidence(
-        self,
-        forecast_row: pd.Series,
-        historical_data: np.ndarray
-    ) -> float:
+    def _calculate_confidence(self, forecast_row: pd.Series, historical_data: np.ndarray) -> float:
         """
         Calculate confidence score based on prediction intervals
 
@@ -380,7 +349,7 @@ class QuotaPredictorService:
             Confidence score (0.0 to 1.0)
         """
         # Width of prediction interval
-        interval_width = forecast_row['yhat_upper'] - forecast_row['yhat_lower']
+        interval_width = forecast_row["yhat_upper"] - forecast_row["yhat_lower"]
 
         # Normalize by mean of historical data
         historical_mean = np.mean(historical_data)
@@ -394,11 +363,7 @@ class QuotaPredictorService:
 
         return confidence
 
-    def _calculate_days_until_full(
-        self,
-        forecast: pd.DataFrame,
-        quota: int
-    ) -> Optional[int]:
+    def _calculate_days_until_full(self, forecast: pd.DataFrame, quota: int) -> Optional[int]:
         """
         Calculate days until quota is exceeded
 
@@ -411,10 +376,10 @@ class QuotaPredictorService:
         """
         # Find first day where yhat exceeds quota
         for idx, row in forecast.iterrows():
-            if row['yhat'] >= quota:
+            if row["yhat"] >= quota:
                 # Calculate relative day
-                first_date = forecast.iloc[0]['ds']
-                exceed_date = row['ds']
+                first_date = forecast.iloc[0]["ds"]
+                exceed_date = row["ds"]
                 days = (exceed_date - first_date).days
                 return max(0, days)
 
@@ -422,9 +387,7 @@ class QuotaPredictorService:
         return None
 
     async def batch_predict_all_users(
-        self,
-        db: AsyncSession,
-        limit: Optional[int] = None
+        self, db: AsyncSession, limit: Optional[int] = None
     ) -> List[Dict]:
         """
         Batch predict for all users (optimized for multi-core CPU)

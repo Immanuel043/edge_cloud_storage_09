@@ -1,47 +1,53 @@
 # services/storage-service/app/routers/files.py
 
-from fastapi import APIRouter, Depends, HTTPException, Request,Header, Response
-from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text, or_
-from typing import List, Optional
-import os
 import json
 import logging
+import os
 from datetime import datetime
+from typing import List, Optional
 from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
+from sqlalchemy import or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 
 def _content_disposition(disposition: str, filename: str) -> str:
     """Build a Content-Disposition header value safe for non-ASCII filenames (RFC 5987)."""
-    ascii_safe = filename.encode('ascii', errors='replace').decode('ascii').replace('"', '\\"')
+    ascii_safe = filename.encode("ascii", errors="replace").decode("ascii").replace('"', '\\"')
     try:
-        filename.encode('latin-1')
+        filename.encode("latin-1")
         return f'{disposition}; filename="{ascii_safe}"'
     except UnicodeEncodeError:
-        encoded = quote(filename, safe='')
+        encoded = quote(filename, safe="")
         return f"{disposition}; filename=\"{ascii_safe}\"; filename*=UTF-8''{encoded}"
-from ..dependencies import get_db, log_activity, get_current_user
-from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType
-from ..services.storage import storage_service
-from ..services.encryption import encryption_service
-from ..services.search_service import search_service
-from ..services.download_optimizer import download_optimizer
-from ..services.bandwidth_throttle import bandwidth_throttle_service
-from ..models.database import User, Object, ActivityLog, Favorite, FileNameSuggestion
-from ..models.schemas import FileResponse
-from ..database import get_redis
-from ..config import settings
-from ..services.kafka_client import get_kafka_producer
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
-from ..utils.resolved_file_view import ResolvedFileView
-from pydantic import BaseModel
-import re
+
+
 import base64
+import re
+from typing import AsyncGenerator, Optional, Tuple
+
 import aiofiles
-from typing import Optional, Tuple, AsyncGenerator
+from pydantic import BaseModel
+
+from ..config import settings
+from ..database import get_redis
+from ..dependencies import get_current_user, get_db, log_activity
+from ..models.database import ActivityLog, Favorite, FileNameSuggestion, Object, User
+from ..models.schemas import FileResponse
+from ..services.audit_logging_service import AuditEventType
+from ..services.audit_logging_service import audit_service as audit_logging_service
+from ..services.bandwidth_throttle import bandwidth_throttle_service
+from ..services.download_optimizer import download_optimizer
+from ..services.encryption import encryption_service
+from ..services.kafka_client import get_kafka_producer
+from ..services.search_service import search_service
+from ..services.storage import storage_service
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
+from ..utils.resolved_file_view import ResolvedFileView
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 USE_X_ACCEL = bool(os.environ.get("USE_X_ACCEL", False))
@@ -54,7 +60,7 @@ async def throttled_download_generator(
     file_size: int,
     plan_type: str = "free",
     db_bandwidth_override: int = None,
-    db_streams_override: int = None
+    db_streams_override: int = None,
 ) -> AsyncGenerator[bytes, None]:
     """
     Wraps a download generator with bandwidth throttling and stream slot management.
@@ -82,19 +88,19 @@ async def throttled_download_generator(
     try:
         # Try to acquire stream slot (plan-based limit)
         stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
-            user_id,
-            plan_type=plan_type,
-            db_streams_override=db_streams_override
+            user_id, plan_type=plan_type, db_streams_override=db_streams_override
         )
 
         if not stream_acquired:
             raise HTTPException(
                 status_code=429,
                 detail=f"Too many concurrent downloads. Maximum {max_streams} streams allowed for your plan.",
-                headers={"Retry-After": "10"}
+                headers={"Retry-After": "10"},
             )
 
-        logger.debug(f"Stream slot acquired for user {user_id} ({plan_type}), starting download ({file_size} bytes)")
+        logger.debug(
+            f"Stream slot acquired for user {user_id} ({plan_type}), starting download ({file_size} bytes)"
+        )
 
         # Stream data with bandwidth throttling (plan-aware)
         async for chunk in bandwidth_throttle_service.throttled_transfer(
@@ -102,7 +108,7 @@ async def throttled_download_generator(
             data_generator=data_generator,
             raise_on_long_wait=True,
             plan_type=plan_type,
-            db_bandwidth_override=db_bandwidth_override
+            db_bandwidth_override=db_bandwidth_override,
         ):
             yield chunk
 
@@ -162,6 +168,7 @@ async def _try_rust_or_python(
     use_rust = False
     try:
         from ..services.rust_dataplane_client import get_rust_client
+
         rust_client = get_rust_client()
         if await rust_client.is_available():
             use_rust = True
@@ -187,13 +194,19 @@ async def _try_rust_or_python(
 class BulkDeleteRequest(BaseModel):
     file_ids: List[str]
 
+
 class RenameRequest(BaseModel):
     name: str
 
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
-@router.get("", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
+
+@router.get(
+    "",
+    response_model=List[FileResponse],
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))],
+)
 async def list_files(
     request: Request,
     folder_id: Optional[str] = None,
@@ -251,8 +264,7 @@ async def list_files(
     # Batch query for favorites
     favorites_result = await db.execute(
         select(Favorite.file_id).filter(
-            Favorite.user_id == current_user.id,
-            Favorite.file_id.in_(file_ids)
+            Favorite.user_id == current_user.id, Favorite.file_id.in_(file_ids)
         )
     )
     favorite_file_ids = set(favorites_result.scalars().all())
@@ -273,8 +285,8 @@ async def list_files(
             is_favorite=(f.id in favorite_file_ids),
             # Encryption mode (server-side encryption for normal storage)
             # Note: ZK files are in a separate service
-            is_encrypted=(f.encryption_mode == 'server_side'),
-            encryption_version=getattr(f, 'encryption_version', None),
+            is_encrypted=(f.encryption_mode == "server_side"),
+            encryption_version=getattr(f, "encryption_version", None),
             encryption_mode=f.encryption_mode,
         )
         for f in files
@@ -297,53 +309,50 @@ async def get_file_stats(
 
     # Get total files and size
     total_query = select(
-        func.count(Object.id).label('total_files'),
-        func.coalesce(func.sum(Object.file_size), 0).label('total_size')
-    ).filter(
-        Object.user_id == current_user.id,
-        Object.is_deleted == False
-    )
+        func.count(Object.id).label("total_files"),
+        func.coalesce(func.sum(Object.file_size), 0).label("total_size"),
+    ).filter(Object.user_id == current_user.id, Object.is_deleted == False)
     total_result = await db.execute(total_query)
     totals = total_result.one()
 
     # Get MIME type distribution
-    mime_query = select(
-        Object.mime_type,
-        func.count(Object.id).label('count'),
-        func.coalesce(func.sum(Object.file_size), 0).label('total_size')
-    ).filter(
-        Object.user_id == current_user.id,
-        Object.is_deleted == False
-    ).group_by(Object.mime_type)
+    mime_query = (
+        select(
+            Object.mime_type,
+            func.count(Object.id).label("count"),
+            func.coalesce(func.sum(Object.file_size), 0).label("total_size"),
+        )
+        .filter(Object.user_id == current_user.id, Object.is_deleted == False)
+        .group_by(Object.mime_type)
+    )
 
     mime_result = await db.execute(mime_query)
     mime_distribution = {}
     for row in mime_result:
-        mime_type = row.mime_type or 'unknown'
-        mime_distribution[mime_type] = {
-            'count': row.count,
-            'total_size': row.total_size
-        }
+        mime_type = row.mime_type or "unknown"
+        mime_distribution[mime_type] = {"count": row.count, "total_size": row.total_size}
 
     return {
-        'total_files': totals.total_files,
-        'total_size': totals.total_size,
-        'mime_type_distribution': mime_distribution
+        "total_files": totals.total_files,
+        "total_size": totals.total_size,
+        "mime_type_distribution": mime_distribution,
     }
 
 
 ###########Download with Range Support##################################
-async def parse_range_header(range_header: Optional[str], file_size: int) -> Optional[Tuple[int, int]]:
+async def parse_range_header(
+    range_header: Optional[str], file_size: int
+) -> Optional[Tuple[int, int]]:
     """Parse Range header and return (start, end) inclusive byte offsets."""
     if not range_header:
         return None
-    
+
     match = RANGE_RE.match(range_header.strip())
     if not match:
         raise HTTPException(status_code=416, detail="Invalid Range header")
-    
+
     start_str, end_str = match.groups()
-    
+
     # Handle suffix-byte-range-spec (e.g., "bytes=-500" for last 500 bytes)
     if start_str == "":
         if end_str == "":
@@ -356,19 +365,20 @@ async def parse_range_header(range_header: Optional[str], file_size: int) -> Opt
     else:
         start = int(start_str)
         end = int(end_str) if end_str != "" else file_size - 1
-    
+
     # Validate range
     if start > end or start >= file_size:
         raise HTTPException(
-            status_code=416, 
+            status_code=416,
             detail="Range Not Satisfiable",
-            headers={"Content-Range": f"bytes */{file_size}"}
+            headers={"Content-Range": f"bytes */{file_size}"},
         )
-    
+
     # Clamp end to file size
     end = min(end, file_size - 1)
-    
+
     return (start, end)
+
 
 async def stream_file_range_disk(path: str, start: int, end: int, block_size: int = 1024 * 1024):
     """Stream a byte range from a disk file."""
@@ -383,6 +393,7 @@ async def stream_file_range_disk(path: str, start: int, end: int, block_size: in
             yield chunk
             remaining -= len(chunk)
 
+
 async def stream_full_file_disk(path: str, block_size: int = 1024 * 1024):
     """Stream entire file from disk."""
     async with aiofiles.open(path, "rb") as f:
@@ -392,32 +403,28 @@ async def stream_full_file_disk(path: str, block_size: int = 1024 * 1024):
                 break
             yield chunk
 
+
 async def stream_chunked_range(
-    file_obj,
-    start: int,
-    end: int,
-    file_key,
-    encryption_service,
-    block_size: int = 1024 * 1024
+    file_obj, start: int, end: int, file_key, encryption_service, block_size: int = 1024 * 1024
 ) -> AsyncGenerator[bytes, None]:
     """Stream byte range from chunked or content-addressed storage."""
     chunk_info = file_obj.chunk_info or {}
 
     # Check if this is content-addressed storage (from deduplication)
-    if 'blocks' in chunk_info and 'stored_blocks' in chunk_info:
+    if "blocks" in chunk_info and "stored_blocks" in chunk_info:
         # Content-addressed storage - reconstruct from blocks
-        blocks = chunk_info['blocks']
-        stored_blocks = chunk_info['stored_blocks']
-        is_convergent = chunk_info.get('convergent_encryption', False)
+        blocks = chunk_info["blocks"]
+        stored_blocks = chunk_info["stored_blocks"]
+        is_convergent = chunk_info.get("convergent_encryption", False)
 
         # Create a map of block hashes to stored paths
-        block_map = {b['hash']: b for b in stored_blocks}
+        block_map = {b["hash"]: b for b in stored_blocks}
 
         current_pos = 0
 
         for block in blocks:
-            block_hash = block['hash']
-            block_size = block['size']
+            block_hash = block["hash"]
+            block_size = block["size"]
             block_end = current_pos + block_size - 1
 
             # Check if this block is in range
@@ -433,7 +440,7 @@ async def stream_chunked_range(
             if not stored_block:
                 raise HTTPException(status_code=500, detail=f"Block {block_hash[:8]} not found")
 
-            block_path = stored_block['path']
+            block_path = stored_block["path"]
 
             if not os.path.exists(block_path):
                 raise HTTPException(status_code=404, detail=f"Block file missing: {block_hash[:8]}")
@@ -443,27 +450,32 @@ async def stream_chunked_range(
                 encrypted_data = await f.read()
 
             # Decrypt block
-            was_compressed = stored_block.get('was_compressed', False)
+            was_compressed = stored_block.get("was_compressed", False)
             if is_convergent:
                 user_id = str(file_obj.user_id)
 
                 # Try Rust data plane for fast PBKDF2 decryption
                 try:
                     from ..services.rust_dataplane_client import get_rust_client
+
                     rust_client = get_rust_client()
                     decrypted_block = await rust_client.convergent_decrypt(
-                        encrypted_data, block_hash, user_id,
+                        encrypted_data,
+                        block_hash,
+                        user_id,
                         was_compressed=was_compressed,
                     )
                 except Exception as e:
                     # Fallback: Python PBKDF2 + AES-GCM
                     logger.warning(
                         "Rust convergent_decrypt failed for block %s, falling back to Python: %s",
-                        block_hash[:12], e,
+                        block_hash[:12],
+                        e,
                     )
-                    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-                    from cryptography.hazmat.backends import default_backend
                     import hashlib
+
+                    from cryptography.hazmat.backends import default_backend
+                    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
                     nonce = encrypted_data[:12]
                     tag = encrypted_data[12:28]
@@ -471,12 +483,12 @@ async def stream_chunked_range(
 
                     content_hash_bytes = bytes.fromhex(block_hash)
                     salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
-                    block_key = hashlib.pbkdf2_hmac('sha256', content_hash_bytes, salt, 100000, dklen=32)
+                    block_key = hashlib.pbkdf2_hmac(
+                        "sha256", content_hash_bytes, salt, 100000, dklen=32
+                    )
 
                     cipher = Cipher(
-                        algorithms.AES(block_key),
-                        modes.GCM(nonce, tag),
-                        backend=default_backend()
+                        algorithms.AES(block_key), modes.GCM(nonce, tag), backend=default_backend()
                     )
                     decryptor = cipher.decryptor()
                     decrypted_block = decryptor.update(ciphertext) + decryptor.finalize()
@@ -484,8 +496,11 @@ async def stream_chunked_range(
                     # Python fallback only decrypts — decompress if block was stored compressed
                     if was_compressed:
                         import zstandard
+
                         dctx = zstandard.ZstdDecompressor()
-                        decrypted_block = dctx.decompress(decrypted_block, max_output_size=64 * 1024 * 1024)
+                        decrypted_block = dctx.decompress(
+                            decrypted_block, max_output_size=64 * 1024 * 1024
+                        )
             else:
                 # Standard file-key encryption
                 decrypted_block = encryption_service.decrypt_data(encrypted_data, file_key)
@@ -493,31 +508,42 @@ async def stream_chunked_range(
             # Safety net: detect zstd-compressed data after decrypt regardless
             # of was_compressed flag — the flag can be wrong for pre-existing
             # CAS blocks (Fix 21).
-            _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
-            if (len(decrypted_block) >= 4
-                    and decrypted_block[:4] == _ZSTD_MAGIC
-                    and len(decrypted_block) != block_size):
+            _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+            if (
+                len(decrypted_block) >= 4
+                and decrypted_block[:4] == _ZSTD_MAGIC
+                and len(decrypted_block) != block_size
+            ):
                 logger.warning(
                     "Block %s still compressed after decrypt, attempting Python decompress",
                     block_hash[:12],
                 )
                 try:
                     import zstandard
+
                     dctx = zstandard.ZstdDecompressor()
-                    decrypted_block = dctx.decompress(decrypted_block, max_output_size=64 * 1024 * 1024)
+                    decrypted_block = dctx.decompress(
+                        decrypted_block, max_output_size=64 * 1024 * 1024
+                    )
                 except Exception as decomp_err:
                     logger.error(
                         "Block %s decompression failed, aborting transfer: %s",
-                        block_hash[:12], decomp_err,
+                        block_hash[:12],
+                        decomp_err,
                     )
-                    raise RuntimeError(f"Block {block_hash[:8]} decompression failed") from decomp_err
+                    raise RuntimeError(
+                        f"Block {block_hash[:8]} decompression failed"
+                    ) from decomp_err
 
             # Strict size validation — abort on mismatch (corruption signal)
             actual_size = len(decrypted_block)
             if actual_size != block_size:
                 logger.error(
                     "Block %s corrupt: expected=%d actual=%d was_compressed=%s — aborting transfer",
-                    block_hash[:12], block_size, actual_size, was_compressed,
+                    block_hash[:12],
+                    block_size,
+                    actual_size,
+                    was_compressed,
                 )
                 raise RuntimeError(
                     f"Block {block_hash[:8]} size mismatch: expected={block_size} actual={actual_size}"
@@ -565,6 +591,7 @@ async def stream_chunked_range(
             was_compressed = chunk_info.get("compressed", False)
             if was_compressed:
                 from ..utils.compression import compressor
+
                 decrypted_chunk = compressor.decompress(decrypted_chunk)
 
             chunk_size = len(decrypted_chunk)
@@ -588,8 +615,12 @@ async def stream_chunked_range(
 
             current_pos += chunk_size
 
+
 @router.get("/{file_id}/download")
-@router.head("/{file_id}/download", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DOWNLOAD))])
+@router.head(
+    "/{file_id}/download",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DOWNLOAD))],
+)
 async def download_file(
     file_id: str,
     request: Request,
@@ -610,22 +641,22 @@ async def download_file(
     - Optional gzip compression for text files (60-90% bandwidth savings)
     - Adaptive buffering based on file size
     """
-    
+
     # Fetch file object
     result = await db.execute(
         select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
     )
     file_obj = result.scalar_one_or_none()
-    
+
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
     # Block downloads of quarantined files
-    if getattr(file_obj, 'is_quarantined', False):
+    if getattr(file_obj, "is_quarantined", False):
         raise HTTPException(
             status_code=403,
             detail=f"This file has been quarantined due to a security threat: {file_obj.quarantine_reason or 'malware detected'}. "
-                   "Contact support if you believe this is an error."
+            "Contact support if you believe this is an error.",
         )
 
     # Update last accessed time (for tiering)
@@ -633,6 +664,7 @@ async def download_file(
 
     # TIERING: Promote file to hot storage if accessed from warm/cold tier
     from ..services.cold_storage_tiering import cold_storage_service
+
     try:
         await cold_storage_service.promote_file_on_access(str(file_id), db)
     except Exception as e:
@@ -653,11 +685,13 @@ async def download_file(
         raise HTTPException(
             status_code=404,
             detail="This file's storage reference is no longer available. "
-                   "The original data has been removed. Please re-upload the file."
+            "The original data has been removed. Please re-upload the file.",
         )
 
     # Decrypt key (None for unencrypted files, for defensive compatibility)
-    file_key = encryption_service.decrypt_key(resolved.encryption_key) if resolved.encryption_key else None
+    file_key = (
+        encryption_service.decrypt_key(resolved.encryption_key) if resolved.encryption_key else None
+    )
 
     # File metadata
     total_size = file_obj.file_size or 0
@@ -666,14 +700,14 @@ async def download_file(
 
     # Determine Content-Disposition (inline for streaming, attachment for download)
     # Use inline for video/audio when inline=True, or auto-detect for video/audio types
-    is_streamable = mime_type.startswith(('video/', 'audio/'))
+    is_streamable = mime_type.startswith(("video/", "audio/"))
     disposition = "inline" if (inline or is_streamable) else "attachment"
 
     # Browser compatibility fix: Some browsers have issues with video/quicktime MIME type
     # Use video/mp4 for MOV files to improve compatibility (most MOV files work with this)
     display_mime_type = mime_type
-    if mime_type == 'video/quicktime' and file_obj.file_name.lower().endswith(('.mov', '.qt')):
-        display_mime_type = 'video/mp4'  # Better browser support
+    if mime_type == "video/quicktime" and file_obj.file_name.lower().endswith((".mov", ".qt")):
+        display_mime_type = "video/mp4"  # Better browser support
 
     # Common headers
     base_headers = {
@@ -683,20 +717,22 @@ async def download_file(
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "ETag": f'"{file_obj.content_hash[:16]}"' if file_obj.content_hash else None,
     }
-    
+
     # Remove None values
     base_headers = {k: v for k, v in base_headers.items() if v is not None}
-    
+
     # Handle HEAD request - check if video needs transcoding when compatible=true
     if request.method == "HEAD":
         # For videos with compatible=true, check if transcoding is needed/in-progress
-        if compatible and mime_type.startswith('video/') and not original:
+        if compatible and mime_type.startswith("video/") and not original:
             from ..services.video_transcoder import video_transcoder
-            
+
             file_id_str = str(file_id)
-            
+
             # Check if proactively optimized version exists
-            if file_obj.optimized_path and await asyncio.to_thread(os.path.exists, file_obj.optimized_path):
+            if file_obj.optimized_path and await asyncio.to_thread(
+                os.path.exists, file_obj.optimized_path
+            ):
                 # Optimized version ready - return 200
                 opt_size = await asyncio.to_thread(os.path.getsize, file_obj.optimized_path)
                 headers = {**base_headers, "Content-Length": str(opt_size)}
@@ -711,45 +747,56 @@ async def download_file(
                     headers = {**base_headers, "Content-Length": str(tc_size)}
                     headers["X-Video-Transcoded"] = "true"
                     return Response(status_code=200, headers=headers)
-            
+
             # Check video processing status
-            if file_obj.video_processing_status in ('processing', 'queued'):
+            if file_obj.video_processing_status in ("processing", "queued"):
                 headers = {**base_headers, "Content-Length": "0"}
                 headers["X-Transcode-Status"] = file_obj.video_processing_status
                 return Response(status_code=202, headers=headers)
-            
+
             # Check if video needs transcoding (MOV, HEVC, etc.)
-            ext = file_obj.file_name.lower().rsplit('.', 1)[-1] if '.' in file_obj.file_name else ''
-            needs_transcode = ext in video_transcoder.INCOMPATIBLE_EXTS or ext in {'mov', 'qt', 'm4v', '3gp', '3g2', 'hevc'}
-            
+            ext = file_obj.file_name.lower().rsplit(".", 1)[-1] if "." in file_obj.file_name else ""
+            needs_transcode = ext in video_transcoder.INCOMPATIBLE_EXTS or ext in {
+                "mov",
+                "qt",
+                "m4v",
+                "3gp",
+                "3g2",
+                "hevc",
+            }
+
             if needs_transcode:
                 # Video needs transcoding but not started yet - return 202
                 headers = {**base_headers, "Content-Length": "0"}
                 headers["X-Transcode-Status"] = "not_started"
                 return Response(status_code=202, headers=headers)
-        
+
         # Non-video files or videos that don't need transcoding - return 200
         headers = {**base_headers, "Content-Length": str(total_size)}
         return Response(status_code=200, headers=headers)
-    
+
     # Parse range header
     parsed_range = await parse_range_header(range_header, total_size)
-    
+
     # Update last accessed
     file_obj.last_accessed = datetime.utcnow()
     await db.commit()
-    
+
     # Log activity
     await log_activity(
-        db, current_user.id, "file_downloaded", str(file_id),
+        db,
+        current_user.id,
+        "file_downloaded",
+        str(file_id),
         {"file_name": file_obj.file_name, "partial": parsed_range is not None},
-        request
+        request,
     )
 
     # Audit log (best-effort)
     try:
         await audit_logging_service.log_event(
-            db, AuditEventType.FILE_DOWNLOADED,
+            db,
+            AuditEventType.FILE_DOWNLOADED,
             user_id=current_user.id,
             resource_type="file",
             resource_id=str(file_id),
@@ -770,13 +817,19 @@ async def download_file(
     use_compat_stream = False
 
     # Gate original download access to keep_both plans
-    if original and file_obj.optimized_path and file_obj.mime_type and file_obj.mime_type.startswith('video/'):
+    if (
+        original
+        and file_obj.optimized_path
+        and file_obj.mime_type
+        and file_obj.mime_type.startswith("video/")
+    ):
         try:
             from shared_billing import BillingService
-            billing_svc = BillingService(db, service_type='normal')
+
+            billing_svc = BillingService(db, service_type="normal")
             sub = await billing_svc.get_user_subscription(current_user.id, include_plan=True)
-            video_opt = (sub.plan.features or {}).get('video_optimization', False)
-            if video_opt != 'keep_both':
+            video_opt = (sub.plan.features or {}).get("video_optimization", False)
+            if video_opt != "keep_both":
                 original = False  # Plan doesn't allow original access
         except Exception:
             pass  # Fail open
@@ -784,8 +837,8 @@ async def download_file(
     # Skip video optimization if user explicitly requests original file
     skip_optimization = original
 
-    if not skip_optimization and compatible and mime_type.startswith('video/'):
-        from ..services.video_transcoder import video_transcoder, VideoTranscodeError
+    if not skip_optimization and compatible and mime_type.startswith("video/"):
+        from ..services.video_transcoder import VideoTranscodeError, video_transcoder
 
         logger.info(f"Compatible stream requested for {file_obj.file_name} ({mime_type})")
 
@@ -799,26 +852,26 @@ async def download_file(
             logger.info(f"Using proactively optimized video: {file_obj.file_name}")
 
         # Check if video is still being processed
-        elif file_obj.video_processing_status == 'processing':
+        elif file_obj.video_processing_status == "processing":
             progress = file_obj.video_processing_progress or 0
             raise HTTPException(
                 status_code=202,
                 detail={
                     "status": "processing",
                     "message": f"Video is being optimized for playback ({progress}% complete). Please wait...",
-                    "progress": progress
-                }
+                    "progress": progress,
+                },
             )
 
         # Check if video is queued but not yet processing
-        elif file_obj.video_processing_status == 'queued':
+        elif file_obj.video_processing_status == "queued":
             raise HTTPException(
                 status_code=202,
                 detail={
                     "status": "queued",
                     "message": "Video is queued for optimization. Playback will be available shortly.",
-                    "progress": 0
-                }
+                    "progress": 0,
+                },
             )
 
         # ============ LEGACY REACTIVE TRANSCODING (FALLBACK) ============
@@ -827,8 +880,7 @@ async def download_file(
         if not use_compat_stream:
             try:
                 compat_path = await video_transcoder.get_or_create_stream(
-                    file_obj=resolved,
-                    encryption_service=encryption_service
+                    file_obj=resolved, encryption_service=encryption_service
                 )
                 logger.info(f"get_or_create_stream returned: {compat_path}")
                 if compat_path:
@@ -836,11 +888,7 @@ async def download_file(
             except VideoTranscodeError as exc:
                 if exc.status_code == 202:
                     raise HTTPException(
-                        status_code=202,
-                        detail={
-                            "status": "transcoding",
-                            "message": exc.message
-                        }
+                        status_code=202, detail={"status": "transcoding", "message": exc.message}
                     )
                 raise HTTPException(status_code=exc.status_code, detail=exc.message)
 
@@ -852,17 +900,19 @@ async def download_file(
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Type": "video/mp4",
-            "Content-Disposition": _content_disposition("inline", f'{filename.rsplit(".", 1)[0]}.mp4'),
+            "Content-Disposition": _content_disposition(
+                "inline", f'{filename.rsplit(".", 1)[0]}.mp4'
+            ),
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Video-Transcoded": "true",
-            "Content-Length": str(end - start + 1)
+            "Content-Length": str(end - start + 1),
         }
         if compat_range:
             headers["Content-Range"] = f"bytes {start}-{end}/{compat_size}"
 
         async def _stream_compat_file(path: str, start_byte: int, end_byte: int):
             chunk_size = download_optimizer.get_optimal_chunk_size(compat_size)
-            async with aiofiles.open(path, 'rb') as f:
+            async with aiofiles.open(path, "rb") as f:
                 await f.seek(start_byte)
                 remaining = end_byte - start_byte + 1
                 while remaining > 0:
@@ -879,7 +929,7 @@ async def download_file(
             _stream_compat_file(compat_path, start, end),
             status_code=status_code,
             headers=headers,
-            media_type="video/mp4"
+            media_type="video/mp4",
         )
 
     # INLINE STORAGE
@@ -889,14 +939,19 @@ async def download_file(
         data = encryption_service.decrypt_file(encrypted_data, file_key)
 
         # Handle compression
-        if resolved.file_metadata and isinstance(resolved.file_metadata, dict) and resolved.file_metadata.get("compressed", False):
+        if (
+            resolved.file_metadata
+            and isinstance(resolved.file_metadata, dict)
+            and resolved.file_metadata.get("compressed", False)
+        ):
             from ..utils.compression import compressor
+
             data = compressor.decompress(data)
-        
+
         # Handle range request
         if parsed_range:
             start, end = parsed_range
-            chunk = data[start:end + 1]
+            chunk = data[start : end + 1]
             headers = {
                 **base_headers,
                 "Content-Range": f"bytes {start}-{end}/{total_size}",
@@ -909,7 +964,7 @@ async def download_file(
                 "Content-Length": str(len(data)),
             }
             return Response(content=data, status_code=200, headers=headers)
-    
+
     # SINGLE FILE STORAGE
     elif resolved.storage_type == "single":
         # Ensure on-disk path exists
@@ -935,7 +990,11 @@ async def download_file(
         # ---------- OPTIMIZED: encrypted or non-offloadable file: decrypt & stream in Python ----------
         # Use optimized streaming that never loads full file in memory
         # Now with per-user bandwidth throttling and stream limiting
-        was_compressed = resolved.file_metadata and isinstance(resolved.file_metadata, dict) and resolved.file_metadata.get("compressed", False)
+        was_compressed = (
+            resolved.file_metadata
+            and isinstance(resolved.file_metadata, dict)
+            and resolved.file_metadata.get("compressed", False)
+        )
         user_id_str = str(current_user.id)
 
         if parsed_range:
@@ -952,7 +1011,7 @@ async def download_file(
                 encryption_service=encryption_service,
                 start_byte=start,
                 end_byte=end,
-                compressed=was_compressed
+                compressed=was_compressed,
             )
             # Wrap with bandwidth throttling and stream limiting (plan-aware)
             throttled_generator = throttled_download_generator(
@@ -961,13 +1020,10 @@ async def download_file(
                 file_size=content_length,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
-                db_streams_override=current_user.max_concurrent_streams
+                db_streams_override=current_user.max_concurrent_streams,
             )
             return StreamingResponse(
-                throttled_generator,
-                status_code=206,
-                headers=headers,
-                media_type=mime_type
+                throttled_generator, status_code=206, headers=headers, media_type=mime_type
             )
         else:
             headers = {
@@ -980,7 +1036,7 @@ async def download_file(
                 encryption_service=encryption_service,
                 start_byte=0,
                 end_byte=total_size - 1,
-                compressed=was_compressed
+                compressed=was_compressed,
             )
             # Wrap with bandwidth throttling and stream limiting (plan-aware)
             throttled_generator = throttled_download_generator(
@@ -989,13 +1045,10 @@ async def download_file(
                 file_size=total_size,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
-                db_streams_override=current_user.max_concurrent_streams
+                db_streams_override=current_user.max_concurrent_streams,
             )
             return StreamingResponse(
-                throttled_generator,
-                status_code=200,
-                headers=headers,
-                media_type=mime_type
+                throttled_generator, status_code=200, headers=headers, media_type=mime_type
             )
 
     # CHUNKED STORAGE (includes content_addressed)
@@ -1004,17 +1057,14 @@ async def download_file(
         if not resolved.chunk_info or not isinstance(resolved.chunk_info, dict):
             raise HTTPException(
                 status_code=500,
-                detail="File deduplication is incomplete. Please re-upload the file."
+                detail="File deduplication is incomplete. Please re-upload the file.",
             )
 
         user_id_str = str(current_user.id)
 
         # Detect content-addressed storage (CAS) — uses blocks/stored_blocks
         # instead of count/paths, so we must use stream_chunked_range.
-        is_cas = (
-            'blocks' in resolved.chunk_info
-            and 'stored_blocks' in resolved.chunk_info
-        )
+        is_cas = "blocks" in resolved.chunk_info and "stored_blocks" in resolved.chunk_info
 
         if parsed_range:
             start, end = parsed_range
@@ -1037,13 +1087,10 @@ async def download_file(
                 file_size=content_length,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
-                db_streams_override=current_user.max_concurrent_streams
+                db_streams_override=current_user.max_concurrent_streams,
             )
             return StreamingResponse(
-                throttled_generator,
-                status_code=206,
-                headers=headers,
-                media_type=mime_type
+                throttled_generator, status_code=206, headers=headers, media_type=mime_type
             )
         else:
             headers = {
@@ -1063,13 +1110,10 @@ async def download_file(
                 file_size=total_size,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
-                db_streams_override=current_user.max_concurrent_streams
+                db_streams_override=current_user.max_concurrent_streams,
             )
             return StreamingResponse(
-                throttled_generator,
-                status_code=200,
-                headers=headers,
-                media_type=mime_type
+                throttled_generator, status_code=200, headers=headers, media_type=mime_type
             )
 
     else:
@@ -1105,11 +1149,7 @@ async def get_transcode_progress(
 
     # Check if cached version exists
     if video_transcoder.is_cached(file_id):
-        return {
-            "status": "complete",
-            "percent": 100,
-            "file_id": file_id
-        }
+        return {"status": "complete", "percent": 100, "file_id": file_id}
 
     # Get current progress
     progress = video_transcoder.get_progress(file_id)
@@ -1121,13 +1161,9 @@ async def get_transcode_progress(
                 "status": "transcoding",
                 "percent": 0,
                 "file_id": file_id,
-                "message": "Transcoding starting..."
+                "message": "Transcoding starting...",
             }
-        return {
-            "status": "not_started",
-            "percent": 0,
-            "file_id": file_id
-        }
+        return {"status": "not_started", "percent": 0, "file_id": file_id}
 
     return {
         "status": progress.get("status", "transcoding"),
@@ -1136,14 +1172,14 @@ async def get_transcode_progress(
         "frame": progress.get("frame", 0),
         "eta_seconds": progress.get("eta_seconds"),
         "started_at": progress.get("started_at"),
-        "file_id": file_id
+        "file_id": file_id,
     }
 
 
 @router.get("/{file_id}/preview")
 async def get_file_preview(
     file_id: str,
-    size: str = 'medium',
+    size: str = "medium",
     force_refresh: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1168,13 +1204,15 @@ async def get_file_preview(
     - Optimized video processing with ffmpeg
     - Async generation to avoid blocking
     """
+    import base64
+    import tempfile
+
+    import aiofiles
+
+    from ..database import get_redis
     from ..services.preview_generator import preview_generator
     from ..services.preview_optimizer import preview_optimizer
     from ..services.preview_service import preview_service
-    import base64
-    import aiofiles
-    import tempfile
-    from ..database import get_redis
 
     # Get Redis client
     redis = await get_redis()
@@ -1194,12 +1232,12 @@ async def get_file_preview(
             # Cached preview is stored as raw bytes
             return Response(
                 content=cached_preview,
-                media_type='image/jpeg',
+                media_type="image/jpeg",
                 headers={
                     "Cache-Control": "public, max-age=2592000",  # 30 days
                     "X-Cache": "HIT",
-                    "X-Preview-Status": "cached"
-                }
+                    "X-Preview-Status": "cached",
+                },
             )
 
     logger.info(f"Preview cache MISS for {file_id} (size: {size}) - checking disk...")
@@ -1212,6 +1250,7 @@ async def get_file_preview(
     # If not owned, check if shared with this user
     if not file_obj:
         from ..models.database import SharedAccess
+
         shared_result = await db.execute(
             select(Object)
             .join(SharedAccess, SharedAccess.file_id == Object.id)
@@ -1221,7 +1260,7 @@ async def get_file_preview(
                     SharedAccess.shared_with_email == current_user.email,
                     SharedAccess.shared_with_user_id == current_user.id,
                 ),
-                SharedAccess.invitation_status == 'accepted',
+                SharedAccess.invitation_status == "accepted",
             )
         )
         file_obj = shared_result.scalar_one_or_none()
@@ -1231,14 +1270,17 @@ async def get_file_preview(
 
     # Disk fallback: check disk before regenerating
     from ..services.preview_storage import (
-        async_load_preview_from_disk, async_get_disk_content_hash,
-        async_delete_previews_from_disk, async_save_preview_to_disk,
-        preview_cache_ttl as _preview_cache_ttl,
+        async_delete_previews_from_disk,
+        async_get_disk_content_hash,
+        async_load_preview_from_disk,
+        async_save_preview_to_disk,
     )
+    from ..services.preview_storage import preview_cache_ttl as _preview_cache_ttl
+
     disk_bytes = await async_load_preview_from_disk(file_id, size)
     if disk_bytes:
         disk_hash = await async_get_disk_content_hash(file_id)
-        current_hash = getattr(file_obj, 'content_hash', None)
+        current_hash = getattr(file_obj, "content_hash", None)
         if disk_hash and current_hash and disk_hash == current_hash:
             # Valid disk preview — re-populate Redis and serve
             ttl = _preview_cache_ttl(file_obj.mime_type)
@@ -1246,12 +1288,12 @@ async def get_file_preview(
             logger.info(f"Preview DISK HIT for {file_id} (size: {size}), re-cached to Redis")
             return Response(
                 content=disk_bytes,
-                media_type='image/jpeg',
+                media_type="image/jpeg",
                 headers={
                     "Cache-Control": f"public, max-age={ttl}",
                     "X-Cache": "DISK",
-                    "X-Preview-Status": "cached"
-                }
+                    "X-Preview-Status": "cached",
+                },
             )
         else:
             # Stale disk preview — delete and fall through to generation
@@ -1262,14 +1304,14 @@ async def get_file_preview(
     # Note: ZK files are now in a separate service (ZK Private Vault)
     # Normal Storage service only handles server-side encrypted files
     # Check if this is a server-side encrypted file (encryption_mode = 'server_side')
-    is_zk_encrypted = getattr(file_obj, 'encryption_mode', None) == 'client_side'
+    is_zk_encrypted = getattr(file_obj, "encryption_mode", None) == "client_side"
 
     if is_zk_encrypted:
         # This shouldn't happen in Normal Storage service, but handle gracefully
         # ZK files should be in the ZK service now
         raise HTTPException(
             status_code=400,
-            detail="Zero-Knowledge encrypted files are not available in Normal Storage. Please use the ZK Private Vault service."
+            detail="Zero-Knowledge encrypted files are not available in Normal Storage. Please use the ZK Private Vault service.",
         )
 
     # Resolve dedup references so preview reads from the correct storage
@@ -1282,14 +1324,15 @@ async def get_file_preview(
     # For large videos (>50MB), check if preview is being generated in background
     PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50MB
     is_large_video = (
-        file_obj.mime_type and
-        file_obj.mime_type.startswith('video/') and
-        file_obj.file_size > PREVIEW_QUEUE_THRESHOLD
+        file_obj.mime_type
+        and file_obj.mime_type.startswith("video/")
+        and file_obj.file_size > PREVIEW_QUEUE_THRESHOLD
     )
 
     if is_large_video:
-        from fastapi.responses import JSONResponse
         from datetime import datetime
+
+        from fastapi.responses import JSONResponse
 
         status_key = f"preview:status:{file_id}"
         status_data = await redis.get(status_key)
@@ -1302,23 +1345,27 @@ async def get_file_preview(
 
             try:
                 await producer.send_and_wait(
-                    'preview-processing',
+                    "preview-processing",
                     {
-                        'file_id': str(file_id),
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'file_name': file_obj.file_name,
-                        'file_size': file_obj.file_size,
-                        'mime_type': file_obj.mime_type,
-                        'storage_type': file_obj.storage_type,
-                        'upload_id': (resolved.chunk_info or {}).get('upload_id', '') if resolved.chunk_info else '',
-                    }
+                        "file_id": str(file_id),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "file_name": file_obj.file_name,
+                        "file_size": file_obj.file_size,
+                        "mime_type": file_obj.mime_type,
+                        "storage_type": file_obj.storage_type,
+                        "upload_id": (
+                            (resolved.chunk_info or {}).get("upload_id", "")
+                            if resolved.chunk_info
+                            else ""
+                        ),
+                    },
                 )
                 new_status = {
-                    'status': 'queued',
-                    'queued_at': datetime.utcnow().isoformat(),
+                    "status": "queued",
+                    "queued_at": datetime.utcnow().isoformat(),
                 }
                 if carry_retry_count > 0:
-                    new_status['retry_count'] = carry_retry_count
+                    new_status["retry_count"] = carry_retry_count
                 await redis.setex(status_key, 3600, json.dumps(new_status))
                 return True
             except Exception as e:
@@ -1334,201 +1381,218 @@ async def get_file_preview(
             # Direct preview (small/medium videos without optimization)
             return min(max(5, int(size_mb / 50)), 60)
 
-        def _return_202(status_val='processing', message=None, estimated_wait=None):
+        def _return_202(status_val="processing", message=None, estimated_wait=None):
             wait = estimated_wait or _estimate_preview_wait(
                 file_obj.file_size or 0, _optimization_active()
             )
             return JSONResponse(
                 status_code=202,
                 content={
-                    'status': status_val,
-                    'message': message or f'Preview is being generated ({status_val})',
-                    'retry_after': wait,
-                    'estimated_wait_seconds': wait,
-                    'file_id': file_id,
+                    "status": status_val,
+                    "message": message or f"Preview is being generated ({status_val})",
+                    "retry_after": wait,
+                    "estimated_wait_seconds": wait,
+                    "file_id": file_id,
                 },
-                headers={'Retry-After': str(wait)}
+                headers={"Retry-After": str(wait)},
             )
 
         def _optimization_active() -> bool:
-            return (
-                hasattr(file_obj, 'video_processing_status')
-                and file_obj.video_processing_status in ('queued', 'processing')
-            )
+            return hasattr(
+                file_obj, "video_processing_status"
+            ) and file_obj.video_processing_status in ("queued", "processing")
 
         if status_data:
             try:
                 if isinstance(status_data, bytes):
-                    status_data = status_data.decode('utf-8')
+                    status_data = status_data.decode("utf-8")
                 status_info = json.loads(status_data)
-                status = status_info.get('status')
+                status = status_info.get("status")
 
-                if status in ['queued', 'processing', 'deferred']:
+                if status in ["queued", "processing", "deferred"]:
                     logger.info(f"🎬 Preview {status} for large video {file_id}, returning 202")
                     return _return_202(status)
 
-                elif status == 'ready':
+                elif status == "ready":
                     cached_preview = await redis.get(cache_key)
                     if cached_preview:
-                        logger.info(f"✅ Preview cache HIT (post-ready) for {file_id} (size: {size})")
+                        logger.info(
+                            f"✅ Preview cache HIT (post-ready) for {file_id} (size: {size})"
+                        )
                         return Response(
                             content=cached_preview,
-                            media_type='image/jpeg',
+                            media_type="image/jpeg",
                             headers={
                                 "Cache-Control": "public, max-age=2592000",
                                 "X-Cache": "HIT",
-                                "X-Preview-Status": "cached"
-                            }
+                                "X-Preview-Status": "cached",
+                            },
                         )
                     # Disk fallback before re-queuing
                     disk_bytes = await async_load_preview_from_disk(file_id, size)
                     if disk_bytes:
                         disk_hash = await async_get_disk_content_hash(file_id)
-                        current_hash = getattr(file_obj, 'content_hash', None)
+                        current_hash = getattr(file_obj, "content_hash", None)
                         if disk_hash and current_hash and disk_hash == current_hash:
                             ttl = _preview_cache_ttl(file_obj.mime_type)
                             await redis.setex(cache_key, ttl, disk_bytes)
-                            logger.info(f"Preview DISK HIT (post-ready) for {file_id} (size: {size})")
+                            logger.info(
+                                f"Preview DISK HIT (post-ready) for {file_id} (size: {size})"
+                            )
                             return Response(
                                 content=disk_bytes,
-                                media_type='image/jpeg',
+                                media_type="image/jpeg",
                                 headers={
                                     "Cache-Control": f"public, max-age={ttl}",
                                     "X-Cache": "DISK",
-                                    "X-Preview-Status": "cached"
-                                }
+                                    "X-Preview-Status": "cached",
+                                },
                             )
                         else:
                             if disk_hash and current_hash and disk_hash != current_hash:
                                 await async_delete_previews_from_disk(file_id)
 
                     if _optimization_active():
-                        logger.info(f"Optimization pipeline active for {file_id}, waiting for thumbnails")
-                        return _return_202('processing', 'Video optimization in progress, thumbnails pending')
-                    logger.warning(f"Preview status=ready but cache+disk miss for {file_id}:{size}, re-queuing")
+                        logger.info(
+                            f"Optimization pipeline active for {file_id}, waiting for thumbnails"
+                        )
+                        return _return_202(
+                            "processing", "Video optimization in progress, thumbnails pending"
+                        )
+                    logger.warning(
+                        f"Preview status=ready but cache+disk miss for {file_id}:{size}, re-queuing"
+                    )
                     try:
                         await _queue_preview_to_kafka()
                     except Exception as e:
                         logger.warning(f"Failed to re-queue after cache miss for {file_id}: {e}")
-                    return _return_202('queued', 'Preview cache expired, re-generating')
+                    return _return_202("queued", "Preview cache expired, re-generating")
 
-                elif status == 'failed':
-                    retry_count = status_info.get('retry_count', 0)
-                    is_retryable = status_info.get('retryable', True)  # default True for backwards compat
-                    error_msg = status_info.get('error', 'Preview generation failed')
+                elif status == "failed":
+                    retry_count = status_info.get("retry_count", 0)
+                    is_retryable = status_info.get(
+                        "retryable", True
+                    )  # default True for backwards compat
+                    error_msg = status_info.get("error", "Preview generation failed")
 
                     if is_retryable and retry_count < 3:
                         if _optimization_active():
-                            return _return_202('processing', 'Video optimization in progress, thumbnails pending')
-                        logger.info(f"Re-queuing failed preview for {file_id} (retry {retry_count + 1}/3)")
+                            return _return_202(
+                                "processing", "Video optimization in progress, thumbnails pending"
+                            )
+                        logger.info(
+                            f"Re-queuing failed preview for {file_id} (retry {retry_count + 1}/3)"
+                        )
                         try:
                             await _queue_preview_to_kafka(carry_retry_count=retry_count)
                         except Exception as e:
                             logger.warning(f"Failed to re-queue preview for {file_id}: {e}")
-                        return _return_202('queued', 'Preview generation retrying')
+                        return _return_202("queued", "Preview generation retrying")
                     else:
-                        reason = 'non-retryable' if not is_retryable else f'after {retry_count} retries'
+                        reason = (
+                            "non-retryable" if not is_retryable else f"after {retry_count} retries"
+                        )
                         logger.warning(f"Preview generation failed ({reason}) for {file_id}")
                         return JSONResponse(
                             status_code=409,
                             content={
-                                'status': 'failed',
-                                'message': error_msg,
-                                'error': error_msg,
-                                'file_id': file_id,
-                            }
+                                "status": "failed",
+                                "message": error_msg,
+                                "error": error_msg,
+                                "file_id": file_id,
+                            },
                         )
 
                 else:
-                    logger.info(f"🎬 Unknown preview status '{status}' for large video {file_id}, returning 202")
-                    return _return_202(status or 'processing')
+                    logger.info(
+                        f"🎬 Unknown preview status '{status}' for large video {file_id}, returning 202"
+                    )
+                    return _return_202(status or "processing")
 
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Failed to parse preview status for {file_id}: {e}")
-                return _return_202('processing', 'Preview is being processed')
+                return _return_202("processing", "Preview is being processed")
 
         else:
             if _optimization_active():
                 logger.info(f"Optimization pipeline active for {file_id}, returning 202")
-                return _return_202('processing', 'Video optimization in progress, thumbnails pending')
+                return _return_202(
+                    "processing", "Video optimization in progress, thumbnails pending"
+                )
 
             # Terminal by policy: ingestion pipeline's reject branch flagged
             # this video as unprocessable for automatic preview. Only
             # 'rejected' (not 'failed') is terminal — 'failed' keeps the
             # retry semantics handled in the status=='failed' branch above.
-            if getattr(file_obj, 'video_processing_status', None) == 'rejected':
+            if getattr(file_obj, "video_processing_status", None) == "rejected":
                 error_msg = (
-                    getattr(file_obj, 'video_processing_error', None)
-                    or 'Automatic preview unavailable for this video'
+                    getattr(file_obj, "video_processing_error", None)
+                    or "Automatic preview unavailable for this video"
                 )
                 logger.info(f"Returning 409 for rejected video {file_id}: {error_msg}")
                 return JSONResponse(
                     status_code=409,
                     content={
-                        'status': 'failed',
-                        'message': error_msg,
-                        'error': error_msg,
-                        'file_id': file_id,
+                        "status": "failed",
+                        "message": error_msg,
+                        "error": error_msg,
+                        "file_id": file_id,
                     },
                 )
 
             try:
                 queued = await _queue_preview_to_kafka()
                 if queued:
-                    logger.info(f"Queued existing large video for background preview: {file_obj.file_name}")
-                    return _return_202('queued', 'Preview is being generated in background')
+                    logger.info(
+                        f"Queued existing large video for background preview: {file_obj.file_name}"
+                    )
+                    return _return_202("queued", "Preview is being generated in background")
             except Exception as e:
                 logger.warning(f"Failed to queue large video for background preview: {e}")
 
-            return _return_202('processing', 'Preview generation pending')
+            return _return_202("processing", "Preview generation pending")
 
-    size_tuple = preview_generator.SIZES.get(size, preview_generator.SIZES['medium'])
+    size_tuple = preview_generator.SIZES.get(size, preview_generator.SIZES["medium"])
 
     def _placeholder_meta():
-        mime = (file_obj.mime_type or '').lower() if file_obj.mime_type else ''
-        ext = os.path.splitext(file_obj.file_name or '')[1].lower()
+        mime = (file_obj.mime_type or "").lower() if file_obj.mime_type else ""
+        ext = os.path.splitext(file_obj.file_name or "")[1].lower()
 
-        if mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES:
-            return ('VIDEO', '🎬')
-        if mime.startswith('audio/') or ext in preview_generator.AUDIO_TYPES:
-            return ('AUDIO', '🎵')
-        if 'pdf' in mime or ext == '.pdf':
-            return ('PDF', '📄')
+        if mime.startswith("video/") or ext in preview_generator.VIDEO_TYPES:
+            return ("VIDEO", "🎬")
+        if mime.startswith("audio/") or ext in preview_generator.AUDIO_TYPES:
+            return ("AUDIO", "🎵")
+        if "pdf" in mime or ext == ".pdf":
+            return ("PDF", "📄")
         if ext in preview_generator.ARCHIVE_TYPES:
-            return ('ARCHIVE', '📦')
+            return ("ARCHIVE", "📦")
         if ext in preview_generator.DOCUMENT_TYPES:
-            return ('DOC', '📄')
-        return ('FILE', '📄')
+            return ("DOC", "📄")
+        return ("FILE", "📄")
 
     async def _return_placeholder(status: str, reason: Optional[str] = None):
         label, icon = _placeholder_meta()
         placeholder_bytes, media_type = preview_generator._generate_placeholder_preview(
-            file_type=label,
-            size=size_tuple,
-            icon=icon
+            file_type=label, size=size_tuple, icon=icon
         )
         placeholder_cache_ttl = 3600
         await redis.setex(cache_key, placeholder_cache_ttl, placeholder_bytes)
         headers = {
             "Cache-Control": f"public, max-age={placeholder_cache_ttl}",
             "X-Cache": "MISS",
-            "X-Preview-Status": status
+            "X-Preview-Status": status,
         }
         if reason:
             headers["X-Preview-Reason"] = reason[:120]
-        return Response(
-            content=placeholder_bytes,
-            media_type=media_type,
-            headers=headers
-        )
+        return Response(content=placeholder_bytes, media_type=media_type, headers=headers)
 
     # Step 1: For videos, check if transcoded version exists (faster preview generation)
     # Transcoded MP4s have metadata at the beginning (+faststart), making frame extraction instant
     from ..services.video_transcoder import video_transcoder
 
-    mime = (file_obj.mime_type or '').lower()
-    ext = os.path.splitext(file_obj.file_name or '')[1].lower()
-    is_video = mime.startswith('video/') or ext in preview_generator.VIDEO_TYPES
+    mime = (file_obj.mime_type or "").lower()
+    ext = os.path.splitext(file_obj.file_name or "")[1].lower()
+    is_video = mime.startswith("video/") or ext in preview_generator.VIDEO_TYPES
 
     temp_file_path = None
     use_transcoded = False
@@ -1551,13 +1615,10 @@ async def get_file_preview(
                 redis_client=redis,
             )
             if result is None:
-                return await _return_placeholder(
-                    status="queued",
-                    reason="generation_in_progress"
-                )
+                return await _return_placeholder(status="queued", reason="generation_in_progress")
 
             preview_bytes, content_type = result
-            is_video_file = file_obj.mime_type and file_obj.mime_type.startswith('video/')
+            is_video_file = file_obj.mime_type and file_obj.mime_type.startswith("video/")
             cache_ttl = 604800 if is_video_file else 2592000
             return Response(
                 content=preview_bytes,
@@ -1565,29 +1626,27 @@ async def get_file_preview(
                 headers={
                     "Cache-Control": f"public, max-age={cache_ttl}",
                     "X-Cache": "MISS",
-                    "X-Preview-Status": "generated"
-                }
+                    "X-Preview-Status": "generated",
+                },
             )
 
         # Transcoded video path: generate single size directly
         try:
             preview_bytes, content_type = await preview_generator.generate_preview(
                 file_path=temp_file_path,
-                mime_type='video/mp4',
+                mime_type="video/mp4",
                 size=size,
-                file_name=file_obj.file_name
+                file_name=file_obj.file_name,
             )
         except Exception as exc:
             logger.error(f"Preview generation failed for {file_id}: {exc}", exc_info=True)
-            return await _return_placeholder(
-                status="error",
-                reason=str(exc)
-            )
+            return await _return_placeholder(status="error", reason=str(exc))
 
         from ..services.preview_storage import async_save_preview_to_disk, preview_cache_ttl
+
         cache_ttl = preview_cache_ttl(file_obj.mime_type)
         await redis.setex(cache_key, cache_ttl, preview_bytes)
-        source_hash = getattr(file_obj, 'content_hash', None)
+        source_hash = getattr(file_obj, "content_hash", None)
         if source_hash:
             await async_save_preview_to_disk(file_id, size, preview_bytes, source_hash)
         logger.info(f"Cached transcoded preview for {file_id} (size: {size})")
@@ -1598,8 +1657,8 @@ async def get_file_preview(
             headers={
                 "Cache-Control": f"public, max-age={cache_ttl}",
                 "X-Cache": "MISS",
-                "X-Preview-Status": "generated"
-            }
+                "X-Preview-Status": "generated",
+            },
         )
 
     finally:
@@ -1627,24 +1686,17 @@ async def get_preview_status(
     redis = await get_redis()
 
     # First check if preview is already cached in Redis (ready)
-    for size in ['small', 'medium', 'large']:
+    for size in ["small", "medium", "large"]:
         cache_key = f"preview:{file_id}:{size}"
         if await redis.exists(cache_key):
-            return {
-                'status': 'ready',
-                'file_id': file_id,
-                'message': 'Preview is ready'
-            }
+            return {"status": "ready", "file_id": file_id, "message": "Preview is ready"}
 
     # Check disk (Redis may have evicted but disk still has it)
     from ..services.preview_storage import async_load_preview_from_disk as _async_load_disk
-    for size in ['small', 'medium', 'large']:
+
+    for size in ["small", "medium", "large"]:
         if await _async_load_disk(file_id, size) is not None:
-            return {
-                'status': 'ready',
-                'file_id': file_id,
-                'message': 'Preview is ready (on disk)'
-            }
+            return {"status": "ready", "file_id": file_id, "message": "Preview is ready (on disk)"}
 
     # Check status key
     status_key = f"preview:status:{file_id}"
@@ -1653,26 +1705,26 @@ async def get_preview_status(
     if status_data:
         try:
             if isinstance(status_data, bytes):
-                status_data = status_data.decode('utf-8')
+                status_data = status_data.decode("utf-8")
             status_info = json.loads(status_data)
-            status = status_info.get('status', 'unknown')
+            status = status_info.get("status", "unknown")
 
             response = {
-                'status': status,
-                'file_id': file_id,
+                "status": status,
+                "file_id": file_id,
             }
 
-            if status == 'queued':
-                response['message'] = 'Preview is queued for generation'
-                response['retry_after'] = 5
-            elif status == 'processing':
-                response['message'] = 'Preview is being generated'
-                response['retry_after'] = 3
-            elif status == 'failed':
-                response['message'] = 'Preview generation failed'
-                response['error'] = status_info.get('error', 'Unknown error')
-            elif status == 'ready':
-                response['message'] = 'Preview is ready'
+            if status == "queued":
+                response["message"] = "Preview is queued for generation"
+                response["retry_after"] = 5
+            elif status == "processing":
+                response["message"] = "Preview is being generated"
+                response["retry_after"] = 3
+            elif status == "failed":
+                response["message"] = "Preview generation failed"
+                response["error"] = status_info.get("error", "Unknown error")
+            elif status == "ready":
+                response["message"] = "Preview is ready"
 
             return response
         except (json.JSONDecodeError, KeyError):
@@ -1680,9 +1732,9 @@ async def get_preview_status(
 
     # No status found - preview hasn't been queued or status expired
     return {
-        'status': 'unknown',
-        'file_id': file_id,
-        'message': 'No preview status found - preview will be generated on first request'
+        "status": "unknown",
+        "file_id": file_id,
+        "message": "No preview status found - preview will be generated on first request",
     }
 
 
@@ -1705,11 +1757,11 @@ async def perform_rename(
     if len(new_name) > 255:
         raise HTTPException(status_code=400, detail="File name too long (max 255 characters)")
 
-    invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+    invalid_chars = ["<", ">", ":", '"', "/", "\\", "|", "?", "*"]
     if any(char in new_name for char in invalid_chars):
         raise HTTPException(
             status_code=400,
-            detail=f"File name contains invalid characters: {', '.join(invalid_chars)}"
+            detail=f"File name contains invalid characters: {', '.join(invalid_chars)}",
         )
 
     old_name = file_obj.file_name
@@ -1727,7 +1779,9 @@ async def perform_rename(
         )
     )
     if duplicate_check.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="A file with this name already exists in the same location")
+        raise HTTPException(
+            status_code=409, detail="A file with this name already exists in the same location"
+        )
 
     # Update file
     file_obj.file_name = new_name
@@ -1737,7 +1791,10 @@ async def perform_rename(
 
     # Log activity
     await log_activity(
-        db, user_id, "file_renamed", str(file_obj.id),
+        db,
+        user_id,
+        "file_renamed",
+        str(file_obj.id),
         {"old_name": old_name, "new_name": new_name},
         request,
     )
@@ -1745,7 +1802,8 @@ async def perform_rename(
     # Audit log (best-effort)
     try:
         await audit_logging_service.log_event(
-            db, AuditEventType.FILE_MODIFIED,
+            db,
+            AuditEventType.FILE_MODIFIED,
             user_id=user_id,
             resource_type="file",
             resource_id=str(file_obj.id),
@@ -1762,18 +1820,20 @@ async def perform_rename(
     # Update Elasticsearch
     if search_service.connected:
         try:
-            await search_service.index_file({
-                'id': str(file_obj.id),
-                'user_id': str(file_obj.user_id),
-                'name': file_obj.file_name,
-                'original_name': file_obj.file_name,
-                'size': file_obj.file_size,
-                'mime_type': file_obj.mime_type,
-                'storage_tier': file_obj.storage_tier or 'cache',
-                'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                'created_at': file_obj.created_at.isoformat() if file_obj.created_at else None,
-                'updated_at': file_obj.updated_at.isoformat() if file_obj.updated_at else None,
-            })
+            await search_service.index_file(
+                {
+                    "id": str(file_obj.id),
+                    "user_id": str(file_obj.user_id),
+                    "name": file_obj.file_name,
+                    "original_name": file_obj.file_name,
+                    "size": file_obj.file_size,
+                    "mime_type": file_obj.mime_type,
+                    "storage_tier": file_obj.storage_tier or "cache",
+                    "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                    "created_at": file_obj.created_at.isoformat() if file_obj.created_at else None,
+                    "updated_at": file_obj.updated_at.isoformat() if file_obj.updated_at else None,
+                }
+            )
         except Exception as e:
             logger.warning(f"Failed to update search index after rename: {e}")
 
@@ -1799,7 +1859,11 @@ async def perform_rename(
     return file_obj
 
 
-@router.patch("/{file_id}/rename", response_model=FileResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
+@router.patch(
+    "/{file_id}/rename",
+    response_model=FileResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))],
+)
 async def rename_file(
     file_id: str,
     rename_request: RenameRequest,
@@ -1816,19 +1880,14 @@ async def rename_file(
     try:
         # Get file and verify ownership
         result = await db.execute(
-            select(Object).where(
-                Object.id == file_id,
-                Object.user_id == current_user.id
-            )
+            select(Object).where(Object.id == file_id, Object.user_id == current_user.id)
         )
         file_obj = result.scalar_one_or_none()
 
         if not file_obj:
             raise HTTPException(status_code=404, detail="File not found")
 
-        file_obj = await perform_rename(
-            file_obj, rename_request.name, current_user.id, db, request
-        )
+        file_obj = await perform_rename(file_obj, rename_request.name, current_user.id, db, request)
 
         return FileResponse(
             id=str(file_obj.id),
@@ -1853,7 +1912,9 @@ async def rename_file(
         raise HTTPException(status_code=500, detail=f"Failed to rename file: {str(e)}")
 
 
-@router.get("/{file_id}/activity", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
+@router.get(
+    "/{file_id}/activity", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))]
+)
 async def get_file_activity(
     file_id: str,
     limit: int = 50,
@@ -1869,10 +1930,7 @@ async def get_file_activity(
     try:
         # First verify file exists and user has access
         result = await db.execute(
-            select(Object).where(
-                Object.id == file_id,
-                Object.user_id == current_user.id
-            )
+            select(Object).where(Object.id == file_id, Object.user_id == current_user.id)
         )
         file_obj = result.scalar_one_or_none()
 
@@ -1882,10 +1940,7 @@ async def get_file_activity(
         # Get activity logs for this file
         activity_result = await db.execute(
             select(ActivityLog)
-            .where(
-                ActivityLog.object_id == file_id,
-                ActivityLog.user_id == current_user.id
-            )
+            .where(ActivityLog.object_id == file_id, ActivityLog.user_id == current_user.id)
             .order_by(ActivityLog.created_at.desc())
             .limit(limit)
         )
@@ -1911,11 +1966,14 @@ async def get_file_activity(
     except Exception as e:
         print(f"Get file activity error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to get file activity: {str(e)}")
 
 
-@router.delete("/{file_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+@router.delete(
+    "/{file_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))]
+)
 async def delete_file(
     file_id: str,
     request: Request,
@@ -1924,7 +1982,9 @@ async def delete_file(
 ):
     """Soft delete file - moves file to trash"""
     result = await db.execute(
-        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == False)
+        select(Object).filter(
+            Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == False
+        )
     )
     file_obj = result.scalar_one_or_none()
 
@@ -1939,6 +1999,7 @@ async def delete_file(
 
         # Invalidate previews before commit
         from ..services.preview_storage import invalidate_preview
+
         old_hash = file_obj.content_hash
         if old_hash:
             redis_client = await get_redis()
@@ -1951,7 +2012,7 @@ async def delete_file(
             object_id=file_id,
             ip_address=request.client.host if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
-            meta_data={"file_name": file_name}
+            meta_data={"file_name": file_name},
         )
         db.add(activity)
 
@@ -1960,7 +2021,8 @@ async def delete_file(
         # Audit log (best-effort)
         try:
             await audit_logging_service.log_event(
-                db, AuditEventType.FILE_DELETED,
+                db,
+                AuditEventType.FILE_DELETED,
                 user_id=current_user.id,
                 resource_type="file",
                 resource_id=str(file_id),
@@ -1987,11 +2049,16 @@ async def delete_file(
         await db.rollback()
         print(f"Delete error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trash", response_model=List[FileResponse], dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))])
+@router.get(
+    "/trash",
+    response_model=List[FileResponse],
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_LIST))],
+)
 async def list_trash(
     request: Request,
     limit: int = 100,
@@ -2001,10 +2068,13 @@ async def list_trash(
 ):
     """List files in trash (soft-deleted files)"""
     # Query for deleted files
-    query = select(Object).filter(
-        Object.user_id == current_user.id,
-        Object.is_deleted == True
-    ).order_by(Object.deleted_at.desc()).limit(min(limit, 500)).offset(offset)
+    query = (
+        select(Object)
+        .filter(Object.user_id == current_user.id, Object.is_deleted == True)
+        .order_by(Object.deleted_at.desc())
+        .limit(min(limit, 500))
+        .offset(offset)
+    )
 
     result = await db.execute(query)
     files = result.scalars().all()
@@ -2015,8 +2085,7 @@ async def list_trash(
     # Batch query for favorites
     favorites_result = await db.execute(
         select(Favorite.file_id).filter(
-            Favorite.user_id == current_user.id,
-            Favorite.file_id.in_(file_ids)
+            Favorite.user_id == current_user.id, Favorite.file_id.in_(file_ids)
         )
     )
     favorite_file_ids = set(favorites_result.scalars().all())
@@ -2028,8 +2097,8 @@ async def list_trash(
             size=f.file_size,
             mime_type=f.mime_type,
             folder_id=str(f.folder_id) if f.folder_id else None,
-            storage_tier=f.storage_tier or 'hot',
-            backup_status=f.backup_status or 'none',
+            storage_tier=f.storage_tier or "hot",
+            backup_status=f.backup_status or "none",
             created_at=f.created_at,
             last_accessed=f.last_accessed,
             updated_at=f.updated_at,
@@ -2041,13 +2110,16 @@ async def list_trash(
             file_key_iv=None,
             encryption_algorithm=None,
             encryption_version=None,
-            encryption_mode=f.encryption_mode or 'none',
+            encryption_mode=f.encryption_mode or "none",
         )
         for f in files
     ]
 
 
-@router.post("/trash/{file_id}/restore", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
+@router.post(
+    "/trash/{file_id}/restore",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))],
+)
 async def restore_from_trash(
     file_id: str,
     request: Request,
@@ -2056,7 +2128,9 @@ async def restore_from_trash(
 ):
     """Restore a file from trash"""
     result = await db.execute(
-        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == True)
+        select(Object).filter(
+            Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == True
+        )
     )
     file_obj = result.scalar_one_or_none()
 
@@ -2076,7 +2150,7 @@ async def restore_from_trash(
             object_id=file_id,
             ip_address=request.client.host if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
-            meta_data={"file_name": file_name}
+            meta_data={"file_name": file_name},
         )
         db.add(activity)
 
@@ -2085,18 +2159,24 @@ async def restore_from_trash(
         # Re-index in Elasticsearch
         if search_service.connected:
             try:
-                await search_service.index_file({
-                    'id': str(file_obj.id),
-                    'user_id': str(file_obj.user_id),
-                    'name': file_obj.file_name,
-                    'original_name': file_obj.file_name,
-                    'size': file_obj.file_size,
-                    'mime_type': file_obj.mime_type,
-                    'storage_tier': file_obj.storage_tier or 'cache',
-                    'folder_id': str(file_obj.folder_id) if file_obj.folder_id else None,
-                    'created_at': file_obj.created_at.isoformat() if file_obj.created_at else None,
-                    'updated_at': file_obj.updated_at.isoformat() if file_obj.updated_at else None,
-                })
+                await search_service.index_file(
+                    {
+                        "id": str(file_obj.id),
+                        "user_id": str(file_obj.user_id),
+                        "name": file_obj.file_name,
+                        "original_name": file_obj.file_name,
+                        "size": file_obj.file_size,
+                        "mime_type": file_obj.mime_type,
+                        "storage_tier": file_obj.storage_tier or "cache",
+                        "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                        "created_at": (
+                            file_obj.created_at.isoformat() if file_obj.created_at else None
+                        ),
+                        "updated_at": (
+                            file_obj.updated_at.isoformat() if file_obj.updated_at else None
+                        ),
+                    }
+                )
             except Exception as e:
                 logger.warning(f"Failed to re-index restored file: {e}")
 
@@ -2108,7 +2188,10 @@ async def restore_from_trash(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/trash/{file_id}/permanent", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+@router.delete(
+    "/trash/{file_id}/permanent",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))],
+)
 async def permanent_delete(
     file_id: str,
     request: Request,
@@ -2119,7 +2202,9 @@ async def permanent_delete(
     redis_client = await get_redis()
 
     result = await db.execute(
-        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == True)
+        select(Object).filter(
+            Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == True
+        )
     )
     file_obj = result.scalar_one_or_none()
 
@@ -2176,12 +2261,13 @@ async def permanent_delete(
 
         # Invalidate preview assets (Redis + disk)
         from ..services.preview_storage import invalidate_preview
+
         old_hash = file_obj.content_hash
         if old_hash:
             await invalidate_preview(file_id, old_hash, redis_client)
 
         # Update user storage
-        if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
+        if hasattr(current_user, "storage_used") and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - file_obj.file_size)
 
         # Invalidate cached quota so subsequent checks see fresh values
@@ -2197,44 +2283,38 @@ async def permanent_delete(
         # Delete related records first to avoid FK constraint violations
         # Only delete from tables that actually exist in the database
         await db.execute(
-            text("DELETE FROM dlp_scan_logs WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM dlp_scan_logs WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
-            text("DELETE FROM virus_scan_logs WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM virus_scan_logs WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
-            text("DELETE FROM favorites WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM favorites WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
-            text("DELETE FROM file_versions WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM file_versions WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
             text("DELETE FROM file_cluster_assignments WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            {"file_id": file_id},
         )
         await db.execute(
-            text("DELETE FROM file_similarities WHERE file_id = :file_id OR similar_file_id = :file_id"),
-            {"file_id": file_id}
+            text(
+                "DELETE FROM file_similarities WHERE file_id = :file_id OR similar_file_id = :file_id"
+            ),
+            {"file_id": file_id},
         )
         await db.execute(
-            text("DELETE FROM share_bundle_files WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM share_bundle_files WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
-            text("DELETE FROM file_embeddings WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM file_embeddings WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
-            text("DELETE FROM file_tags WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM file_tags WHERE file_id = :file_id"), {"file_id": file_id}
         )
         await db.execute(
-            text("DELETE FROM file_ocr WHERE file_id = :file_id"),
-            {"file_id": file_id}
+            text("DELETE FROM file_ocr WHERE file_id = :file_id"), {"file_id": file_id}
         )
 
         # Permanently delete the file object
@@ -2247,7 +2327,7 @@ async def permanent_delete(
             object_id=file_id,
             ip_address=request.client.host if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
-            meta_data={"file_name": file_name}
+            meta_data={"file_name": file_name},
         )
         db.add(activity)
 
@@ -2260,17 +2340,24 @@ async def permanent_delete(
             except Exception as e:
                 logger.warning(f"Failed to remove permanently deleted file from search index: {e}")
 
-        return {"status": "success", "freed_space": freed_space, "message": "File permanently deleted"}
+        return {
+            "status": "success",
+            "freed_space": freed_space,
+            "message": "File permanently deleted",
+        }
 
     except Exception as e:
         await db.rollback()
         print(f"Permanent delete error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/trash/empty", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+@router.post(
+    "/trash/empty", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))]
+)
 async def empty_trash(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -2286,7 +2373,12 @@ async def empty_trash(
     files = result.scalars().all()
 
     if not files:
-        return {"status": "success", "deleted": 0, "freed_space": 0, "message": "Trash is already empty"}
+        return {
+            "status": "success",
+            "deleted": 0,
+            "freed_space": 0,
+            "message": "Trash is already empty",
+        }
 
     deleted_count = 0
     freed_space = 0
@@ -2340,6 +2432,7 @@ async def empty_trash(
 
                 # Invalidate preview assets
                 from ..services.preview_storage import invalidate_preview as _invalidate_preview
+
                 old_hash = file_obj.content_hash
                 if old_hash:
                     try:
@@ -2358,44 +2451,41 @@ async def empty_trash(
 
         # Only delete from tables that actually exist in the database
         await db.execute(
-            text("DELETE FROM dlp_scan_logs WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            text("DELETE FROM dlp_scan_logs WHERE file_id = ANY(:file_ids)"), {"file_ids": file_ids}
         )
         await db.execute(
             text("DELETE FROM virus_scan_logs WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            {"file_ids": file_ids},
         )
         await db.execute(
-            text("DELETE FROM favorites WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            text("DELETE FROM favorites WHERE file_id = ANY(:file_ids)"), {"file_ids": file_ids}
         )
         await db.execute(
-            text("DELETE FROM file_versions WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            text("DELETE FROM file_versions WHERE file_id = ANY(:file_ids)"), {"file_ids": file_ids}
         )
         await db.execute(
             text("DELETE FROM file_cluster_assignments WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            {"file_ids": file_ids},
         )
         await db.execute(
-            text("DELETE FROM file_similarities WHERE file_id = ANY(:file_ids) OR similar_file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            text(
+                "DELETE FROM file_similarities WHERE file_id = ANY(:file_ids) OR similar_file_id = ANY(:file_ids)"
+            ),
+            {"file_ids": file_ids},
         )
         await db.execute(
             text("DELETE FROM share_bundle_files WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            {"file_ids": file_ids},
         )
         await db.execute(
             text("DELETE FROM file_embeddings WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            {"file_ids": file_ids},
         )
         await db.execute(
-            text("DELETE FROM file_tags WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            text("DELETE FROM file_tags WHERE file_id = ANY(:file_ids)"), {"file_ids": file_ids}
         )
         await db.execute(
-            text("DELETE FROM file_ocr WHERE file_id = ANY(:file_ids)"),
-            {"file_ids": file_ids}
+            text("DELETE FROM file_ocr WHERE file_id = ANY(:file_ids)"), {"file_ids": file_ids}
         )
 
         # Batch delete database records
@@ -2403,7 +2493,7 @@ async def empty_trash(
             await db.delete(file_obj)
 
         # Update user storage
-        if hasattr(current_user, 'storage_used') and current_user.storage_used is not None:
+        if hasattr(current_user, "storage_used") and current_user.storage_used is not None:
             current_user.storage_used = max(0, current_user.storage_used - freed_space)
 
         # Invalidate cached quota so subsequent checks see fresh values
@@ -2419,7 +2509,7 @@ async def empty_trash(
             object_id=None,
             ip_address=request.client.host if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
-            meta_data={"deleted_count": deleted_count, "freed_space": freed_space}
+            meta_data={"deleted_count": deleted_count, "freed_space": freed_space},
         )
         db.add(activity)
 
@@ -2433,17 +2523,25 @@ async def empty_trash(
                 except Exception as e:
                     logger.warning(f"Failed to remove file {fid} from search index: {e}")
 
-        return {"status": "success", "deleted": deleted_count, "freed_space": freed_space, "message": f"Emptied trash: {deleted_count} files permanently deleted"}
+        return {
+            "status": "success",
+            "deleted": deleted_count,
+            "freed_space": freed_space,
+            "message": f"Emptied trash: {deleted_count} files permanently deleted",
+        }
 
     except Exception as e:
         await db.rollback()
         print(f"Empty trash error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/bulk-delete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))])
+@router.post(
+    "/bulk-delete", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_DELETE))]
+)
 async def bulk_delete_files(
     request: Request,
     request_data: BulkDeleteRequest,
@@ -2466,7 +2564,7 @@ async def bulk_delete_files(
             select(Object).filter(
                 Object.id.in_(file_ids),
                 Object.user_id == current_user.id,
-                Object.is_deleted == False
+                Object.is_deleted == False,
             )
         )
         files = result.scalars().all()
@@ -2500,16 +2598,20 @@ async def bulk_delete_files(
         # Log activity
         if deleted_count > 0:
             await log_activity(
-                db, current_user.id, "bulk_moved_to_trash", None,
+                db,
+                current_user.id,
+                "bulk_moved_to_trash",
+                None,
                 {"deleted_count": deleted_count},
-                request
+                request,
             )
 
             # Audit: log each deletion for anomaly detection
             for fid in deleted_files:
                 try:
                     await audit_logging_service.log_event(
-                        db, AuditEventType.FILE_DELETED,
+                        db,
+                        AuditEventType.FILE_DELETED,
                         user_id=current_user.id,
                         resource_type="file",
                         resource_id=fid,
@@ -2527,18 +2629,23 @@ async def bulk_delete_files(
             "deleted": deleted_count,
             "deleted_files": deleted_files,
             "failed_files": failed_files,
-            "message": f"{deleted_count} files moved to trash"
+            "message": f"{deleted_count} files moved to trash",
         }
 
     except Exception as e:
         await db.rollback()
         print(f"Bulk delete error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{file_id}/copy", response_model=FileResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))])
+@router.post(
+    "/{file_id}/copy",
+    response_model=FileResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPDATE))],
+)
 async def copy_file(
     file_id: str,
     request: Request,
@@ -2558,9 +2665,7 @@ async def copy_file(
     # Fetch original file
     result = await db.execute(
         select(Object).filter(
-            Object.id == file_id,
-            Object.user_id == current_user.id,
-            Object.is_deleted == False
+            Object.id == file_id, Object.user_id == current_user.id, Object.is_deleted == False
         )
     )
     original_file = result.scalar_one_or_none()
@@ -2572,13 +2677,13 @@ async def copy_file(
     if original_file.is_encrypted:
         raise HTTPException(
             status_code=400,
-            detail="Copying Zero-Knowledge encrypted files is not currently supported. Please download and re-upload the file manually."
+            detail="Copying Zero-Knowledge encrypted files is not currently supported. Please download and re-upload the file manually.",
         )
 
     try:
         # Generate copy name
         base_name = original_file.file_name
-        last_dot = base_name.rfind('.')
+        last_dot = base_name.rfind(".")
         if last_dot > 0:
             name_part = base_name[:last_dot]
             ext_part = base_name[last_dot:]
@@ -2591,7 +2696,7 @@ async def copy_file(
             Object.user_id == current_user.id,
             Object.folder_id == original_file.folder_id,
             Object.is_deleted == False,
-            Object.file_name.like(f"{name_part} (Copy%)%")
+            Object.file_name.like(f"{name_part} (Copy%)%"),
         )
         result = await db.execute(query)
         existing_copies = result.scalars().all()
@@ -2602,9 +2707,10 @@ async def copy_file(
         else:
             # Extract numbers from existing copies
             import re
+
             numbers = []
             for copy in existing_copies:
-                match = re.search(r'\(Copy(?: (\d+))?\)', copy.file_name)
+                match = re.search(r"\(Copy(?: (\d+))?\)", copy.file_name)
                 if match:
                     num = match.group(1)
                     numbers.append(int(num) if num else 1)
@@ -2623,11 +2729,14 @@ async def copy_file(
         if original_file.storage_type == "inline":
             # For inline storage, decrypt and re-encrypt with new key
             import base64
+
             original_file_key = encryption_service.decrypt_key(original_file.encryption_key)
             original_encrypted_data = base64.b64decode(original_file.storage_key)
-            decrypted_data = encryption_service.decrypt_file(original_encrypted_data, original_file_key)
+            decrypted_data = encryption_service.decrypt_file(
+                original_encrypted_data, original_file_key
+            )
             new_encrypted_data = encryption_service.encrypt_file(decrypted_data, new_file_key)
-            new_storage_key = base64.b64encode(new_encrypted_data).decode('utf-8')
+            new_storage_key = base64.b64encode(new_encrypted_data).decode("utf-8")
 
         elif original_file.storage_type == "single":
             # For single file storage, copy the file on disk
@@ -2640,6 +2749,7 @@ async def copy_file(
             os.makedirs(storage_dir, exist_ok=True)
 
             import uuid
+
             new_file_id = uuid.uuid4()
             new_filename = f"{new_file_id}.enc"
             new_object_path = os.path.join(storage_dir, new_filename)
@@ -2658,17 +2768,21 @@ async def copy_file(
                     # Small to medium files: load into memory (fastest)
                     logger.info(f"Using in-memory copy for file size {file_size_mb:.2f} MB")
 
-                    async with aiofiles.open(original_file.object_path, 'rb') as src:
+                    async with aiofiles.open(original_file.object_path, "rb") as src:
                         encrypted_data = await src.read()
 
                     # Decrypt with old key
-                    decrypted_data = encryption_service.decrypt_data(encrypted_data, original_file_key)
+                    decrypted_data = encryption_service.decrypt_data(
+                        encrypted_data, original_file_key
+                    )
 
                     # Re-encrypt with new key
-                    new_encrypted_data = encryption_service.encrypt_data(decrypted_data, new_file_key)
+                    new_encrypted_data = encryption_service.encrypt_data(
+                        decrypted_data, new_file_key
+                    )
 
                     # Write to new path
-                    async with aiofiles.open(new_object_path, 'wb') as dst:
+                    async with aiofiles.open(new_object_path, "wb") as dst:
                         await dst.write(new_encrypted_data)
 
                     logger.info(f"In-memory copy completed successfully")
@@ -2688,8 +2802,10 @@ async def copy_file(
                         chunk_index = 0
 
                         # Open both files simultaneously for streaming
-                        async with aiofiles.open(original_file.object_path, 'rb') as src, \
-                                   aiofiles.open(new_object_path, 'wb') as dst:
+                        async with (
+                            aiofiles.open(original_file.object_path, "rb") as src,
+                            aiofiles.open(new_object_path, "wb") as dst,
+                        ):
 
                             while True:
                                 # Read one 64 MB encrypted chunk
@@ -2699,16 +2815,12 @@ async def copy_file(
 
                                 # Decrypt chunk with old key
                                 decrypted_chunk = encryption_service.decrypt_chunk(
-                                    encrypted_chunk,
-                                    original_file_key,
-                                    chunk_index
+                                    encrypted_chunk, original_file_key, chunk_index
                                 )
 
                                 # Re-encrypt chunk with new key
                                 new_encrypted_chunk = encryption_service.encrypt_chunk(
-                                    decrypted_chunk,
-                                    new_file_key,
-                                    chunk_index
+                                    decrypted_chunk, new_file_key, chunk_index
                                 )
 
                                 # Write encrypted chunk to new file
@@ -2730,7 +2842,9 @@ async def copy_file(
 
                                 # Memory automatically cleared when chunk variables go out of scope
 
-                        logger.info(f"Chunked streaming copy completed successfully: {chunk_index} chunks processed")
+                        logger.info(
+                            f"Chunked streaming copy completed successfully: {chunk_index} chunks processed"
+                        )
 
                     except Exception as chunk_error:
                         # If chunked copy fails, ensure partial file is cleaned up
@@ -2750,7 +2864,9 @@ async def copy_file(
                 raise copy_error
 
         else:
-            raise HTTPException(status_code=400, detail=f"Unsupported storage type: {original_file.storage_type}")
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported storage type: {original_file.storage_type}"
+            )
 
         # Create new Object record
         new_file = Object(
@@ -2778,33 +2894,44 @@ async def copy_file(
 
         # Log activity
         await log_activity(
-            db, current_user.id, "file_copied", str(new_file.id),
+            db,
+            current_user.id,
+            "file_copied",
+            str(new_file.id),
             {
                 "file_name": copy_name,
                 "original_file_id": str(file_id),
                 "original_file_name": original_file.file_name,
                 "size": original_file.file_size,
             },
-            request
+            request,
         )
 
-        logger.info(f"File copied successfully: {original_file.file_name} -> {copy_name} (size: {original_file.file_size} bytes)")
+        logger.info(
+            f"File copied successfully: {original_file.file_name} -> {copy_name} (size: {original_file.file_size} bytes)"
+        )
 
         # Index copied file in Elasticsearch
         if search_service.connected:
             try:
-                await search_service.index_file({
-                    'id': str(new_file.id),
-                    'user_id': str(current_user.id),
-                    'name': new_file.file_name,
-                    'original_name': new_file.file_name,
-                    'size': new_file.file_size,
-                    'mime_type': new_file.mime_type,
-                    'storage_tier': new_file.storage_tier or 'cache',
-                    'folder_id': str(new_file.folder_id) if new_file.folder_id else None,
-                    'created_at': new_file.created_at.isoformat() if new_file.created_at else None,
-                    'updated_at': new_file.updated_at.isoformat() if new_file.updated_at else None,
-                })
+                await search_service.index_file(
+                    {
+                        "id": str(new_file.id),
+                        "user_id": str(current_user.id),
+                        "name": new_file.file_name,
+                        "original_name": new_file.file_name,
+                        "size": new_file.file_size,
+                        "mime_type": new_file.mime_type,
+                        "storage_tier": new_file.storage_tier or "cache",
+                        "folder_id": str(new_file.folder_id) if new_file.folder_id else None,
+                        "created_at": (
+                            new_file.created_at.isoformat() if new_file.created_at else None
+                        ),
+                        "updated_at": (
+                            new_file.updated_at.isoformat() if new_file.updated_at else None
+                        ),
+                    }
+                )
             except Exception as e:
                 logger.warning(f"Failed to index copied file in search: {e}")
 
@@ -2828,6 +2955,7 @@ async def copy_file(
         await db.rollback()
         logger.error(f"File copy error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to copy file: {str(e)}")
 
@@ -2837,23 +2965,26 @@ async def copy_file(
 # Automatic Repeat Request for reliable video streaming
 # ============================================================================
 
+
 @router.post("/{file_id}/stream/init")
 async def init_arq_stream(
     file_id: str,
     chunk_size: Optional[int] = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Initialize an ARQ streaming session for reliable video delivery.
 
     Returns session_id and chunk information for client-side ARQ handling.
     """
-    from ..services.arq_streaming_service import arq_streaming_service
     from ..database import get_redis
+    from ..services.arq_streaming_service import arq_streaming_service
 
     # Get file
-    result = await db.execute(select(Object).filter(Object.id == file_id, Object.user_id == current_user.id))
+    result = await db.execute(
+        select(Object).filter(Object.id == file_id, Object.user_id == current_user.id)
+    )
     file_obj = result.scalar_one_or_none()
 
     if not file_obj:
@@ -2867,8 +2998,7 @@ async def init_arq_stream(
         file_path = file_obj.object_path
     else:
         raise HTTPException(
-            status_code=400,
-            detail="File not available for streaming (may require decryption)"
+            status_code=400, detail="File not available for streaming (may require decryption)"
         )
 
     # Initialize Redis for session tracking
@@ -2878,9 +3008,7 @@ async def init_arq_stream(
     # Create session
     try:
         session_info = await arq_streaming_service.init_stream_session(
-            file_id=file_id,
-            file_path=file_path,
-            chunk_size=chunk_size
+            file_id=file_id, file_path=file_path, chunk_size=chunk_size
         )
         return session_info
     except FileNotFoundError:
@@ -2889,10 +3017,7 @@ async def init_arq_stream(
 
 @router.get("/{file_id}/stream/{session_id}/chunk/{chunk_index}")
 async def get_stream_chunk(
-    file_id: str,
-    session_id: str,
-    chunk_index: int,
-    current_user: User = Depends(get_current_user)
+    file_id: str, session_id: str, chunk_index: int, current_user: User = Depends(get_current_user)
 ):
     """
     Get a specific chunk with checksum for client verification.
@@ -2911,14 +3036,10 @@ async def get_stream_chunk(
             "X-Byte-Range": f"{chunk.byte_start}-{chunk.byte_end}",
             "X-Total-Size": str(chunk.total_size),
             "Content-Length": str(len(chunk.data)),
-            "Content-Type": "application/octet-stream"
+            "Content-Type": "application/octet-stream",
         }
 
-        return Response(
-            content=chunk.data,
-            media_type="application/octet-stream",
-            headers=headers
-        )
+        return Response(content=chunk.data, media_type="application/octet-stream", headers=headers)
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2926,10 +3047,7 @@ async def get_stream_chunk(
 
 @router.post("/{file_id}/stream/{session_id}/ack")
 async def ack_chunks(
-    file_id: str,
-    session_id: str,
-    chunks: List[int],
-    current_user: User = Depends(get_current_user)
+    file_id: str, session_id: str, chunks: List[int], current_user: User = Depends(get_current_user)
 ):
     """
     Acknowledge successfully received chunks.
@@ -2947,10 +3065,7 @@ async def ack_chunks(
 
 @router.post("/{file_id}/stream/{session_id}/nack")
 async def retransmit_chunks(
-    file_id: str,
-    session_id: str,
-    chunks: List[int],
-    current_user: User = Depends(get_current_user)
+    file_id: str, session_id: str, chunks: List[int], current_user: User = Depends(get_current_user)
 ):
     """
     Request retransmission of lost or corrupt chunks.
@@ -2965,13 +3080,9 @@ async def retransmit_chunks(
         return {
             "retransmitted_count": len(retransmitted),
             "chunks": [
-                {
-                    "chunk_index": c.chunk_index,
-                    "checksum": c.checksum,
-                    "size": len(c.data)
-                }
+                {"chunk_index": c.chunk_index, "checksum": c.checksum, "size": len(c.data)}
                 for c in retransmitted
-            ]
+            ],
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2979,9 +3090,7 @@ async def retransmit_chunks(
 
 @router.get("/{file_id}/stream/{session_id}/status")
 async def get_stream_status(
-    file_id: str,
-    session_id: str,
-    current_user: User = Depends(get_current_user)
+    file_id: str, session_id: str, current_user: User = Depends(get_current_user)
 ):
     """
     Get current streaming session status and statistics.
@@ -2997,9 +3106,7 @@ async def get_stream_status(
 
 @router.delete("/{file_id}/stream/{session_id}")
 async def close_stream_session(
-    file_id: str,
-    session_id: str,
-    current_user: User = Depends(get_current_user)
+    file_id: str, session_id: str, current_user: User = Depends(get_current_user)
 ):
     """
     Close a streaming session and clean up resources.
@@ -3018,11 +3125,10 @@ async def close_stream_session(
 # For frontend polling during proactive video optimization
 # ============================================================================
 
+
 @router.get("/{file_id}/video/status")
 async def get_video_processing_status(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get video processing status for frontend polling.
@@ -3047,22 +3153,14 @@ async def get_video_processing_status(
         raise HTTPException(status_code=404, detail="File not found")
 
     # Check if it's a video
-    mime_type = file_obj.mime_type or ''
-    if not mime_type.startswith('video/'):
-        return {
-            "file_id": file_id,
-            "status": "not_video",
-            "message": "File is not a video"
-        }
+    mime_type = file_obj.mime_type or ""
+    if not mime_type.startswith("video/"):
+        return {"file_id": file_id, "status": "not_video", "message": "File is not a video"}
 
     # Get processing status
     status = await video_ingestion_service.get_processing_status(file_obj)
 
-    return {
-        "file_id": file_id,
-        "file_name": file_obj.file_name,
-        **status
-    }
+    return {"file_id": file_id, "file_name": file_obj.file_name, **status}
 
 
 # ============================================================================
@@ -3074,11 +3172,10 @@ async def get_video_processing_status(
 # chunks, rename) for native ZK users are in zk-encryption-service.
 # ============================================================================
 
+
 @router.get("/{file_id}/zk/metadata")
 async def get_zk_file_metadata(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    file_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get ZK file metadata for client-side decryption.
@@ -3101,10 +3198,7 @@ async def get_zk_file_metadata(
 
     # Verify this is a ZK-encrypted file
     if not file_obj.encrypted_file_key:
-        raise HTTPException(
-            status_code=400,
-            detail="This is not a Zero-Knowledge encrypted file"
-        )
+        raise HTTPException(status_code=400, detail="This is not a Zero-Knowledge encrypted file")
 
     # Get chunk info
     chunk_info = file_obj.chunk_info or {}
@@ -3124,7 +3218,7 @@ async def get_zk_file_metadata(
         "encryption_algorithm": file_obj.encryption_algorithm or "AES-256-GCM",
         "chunk_count": chunk_count,
         "chunk_size": chunk_size,
-        "is_encrypted": True
+        "is_encrypted": True,
     }
 
 
@@ -3133,7 +3227,7 @@ async def download_zk_chunk(
     file_id: str,
     chunk_index: int,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Download a single encrypted chunk for ZK files.
@@ -3160,7 +3254,7 @@ async def download_zk_chunk(
     if not file_obj.encrypted_file_key:
         raise HTTPException(
             status_code=400,
-            detail="This is not a Zero-Knowledge encrypted file. Use the standard download endpoint."
+            detail="This is not a Zero-Knowledge encrypted file. Use the standard download endpoint.",
         )
 
     # Get chunk path from chunk_info
@@ -3178,7 +3272,9 @@ async def download_zk_chunk(
             if upload_id:
                 shard = upload_id[:2]
                 for tier in ["cache", "hot", "warm", "cold"]:
-                    fallback_path = f"/app/storage/{tier}/{shard}/{upload_id}_chunk_{chunk_index}.enc"
+                    fallback_path = (
+                        f"/app/storage/{tier}/{shard}/{upload_id}_chunk_{chunk_index}.enc"
+                    )
                     if os.path.exists(fallback_path):
                         chunk_paths[str(chunk_index)] = fallback_path
                         break
@@ -3186,13 +3282,10 @@ async def download_zk_chunk(
     chunk_path = chunk_paths.get(str(chunk_index))
 
     if not chunk_path or not os.path.exists(chunk_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Chunk {chunk_index} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_index} not found")
 
     # Read and return encrypted chunk
-    async with aiofiles.open(chunk_path, 'rb') as f:
+    async with aiofiles.open(chunk_path, "rb") as f:
         chunk_data = await f.read()
 
     return Response(
@@ -3202,6 +3295,6 @@ async def download_zk_chunk(
             "Content-Length": str(len(chunk_data)),
             "X-Chunk-Index": str(chunk_index),
             "X-File-Encrypted": "true",
-            "X-Encryption-Algorithm": file_obj.encryption_algorithm or "AES-256-GCM"
-        }
+            "X-Encryption-Algorithm": file_obj.encryption_algorithm or "AES-256-GCM",
+        },
     )

@@ -8,40 +8,44 @@ API endpoints for storage optimization:
 - Get optimization summary
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
-from typing import List, Optional
-from datetime import datetime
 import logging
+from datetime import datetime
+from typing import List, Optional
 
-from ..dependencies import get_db, get_current_user
-from ..models.database import (
-    User, StorageAnalysis, OptimizationSuggestion, OptimizationAction)
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_current_user, get_db
+from ..models.database import OptimizationAction, OptimizationSuggestion, StorageAnalysis, User
 from ..models.schemas import (
-    StorageAnalysisResponse,
-    OptimizationSuggestionResponse,
     OptimizationActionRequest,
     OptimizationActionResponse,
+    OptimizationSuggestionResponse,
+    OptimizationSummary,
+    StorageAnalysisResponse,
     StorageBreakdown,
-    OptimizationSummary
 )
+from ..monitoring.metrics import metrics_collector
 from ..services.storage_analyzer import storage_analyzer
 from ..services.storage_optimizer import storage_optimizer
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 from ..workers.storage_optimization_worker import storage_optimization_worker
-from ..monitoring.metrics import metrics_collector
 
 router = APIRouter(prefix="/api/v1/storage/optimization", tags=["storage-optimization"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("/analysis", response_model=StorageAnalysisResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_ANALYSIS))])
+@router.get(
+    "/analysis",
+    response_model=StorageAnalysisResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_ANALYSIS))],
+)
 async def get_storage_analysis(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    force_refresh: bool = Query(False, description="Force new analysis")
+    force_refresh: bool = Query(False, description="Force new analysis"),
 ):
     """
     Get latest storage analysis for current user
@@ -67,27 +71,23 @@ async def get_storage_analysis(
 
             if existing_analysis:
                 # Check if less than 24 hours old
-                age_hours = (datetime.utcnow() - existing_analysis.analysis_date).total_seconds() / 3600
+                age_hours = (
+                    datetime.utcnow() - existing_analysis.analysis_date
+                ).total_seconds() / 3600
                 if age_hours < 24:
                     logger.info(f"Returning cached analysis for user {current_user.id}")
-                    metrics_collector.increment_counter('storage_analysis_cache_hits_total')
+                    metrics_collector.increment_counter("storage_analysis_cache_hits_total")
 
                     return await _build_analysis_response(existing_analysis)
 
         # Generate new analysis
         logger.info(f"Generating new storage analysis for user {current_user.id}")
-        metrics_collector.increment_counter('storage_analysis_cache_misses_total')
+        metrics_collector.increment_counter("storage_analysis_cache_misses_total")
 
-        analysis = await storage_analyzer.analyze_user_storage(
-            user_id=current_user.id,
-            db=db
-        )
+        analysis = await storage_analyzer.analyze_user_storage(user_id=current_user.id, db=db)
 
         if not analysis:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to analyze storage"
-            )
+            raise HTTPException(status_code=500, detail="Failed to analyze storage")
 
         # Save analysis
         db.add(analysis)
@@ -101,7 +101,7 @@ async def get_storage_analysis(
         await db.commit()
 
         logger.info(f"Generated storage analysis for user {current_user.id}")
-        metrics_collector.increment_counter('storage_analyses_completed_total')
+        metrics_collector.increment_counter("storage_analyses_completed_total")
 
         return await _build_analysis_response(analysis)
 
@@ -116,7 +116,8 @@ async def _build_analysis_response(analysis: StorageAnalysis) -> StorageAnalysis
     """Build response object from analysis"""
     total_savings_percent = (
         (analysis.total_potential_savings / analysis.total_size * 100)
-        if analysis.total_size > 0 else 0
+        if analysis.total_size > 0
+        else 0
     )
 
     return StorageAnalysisResponse(
@@ -127,38 +128,35 @@ async def _build_analysis_response(analysis: StorageAnalysis) -> StorageAnalysis
         duplicate_files=analysis.duplicate_files,
         duplicate_size=analysis.duplicate_size,
         tier_distribution={
-            'cache': {'files': analysis.cache_files, 'size': analysis.cache_size},
-            'warm': {'files': analysis.warm_files, 'size': analysis.warm_size},
-            'cold': {'files': analysis.cold_files, 'size': analysis.cold_size}
+            "cache": {"files": analysis.cache_files, "size": analysis.cache_size},
+            "warm": {"files": analysis.warm_files, "size": analysis.warm_size},
+            "cold": {"files": analysis.cold_files, "size": analysis.cold_size},
         },
         avg_access_frequency=analysis.avg_access_frequency,
         never_accessed={
-            'files': analysis.files_never_accessed,
-            'size': analysis.size_never_accessed
+            "files": analysis.files_never_accessed,
+            "size": analysis.size_never_accessed,
         },
-        accessed_once={
-            'files': analysis.files_accessed_once,
-            'size': analysis.size_accessed_once
-        },
+        accessed_once={"files": analysis.files_accessed_once, "size": analysis.size_accessed_once},
         age_breakdown={
-            '30d': {'files': analysis.files_older_30d, 'size': analysis.size_older_30d},
-            '90d': {'files': analysis.files_older_90d, 'size': analysis.size_older_90d},
-            '180d': {'files': analysis.files_older_180d, 'size': analysis.size_older_180d}
+            "30d": {"files": analysis.files_older_30d, "size": analysis.size_older_30d},
+            "90d": {"files": analysis.files_older_90d, "size": analysis.size_older_90d},
+            "180d": {"files": analysis.files_older_180d, "size": analysis.size_older_180d},
         },
         compression_savings={
-            'files': analysis.compressible_files,
-            'size': analysis.compressible_size,
-            'estimated_savings': analysis.estimated_savings_compression
+            "files": analysis.compressible_files,
+            "size": analysis.compressible_size,
+            "estimated_savings": analysis.estimated_savings_compression,
         },
         tiering_savings={
-            'files': analysis.files_to_cold,
-            'size': analysis.size_to_cold,
-            'estimated_savings': analysis.estimated_savings_tiering
+            "files": analysis.files_to_cold,
+            "size": analysis.size_to_cold,
+            "estimated_savings": analysis.estimated_savings_tiering,
         },
         total_potential_savings=analysis.total_potential_savings,
         total_potential_savings_percent=total_savings_percent,
         analysis_date=analysis.analysis_date,
-        analysis_duration_ms=analysis.analysis_duration_ms
+        analysis_duration_ms=analysis.analysis_duration_ms,
     )
 
 
@@ -168,7 +166,7 @@ async def get_optimization_suggestions(
     db: AsyncSession = Depends(get_db),
     include_dismissed: bool = Query(False, description="Include dismissed suggestions"),
     suggestion_type: Optional[str] = Query(None, description="Filter by type"),
-    priority: Optional[str] = Query(None, description="Filter by priority")
+    priority: Optional[str] = Query(None, description="Filter by priority"),
 ):
     """
     Get optimization suggestions for current user
@@ -186,7 +184,7 @@ async def get_optimization_suggestions(
     try:
         query = select(OptimizationSuggestion).where(
             OptimizationSuggestion.user_id == current_user.id,
-            OptimizationSuggestion.status == 'pending'
+            OptimizationSuggestion.status == "pending",
         )
 
         if not include_dismissed:
@@ -199,7 +197,7 @@ async def get_optimization_suggestions(
             query = query.where(OptimizationSuggestion.priority == priority)
 
         # Order by priority
-        priority_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         query = query.order_by(OptimizationSuggestion.created_at.desc())
 
         result = await db.execute(query)
@@ -226,12 +224,14 @@ async def get_optimization_suggestions(
                 status=s.status,
                 is_dismissed=s.is_dismissed,
                 created_at=s.created_at,
-                applied_at=s.applied_at
+                applied_at=s.applied_at,
             )
             for s in suggestions
         ]
 
-        logger.info(f"Retrieved {len(response)} optimization suggestions for user {current_user.id}")
+        logger.info(
+            f"Retrieved {len(response)} optimization suggestions for user {current_user.id}"
+        )
         return response
 
     except Exception as e:
@@ -241,8 +241,7 @@ async def get_optimization_suggestions(
 
 @router.get("/summary", response_model=OptimizationSummary)
 async def get_optimization_summary(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get optimization summary for current user
@@ -263,95 +262,154 @@ async def get_optimization_summary(
         analysis = analysis_result.scalar_one_or_none()
 
         if not analysis:
-            raise HTTPException(
-                status_code=404,
-                detail="No analysis found. Run analysis first."
-            )
+            raise HTTPException(status_code=404, detail="No analysis found. Run analysis first.")
 
         # Get suggestions summary
         suggestions_summary = await storage_optimizer.get_suggestions_summary(
-            user_id=current_user.id,
-            db=db
+            user_id=current_user.id, db=db
         )
 
         # Build tier breakdown
         breakdown_by_tier = [
             StorageBreakdown(
-                category='cache',
+                category="cache",
                 files=analysis.cache_files,
                 size=analysis.cache_size,
-                percent=(analysis.cache_size / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    (analysis.cache_size / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='warm',
+                category="warm",
                 files=analysis.warm_files,
                 size=analysis.warm_size,
-                percent=(analysis.warm_size / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    (analysis.warm_size / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='cold',
+                category="cold",
                 files=analysis.cold_files,
                 size=analysis.cold_size,
-                percent=(analysis.cold_size / analysis.total_size * 100) if analysis.total_size > 0 else 0
-            )
+                percent=(
+                    (analysis.cold_size / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
+            ),
         ]
 
         # Build age breakdown
         breakdown_by_age = [
             StorageBreakdown(
-                category='< 30 days',
+                category="< 30 days",
                 files=analysis.total_files - analysis.files_older_30d,
                 size=analysis.total_size - analysis.size_older_30d,
-                percent=((analysis.total_size - analysis.size_older_30d) / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    ((analysis.total_size - analysis.size_older_30d) / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='30-90 days',
+                category="30-90 days",
                 files=analysis.files_older_30d - analysis.files_older_90d,
                 size=analysis.size_older_30d - analysis.size_older_90d,
-                percent=((analysis.size_older_30d - analysis.size_older_90d) / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    (
+                        (analysis.size_older_30d - analysis.size_older_90d)
+                        / analysis.total_size
+                        * 100
+                    )
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='90-180 days',
+                category="90-180 days",
                 files=analysis.files_older_90d - analysis.files_older_180d,
                 size=analysis.size_older_90d - analysis.size_older_180d,
-                percent=((analysis.size_older_90d - analysis.size_older_180d) / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    (
+                        (analysis.size_older_90d - analysis.size_older_180d)
+                        / analysis.total_size
+                        * 100
+                    )
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='> 180 days',
+                category="> 180 days",
                 files=analysis.files_older_180d,
                 size=analysis.size_older_180d,
-                percent=(analysis.size_older_180d / analysis.total_size * 100) if analysis.total_size > 0 else 0
-            )
+                percent=(
+                    (analysis.size_older_180d / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
+            ),
         ]
 
         # Build access breakdown
         breakdown_by_access = [
             StorageBreakdown(
-                category='Never accessed',
+                category="Never accessed",
                 files=analysis.files_never_accessed,
                 size=analysis.size_never_accessed,
-                percent=(analysis.size_never_accessed / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    (analysis.size_never_accessed / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='Accessed once',
+                category="Accessed once",
                 files=analysis.files_accessed_once,
                 size=analysis.size_accessed_once,
-                percent=(analysis.size_accessed_once / analysis.total_size * 100) if analysis.total_size > 0 else 0
+                percent=(
+                    (analysis.size_accessed_once / analysis.total_size * 100)
+                    if analysis.total_size > 0
+                    else 0
+                ),
             ),
             StorageBreakdown(
-                category='Accessed multiple times',
-                files=analysis.total_files - analysis.files_never_accessed - analysis.files_accessed_once,
-                size=analysis.total_size - analysis.size_never_accessed - analysis.size_accessed_once,
-                percent=((analysis.total_size - analysis.size_never_accessed - analysis.size_accessed_once) / analysis.total_size * 100) if analysis.total_size > 0 else 0
-            )
+                category="Accessed multiple times",
+                files=analysis.total_files
+                - analysis.files_never_accessed
+                - analysis.files_accessed_once,
+                size=analysis.total_size
+                - analysis.size_never_accessed
+                - analysis.size_accessed_once,
+                percent=(
+                    (
+                        (
+                            analysis.total_size
+                            - analysis.size_never_accessed
+                            - analysis.size_accessed_once
+                        )
+                        / analysis.total_size
+                        * 100
+                    )
+                    if analysis.total_size > 0
+                    else 0
+                ),
+            ),
         ]
 
         total_savings_percent = (
             (analysis.total_potential_savings / analysis.total_size * 100)
-            if analysis.total_size > 0 else 0
+            if analysis.total_size > 0
+            else 0
         )
 
-        high_priority_count = suggestions_summary['by_priority'].get('high', 0) + suggestions_summary['by_priority'].get('critical', 0)
+        high_priority_count = suggestions_summary["by_priority"].get(
+            "high", 0
+        ) + suggestions_summary["by_priority"].get("critical", 0)
 
         return OptimizationSummary(
             user_id=str(current_user.id),
@@ -362,9 +420,9 @@ async def get_optimization_summary(
             breakdown_by_access=breakdown_by_access,
             total_potential_savings=analysis.total_potential_savings,
             total_potential_savings_percent=total_savings_percent,
-            suggestion_count=suggestions_summary['total_suggestions'],
+            suggestion_count=suggestions_summary["total_suggestions"],
             high_priority_count=high_priority_count,
-            last_analysis_date=analysis.analysis_date
+            last_analysis_date=analysis.analysis_date,
         )
 
     except HTTPException:
@@ -378,7 +436,7 @@ async def get_optimization_summary(
 async def dismiss_suggestion(
     suggestion_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Dismiss an optimization suggestion
@@ -395,7 +453,7 @@ async def dismiss_suggestion(
         result = await db.execute(
             select(OptimizationSuggestion).where(
                 OptimizationSuggestion.id == suggestion_id,
-                OptimizationSuggestion.user_id == current_user.id
+                OptimizationSuggestion.user_id == current_user.id,
             )
         )
         suggestion = result.scalar_one_or_none()
@@ -408,7 +466,7 @@ async def dismiss_suggestion(
         await db.commit()
 
         logger.info(f"Dismissed suggestion {suggestion_id} for user {current_user.id}")
-        metrics_collector.increment_counter('storage_optimization_suggestions_dismissed_total')
+        metrics_collector.increment_counter("storage_optimization_suggestions_dismissed_total")
 
         return {"status": "success", "message": "Suggestion dismissed"}
 
@@ -421,8 +479,7 @@ async def dismiss_suggestion(
 
 @router.post("/trigger-analysis")
 async def trigger_analysis(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Manually trigger storage analysis for current user
@@ -436,20 +493,19 @@ async def trigger_analysis(
         logger.info(f"Manually triggering storage analysis for user {current_user.id}")
 
         analysis, suggestions = await storage_optimization_worker.analyze_user(
-            user_id=current_user.id,
-            db=db
+            user_id=current_user.id, db=db
         )
 
         if not analysis:
             raise HTTPException(status_code=500, detail="Analysis failed")
 
-        metrics_collector.increment_counter('storage_optimization_manual_triggers_total')
+        metrics_collector.increment_counter("storage_optimization_manual_triggers_total")
 
         return {
             "status": "success",
             "message": "Storage analysis completed",
             "analysis_id": str(analysis.id),
-            "suggestions_generated": len(suggestions)
+            "suggestions_generated": len(suggestions),
         }
 
     except HTTPException:
@@ -461,10 +517,10 @@ async def trigger_analysis(
 
 # Admin endpoints
 
+
 @router.post("/admin/trigger-worker", tags=["admin"])
 async def trigger_optimization_worker(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Manually trigger storage optimization worker (admin only)
@@ -483,12 +539,9 @@ async def trigger_optimization_worker(
 
         await storage_optimization_worker.run_once()
 
-        metrics_collector.increment_counter('storage_optimization_worker_manual_triggers_total')
+        metrics_collector.increment_counter("storage_optimization_worker_manual_triggers_total")
 
-        return {
-            "status": "success",
-            "message": "Storage optimization worker executed successfully"
-        }
+        return {"status": "success", "message": "Storage optimization worker executed successfully"}
 
     except Exception as e:
         logger.error(f"Failed to trigger storage optimization worker: {e}", exc_info=True)

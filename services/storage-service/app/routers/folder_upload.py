@@ -7,36 +7,33 @@ Endpoints for uploading folders with structure preservation:
 - Progress tracking
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-import uuid
+import asyncio
+import hashlib
 import logging
+import mimetypes
+import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from ..dependencies import get_db, get_current_user, log_activity, get_plan_quota
+import aiofiles
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..database import get_redis
-from ..models.database import User, Folder, Object
+from ..dependencies import get_current_user, get_db, get_plan_quota, log_activity
+from ..models.database import Folder, Object, User
 from ..models.schemas import (
+    FolderUploadCompleteRequest,
+    FolderUploadFileRequest,
     FolderUploadInit,
     FolderUploadInitResponse,
-    FolderUploadFileRequest,
-    FolderUploadCompleteRequest,
-    FolderUploadStatusResponse
+    FolderUploadStatusResponse,
 )
-from ..services.folder_upload_service import folder_upload_service, PathValidationError
+from ..routers.upload import STREAM_BUFFER_SIZE, process_chunk_cpu_bound, should_compress
 from ..services.encryption import encryption_service
-from ..routers.upload import (
-    should_compress,
-    process_chunk_cpu_bound,
-    STREAM_BUFFER_SIZE
-)
-import hashlib
-import os
-import mimetypes
-import aiofiles
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from ..services.folder_upload_service import PathValidationError, folder_upload_service
 
 router = APIRouter(prefix="/api/v1/upload/folder", tags=["folder-upload"])
 logger = logging.getLogger(__name__)
@@ -82,10 +79,7 @@ async def init_folder_upload(
 
     # Check storage quota
     if current_user.storage_used + init_data.total_size > current_user.storage_quota:
-        raise HTTPException(
-            status_code=413,
-            detail="Storage quota exceeded"
-        )
+        raise HTTPException(status_code=413, detail="Storage quota exceeded")
 
     # Atomically reserve space in Redis to prevent concurrent folder uploads exceeding quota
     user_id_str = str(current_user.id)
@@ -99,15 +93,14 @@ async def init_folder_upload(
         # Over quota with reservation — undo and reject
         await redis_client.decrby(reserve_key, init_data.total_size)
         raise HTTPException(
-            status_code=413,
-            detail="Storage quota exceeded (concurrent upload limit)"
+            status_code=413, detail="Storage quota exceeded (concurrent upload limit)"
         )
 
     # Validate file count
     if init_data.total_files > folder_upload_service.MAX_FILES_PER_UPLOAD:
         raise HTTPException(
             status_code=400,
-            detail=f"Too many files (max: {folder_upload_service.MAX_FILES_PER_UPLOAD})"
+            detail=f"Too many files (max: {folder_upload_service.MAX_FILES_PER_UPLOAD})",
         )
 
     # Validate parent folder if specified
@@ -115,8 +108,7 @@ async def init_folder_upload(
     if init_data.parent_id:
         result = await db.execute(
             select(Folder).where(
-                Folder.id == init_data.parent_id,
-                Folder.user_id == current_user.id
+                Folder.id == init_data.parent_id, Folder.user_id == current_user.id
             )
         )
         parent_folder = result.scalar_one_or_none()
@@ -125,7 +117,11 @@ async def init_folder_upload(
 
     # Create root folder
     parent_path = parent_folder.path if parent_folder else "/"
-    folder_path = os.path.join(parent_path, safe_folder_name) if parent_path != "/" else f"/{safe_folder_name}"
+    folder_path = (
+        os.path.join(parent_path, safe_folder_name)
+        if parent_path != "/"
+        else f"/{safe_folder_name}"
+    )
 
     root_folder = Folder(
         user_id=current_user.id,
@@ -147,7 +143,7 @@ async def init_folder_upload(
         parent_folder_id=init_data.parent_id,
         total_files=init_data.total_files,
         total_size=init_data.total_size,
-        redis_client=redis_client
+        redis_client=redis_client,
     )
 
     # Store root folder in session
@@ -157,24 +153,25 @@ async def init_folder_upload(
 
     # Log activity
     await log_activity(
-        db, current_user.id, "folder_upload_initiated", str(root_folder.id),
+        db,
+        current_user.id,
+        "folder_upload_initiated",
+        str(root_folder.id),
         {
             "folder_name": safe_folder_name,
             "total_files": init_data.total_files,
-            "total_size": init_data.total_size
+            "total_size": init_data.total_size,
         },
-        request
+        request,
     )
 
-    logger.info(
-        f"Folder upload session {session_id} initiated by user {current_user.id}"
-    )
+    logger.info(f"Folder upload session {session_id} initiated by user {current_user.id}")
 
     return FolderUploadInitResponse(
         session_id=session_id,
         root_folder_id=str(root_folder.id),
         folder_name=safe_folder_name,
-        message=f"Folder upload session created. Upload {init_data.total_files} files."
+        message=f"Folder upload session created. Upload {init_data.total_files} files.",
     )
 
 
@@ -210,7 +207,7 @@ async def upload_folder_file(
         raise HTTPException(status_code=404, detail="Upload session not found")
 
     # Verify ownership
-    if session_data['user_id'] != str(current_user.id):
+    if session_data["user_id"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
 
     # Validate and sanitize path
@@ -225,9 +222,9 @@ async def upload_folder_file(
 
     try:
         # Parse path
-        parts = safe_path.split('/')
+        parts = safe_path.split("/")
         filename = parts[-1]
-        folder_path = '/'.join(parts[:-1]) if len(parts) > 1 else ""
+        folder_path = "/".join(parts[:-1]) if len(parts) > 1 else ""
 
         # Get or create folder
         folder_id = await _get_or_create_folder_path(
@@ -236,7 +233,7 @@ async def upload_folder_file(
             folder_path=folder_path,
             user_id=current_user.id,
             db=db,
-            redis_client=redis_client
+            redis_client=redis_client,
         )
 
         # Read file data
@@ -256,6 +253,7 @@ async def upload_folder_file(
         def process_file():
             if use_compression:
                 from ..utils.compression import compressor
+
                 processed_data = compressor.compress(file_data)
             else:
                 processed_data = file_data
@@ -274,7 +272,7 @@ async def upload_folder_file(
         os.makedirs(storage_dir, exist_ok=True)
         storage_path = f"{storage_dir}/{file_id}.enc"
 
-        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+        async with aiofiles.open(storage_path, "wb", buffering=STREAM_BUFFER_SIZE) as f:
             await f.write(encrypted_data)
 
         # Create database record
@@ -295,8 +293,8 @@ async def upload_folder_file(
             file_metadata={
                 "compressed": use_compression,
                 "upload_method": "folder_upload",
-                "relative_path": safe_path
-            }
+                "relative_path": safe_path,
+            },
         )
         db.add(file_obj)
 
@@ -306,13 +304,10 @@ async def upload_folder_file(
         await db.commit()
 
         # Mark file as uploaded in session
-        await folder_upload_service.mark_file_uploaded(
-            session_id, str(file_id), redis_client
-        )
+        await folder_upload_service.mark_file_uploaded(session_id, str(file_id), redis_client)
 
         logger.info(
-            f"File uploaded in folder session {session_id}: "
-            f"{safe_path} ({file_size} bytes)"
+            f"File uploaded in folder session {session_id}: " f"{safe_path} ({file_size} bytes)"
         )
 
         return {
@@ -322,13 +317,12 @@ async def upload_folder_file(
             "file_size": file_size,
             "relative_path": safe_path,
             "compressed": use_compression,
-            "encrypted": True
+            "encrypted": True,
         }
 
     except Exception as e:
         logger.error(
-            f"File upload failed in session {session_id} for {relative_path}: {e}",
-            exc_info=True
+            f"File upload failed in session {session_id} for {relative_path}: {e}", exc_info=True
         )
         await folder_upload_service.mark_file_failed(
             session_id, relative_path, str(e), redis_client
@@ -342,7 +336,7 @@ async def _get_or_create_folder_path(
     folder_path: str,
     user_id: uuid.UUID,
     db: AsyncSession,
-    redis_client
+    redis_client,
 ) -> uuid.UUID:
     """
     Get or create folder at path, creating parent folders as needed
@@ -360,41 +354,34 @@ async def _get_or_create_folder_path(
     """
     # If root folder, return it
     if not folder_path:
-        return session_data['created_folders']['']
+        return session_data["created_folders"][""]
 
     # Check if already created
-    if folder_path in session_data['created_folders']:
-        return session_data['created_folders'][folder_path]
+    if folder_path in session_data["created_folders"]:
+        return session_data["created_folders"][folder_path]
 
     # Split path and create parent folders first
-    parts = folder_path.split('/')
+    parts = folder_path.split("/")
     current_path = ""
-    current_folder_id = session_data['created_folders']['']  # Root folder
+    current_folder_id = session_data["created_folders"][""]  # Root folder
 
     for part in parts:
         parent_folder_id = current_folder_id
         current_path = f"{current_path}/{part}" if current_path else part
 
         # Check if this level already exists
-        if current_path in session_data['created_folders']:
-            current_folder_id = session_data['created_folders'][current_path]
+        if current_path in session_data["created_folders"]:
+            current_folder_id = session_data["created_folders"][current_path]
             continue
 
         # Get parent folder to construct full path
-        result = await db.execute(
-            select(Folder).where(Folder.id == parent_folder_id)
-        )
+        result = await db.execute(select(Folder).where(Folder.id == parent_folder_id))
         parent_folder = result.scalar_one()
 
         full_path = f"{parent_folder.path}/{part}"
 
         # Create folder
-        new_folder = Folder(
-            user_id=user_id,
-            parent_id=parent_folder_id,
-            name=part,
-            path=full_path
-        )
+        new_folder = Folder(user_id=user_id, parent_id=parent_folder_id, name=part, path=full_path)
         db.add(new_folder)
         await db.flush()
         await db.refresh(new_folder)
@@ -434,44 +421,47 @@ async def complete_folder_upload(
     redis_client = await get_redis()
 
     # Get session
-    session_data = await folder_upload_service.get_session(
-        complete_data.session_id, redis_client
-    )
+    session_data = await folder_upload_service.get_session(complete_data.session_id, redis_client)
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")
 
     # Verify ownership
-    if session_data['user_id'] != str(current_user.id):
+    if session_data["user_id"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
 
     # Update session status
     await folder_upload_service.update_session(
-        complete_data.session_id,
-        {'status': 'completed'},
-        redis_client
+        complete_data.session_id, {"status": "completed"}, redis_client
     )
 
     # Release quota reservation (actual usage is tracked in DB per-file)
     try:
-        total_size = session_data.get('total_size', 0)
+        total_size = session_data.get("total_size", 0)
         if total_size > 0:
             await redis_client.decrby(f"quota_reserved:{str(current_user.id)}", total_size)
     except Exception:
         pass
 
     # Log activity
-    root_folder_id = session_data['created_folders'].get('')
+    root_folder_id = session_data["created_folders"].get("")
     await log_activity(
-        db, current_user.id, "folder_upload_completed", root_folder_id,
+        db,
+        current_user.id,
+        "folder_upload_completed",
+        root_folder_id,
         {
-            "total_files": session_data['total_files'],
-            "uploaded_files": session_data['uploaded_files'],
-            "failed_files": session_data['failed_files']
+            "total_files": session_data["total_files"],
+            "uploaded_files": session_data["uploaded_files"],
+            "failed_files": session_data["failed_files"],
         },
-        request
+        request,
     )
 
-    progress = (session_data['uploaded_files'] / session_data['total_files'] * 100) if session_data['total_files'] > 0 else 100
+    progress = (
+        (session_data["uploaded_files"] / session_data["total_files"] * 100)
+        if session_data["total_files"] > 0
+        else 100
+    )
 
     logger.info(
         f"Folder upload session {complete_data.session_id} completed: "
@@ -480,13 +470,13 @@ async def complete_folder_upload(
 
     return FolderUploadStatusResponse(
         session_id=complete_data.session_id,
-        status='completed',
+        status="completed",
         root_folder_id=root_folder_id,
-        total_files=session_data['total_files'],
-        uploaded_files=session_data['uploaded_files'],
-        failed_files=session_data['failed_files'],
+        total_files=session_data["total_files"],
+        uploaded_files=session_data["uploaded_files"],
+        failed_files=session_data["failed_files"],
         progress=progress,
-        errors=[e.get('error', '') for e in session_data.get('errors', [])]
+        errors=[e.get("error", "") for e in session_data.get("errors", [])],
     )
 
 
@@ -516,18 +506,22 @@ async def get_folder_upload_status(
     if not session_data:
         raise HTTPException(status_code=404, detail="Upload session not found")
 
-    if session_data['user_id'] != str(current_user.id):
+    if session_data["user_id"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Unauthorized")
 
-    progress = (session_data['uploaded_files'] / session_data['total_files'] * 100) if session_data['total_files'] > 0 else 0
+    progress = (
+        (session_data["uploaded_files"] / session_data["total_files"] * 100)
+        if session_data["total_files"] > 0
+        else 0
+    )
 
     return FolderUploadStatusResponse(
         session_id=session_id,
-        status=session_data['status'],
-        root_folder_id=session_data['created_folders'].get(''),
-        total_files=session_data['total_files'],
-        uploaded_files=session_data['uploaded_files'],
-        failed_files=session_data['failed_files'],
+        status=session_data["status"],
+        root_folder_id=session_data["created_folders"].get(""),
+        total_files=session_data["total_files"],
+        uploaded_files=session_data["uploaded_files"],
+        failed_files=session_data["failed_files"],
         progress=progress,
-        errors=[e.get('error', '') for e in session_data.get('errors', [])]
+        errors=[e.get("error", "") for e in session_data.get("errors", [])],
     )

@@ -14,12 +14,13 @@ Features:
 """
 
 import os
+from typing import Dict, Optional
+
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
-from sentry_sdk.integrations.redis import RedisIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
-from typing import Optional, Dict
+from sentry_sdk.integrations.redis import RedisIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 
 class SentryService:
@@ -42,7 +43,6 @@ class SentryService:
             dsn=self.dsn,
             environment=self.environment,
             release=f"edge-storage@{self.release}",
-
             # Integrations
             integrations=[
                 FastApiIntegration(),
@@ -50,31 +50,23 @@ class SentryService:
                 RedisIntegration(),
                 LoggingIntegration(
                     level=None,  # Capture all log levels
-                    event_level=None  # Send all events to Sentry
+                    event_level=None,  # Send all events to Sentry
                 ),
             ],
-
             # Performance monitoring
             traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
-
             # Error sampling
             sample_rate=1.0,  # 100% error capture
-
             # Send default PII (Personally Identifiable Information)
             send_default_pii=False,  # Don't send PII by default for GDPR compliance
-
             # Before send callback for filtering
             before_send=self.before_send,
-
             # Before breadcrumb callback
             before_breadcrumb=self.before_breadcrumb,
-
             # Max breadcrumbs
             max_breadcrumbs=50,
-
             # Attach stack traces
             attach_stacktrace=True,
-
             # Enable profiling
             profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
         )
@@ -139,11 +131,7 @@ class SentryService:
         if not self.enabled:
             return
 
-        sentry_sdk.set_user({
-            "id": user_id,
-            "email": email,
-            "username": username
-        })
+        sentry_sdk.set_user({"id": user_id, "email": email, "username": username})
 
     def set_tag(self, key: str, value: str):
         """Set a tag."""
@@ -161,18 +149,19 @@ class SentryService:
 
         sentry_sdk.set_context(name, context)
 
-    def add_breadcrumb(self, message: str, category: str = "default", level: str = "info", data: Optional[Dict] = None):
+    def add_breadcrumb(
+        self,
+        message: str,
+        category: str = "default",
+        level: str = "info",
+        data: Optional[Dict] = None,
+    ):
         """Add a breadcrumb for debugging."""
 
         if not self.enabled:
             return
 
-        sentry_sdk.add_breadcrumb(
-            message=message,
-            category=category,
-            level=level,
-            data=data or {}
-        )
+        sentry_sdk.add_breadcrumb(message=message, category=category, level=level, data=data or {})
 
     def start_transaction(self, name: str, op: str = "http"):
         """Start a performance transaction."""
@@ -246,6 +235,7 @@ def track_performance(operation: str):
 
         # Return appropriate wrapper
         import asyncio
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:

@@ -10,17 +10,18 @@ Provides comprehensive security checks for URL-based file uploads:
 """
 
 import ipaddress
-import socket
+import logging
 import re
+import socket
 from typing import Optional, Tuple
 from urllib.parse import urlparse
-import logging
 
 logger = logging.getLogger(__name__)
 
 
 class SSRFProtectionError(Exception):
     """Raised when SSRF protection blocks a URL"""
+
     pass
 
 
@@ -39,36 +40,36 @@ class URLValidator:
 
     # Private IP ranges to block (RFC1918, RFC6598, etc.)
     BLOCKED_IP_RANGES = [
-        ipaddress.ip_network('0.0.0.0/8'),       # Current network
-        ipaddress.ip_network('10.0.0.0/8'),      # Private network
-        ipaddress.ip_network('127.0.0.0/8'),     # Loopback
-        ipaddress.ip_network('169.254.0.0/16'),  # Link-local (AWS metadata!)
-        ipaddress.ip_network('172.16.0.0/12'),   # Private network
-        ipaddress.ip_network('192.168.0.0/16'),  # Private network
-        ipaddress.ip_network('224.0.0.0/4'),     # Multicast
-        ipaddress.ip_network('240.0.0.0/4'),     # Reserved
-        ipaddress.ip_network('::1/128'),         # IPv6 loopback
-        ipaddress.ip_network('fe80::/10'),       # IPv6 link-local
-        ipaddress.ip_network('fc00::/7'),        # IPv6 private
+        ipaddress.ip_network("0.0.0.0/8"),  # Current network
+        ipaddress.ip_network("10.0.0.0/8"),  # Private network
+        ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+        ipaddress.ip_network("169.254.0.0/16"),  # Link-local (AWS metadata!)
+        ipaddress.ip_network("172.16.0.0/12"),  # Private network
+        ipaddress.ip_network("192.168.0.0/16"),  # Private network
+        ipaddress.ip_network("224.0.0.0/4"),  # Multicast
+        ipaddress.ip_network("240.0.0.0/4"),  # Reserved
+        ipaddress.ip_network("::1/128"),  # IPv6 loopback
+        ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+        ipaddress.ip_network("fc00::/7"),  # IPv6 private
     ]
 
     # Cloud metadata endpoints to explicitly block
     BLOCKED_HOSTS = [
-        'metadata.google.internal',
-        '169.254.169.254',  # AWS, Azure, GCP metadata
-        'metadata',
-        'localhost',
+        "metadata.google.internal",
+        "169.254.169.254",  # AWS, Azure, GCP metadata
+        "metadata",
+        "localhost",
     ]
 
     # Allowed URL schemes
-    ALLOWED_SCHEMES = ['http', 'https']
+    ALLOWED_SCHEMES = ["http", "https"]
 
     # Maximum redirect depth
     MAX_REDIRECTS = 5
 
-    def __init__(self,
-                 whitelist_domains: Optional[list] = None,
-                 blacklist_domains: Optional[list] = None):
+    def __init__(
+        self, whitelist_domains: Optional[list] = None, blacklist_domains: Optional[list] = None
+    ):
         """
         Initialize URL validator
 
@@ -113,15 +114,11 @@ class URLValidator:
 
             # Check against explicitly blocked hosts
             if hostname.lower() in self.BLOCKED_HOSTS:
-                raise SSRFProtectionError(
-                    f"Access to {hostname} is blocked (metadata endpoint)"
-                )
+                raise SSRFProtectionError(f"Access to {hostname} is blocked (metadata endpoint)")
 
             # If whitelist is configured, check it
             if self.whitelist_domains and hostname.lower() not in self.whitelist_domains:
-                raise SSRFProtectionError(
-                    f"Domain not in whitelist: {hostname}"
-                )
+                raise SSRFProtectionError(f"Domain not in whitelist: {hostname}")
 
             # Resolve hostname to IP and check for private ranges
             self._check_ip_address(hostname)
@@ -177,8 +174,9 @@ class URLValidator:
             logger.error(f"IP check failed for {hostname}: {e}")
             raise SSRFProtectionError(f"IP validation failed: {e}")
 
-    def _validate_ip(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
-                     hostname: str) -> None:
+    def _validate_ip(
+        self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address, hostname: str
+    ) -> None:
         """
         Check if IP address is in blocked range
 
@@ -199,27 +197,19 @@ class URLValidator:
 
         # Additional check for private addresses
         if ip.is_private:
-            raise SSRFProtectionError(
-                f"Access to private IP blocked: {hostname} -> {ip}"
-            )
+            raise SSRFProtectionError(f"Access to private IP blocked: {hostname} -> {ip}")
 
         # Check for loopback
         if ip.is_loopback:
-            raise SSRFProtectionError(
-                f"Access to loopback address blocked: {hostname} -> {ip}"
-            )
+            raise SSRFProtectionError(f"Access to loopback address blocked: {hostname} -> {ip}")
 
         # Check for link-local
         if ip.is_link_local:
-            raise SSRFProtectionError(
-                f"Access to link-local address blocked: {hostname} -> {ip}"
-            )
+            raise SSRFProtectionError(f"Access to link-local address blocked: {hostname} -> {ip}")
 
         # Check for multicast
         if ip.is_multicast:
-            raise SSRFProtectionError(
-                f"Access to multicast address blocked: {hostname} -> {ip}"
-            )
+            raise SSRFProtectionError(f"Access to multicast address blocked: {hostname} -> {ip}")
 
     def sanitize_url(self, url: str) -> str:
         """
@@ -273,7 +263,7 @@ class URLValidator:
         original_parsed = urlparse(original_url)
         final_parsed = urlparse(final_url)
 
-        if original_parsed.scheme == 'https' and final_parsed.scheme == 'http':
+        if original_parsed.scheme == "https" and final_parsed.scheme == "http":
             raise SSRFProtectionError(
                 f"HTTPS-to-HTTP downgrade blocked: {original_url} -> {final_url}"
             )
@@ -283,8 +273,9 @@ class URLValidator:
 url_validator = URLValidator()
 
 
-def create_url_validator(whitelist: Optional[list] = None,
-                        blacklist: Optional[list] = None) -> URLValidator:
+def create_url_validator(
+    whitelist: Optional[list] = None, blacklist: Optional[list] = None
+) -> URLValidator:
     """
     Factory function to create a URL validator with custom lists
 

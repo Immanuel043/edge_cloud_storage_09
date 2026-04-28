@@ -13,26 +13,27 @@ Features:
 - Configurable similarity thresholds
 """
 
-import os
 import logging
-import numpy as np
-from typing import List, Dict, Optional, Tuple
+import os
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
-# CPU optimization
-os.environ['OMP_NUM_THREADS'] = '32'
-os.environ['MKL_NUM_THREADS'] = '32'
-os.environ['OPENBLAS_NUM_THREADS'] = '32'
+import numpy as np
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+# CPU optimization
+os.environ["OMP_NUM_THREADS"] = "32"
+os.environ["MKL_NUM_THREADS"] = "32"
+os.environ["OPENBLAS_NUM_THREADS"] = "32"
+
+import scipy.sparse as sp
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import scipy.sparse as sp
 
-from ..models.database import Object, FileSimilarity, User
+from ..models.database import FileSimilarity, Object, User
 from ..monitoring.metrics import metrics_collector
 
 logger = logging.getLogger(__name__)
@@ -54,11 +55,11 @@ class ContentSimilarityService:
 
     def __init__(self):
         self.vectorizer = TfidfVectorizer(
-            analyzer='char',
+            analyzer="char",
             ngram_range=(2, 4),
             max_features=1000,
             lowercase=True,
-            strip_accents='unicode'
+            strip_accents="unicode",
         )
         self.min_similarity = 0.3  # Minimum similarity to store
         self.batch_size = 1000
@@ -69,7 +70,7 @@ class ContentSimilarityService:
         user_id: UUID,
         db: AsyncSession,
         top_k: int = 10,
-        force_recompute: bool = False
+        force_recompute: bool = False,
     ) -> List[Dict]:
         """
         Compute similarity between a file and all other user files
@@ -92,17 +93,14 @@ class ContentSimilarityService:
                 cached = await self._get_cached_similarities(file_id, db, top_k)
                 if cached:
                     logger.info(f"Returning {len(cached)} cached similarities for file {file_id}")
-                    metrics_collector.increment_counter('content_similarity_cache_hits_total')
+                    metrics_collector.increment_counter("content_similarity_cache_hits_total")
                     return cached
 
-            metrics_collector.increment_counter('content_similarity_cache_misses_total')
+            metrics_collector.increment_counter("content_similarity_cache_misses_total")
 
             # Get target file
             result = await db.execute(
-                select(Object).where(
-                    Object.id == file_id,
-                    Object.user_id == user_id
-                )
+                select(Object).where(Object.id == file_id, Object.user_id == user_id)
             )
             target_file = result.scalar_one_or_none()
 
@@ -113,9 +111,7 @@ class ContentSimilarityService:
             # Get all user files (excluding target)
             result = await db.execute(
                 select(Object).where(
-                    Object.user_id == user_id,
-                    Object.id != file_id,
-                    Object.object_type == 'file'
+                    Object.user_id == user_id, Object.id != file_id, Object.object_type == "file"
                 )
             )
             all_files = result.scalars().all()
@@ -149,37 +145,36 @@ class ContentSimilarityService:
                 similar_name = self._get_object_name(similar_file)
 
                 # Extract common keywords
-                common_keywords = self._find_common_keywords(
-                    target_name,
-                    similar_name
-                )
+                common_keywords = self._find_common_keywords(target_name, similar_name)
                 name_similarity = self._compute_name_similarity(target_name, similar_name)
                 type_match = self._detect_type_match(target_file, similar_file)
 
-                similar_files.append({
-                    'file_id': similar_file.id,
-                    'file_name': similar_name,
-                    'file_size': similar_file.file_size,
-                    'mime_type': similar_file.mime_type,
-                    'storage_tier': similar_file.storage_tier,
-                    'similarity_score': score,
-                    'similarity_type': 'content',
-                    'common_keywords': common_keywords,
-                    'created_at': similar_file.created_at,
-                    'last_accessed': similar_file.last_accessed
-                })
+                similar_files.append(
+                    {
+                        "file_id": similar_file.id,
+                        "file_name": similar_name,
+                        "file_size": similar_file.file_size,
+                        "mime_type": similar_file.mime_type,
+                        "storage_tier": similar_file.storage_tier,
+                        "similarity_score": score,
+                        "similarity_type": "content",
+                        "common_keywords": common_keywords,
+                        "created_at": similar_file.created_at,
+                        "last_accessed": similar_file.last_accessed,
+                    }
+                )
 
                 # Save to database for caching
                 await self._save_similarity(
                     file_id=file_id,
                     similar_file_id=similar_file.id,
                     score=score,
-                    similarity_type='content',
+                    similarity_type="content",
                     common_keywords=common_keywords,
                     user_id=user_id,
                     name_similarity=name_similarity,
                     type_match=type_match,
-                    db=db
+                    db=db,
                 )
 
             await db.commit()
@@ -190,21 +185,18 @@ class ContentSimilarityService:
                 f"Found {len(similar_files)} similar files for {file_id} in {duration_ms}ms"
             )
 
-            metrics_collector.increment_counter('content_similarity_computations_total')
-            metrics_collector.observe_histogram('content_similarity_duration_ms', duration_ms)
+            metrics_collector.increment_counter("content_similarity_computations_total")
+            metrics_collector.observe_histogram("content_similarity_duration_ms", duration_ms)
 
             return similar_files
 
         except Exception as e:
             logger.error(f"Failed to compute file similarity: {e}", exc_info=True)
-            metrics_collector.increment_counter('content_similarity_errors_total')
+            metrics_collector.increment_counter("content_similarity_errors_total")
             return []
 
     async def batch_compute_similarities(
-        self,
-        user_id: UUID,
-        db: AsyncSession,
-        file_ids: Optional[List[UUID]] = None
+        self, user_id: UUID, db: AsyncSession, file_ids: Optional[List[UUID]] = None
     ) -> int:
         """
         Batch compute similarities for multiple files
@@ -221,10 +213,7 @@ class ContentSimilarityService:
 
         try:
             # Get files to process
-            query = select(Object).where(
-                Object.user_id == user_id,
-                Object.object_type == 'file'
-            )
+            query = select(Object).where(Object.user_id == user_id, Object.object_type == "file")
 
             if file_ids:
                 query = query.where(Object.id.in_(file_ids))
@@ -270,24 +259,24 @@ class ContentSimilarityService:
                         file_id=file_i.id,
                         similar_file_id=file_j.id,
                         score=score,
-                        similarity_type='content',
+                        similarity_type="content",
                         common_keywords=common_keywords,
                         user_id=user_id,
                         name_similarity=name_similarity,
                         type_match=type_match,
-                        db=db
+                        db=db,
                     )
 
                     await self._save_similarity(
                         file_id=file_j.id,
                         similar_file_id=file_i.id,
                         score=score,
-                        similarity_type='content',
+                        similarity_type="content",
                         common_keywords=common_keywords,
                         user_id=user_id,
                         name_similarity=name_similarity,
                         type_match=type_match,
-                        db=db
+                        db=db,
                     )
 
                     similarities_created += 2
@@ -301,19 +290,17 @@ class ContentSimilarityService:
 
             duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
 
-            logger.info(
-                f"Batch computed {similarities_created} similarities in {duration_ms}ms"
-            )
+            logger.info(f"Batch computed {similarities_created} similarities in {duration_ms}ms")
 
-            metrics_collector.increment_counter('content_similarity_batch_computations_total')
-            metrics_collector.observe_histogram('content_similarity_batch_duration_ms', duration_ms)
+            metrics_collector.increment_counter("content_similarity_batch_computations_total")
+            metrics_collector.observe_histogram("content_similarity_batch_duration_ms", duration_ms)
 
             return similarities_created
 
         except Exception as e:
             logger.error(f"Failed to batch compute similarities: {e}", exc_info=True)
             await db.rollback()
-            metrics_collector.increment_counter('content_similarity_batch_errors_total')
+            metrics_collector.increment_counter("content_similarity_batch_errors_total")
             return 0
 
     def _extract_features(self, files: List[Object]) -> sp.csr_matrix:
@@ -336,7 +323,7 @@ class ContentSimilarityService:
         extensions = []
         for f in files:
             name = self._get_object_name(f)
-            ext = name.split('.')[-1].lower() if '.' in name else 'none'
+            ext = name.split(".")[-1].lower() if "." in name else "none"
             extensions.append(ext)
 
         unique_extensions = list(set(extensions))
@@ -350,11 +337,13 @@ class ContentSimilarityService:
 
         # Combine features with weights
         # TF-IDF: 70%, Extension: 20%, Size: 10%
-        feature_matrix = sp.hstack([
-            tfidf_features * 0.70,
-            sp.csr_matrix(ext_features) * 0.20,
-            sp.csr_matrix(sizes_normalized) * 0.10
-        ])
+        feature_matrix = sp.hstack(
+            [
+                tfidf_features * 0.70,
+                sp.csr_matrix(ext_features) * 0.20,
+                sp.csr_matrix(sizes_normalized) * 0.10,
+            ]
+        )
 
         return feature_matrix
 
@@ -372,8 +361,8 @@ class ContentSimilarityService:
         # Split on common separators
         import re
 
-        words1 = set(re.split(r'[_\-\s\.]+', name1.lower()))
-        words2 = set(re.split(r'[_\-\s\.]+', name2.lower()))
+        words1 = set(re.split(r"[_\-\s\.]+", name1.lower()))
+        words2 = set(re.split(r"[_\-\s\.]+", name2.lower()))
 
         # Filter out very short words and extensions
         words1 = {w for w in words1 if len(w) > 2 and not w.isdigit()}
@@ -384,10 +373,7 @@ class ContentSimilarityService:
         return sorted(list(common))[:5]  # Return top 5
 
     async def _get_cached_similarities(
-        self,
-        file_id: UUID,
-        db: AsyncSession,
-        top_k: int
+        self, file_id: UUID, db: AsyncSession, top_k: int
     ) -> Optional[List[Dict]]:
         """
         Get cached similarities for a file
@@ -424,26 +410,26 @@ class ContentSimilarityService:
         similar_files = []
         for sim in cached:
             # Get similar file details
-            result = await db.execute(
-                select(Object).where(Object.id == sim.similar_file_id)
-            )
+            result = await db.execute(select(Object).where(Object.id == sim.similar_file_id))
             similar_file = result.scalar_one_or_none()
 
             if not similar_file:
                 continue
 
-            similar_files.append({
-                'file_id': similar_file.id,
-                'file_name': self._get_object_name(similar_file),
-                'file_size': similar_file.file_size,
-                'mime_type': similar_file.mime_type,
-                'storage_tier': similar_file.storage_tier,
-                'similarity_score': sim.similarity_score,
-                'similarity_type': sim.similarity_type,
-                'common_keywords': sim.common_keywords or [],
-                'created_at': similar_file.created_at,
-                'last_accessed': similar_file.last_accessed
-            })
+            similar_files.append(
+                {
+                    "file_id": similar_file.id,
+                    "file_name": self._get_object_name(similar_file),
+                    "file_size": similar_file.file_size,
+                    "mime_type": similar_file.mime_type,
+                    "storage_tier": similar_file.storage_tier,
+                    "similarity_score": sim.similarity_score,
+                    "similarity_type": sim.similarity_type,
+                    "common_keywords": sim.common_keywords or [],
+                    "created_at": similar_file.created_at,
+                    "last_accessed": similar_file.last_accessed,
+                }
+            )
 
         return similar_files
 
@@ -457,7 +443,7 @@ class ContentSimilarityService:
         user_id: UUID,
         db: AsyncSession,
         name_similarity: Optional[float] = None,
-        type_match: Optional[bool] = None
+        type_match: Optional[bool] = None,
     ):
         """
         Save similarity to database
@@ -480,7 +466,7 @@ class ContentSimilarityService:
             select(FileSimilarity).where(
                 and_(
                     FileSimilarity.file_id == file_id,
-                    FileSimilarity.similar_file_id == similar_file_id
+                    FileSimilarity.similar_file_id == similar_file_id,
                 )
             )
         )
@@ -511,7 +497,7 @@ class ContentSimilarityService:
                 type_match=type_match if type_match is not None else False,
                 computed_at=timestamp,
                 created_at=timestamp,
-                updated_at=timestamp
+                updated_at=timestamp,
             )
             db.add(similarity)
 
@@ -521,7 +507,7 @@ class ContentSimilarityService:
         user_id: UUID,
         db: AsyncSession,
         limit: int = 10,
-        min_score: float = 0.3
+        min_score: float = 0.3,
     ) -> List[Dict]:
         """
         Get similar files for a given file (public API)
@@ -542,11 +528,7 @@ class ContentSimilarityService:
 
         try:
             results = await self.compute_file_similarity(
-                file_id=file_id,
-                user_id=user_id,
-                db=db,
-                top_k=limit,
-                force_recompute=False
+                file_id=file_id, user_id=user_id, db=db, top_k=limit, force_recompute=False
             )
             return results
         finally:
@@ -554,7 +536,7 @@ class ContentSimilarityService:
 
     def _get_object_name(self, obj: Object) -> str:
         """Gracefully fetch the stored object name."""
-        return getattr(obj, 'object_name', None) or getattr(obj, 'file_name', None) or ''
+        return getattr(obj, "object_name", None) or getattr(obj, "file_name", None) or ""
 
     def _compute_name_similarity(self, name_a: Optional[str], name_b: Optional[str]) -> float:
         """Approximate filename similarity for debugging/telemetry."""
@@ -564,25 +546,25 @@ class ContentSimilarityService:
 
     def _detect_type_match(self, file_a: Object, file_b: Object) -> bool:
         """Check if two files share the same mime type or extension."""
-        mime_a = (file_a.mime_type or '').split(';')[0]
-        mime_b = (file_b.mime_type or '').split(';')[0]
+        mime_a = (file_a.mime_type or "").split(";")[0]
+        mime_b = (file_b.mime_type or "").split(";")[0]
         if mime_a and mime_b:
             return mime_a == mime_b
 
         name_a = self._get_object_name(file_a)
         name_b = self._get_object_name(file_b)
 
-        ext_a = name_a.rsplit('.', 1)[-1].lower() if '.' in name_a else ''
-        ext_b = name_b.rsplit('.', 1)[-1].lower() if '.' in name_b else ''
+        ext_a = name_a.rsplit(".", 1)[-1].lower() if "." in name_a else ""
+        ext_b = name_b.rsplit(".", 1)[-1].lower() if "." in name_b else ""
         return bool(ext_a) and ext_a == ext_b
 
     def _resolve_similarity_timestamp(self, similarity: FileSimilarity) -> datetime:
         """Return the best available timestamp for cached similarities."""
         return (
-            getattr(similarity, 'computed_at', None) or
-            getattr(similarity, 'updated_at', None) or
-            getattr(similarity, 'created_at', None) or
-            datetime.utcnow()
+            getattr(similarity, "computed_at", None)
+            or getattr(similarity, "updated_at", None)
+            or getattr(similarity, "created_at", None)
+            or datetime.utcnow()
         )
 
 

@@ -35,10 +35,7 @@ class VideoOptimizer:
         """Check if ffmpeg is installed"""
         try:
             result = subprocess.run(
-                ['ffmpeg', '-version'],
-                capture_output=True,
-                timeout=5,
-                check=False
+                ["ffmpeg", "-version"], capture_output=True, timeout=5, check=False
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -48,10 +45,7 @@ class VideoOptimizer:
         """Check if ffprobe is installed"""
         try:
             result = subprocess.run(
-                ['ffprobe', '-version'],
-                capture_output=True,
-                timeout=5,
-                check=False
+                ["ffprobe", "-version"], capture_output=True, timeout=5, check=False
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -76,29 +70,29 @@ class VideoOptimizer:
             file_size = os.path.getsize(file_path)
             ext = Path(file_path).suffix.lower()
             return {
-                'has_moov': True,
-                'moov_location': 'end' if ext == '.mov' else 'unknown',
-                'needs_faststart': ext == '.mov',
-                'file_size': file_size,
-                'duration': 0.0,
-                'format': ext
+                "has_moov": True,
+                "moov_location": "end" if ext == ".mov" else "unknown",
+                "needs_faststart": ext == ".mov",
+                "file_size": file_size,
+                "duration": 0.0,
+                "format": ext,
             }
 
         try:
             # Use ffprobe to get detailed format information
             cmd = [
-                'ffprobe',
-                '-v', 'error',
-                '-show_format',
-                '-show_streams',
-                '-print_format', 'json',
-                file_path
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_format",
+                "-show_streams",
+                "-print_format",
+                "json",
+                file_path,
             ]
 
             result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
             stdout, stderr = await result.communicate()
@@ -108,33 +102,33 @@ class VideoOptimizer:
                 return self._fallback_detection(file_path)
 
             probe_data = json.loads(stdout.decode())
-            format_info = probe_data.get('format', {})
+            format_info = probe_data.get("format", {})
 
             # Check if video can be played without full download
             # This is a heuristic: if ffprobe can read format quickly, moov is at start
-            file_size = int(format_info.get('size', 0))
-            duration = float(format_info.get('duration', 0.0))
-            format_name = format_info.get('format_name', '')
+            file_size = int(format_info.get("size", 0))
+            duration = float(format_info.get("duration", 0.0))
+            format_name = format_info.get("format_name", "")
 
             # Check for faststart flag in format tags
-            tags = format_info.get('tags', {})
-            is_faststart = 'compatible_brands' in tags or 'major_brand' in tags
+            tags = format_info.get("tags", {})
+            is_faststart = "compatible_brands" in tags or "major_brand" in tags
 
             # Heuristic: Check if we can determine moov location
             # If ffprobe succeeds quickly and we have duration, moov is accessible
-            moov_location = 'start' if is_faststart else 'unknown'
+            moov_location = "start" if is_faststart else "unknown"
 
             # For MOV files without faststart, assume moov at end
-            if format_name in ['mov,mp4,m4a,3gp,3g2,mj2'] and not is_faststart:
-                moov_location = 'end'
+            if format_name in ["mov,mp4,m4a,3gp,3g2,mj2"] and not is_faststart:
+                moov_location = "end"
 
             return {
-                'has_moov': True,
-                'moov_location': moov_location,
-                'needs_faststart': moov_location != 'start',
-                'file_size': file_size,
-                'duration': duration,
-                'format': format_name
+                "has_moov": True,
+                "moov_location": moov_location,
+                "needs_faststart": moov_location != "start",
+                "file_size": file_size,
+                "duration": duration,
+                "format": format_name,
             }
 
         except Exception as e:
@@ -148,21 +142,19 @@ class VideoOptimizer:
 
         # Heuristic: MOV files typically have moov at end
         # MP4 files from modern sources typically have moov at start
-        needs_faststart = ext in ['.mov', '.qt']
+        needs_faststart = ext in [".mov", ".qt"]
 
         return {
-            'has_moov': True,
-            'moov_location': 'end' if needs_faststart else 'unknown',
-            'needs_faststart': needs_faststart,
-            'file_size': file_size,
-            'duration': 0.0,
-            'format': ext
+            "has_moov": True,
+            "moov_location": "end" if needs_faststart else "unknown",
+            "needs_faststart": needs_faststart,
+            "file_size": file_size,
+            "duration": 0.0,
+            "format": ext,
         }
 
     async def apply_faststart(
-        self,
-        input_path: str,
-        output_path: Optional[str] = None
+        self, input_path: str, output_path: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
         """
         Apply faststart optimization to video file
@@ -184,8 +176,7 @@ class VideoOptimizer:
             # Create temp file if output not specified
             if output_path is None:
                 temp_fd, output_path = tempfile.mkstemp(
-                    suffix=Path(input_path).suffix,
-                    prefix='faststart_'
+                    suffix=Path(input_path).suffix, prefix="faststart_"
                 )
                 os.close(temp_fd)
 
@@ -193,19 +184,21 @@ class VideoOptimizer:
 
             # Run ffmpeg with faststart flag
             cmd = [
-                'ffmpeg',
-                '-i', input_path,
-                '-c', 'copy',  # Copy streams without re-encoding
-                '-movflags', '+faststart',  # Move moov atom to start
-                '-y',  # Overwrite output
-                '-loglevel', 'error',
-                output_path
+                "ffmpeg",
+                "-i",
+                input_path,
+                "-c",
+                "copy",  # Copy streams without re-encoding
+                "-movflags",
+                "+faststart",  # Move moov atom to start
+                "-y",  # Overwrite output
+                "-loglevel",
+                "error",
+                output_path,
             ]
 
             result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
             stdout, stderr = await result.communicate()
@@ -248,9 +241,7 @@ class VideoOptimizer:
             return False, None
 
     async def optimize_video_for_streaming(
-        self,
-        file_path: str,
-        replace_original: bool = True
+        self, file_path: str, replace_original: bool = True
     ) -> Dict[str, any]:
         """
         Complete video optimization workflow
@@ -272,14 +263,14 @@ class VideoOptimizer:
             # Step 1: Detect current state
             metadata = await self.detect_moov_location(file_path)
 
-            if not metadata['needs_faststart']:
+            if not metadata["needs_faststart"]:
                 logger.info(f"Video already optimized: {file_path}")
                 return {
-                    'success': True,
-                    'optimized': False,
-                    'original_path': file_path,
-                    'optimized_path': file_path,
-                    'metadata': metadata
+                    "success": True,
+                    "optimized": False,
+                    "original_path": file_path,
+                    "optimized_path": file_path,
+                    "metadata": metadata,
                 }
 
             # Step 2: Apply faststart
@@ -288,12 +279,12 @@ class VideoOptimizer:
 
             if not success:
                 return {
-                    'success': False,
-                    'optimized': False,
-                    'original_path': file_path,
-                    'optimized_path': None,
-                    'metadata': metadata,
-                    'error': 'Faststart failed'
+                    "success": False,
+                    "optimized": False,
+                    "original_path": file_path,
+                    "optimized_path": None,
+                    "metadata": metadata,
+                    "error": "Faststart failed",
                 }
 
             # Step 3: Replace original if requested
@@ -312,11 +303,15 @@ class VideoOptimizer:
                     logger.info(f"Video optimized and replaced: {file_path}")
 
                     return {
-                        'success': True,
-                        'optimized': True,
-                        'original_path': file_path,
-                        'optimized_path': file_path,
-                        'metadata': {**metadata, 'moov_location': 'start', 'needs_faststart': False}
+                        "success": True,
+                        "optimized": True,
+                        "original_path": file_path,
+                        "optimized_path": file_path,
+                        "metadata": {
+                            **metadata,
+                            "moov_location": "start",
+                            "needs_faststart": False,
+                        },
                     }
 
                 except Exception as e:
@@ -330,21 +325,21 @@ class VideoOptimizer:
 
             else:
                 return {
-                    'success': True,
-                    'optimized': True,
-                    'original_path': file_path,
-                    'optimized_path': optimized_path,
-                    'metadata': {**metadata, 'moov_location': 'start', 'needs_faststart': False}
+                    "success": True,
+                    "optimized": True,
+                    "original_path": file_path,
+                    "optimized_path": optimized_path,
+                    "metadata": {**metadata, "moov_location": "start", "needs_faststart": False},
                 }
 
         except Exception as e:
             logger.error(f"Error optimizing video: {e}")
             return {
-                'success': False,
-                'optimized': False,
-                'original_path': file_path,
-                'optimized_path': None,
-                'error': str(e)
+                "success": False,
+                "optimized": False,
+                "original_path": file_path,
+                "optimized_path": None,
+                "error": str(e),
             }
 
 

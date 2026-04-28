@@ -12,13 +12,14 @@ Background service that:
 import asyncio
 import logging
 from datetime import datetime, timedelta
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import async_session
+from ..models.database import Object, User
 from ..services.access_predictor import access_predictor
 from ..services.cold_storage_tiering import ColdStorageTieringService
-from ..models.database import Object, User
 
 logger = logging.getLogger(__name__)
 
@@ -120,24 +121,18 @@ class PrefetchWorker:
         """
         try:
             # Get predictions using hybrid method
-            predictions = await access_predictor.predict_next_files(
-                db,
-                user_id,
-                method="hybrid"
-            )
+            predictions = await access_predictor.predict_next_files(db, user_id, method="hybrid")
 
             # Filter by confidence threshold
-            high_confidence = [
-                p for p in predictions
-                if p["confidence"] >= self.min_confidence
-            ]
+            high_confidence = [p for p in predictions if p["confidence"] >= self.min_confidence]
 
             if not high_confidence:
                 return
 
             # Store as prefetch candidates
             for pred in high_confidence:
-                await db.execute(text("""
+                await db.execute(
+                    text("""
                     INSERT INTO prefetch_candidates
                         (user_id, file_id, prediction_confidence, prediction_method, predicted_at, expires_at)
                     VALUES
@@ -148,12 +143,14 @@ class PrefetchWorker:
                         prediction_method = EXCLUDED.prediction_method,
                         predicted_at = NOW(),
                         expires_at = NOW() + INTERVAL '24 hours'
-                """), {
-                    "user_id": user_id,
-                    "file_id": pred["file_id"],
-                    "confidence": pred["confidence"],
-                    "method": pred["method"]
-                })
+                """),
+                    {
+                        "user_id": user_id,
+                        "file_id": pred["file_id"],
+                        "confidence": pred["confidence"],
+                        "method": pred["method"],
+                    },
+                )
 
                 # If very high confidence, trigger immediate prefetch
                 if pred["confidence"] >= 0.7 and self.aggressiveness >= 0.5:
@@ -170,9 +167,7 @@ class PrefetchWorker:
         """
         try:
             # Get file info
-            result = await db.execute(
-                select(Object).where(Object.id == file_id)
-            )
+            result = await db.execute(select(Object).where(Object.id == file_id))
             file_obj = result.scalar_one_or_none()
 
             if not file_obj:
@@ -190,16 +185,16 @@ class PrefetchWorker:
 
             if success:
                 # Mark as prefetched
-                await db.execute(text("""
+                await db.execute(
+                    text("""
                     UPDATE prefetch_candidates
                     SET prefetched = true,
                         prefetched_at = NOW()
                     WHERE user_id = :user_id
                       AND file_id = :file_id
-                """), {
-                    "user_id": user_id,
-                    "file_id": file_id
-                })
+                """),
+                    {"user_id": user_id, "file_id": file_id},
+                )
 
                 logger.info(f"✅ Successfully prefetched {file_obj.file_name}")
 
@@ -237,7 +232,8 @@ class PrefetchWorker:
         """
         try:
             # Check if this file was predicted
-            result = await db.execute(text("""
+            result = await db.execute(
+                text("""
                 UPDATE prefetch_candidates
                 SET accessed_after_prefetch = true
                 WHERE user_id = :user_id
@@ -245,13 +241,14 @@ class PrefetchWorker:
                   AND prefetched = true
                   AND predicted_at > NOW() - INTERVAL '24 hours'
                 RETURNING id
-            """), {
-                "user_id": user_id,
-                "file_id": file_id
-            })
+            """),
+                {"user_id": user_id, "file_id": file_id},
+            )
 
             if result.rowcount > 0:
-                logger.info(f"✅ Prediction was accurate: user {user_id} accessed predicted file {file_id}")
+                logger.info(
+                    f"✅ Prediction was accurate: user {user_id} accessed predicted file {file_id}"
+                )
 
             await db.commit()
 
@@ -283,7 +280,7 @@ class PrefetchWorker:
                 "total_prefetched": stats.total_prefetched or 0,
                 "accurate_predictions": stats.accurate_predictions or 0,
                 "accuracy_percentage": float(stats.accuracy_percentage or 0),
-                "period_days": 30
+                "period_days": 30,
             }
 
         except Exception as e:

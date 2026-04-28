@@ -1,14 +1,18 @@
-import os, json, aiofiles, hashlib
+import hashlib
+import json
+import os
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
+import aiofiles
 import aiohttp
+import boto3
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-import boto3
 
-from ..models.database import ActivityLog
 from ..config import settings
 from ..database import redis_client
+from ..models.database import ActivityLog
 
 
 class BackupService:
@@ -54,7 +58,9 @@ class BackupService:
     # =============================
     # 🔹 Strategy Resolver
     # =============================
-    def resolve_strategy(self, user_strategy: str, user=None, db: Optional[AsyncSession] = None) -> str:
+    def resolve_strategy(
+        self, user_strategy: str, user=None, db: Optional[AsyncSession] = None
+    ) -> str:
         """
         Resolve strategy against global config.
         Logs fallbacks when global settings disable parts of the strategy.
@@ -118,9 +124,7 @@ class BackupService:
     async def backup_to_node(self, file_data: bytes, file_id: str, node_url: str) -> bool:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{node_url}/backup/{file_id}", data=file_data
-                ) as response:
+                async with session.post(f"{node_url}/backup/{file_id}", data=file_data) as response:
                     return response.status == 200
         except Exception as e:
             print(f"Node backup failed: {e}")
@@ -143,7 +147,9 @@ class BackupService:
 
         client = self._get_s3_client()
         if client:
-            await self.backup_to_s3(local_backup, f"backups/{object_id}/{os.path.basename(local_backup)}")
+            await self.backup_to_s3(
+                local_backup, f"backups/{object_id}/{os.path.basename(local_backup)}"
+            )
 
         if settings.BACKUP_NODE_URL:
             await self.backup_to_node(full_data, object_id, settings.BACKUP_NODE_URL)
@@ -200,9 +206,7 @@ class BackupService:
             try:
                 with open(restore_file, "wb") as f:
                     client.download_fileobj(
-                        settings.BACKUP_S3_BUCKET,
-                        f"backups/{object_id}/{chosen_version}",
-                        f
+                        settings.BACKUP_S3_BUCKET, f"backups/{object_id}/{chosen_version}", f
                     )
                 return restore_file
             except Exception as e:

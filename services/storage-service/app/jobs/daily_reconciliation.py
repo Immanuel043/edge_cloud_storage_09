@@ -21,14 +21,13 @@ from pathlib import Path
 # Add app directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from app.database import get_db_async
 from app.config import settings
+from app.database import get_db_async
 from shared_billing import run_daily_reconciliation
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ async def main():
                     db=db,
                     stripe_api_key=settings.STRIPE_SECRET_KEY,
                     razorpay_key_id=settings.RAZORPAY_KEY_ID,
-                    razorpay_key_secret=settings.RAZORPAY_KEY_SECRET
+                    razorpay_key_secret=settings.RAZORPAY_KEY_SECRET,
                 )
 
                 # Log results

@@ -5,11 +5,12 @@ This demonstrates how to replace the existing Python ThreadPool processing
 with the high-performance Rust service.
 """
 
-import os
 import hashlib
-from typing import Optional
-from .rust_dataplane_client import get_rust_client
 import logging
+import os
+from typing import Optional
+
+from .rust_dataplane_client import get_rust_client
 
 logger = logging.getLogger(__name__)
 

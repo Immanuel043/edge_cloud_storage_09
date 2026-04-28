@@ -13,24 +13,24 @@ Features:
 - Real-time audit trail
 """
 
+import csv
+import io
+import json
 import logging
-from typing import Optional, List
 from datetime import datetime, timedelta
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func
 from pydantic import BaseModel
+from sqlalchemy import and_, desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, get_current_user
-from ..models.database import User, AuditLog, SecurityAlert, ComplianceReport
-from ..services.audit_logging_service import audit_service, AuditEventType, AuditSeverity
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
-import io
-import json
-import csv
+from ..dependencies import get_current_user, get_db
+from ..models.database import AuditLog, ComplianceReport, SecurityAlert, User
+from ..services.audit_logging_service import AuditEventType, AuditSeverity, audit_service
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 
 router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 logger = logging.getLogger(__name__)
@@ -38,8 +38,10 @@ logger = logging.getLogger(__name__)
 
 # ===== Request/Response Models =====
 
+
 class AuditLogQuery(BaseModel):
     """Query parameters for audit log search"""
+
     user_id: Optional[str] = None
     resource_id: Optional[str] = None
     event_type: Optional[str] = None
@@ -53,6 +55,7 @@ class AuditLogQuery(BaseModel):
 
 class AuditLogResponse(BaseModel):
     """Audit log entry response"""
+
     id: str
     event_type: str
     event_category: Optional[str]
@@ -69,6 +72,7 @@ class AuditLogResponse(BaseModel):
 
 class ComplianceReportRequest(BaseModel):
     """Request for compliance report generation"""
+
     report_type: str  # gdpr, soc2, iso27001
     start_date: datetime
     end_date: datetime
@@ -76,12 +80,13 @@ class ComplianceReportRequest(BaseModel):
 
 # ===== Endpoints =====
 
+
 @router.post("/logs/query", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
 async def query_audit_logs(
     request: Request,
     query: AuditLogQuery,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Query audit logs with filters
@@ -93,7 +98,7 @@ async def query_audit_logs(
     conditions = []
 
     # Non-admin users can only see their own logs
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         conditions.append(AuditLog.user_id == current_user.id)
     elif query.user_id:
         conditions.append(AuditLog.user_id == UUID(query.user_id))
@@ -151,10 +156,10 @@ async def query_audit_logs(
                 "severity": log.severity,
                 "ip_address": log.ip_address,
                 "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-                "details": log.details
+                "details": log.details,
             }
             for log in logs
-        ]
+        ],
     }
 
 
@@ -163,7 +168,7 @@ async def get_recent_audit_logs(
     request: Request,
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get recent audit logs for current user
@@ -188,10 +193,10 @@ async def get_recent_audit_logs(
                 "resource_id": log.resource_id,
                 "result": log.result,
                 "severity": log.severity,
-                "timestamp": log.timestamp.isoformat() if log.timestamp else None
+                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
             }
             for log in logs
-        ]
+        ],
     }
 
 
@@ -200,7 +205,7 @@ async def get_audit_statistics(
     request: Request,
     days: int = Query(30, ge=1, le=365),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get audit log statistics for current user
@@ -211,44 +216,24 @@ async def get_audit_statistics(
 
     # Count events by type
     result = await db.execute(
-        select(
-            AuditLog.event_category,
-            func.count(AuditLog.id).label('count')
-        )
-        .filter(
-            and_(
-                AuditLog.user_id == current_user.id,
-                AuditLog.timestamp >= start_date
-            )
-        )
+        select(AuditLog.event_category, func.count(AuditLog.id).label("count"))
+        .filter(and_(AuditLog.user_id == current_user.id, AuditLog.timestamp >= start_date))
         .group_by(AuditLog.event_category)
     )
     category_counts = {row.event_category: row.count for row in result.fetchall()}
 
     # Count by severity
     result = await db.execute(
-        select(
-            AuditLog.severity,
-            func.count(AuditLog.id).label('count')
-        )
-        .filter(
-            and_(
-                AuditLog.user_id == current_user.id,
-                AuditLog.timestamp >= start_date
-            )
-        )
+        select(AuditLog.severity, func.count(AuditLog.id).label("count"))
+        .filter(and_(AuditLog.user_id == current_user.id, AuditLog.timestamp >= start_date))
         .group_by(AuditLog.severity)
     )
     severity_counts = {row.severity: row.count for row in result.fetchall()}
 
     # Total count
     result = await db.execute(
-        select(func.count(AuditLog.id))
-        .filter(
-            and_(
-                AuditLog.user_id == current_user.id,
-                AuditLog.timestamp >= start_date
-            )
+        select(func.count(AuditLog.id)).filter(
+            and_(AuditLog.user_id == current_user.id, AuditLog.timestamp >= start_date)
         )
     )
     total_events = result.scalar() or 0
@@ -259,17 +244,19 @@ async def get_audit_statistics(
         "by_category": category_counts,
         "by_severity": severity_counts,
         "start_date": start_date.isoformat(),
-        "end_date": datetime.utcnow().isoformat()
+        "end_date": datetime.utcnow().isoformat(),
     }
 
 
-@router.post("/logs/export", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
+@router.post(
+    "/logs/export", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))]
+)
 async def export_audit_logs(
     request: Request,
     query: AuditLogQuery,
     format: str = Query("json", regex="^(json|csv)$"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Export audit logs to JSON or CSV
@@ -279,7 +266,7 @@ async def export_audit_logs(
     # Build query (same as query_audit_logs)
     conditions = []
 
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         conditions.append(AuditLog.user_id == current_user.id)
     elif query.user_id:
         conditions.append(AuditLog.user_id == UUID(query.user_id))
@@ -322,7 +309,7 @@ async def export_audit_logs(
                 "ip_address": log.ip_address,
                 "user_agent": log.user_agent,
                 "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-                "details": log.details
+                "details": log.details,
             }
             for log in logs
         ]
@@ -336,32 +323,45 @@ async def export_audit_logs(
             media_type="application/json",
             headers={
                 "Content-Disposition": f"attachment; filename=audit_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-            }
+            },
         )
 
     else:  # CSV
         buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=[
-            'id', 'timestamp', 'event_type', 'event_category', 'user_id',
-            'resource_type', 'resource_id', 'action', 'result', 'severity',
-            'ip_address'
-        ])
+        writer = csv.DictWriter(
+            buffer,
+            fieldnames=[
+                "id",
+                "timestamp",
+                "event_type",
+                "event_category",
+                "user_id",
+                "resource_type",
+                "resource_id",
+                "action",
+                "result",
+                "severity",
+                "ip_address",
+            ],
+        )
 
         writer.writeheader()
         for log in logs:
-            writer.writerow({
-                'id': str(log.id),
-                'timestamp': log.timestamp.isoformat() if log.timestamp else '',
-                'event_type': log.event_type,
-                'event_category': log.event_category or '',
-                'user_id': str(log.user_id) if log.user_id else '',
-                'resource_type': log.resource_type or '',
-                'resource_id': log.resource_id or '',
-                'action': log.action or '',
-                'result': log.result,
-                'severity': log.severity,
-                'ip_address': log.ip_address or ''
-            })
+            writer.writerow(
+                {
+                    "id": str(log.id),
+                    "timestamp": log.timestamp.isoformat() if log.timestamp else "",
+                    "event_type": log.event_type,
+                    "event_category": log.event_category or "",
+                    "user_id": str(log.user_id) if log.user_id else "",
+                    "resource_type": log.resource_type or "",
+                    "resource_id": log.resource_id or "",
+                    "action": log.action or "",
+                    "result": log.result,
+                    "severity": log.severity,
+                    "ip_address": log.ip_address or "",
+                }
+            )
 
         csv_buffer = io.BytesIO(buffer.getvalue().encode())
         csv_buffer.seek(0)
@@ -371,18 +371,20 @@ async def export_audit_logs(
             media_type="text/csv",
             headers={
                 "Content-Disposition": f"attachment; filename=audit_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-            }
+            },
         )
 
 
-@router.get("/security/alerts", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/security/alerts", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))]
+)
 async def get_security_alerts(
     request: Request,
     status: Optional[str] = Query(None, regex="^(open|investigating|resolved|false_positive)$"),
     severity: Optional[str] = Query(None, regex="^(low|medium|high|critical)$"),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get security alerts
@@ -392,7 +394,7 @@ async def get_security_alerts(
     conditions = []
 
     # Non-admin users only see their own alerts
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         conditions.append(SecurityAlert.user_id == current_user.id)
 
     if status:
@@ -429,11 +431,14 @@ async def get_security_alerts(
                 "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
             }
             for alert in alerts
-        ]
+        ],
     }
 
 
-@router.post("/security/alerts/{alert_id}/dismiss", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.post(
+    "/security/alerts/{alert_id}/dismiss",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def dismiss_security_alert(
     alert_id: str,
     current_user: User = Depends(get_current_user),
@@ -441,12 +446,10 @@ async def dismiss_security_alert(
 ):
     """Dismiss a security alert (marks as false_positive)"""
     conditions = [SecurityAlert.id == alert_id]
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         conditions.append(SecurityAlert.user_id == current_user.id)
 
-    result = await db.execute(
-        select(SecurityAlert).filter(and_(*conditions))
-    )
+    result = await db.execute(select(SecurityAlert).filter(and_(*conditions)))
     alert = result.scalar_one_or_none()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
@@ -458,14 +461,17 @@ async def dismiss_security_alert(
     return {"success": True, "alert_id": alert_id, "status": "false_positive"}
 
 
-@router.get("/security/alerts/summary", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/security/alerts/summary",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_security_alerts_summary(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get counts of open alerts by severity"""
     conditions = [SecurityAlert.status == "open"]
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         conditions.append(SecurityAlert.user_id == current_user.id)
 
     result = await db.execute(
@@ -481,12 +487,14 @@ async def get_security_alerts_summary(
     }
 
 
-@router.post("/compliance/report", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))])
+@router.post(
+    "/compliance/report", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_HEAVY))]
+)
 async def generate_compliance_report(
     request: Request,
     report_request: ComplianceReportRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Generate compliance report
@@ -495,10 +503,9 @@ async def generate_compliance_report(
     Only admins can generate compliance reports.
     """
     # Check admin permission
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         raise HTTPException(
-            status_code=403,
-            detail="Only administrators can generate compliance reports"
+            status_code=403, detail="Only administrators can generate compliance reports"
         )
 
     # Generate report using audit service
@@ -506,7 +513,7 @@ async def generate_compliance_report(
         db=db,
         start_date=report_request.start_date,
         end_date=report_request.end_date,
-        report_type=report_request.report_type
+        report_type=report_request.report_type,
     )
 
     # Store report in database
@@ -520,7 +527,7 @@ async def generate_compliance_report(
         summary=report_data.get("summary"),
         event_count=report_data.get("summary", {}).get("total_events", 0),
         compliance_score=95.0,  # Calculate based on findings
-        metadata=report_data
+        metadata=report_data,
     )
 
     db.add(compliance_report)
@@ -532,20 +539,24 @@ async def generate_compliance_report(
         "report_type": compliance_report.report_type,
         "period": {
             "start": compliance_report.report_period_start.isoformat(),
-            "end": compliance_report.report_period_end.isoformat()
+            "end": compliance_report.report_period_end.isoformat(),
         },
         "summary": compliance_report.summary,
         "compliance_score": compliance_report.compliance_score,
-        "generated_at": compliance_report.generated_at.isoformat() if compliance_report.generated_at else None
+        "generated_at": (
+            compliance_report.generated_at.isoformat() if compliance_report.generated_at else None
+        ),
     }
 
 
-@router.get("/compliance/reports", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/compliance/reports", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))]
+)
 async def list_compliance_reports(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List compliance reports
@@ -554,16 +565,13 @@ async def list_compliance_reports(
     Only admins can view compliance reports.
     """
     # Check admin permission
-    if not getattr(current_user, 'is_admin', False):
+    if not getattr(current_user, "is_admin", False):
         raise HTTPException(
-            status_code=403,
-            detail="Only administrators can view compliance reports"
+            status_code=403, detail="Only administrators can view compliance reports"
         )
 
     result = await db.execute(
-        select(ComplianceReport)
-        .order_by(desc(ComplianceReport.generated_at))
-        .limit(limit)
+        select(ComplianceReport).order_by(desc(ComplianceReport.generated_at)).limit(limit)
     )
     reports = result.scalars().all()
 
@@ -573,13 +581,17 @@ async def list_compliance_reports(
             {
                 "id": str(report.id),
                 "report_type": report.report_type,
-                "period_start": report.report_period_start.isoformat() if report.report_period_start else None,
-                "period_end": report.report_period_end.isoformat() if report.report_period_end else None,
+                "period_start": (
+                    report.report_period_start.isoformat() if report.report_period_start else None
+                ),
+                "period_end": (
+                    report.report_period_end.isoformat() if report.report_period_end else None
+                ),
                 "event_count": report.event_count,
                 "compliance_score": report.compliance_score,
                 "generated_at": report.generated_at.isoformat() if report.generated_at else None,
-                "status": report.status
+                "status": report.status,
             }
             for report in reports
-        ]
+        ],
     }

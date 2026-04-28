@@ -8,38 +8,43 @@ API endpoints for ML-based quota prediction and analytics:
 - Trigger prediction updates
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
-from typing import List, Optional
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime, timedelta
+from typing import List, Optional
 
-from ..dependencies import get_db, get_current_user
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_current_user, get_db
 from ..dependencies_plan import require_plan_feature
-from ..models.database import User, QuotaPrediction, QuotaAlert, StorageUsageHistory
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from ..models.database import QuotaAlert, QuotaPrediction, StorageUsageHistory, User
 from ..models.schemas import (
-    QuotaPredictionResponse,
+    DismissAlertRequest,
     QuotaAlertResponse,
-    UsageHistoryResponse,
+    QuotaPredictionResponse,
     UsageHistoryPoint,
-    DismissAlertRequest
+    UsageHistoryResponse,
 )
-from ..services.quota_predictor import quota_predictor
-from ..workers.quota_prediction_worker import quota_prediction_worker
 from ..monitoring.metrics import metrics_collector
+from ..services.quota_predictor import quota_predictor
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
+from ..workers.quota_prediction_worker import quota_prediction_worker
 
 router = APIRouter(prefix="/api/v1/quota", tags=["quota-analytics"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("/prediction", response_model=QuotaPredictionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_PREDICTION))])
+@router.get(
+    "/prediction",
+    response_model=QuotaPredictionResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_PREDICTION))],
+)
 async def get_quota_prediction(
     request: Request,
     current_user: User = Depends(require_plan_feature("ai_features")),
     db: AsyncSession = Depends(get_db),
-    force_refresh: bool = Query(False, description="Force regenerate prediction")
+    force_refresh: bool = Query(False, description="Force regenerate prediction"),
 ):
     """
     Get ML-based quota prediction for current user
@@ -67,9 +72,13 @@ async def get_quota_prediction(
 
             if existing_prediction:
                 logger.info(f"Returning cached prediction for user {current_user.id}")
-                metrics_collector.increment_counter('quota_prediction_cache_hits_total')
+                metrics_collector.increment_counter("quota_prediction_cache_hits_total")
 
-                usage_percent = (current_user.storage_used / current_user.storage_quota) if current_user.storage_quota > 0 else 0.0
+                usage_percent = (
+                    (current_user.storage_used / current_user.storage_quota)
+                    if current_user.storage_quota > 0
+                    else 0.0
+                )
                 will_exceed = False
 
                 if existing_prediction.days_until_full is not None:
@@ -89,63 +98,66 @@ async def get_quota_prediction(
                     days_until_full=existing_prediction.days_until_full,
                     will_exceed_quota=will_exceed,
                     model_type=existing_prediction.model_type,
-                    prediction_date=existing_prediction.prediction_date
+                    prediction_date=existing_prediction.prediction_date,
                 )
 
         # Generate new prediction
         logger.info(f"Generating new prediction for user {current_user.id}")
-        metrics_collector.increment_counter('quota_prediction_cache_misses_total')
+        metrics_collector.increment_counter("quota_prediction_cache_misses_total")
 
         prediction_data = await quota_predictor.predict_user_quota(
-            user_id=str(current_user.id),
-            db=db
+            user_id=str(current_user.id), db=db
         )
 
         if not prediction_data:
             raise HTTPException(
                 status_code=400,
-                detail="Insufficient usage history for prediction. Need at least 7 days of data."
+                detail="Insufficient usage history for prediction. Need at least 7 days of data.",
             )
 
         # Save prediction to database
         prediction = QuotaPrediction(
             user_id=current_user.id,
-            predicted_7d=prediction_data.get('predicted_7d'),
-            predicted_14d=prediction_data.get('predicted_14d'),
-            predicted_30d=prediction_data.get('predicted_30d'),
-            confidence_7d=prediction_data.get('confidence_7d'),
-            confidence_14d=prediction_data.get('confidence_14d'),
-            confidence_30d=prediction_data.get('confidence_30d'),
-            days_until_full=prediction_data.get('days_until_full'),
-            model_type=prediction_data.get('model_type'),
-            prediction_date=datetime.utcnow()
+            predicted_7d=prediction_data.get("predicted_7d"),
+            predicted_14d=prediction_data.get("predicted_14d"),
+            predicted_30d=prediction_data.get("predicted_30d"),
+            confidence_7d=prediction_data.get("confidence_7d"),
+            confidence_14d=prediction_data.get("confidence_14d"),
+            confidence_30d=prediction_data.get("confidence_30d"),
+            days_until_full=prediction_data.get("days_until_full"),
+            model_type=prediction_data.get("model_type"),
+            prediction_date=datetime.utcnow(),
         )
         db.add(prediction)
         await db.commit()
 
-        usage_percent = (current_user.storage_used / current_user.storage_quota) if current_user.storage_quota > 0 else 0.0
+        usage_percent = (
+            (current_user.storage_used / current_user.storage_quota)
+            if current_user.storage_quota > 0
+            else 0.0
+        )
         will_exceed = False
 
-        if prediction_data.get('days_until_full') is not None:
-            will_exceed = prediction_data['days_until_full'] <= 30
+        if prediction_data.get("days_until_full") is not None:
+            will_exceed = prediction_data["days_until_full"] <= 30
 
-        metrics_collector.increment_counter('quota_predictions_api_generated_total')
+        metrics_collector.increment_counter("quota_predictions_api_generated_total")
 
         return QuotaPredictionResponse(
             user_id=str(current_user.id),
-            current_usage_bytes=prediction_data['current_usage_bytes'],
-            quota_bytes=prediction_data['quota_bytes'],
+            current_usage_bytes=prediction_data["current_usage_bytes"],
+            quota_bytes=prediction_data["quota_bytes"],
             usage_percent=usage_percent,
-            predicted_7d=prediction_data.get('predicted_7d'),
-            predicted_14d=prediction_data.get('predicted_14d'),
-            predicted_30d=prediction_data.get('predicted_30d'),
-            confidence_7d=prediction_data.get('confidence_7d'),
-            confidence_14d=prediction_data.get('confidence_14d'),
-            confidence_30d=prediction_data.get('confidence_30d'),
-            days_until_full=prediction_data.get('days_until_full'),
+            predicted_7d=prediction_data.get("predicted_7d"),
+            predicted_14d=prediction_data.get("predicted_14d"),
+            predicted_30d=prediction_data.get("predicted_30d"),
+            confidence_7d=prediction_data.get("confidence_7d"),
+            confidence_14d=prediction_data.get("confidence_14d"),
+            confidence_30d=prediction_data.get("confidence_30d"),
+            days_until_full=prediction_data.get("days_until_full"),
             will_exceed_quota=will_exceed,
-            model_type=prediction_data.get('model_type'),
-            prediction_date=datetime.utcnow()
+            model_type=prediction_data.get("model_type"),
+            prediction_date=datetime.utcnow(),
         )
 
     except HTTPException:
@@ -159,7 +171,7 @@ async def get_quota_prediction(
 async def get_usage_history(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    days: int = Query(30, ge=7, le=365, description="Number of days of history")
+    days: int = Query(30, ge=7, le=365, description="Number of days of history"),
 ):
     """
     Get storage usage history for current user
@@ -191,7 +203,7 @@ async def get_usage_history(
                 file_count=h.file_count,
                 cache_used=h.cache_used,
                 warm_used=h.warm_used,
-                cold_used=h.cold_used
+                cold_used=h.cold_used,
             )
             for h in history
         ]
@@ -203,7 +215,7 @@ async def get_usage_history(
             start_date=start_date,
             end_date=datetime.utcnow(),
             data_points=data_points,
-            total_points=len(data_points)
+            total_points=len(data_points),
         )
 
     except Exception as e:
@@ -215,7 +227,7 @@ async def get_usage_history(
 async def get_quota_alerts(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    include_dismissed: bool = Query(False, description="Include dismissed alerts")
+    include_dismissed: bool = Query(False, description="Include dismissed alerts"),
 ):
     """
     Get quota alerts for current user
@@ -241,31 +253,33 @@ async def get_quota_alerts(
 
         # Generate human-readable messages
         alert_messages = {
-            '70_percent': "Your storage is 70% full. Consider cleaning up unused files.",
-            '85_percent': "Your storage is 85% full. You're approaching your quota limit.",
-            '95_percent': "Your storage is 95% full! Please free up space soon.",
-            'predicted_full': "Based on your usage patterns, you'll run out of storage soon."
+            "70_percent": "Your storage is 70% full. Consider cleaning up unused files.",
+            "85_percent": "Your storage is 85% full. You're approaching your quota limit.",
+            "95_percent": "Your storage is 95% full! Please free up space soon.",
+            "predicted_full": "Based on your usage patterns, you'll run out of storage soon.",
         }
 
         response = []
         for alert in alerts:
             message = alert_messages.get(alert.alert_type, "Storage alert")
 
-            if alert.alert_type == 'predicted_full' and alert.predicted_days_remaining:
+            if alert.alert_type == "predicted_full" and alert.predicted_days_remaining:
                 message = f"Your storage is predicted to be full in {alert.predicted_days_remaining} days."
 
-            response.append(QuotaAlertResponse(
-                id=str(alert.id),
-                alert_type=alert.alert_type,
-                current_usage_bytes=alert.current_usage_bytes,
-                quota_bytes=alert.quota_bytes,
-                usage_percent=alert.usage_percent,
-                threshold_percent=alert.threshold_percent,
-                predicted_days_remaining=alert.predicted_days_remaining,
-                is_dismissed=alert.is_dismissed,
-                created_at=alert.created_at,
-                message=message
-            ))
+            response.append(
+                QuotaAlertResponse(
+                    id=str(alert.id),
+                    alert_type=alert.alert_type,
+                    current_usage_bytes=alert.current_usage_bytes,
+                    quota_bytes=alert.quota_bytes,
+                    usage_percent=alert.usage_percent,
+                    threshold_percent=alert.threshold_percent,
+                    predicted_days_remaining=alert.predicted_days_remaining,
+                    is_dismissed=alert.is_dismissed,
+                    created_at=alert.created_at,
+                    message=message,
+                )
+            )
 
         logger.info(f"Retrieved {len(response)} alerts for user {current_user.id}")
         return response
@@ -296,8 +310,7 @@ async def dismiss_alert(
         # Get alert
         result = await db.execute(
             select(QuotaAlert).where(
-                QuotaAlert.id == dismiss_data.alert_id,
-                QuotaAlert.user_id == current_user.id
+                QuotaAlert.id == dismiss_data.alert_id, QuotaAlert.user_id == current_user.id
             )
         )
         alert = result.scalar_one_or_none()
@@ -310,7 +323,7 @@ async def dismiss_alert(
         await db.commit()
 
         logger.info(f"Dismissed alert {dismiss_data.alert_id} for user {current_user.id}")
-        metrics_collector.increment_counter('quota_alerts_dismissed_total')
+        metrics_collector.increment_counter("quota_alerts_dismissed_total")
 
         return {"status": "success", "message": "Alert dismissed"}
 
@@ -338,8 +351,7 @@ async def dismiss_all_alerts(
         # Get all active alerts
         result = await db.execute(
             select(QuotaAlert).where(
-                QuotaAlert.user_id == current_user.id,
-                QuotaAlert.is_dismissed == False
+                QuotaAlert.user_id == current_user.id, QuotaAlert.is_dismissed == False
             )
         )
         alerts = result.scalars().all()
@@ -351,12 +363,12 @@ async def dismiss_all_alerts(
         await db.commit()
 
         logger.info(f"Dismissed {len(alerts)} alerts for user {current_user.id}")
-        metrics_collector.increment_counter('quota_alerts_dismissed_total', len(alerts))
+        metrics_collector.increment_counter("quota_alerts_dismissed_total", len(alerts))
 
         return {
             "status": "success",
             "message": f"Dismissed {len(alerts)} alerts",
-            "count": len(alerts)
+            "count": len(alerts),
         }
 
     except Exception as e:
@@ -414,40 +426,51 @@ async def get_quota_stats(
         )
         active_alerts = alert_result.scalar() or 0
 
-        usage_percent = (current_user.storage_used / current_user.storage_quota) if current_user.storage_quota > 0 else 0.0
+        usage_percent = (
+            (current_user.storage_used / current_user.storage_quota)
+            if current_user.storage_quota > 0
+            else 0.0
+        )
 
         stats = {
             "current_usage": {
                 "bytes": current_user.storage_used or 0,
                 "quota": current_user.storage_quota,
                 "percent": usage_percent,
-                "available": current_user.storage_quota - (current_user.storage_used or 0)
+                "available": current_user.storage_quota - (current_user.storage_used or 0),
             },
             "trends": {
                 "growth_rate_30d": round(growth_rate, 2),
                 "data_points": len(history),
-                "tracking_since": history[0].date if history else None
+                "tracking_since": history[0].date if history else None,
             },
             "predictions": {
                 "available": latest_prediction is not None,
                 "days_until_full": latest_prediction.days_until_full if latest_prediction else None,
                 "model_used": latest_prediction.model_type if latest_prediction else None,
-                "last_updated": latest_prediction.prediction_date if latest_prediction else None
+                "last_updated": latest_prediction.prediction_date if latest_prediction else None,
             },
-            "alerts": {
-                "active_count": active_alerts,
-                "has_warnings": active_alerts > 0
-            },
-            "recommendations": []
+            "alerts": {"active_count": active_alerts, "has_warnings": active_alerts > 0},
+            "recommendations": [],
         }
 
         # Generate recommendations
         if usage_percent > 0.85:
-            stats["recommendations"].append("Consider deleting unused files or upgrading your storage plan")
-        if latest_prediction and latest_prediction.days_until_full and latest_prediction.days_until_full < 14:
-            stats["recommendations"].append("You're running out of storage quickly. Take action soon!")
+            stats["recommendations"].append(
+                "Consider deleting unused files or upgrading your storage plan"
+            )
+        if (
+            latest_prediction
+            and latest_prediction.days_until_full
+            and latest_prediction.days_until_full < 14
+        ):
+            stats["recommendations"].append(
+                "You're running out of storage quickly. Take action soon!"
+            )
         if growth_rate > 50:
-            stats["recommendations"].append("Your storage usage is growing rapidly. Monitor your uploads.")
+            stats["recommendations"].append(
+                "Your storage usage is growing rapidly. Monitor your uploads."
+            )
 
         logger.info(f"Generated quota stats for user {current_user.id}")
         return stats
@@ -458,6 +481,7 @@ async def get_quota_stats(
 
 
 # Admin endpoints
+
 
 @router.post("/admin/trigger-worker", tags=["admin"])
 async def trigger_prediction_worker(
@@ -482,12 +506,9 @@ async def trigger_prediction_worker(
         # Run worker once
         await quota_prediction_worker.run_once()
 
-        metrics_collector.increment_counter('quota_prediction_worker_manual_triggers_total')
+        metrics_collector.increment_counter("quota_prediction_worker_manual_triggers_total")
 
-        return {
-            "status": "success",
-            "message": "Quota prediction worker executed successfully"
-        }
+        return {"status": "success", "message": "Quota prediction worker executed successfully"}
 
     except Exception as e:
         logger.error(f"Failed to trigger quota prediction worker: {e}", exc_info=True)

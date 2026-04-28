@@ -10,10 +10,11 @@ Revises: add_subscription_fk_to_users
 Create Date: 2026-01-04
 
 """
+
 from alembic import op
 
-revision = 'add_plan_id_user_subs'
-down_revision = 'add_subscription_fk_to_users'
+revision = "add_plan_id_user_subs"
+down_revision = "add_subscription_fk_to_users"
 branch_labels = None
 depends_on = None
 

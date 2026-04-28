@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 PREVIEW_DIR = "/app/storage/previews"
 
 # Cache TTLs
-_TTL_VIDEO = 604_800      # 7 days
+_TTL_VIDEO = 604_800  # 7 days
 _TTL_DEFAULT = 2_592_000  # 30 days
 
 # Invalidation marker TTL
@@ -31,6 +31,7 @@ _INVALIDATION_MARKER_TTL = 30  # seconds
 # ---------------------------------------------------------------------------
 # TTL helper
 # ---------------------------------------------------------------------------
+
 
 def preview_cache_ttl(mime_type: Optional[str]) -> int:
     """Return cache TTL in seconds: 7 days for video, 30 days otherwise."""
@@ -43,9 +44,8 @@ def preview_cache_ttl(mime_type: Optional[str]) -> int:
 # Disk I/O helpers
 # ---------------------------------------------------------------------------
 
-def save_preview_to_disk(
-    file_id: str, size: str, preview_bytes: bytes, content_hash: str
-) -> None:
+
+def save_preview_to_disk(file_id: str, size: str, preview_bytes: bytes, content_hash: str) -> None:
     """Persist a preview JPEG and its content-hash sidecar to disk."""
     try:
         dir_path = os.path.join(PREVIEW_DIR, file_id)
@@ -61,7 +61,9 @@ def save_preview_to_disk(
     except Exception:
         logger.warning(
             "Failed to save preview to disk for file_id=%s size=%s",
-            file_id, size, exc_info=True,
+            file_id,
+            size,
+            exc_info=True,
         )
 
 
@@ -76,7 +78,9 @@ def load_preview_from_disk(file_id: str, size: str) -> Optional[bytes]:
     except Exception:
         logger.warning(
             "Failed to load preview from disk for file_id=%s size=%s",
-            file_id, size, exc_info=True,
+            file_id,
+            size,
+            exc_info=True,
         )
         return None
 
@@ -92,7 +96,8 @@ def get_disk_content_hash(file_id: str) -> Optional[str]:
     except Exception:
         logger.warning(
             "Failed to read disk content hash for file_id=%s",
-            file_id, exc_info=True,
+            file_id,
+            exc_info=True,
         )
         return None
 
@@ -107,13 +112,15 @@ def delete_previews_from_disk(file_id: str) -> None:
     except Exception:
         logger.warning(
             "Failed to delete preview directory for file_id=%s",
-            file_id, exc_info=True,
+            file_id,
+            exc_info=True,
         )
 
 
 # ---------------------------------------------------------------------------
 # Async wrappers (use these from request handlers / async code)
 # ---------------------------------------------------------------------------
+
 
 async def async_save_preview_to_disk(
     file_id: str, size: str, preview_bytes: bytes, content_hash: str
@@ -136,6 +143,7 @@ async def async_delete_previews_from_disk(file_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Async invalidation (call BEFORE db.commit)
 # ---------------------------------------------------------------------------
+
 
 async def invalidate_preview(
     file_id: str,
@@ -176,8 +184,9 @@ async def invalidate_preview(
     # 5. Null out DB preview columns if a session was provided
     if db_session is not None:
         try:
-            from ..models.database import Object
             from sqlalchemy import update
+
+            from ..models.database import Object
 
             await db_session.execute(
                 update(Object)
@@ -187,7 +196,8 @@ async def invalidate_preview(
         except Exception:
             logger.warning(
                 "Failed to null preview columns for file_id=%s",
-                file_id, exc_info=True,
+                file_id,
+                exc_info=True,
             )
 
 
@@ -195,16 +205,16 @@ async def invalidate_preview(
 # Two-layer freshness guard
 # ---------------------------------------------------------------------------
 
+
 async def _get_current_content_hash(file_id: str) -> Optional[str]:
     """Query the DB for the current content_hash of an Object row."""
-    from ..database import async_session
-    from ..models.database import Object
     from sqlalchemy import select
 
+    from ..database import async_session
+    from ..models.database import Object
+
     async with async_session() as session:
-        result = await session.execute(
-            select(Object.content_hash).filter(Object.id == file_id)
-        )
+        result = await session.execute(select(Object.content_hash).filter(Object.id == file_id))
         row = result.scalar_one_or_none()
         return row  # Returns the content_hash string or None
 
@@ -231,9 +241,7 @@ async def should_persist_preview(
     # Layer 1 — Redis invalidation marker
     blocked_hash = await redis.get(f"preview:blocked:{file_id}")
     if blocked_hash is not None:
-        blocked_hash = (
-            blocked_hash.decode() if isinstance(blocked_hash, bytes) else blocked_hash
-        )
+        blocked_hash = blocked_hash.decode() if isinstance(blocked_hash, bytes) else blocked_hash
         if blocked_hash == source_hash:
             return False  # This writer is stale
         # else: source_hash != blocked_hash -> fresh generation, allow through

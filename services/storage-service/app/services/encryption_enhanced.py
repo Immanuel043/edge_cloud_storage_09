@@ -30,19 +30,19 @@ Architecture:
                  └─> Encrypted data
 """
 
-import os
 import base64
 import hashlib
 import json
 import logging
-from typing import Union, Optional, Dict, Tuple
+import os
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import Dict, Optional, Tuple, Union
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
@@ -51,15 +51,16 @@ logger = logging.getLogger(__name__)
 
 # Constants
 NONCE_SIZE = 12  # AES-GCM recommended nonce size
-KEY_SIZE = 32    # AES-256 key size
+KEY_SIZE = 32  # AES-256 key size
 PBKDF2_ITERATIONS = 600_000  # OWASP recommendation (2023)
 
 
 class KeyVersion(Enum):
     """Key version status"""
-    ACTIVE = "active"       # Currently used for new encryptions
+
+    ACTIVE = "active"  # Currently used for new encryptions
     DEPRECATED = "deprecated"  # Can decrypt but not encrypt
-    RETIRED = "retired"     # Cannot be used (archived)
+    RETIRED = "retired"  # Cannot be used (archived)
 
 
 class EncryptedEnvelope:
@@ -74,7 +75,7 @@ class EncryptedEnvelope:
         encrypted_dek: bytes,
         dek_key_version: int,
         nonce: bytes,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
     ):
         self.encrypted_data = encrypted_data
         self.encrypted_dek = encrypted_dek
@@ -86,26 +87,29 @@ class EncryptedEnvelope:
     def to_bytes(self) -> bytes:
         """Serialize envelope to bytes for storage"""
         # Format: [version:1][key_version:2][nonce_len:2][nonce][dek_len:2][encrypted_dek][metadata_len:4][metadata][encrypted_data]
-        envelope_version = b'\x01'  # Version 1 of envelope format
-        key_version = self.dek_key_version.to_bytes(2, 'big')
+        envelope_version = b"\x01"  # Version 1 of envelope format
+        key_version = self.dek_key_version.to_bytes(2, "big")
 
-        nonce_len = len(self.nonce).to_bytes(2, 'big')
-        dek_len = len(self.encrypted_dek).to_bytes(2, 'big')
+        nonce_len = len(self.nonce).to_bytes(2, "big")
+        dek_len = len(self.encrypted_dek).to_bytes(2, "big")
 
         metadata_json = json.dumps(self.metadata).encode()
-        metadata_len = len(metadata_json).to_bytes(4, 'big')
+        metadata_len = len(metadata_json).to_bytes(4, "big")
 
         return (
-            envelope_version +
-            key_version +
-            nonce_len + self.nonce +
-            dek_len + self.encrypted_dek +
-            metadata_len + metadata_json +
-            self.encrypted_data
+            envelope_version
+            + key_version
+            + nonce_len
+            + self.nonce
+            + dek_len
+            + self.encrypted_dek
+            + metadata_len
+            + metadata_json
+            + self.encrypted_data
         )
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'EncryptedEnvelope':
+    def from_bytes(cls, data: bytes) -> "EncryptedEnvelope":
         """Deserialize envelope from bytes"""
         offset = 0
 
@@ -117,25 +121,25 @@ class EncryptedEnvelope:
             raise ValueError(f"Unsupported envelope version: {envelope_version}")
 
         # Parse key version
-        key_version = int.from_bytes(data[offset:offset+2], 'big')
+        key_version = int.from_bytes(data[offset : offset + 2], "big")
         offset += 2
 
         # Parse nonce
-        nonce_len = int.from_bytes(data[offset:offset+2], 'big')
+        nonce_len = int.from_bytes(data[offset : offset + 2], "big")
         offset += 2
-        nonce = data[offset:offset+nonce_len]
+        nonce = data[offset : offset + nonce_len]
         offset += nonce_len
 
         # Parse encrypted DEK
-        dek_len = int.from_bytes(data[offset:offset+2], 'big')
+        dek_len = int.from_bytes(data[offset : offset + 2], "big")
         offset += 2
-        encrypted_dek = data[offset:offset+dek_len]
+        encrypted_dek = data[offset : offset + dek_len]
         offset += dek_len
 
         # Parse metadata
-        metadata_len = int.from_bytes(data[offset:offset+4], 'big')
+        metadata_len = int.from_bytes(data[offset : offset + 4], "big")
         offset += 4
-        metadata_json = data[offset:offset+metadata_len]
+        metadata_json = data[offset : offset + metadata_len]
         offset += metadata_len
         metadata = json.loads(metadata_json.decode())
 
@@ -147,7 +151,7 @@ class EncryptedEnvelope:
             encrypted_dek=encrypted_dek,
             dek_key_version=key_version,
             nonce=nonce,
-            metadata=metadata
+            metadata=metadata,
         )
 
 
@@ -298,9 +302,7 @@ class EnhancedEncryptionService:
     # ====== Envelope Encryption ======
 
     def encrypt_with_envelope(
-        self,
-        data: bytes,
-        metadata: Optional[Dict] = None
+        self, data: bytes, metadata: Optional[Dict] = None
     ) -> EncryptedEnvelope:
         """
         Encrypt data using envelope encryption
@@ -332,25 +334,24 @@ class EnhancedEncryptionService:
         # Add metadata
         if metadata is None:
             metadata = {}
-        metadata.update({
-            "encrypted_at": datetime.utcnow().isoformat(),
-            "data_size": len(data),
-            "algorithm": "AES-256-GCM",
-            "envelope_version": 1
-        })
+        metadata.update(
+            {
+                "encrypted_at": datetime.utcnow().isoformat(),
+                "data_size": len(data),
+                "algorithm": "AES-256-GCM",
+                "envelope_version": 1,
+            }
+        )
 
         envelope = EncryptedEnvelope(
             encrypted_data=encrypted_data,
             encrypted_dek=encrypted_dek,
             dek_key_version=kek_version,
             nonce=nonce,
-            metadata=metadata
+            metadata=metadata,
         )
 
-        logger.debug(
-            f"Encrypted {len(data)} bytes with envelope "
-            f"(KEK version {kek_version})"
-        )
+        logger.debug(f"Encrypted {len(data)} bytes with envelope " f"(KEK version {kek_version})")
 
         return envelope
 
@@ -444,9 +445,7 @@ class EnhancedEncryptionService:
         return new_version
 
     async def re_encrypt_with_new_key(
-        self,
-        envelope_b64: str,
-        db: Optional[AsyncSession] = None
+        self, envelope_b64: str, db: Optional[AsyncSession] = None
     ) -> str:
         """
         Re-encrypt data with the current active key

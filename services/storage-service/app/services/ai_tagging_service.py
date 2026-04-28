@@ -2,12 +2,13 @@
 AI-Powered Tagging Service
 Uses image classification and NLP to automatically tag files
 """
+
+import asyncio
 import io
 import logging
-from typing import List, Dict, Optional
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from PIL import Image
 
@@ -27,6 +28,7 @@ class AITaggingService:
         # Try to import AI libraries (optional)
         try:
             from transformers import pipeline
+
             self.transformers = pipeline
             self.transformers_available = True
             self.image_classifier = None
@@ -42,8 +44,7 @@ class AITaggingService:
                 logger.info("Loading image classification model...")
                 # Using a small, efficient model
                 self.image_classifier = self.transformers(
-                    "image-classification",
-                    model="google/vit-base-patch16-224"
+                    "image-classification", model="google/vit-base-patch16-224"
                 )
                 logger.info("Image classifier loaded")
             except Exception as e:
@@ -57,19 +58,14 @@ class AITaggingService:
             try:
                 logger.info("Loading text classification model...")
                 self.text_classifier = self.transformers(
-                    "zero-shot-classification",
-                    model="facebook/bart-large-mnli"
+                    "zero-shot-classification", model="facebook/bart-large-mnli"
                 )
                 logger.info("Text classifier loaded")
             except Exception as e:
                 logger.error(f"Failed to load text classifier: {e}")
         return self.text_classifier
 
-    async def generate_tags_for_image(
-        self,
-        image_data: bytes,
-        top_k: int = 5
-    ) -> List[Dict]:
+    async def generate_tags_for_image(self, image_data: bytes, top_k: int = 5) -> List[Dict]:
         """
         Generate tags for an image using AI classification
 
@@ -90,28 +86,29 @@ class AITaggingService:
 
             # Load image
             image = Image.open(io.BytesIO(image_data))
-            if image.mode not in ('RGB', 'L'):
-                image = image.convert('RGB')
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
 
             # Run classification in thread pool
             loop = asyncio.get_event_loop()
             predictions = await loop.run_in_executor(
-                executor,
-                lambda: classifier(image, top_k=top_k)
+                executor, lambda: classifier(image, top_k=top_k)
             )
 
             # Format results
             tags = []
             for pred in predictions:
                 # Clean up label (remove numbers, underscores)
-                label = pred['label'].replace('_', ' ').strip()
-                label = ' '.join([w for w in label.split() if not w.isdigit()])
+                label = pred["label"].replace("_", " ").strip()
+                label = " ".join([w for w in label.split() if not w.isdigit()])
 
-                tags.append({
-                    "tag": label.lower(),
-                    "confidence": round(pred['score'] * 100, 2),
-                    "source": "ai_vision"
-                })
+                tags.append(
+                    {
+                        "tag": label.lower(),
+                        "confidence": round(pred["score"] * 100, 2),
+                        "source": "ai_vision",
+                    }
+                )
 
             return tags
 
@@ -127,11 +124,9 @@ class AITaggingService:
 
             # Tag by format
             if image.format:
-                tags.append({
-                    "tag": f"{image.format.lower()}_image",
-                    "confidence": 100,
-                    "source": "format"
-                })
+                tags.append(
+                    {"tag": f"{image.format.lower()}_image", "confidence": 100, "source": "format"}
+                )
 
             # Tag by aspect ratio
             aspect_ratio = image.width / image.height
@@ -154,11 +149,7 @@ class AITaggingService:
         except:
             return []
 
-    async def generate_tags_for_document(
-        self,
-        text_content: str,
-        filename: str = ""
-    ) -> List[Dict]:
+    async def generate_tags_for_document(self, text_content: str, filename: str = "") -> List[Dict]:
         """
         Generate tags for a document using text classification
 
@@ -189,9 +180,9 @@ class AITaggingService:
         # Deduplicate and sort by confidence
         seen = set()
         unique_tags = []
-        for tag in sorted(tags, key=lambda x: x['confidence'], reverse=True):
-            if tag['tag'] not in seen:
-                seen.add(tag['tag'])
+        for tag in sorted(tags, key=lambda x: x["confidence"], reverse=True):
+            if tag["tag"] not in seen:
+                seen.add(tag["tag"])
                 unique_tags.append(tag)
 
         return unique_tags[:10]  # Top 10 tags
@@ -206,23 +197,19 @@ class AITaggingService:
 
         # Document type patterns
         patterns = {
-            'invoice': ['invoice', 'bill', 'receipt'],
-            'contract': ['contract', 'agreement', 'terms'],
-            'report': ['report', 'analysis', 'summary'],
-            'presentation': ['presentation', 'slides', 'deck'],
-            'resume': ['resume', 'cv', 'curriculum'],
-            'screenshot': ['screenshot', 'screen', 'capture'],
-            'photo': ['photo', 'img', 'pic', 'picture'],
-            'document': ['doc', 'document']
+            "invoice": ["invoice", "bill", "receipt"],
+            "contract": ["contract", "agreement", "terms"],
+            "report": ["report", "analysis", "summary"],
+            "presentation": ["presentation", "slides", "deck"],
+            "resume": ["resume", "cv", "curriculum"],
+            "screenshot": ["screenshot", "screen", "capture"],
+            "photo": ["photo", "img", "pic", "picture"],
+            "document": ["doc", "document"],
         }
 
         for tag, keywords in patterns.items():
             if any(kw in filename_lower for kw in keywords):
-                tags.append({
-                    "tag": tag,
-                    "confidence": 85,
-                    "source": "filename"
-                })
+                tags.append({"tag": tag, "confidence": 85, "source": "filename"})
 
         return tags
 
@@ -233,23 +220,19 @@ class AITaggingService:
 
         # Business document keywords
         business_patterns = {
-            'financial': ['payment', 'invoice', 'receipt', 'transaction', 'account', 'balance'],
-            'legal': ['contract', 'agreement', 'terms', 'conditions', 'liability', 'clause'],
-            'technical': ['system', 'software', 'code', 'technical', 'specification', 'api'],
-            'medical': ['patient', 'diagnosis', 'treatment', 'medical', 'health', 'doctor'],
-            'academic': ['research', 'study', 'analysis', 'thesis', 'academic', 'university'],
-            'marketing': ['campaign', 'marketing', 'advertisement', 'brand', 'customer']
+            "financial": ["payment", "invoice", "receipt", "transaction", "account", "balance"],
+            "legal": ["contract", "agreement", "terms", "conditions", "liability", "clause"],
+            "technical": ["system", "software", "code", "technical", "specification", "api"],
+            "medical": ["patient", "diagnosis", "treatment", "medical", "health", "doctor"],
+            "academic": ["research", "study", "analysis", "thesis", "academic", "university"],
+            "marketing": ["campaign", "marketing", "advertisement", "brand", "customer"],
         }
 
         for tag, keywords in business_patterns.items():
             matches = sum(1 for kw in keywords if kw in text_lower)
             if matches >= 2:  # At least 2 keyword matches
                 confidence = min(95, 60 + matches * 10)
-                tags.append({
-                    "tag": tag,
-                    "confidence": confidence,
-                    "source": "keywords"
-                })
+                tags.append({"tag": tag, "confidence": confidence, "source": "keywords"})
 
         return tags
 
@@ -274,27 +257,24 @@ class AITaggingService:
                 "marketing material",
                 "medical record",
                 "invoice or receipt",
-                "contract or agreement"
+                "contract or agreement",
             ]
 
             # Run classification
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                executor,
-                lambda: classifier(text_sample, candidate_labels)
+                executor, lambda: classifier(text_sample, candidate_labels)
             )
 
             # Format results
             tags = []
-            for label, score in zip(result['labels'][:3], result['scores'][:3]):
+            for label, score in zip(result["labels"][:3], result["scores"][:3]):
                 if score > 0.3:  # Only high confidence
                     # Simplify label
-                    tag = label.replace(' or ', '_').replace(' ', '_')
-                    tags.append({
-                        "tag": tag,
-                        "confidence": round(score * 100, 2),
-                        "source": "ai_nlp"
-                    })
+                    tag = label.replace(" or ", "_").replace(" ", "_")
+                    tags.append(
+                        {"tag": tag, "confidence": round(score * 100, 2), "source": "ai_nlp"}
+                    )
 
             return tags
 
@@ -308,7 +288,7 @@ class AITaggingService:
         mime_type: str,
         filename: str,
         extracted_text: Optional[str] = None,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
     ) -> List[Dict]:
         """
         Generate comprehensive smart tags using all available information
@@ -326,7 +306,7 @@ class AITaggingService:
         all_tags = []
 
         # Image tags
-        if mime_type.startswith('image/'):
+        if mime_type.startswith("image/"):
             image_tags = await self.generate_tags_for_image(file_data)
             all_tags.extend(image_tags)
 
@@ -340,15 +320,15 @@ class AITaggingService:
             all_tags.extend(doc_tags)
 
         # Audio/video tags from metadata
-        if metadata and metadata.get('type') in ['audio', 'video']:
+        if metadata and metadata.get("type") in ["audio", "video"]:
             all_tags.extend(self._tags_from_media_metadata(metadata))
 
         # Deduplicate
         seen = set()
         unique_tags = []
-        for tag in sorted(all_tags, key=lambda x: x['confidence'], reverse=True):
-            if tag['tag'] not in seen:
-                seen.add(tag['tag'])
+        for tag in sorted(all_tags, key=lambda x: x["confidence"], reverse=True):
+            if tag["tag"] not in seen:
+                seen.add(tag["tag"])
                 unique_tags.append(tag)
 
         return unique_tags[:15]  # Top 15 tags
@@ -357,27 +337,21 @@ class AITaggingService:
         """Generate tags from image EXIF data"""
         tags = []
 
-        if metadata.get('camera_make'):
-            tags.append({
-                "tag": f"{metadata['camera_make'].lower()}_photo",
-                "confidence": 90,
-                "source": "exif"
-            })
+        if metadata.get("camera_make"):
+            tags.append(
+                {
+                    "tag": f"{metadata['camera_make'].lower()}_photo",
+                    "confidence": 90,
+                    "source": "exif",
+                }
+            )
 
-        if metadata.get('gps_latitude') or 'GPSInfo' in metadata.get('exif', {}):
-            tags.append({
-                "tag": "geotagged",
-                "confidence": 100,
-                "source": "exif"
-            })
+        if metadata.get("gps_latitude") or "GPSInfo" in metadata.get("exif", {}):
+            tags.append({"tag": "geotagged", "confidence": 100, "source": "exif"})
 
         # Time-based tags
-        if metadata.get('date_taken'):
-            tags.append({
-                "tag": "dated_photo",
-                "confidence": 95,
-                "source": "exif"
-            })
+        if metadata.get("date_taken"):
+            tags.append({"tag": "dated_photo", "confidence": 95, "source": "exif"})
 
         return tags
 
@@ -385,23 +359,21 @@ class AITaggingService:
         """Generate tags from audio/video metadata"""
         tags = []
 
-        if metadata.get('genre'):
-            tags.append({
-                "tag": f"{metadata['genre'].lower()}_music",
-                "confidence": 95,
-                "source": "metadata"
-            })
+        if metadata.get("genre"):
+            tags.append(
+                {
+                    "tag": f"{metadata['genre'].lower()}_music",
+                    "confidence": 95,
+                    "source": "metadata",
+                }
+            )
 
-        if metadata.get('artist'):
-            tags.append({
-                "tag": "music",
-                "confidence": 100,
-                "source": "metadata"
-            })
+        if metadata.get("artist"):
+            tags.append({"tag": "music", "confidence": 100, "source": "metadata"})
 
-        if metadata.get('type') == 'video':
+        if metadata.get("type") == "video":
             # Tag by duration
-            duration = metadata.get('duration', 0)
+            duration = metadata.get("duration", 0)
             if duration > 600:  # 10 minutes
                 tags.append({"tag": "long_video", "confidence": 100, "source": "duration"})
             elif duration < 60:

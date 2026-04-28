@@ -43,34 +43,34 @@ if _LIB is not None:
     # FastCDC (primary -- gear hash, normalized chunking)
     _LIB.ebp_fastcdc.argtypes = [
         ctypes.POINTER(ctypes.c_uint8),  # data
-        ctypes.c_int64,                   # length
-        ctypes.POINTER(ctypes.c_int64),   # out_boundaries
-        ctypes.c_int64,                   # max_boundaries
-        ctypes.c_int64,                   # min_block_size
-        ctypes.c_int64,                   # max_block_size
-        ctypes.c_int64,                   # avg_block_size
+        ctypes.c_int64,  # length
+        ctypes.POINTER(ctypes.c_int64),  # out_boundaries
+        ctypes.c_int64,  # max_boundaries
+        ctypes.c_int64,  # min_block_size
+        ctypes.c_int64,  # max_block_size
+        ctypes.c_int64,  # avg_block_size
     ]
     _LIB.ebp_fastcdc.restype = ctypes.c_int64
 
     # Legacy compat wrapper (same signature as old Rabin C extension)
     _LIB.ebp_find_chunk_boundaries.argtypes = [
         ctypes.POINTER(ctypes.c_uint8),  # data
-        ctypes.c_int64,                   # length
-        ctypes.POINTER(ctypes.c_int64),   # out_boundaries
-        ctypes.c_int64,                   # max_boundaries
-        ctypes.c_int64,                   # min_block_size
-        ctypes.c_int64,                   # max_block_size
-        ctypes.c_int64,                   # window_size (ignored)
-        ctypes.c_uint64,                  # prime (ignored)
-        ctypes.c_uint64,                  # modulus_mask (ignored)
+        ctypes.c_int64,  # length
+        ctypes.POINTER(ctypes.c_int64),  # out_boundaries
+        ctypes.c_int64,  # max_boundaries
+        ctypes.c_int64,  # min_block_size
+        ctypes.c_int64,  # max_block_size
+        ctypes.c_int64,  # window_size (ignored)
+        ctypes.c_uint64,  # prime (ignored)
+        ctypes.c_uint64,  # modulus_mask (ignored)
     ]
     _LIB.ebp_find_chunk_boundaries.restype = ctypes.c_int64
 
     _LIB.ebp_batch_sha256.argtypes = [
-        ctypes.POINTER(ctypes.c_uint8),   # data
-        ctypes.POINTER(ctypes.c_int64),   # offsets
-        ctypes.c_int64,                   # count
-        ctypes.POINTER(ctypes.c_uint8),   # out_hashes
+        ctypes.POINTER(ctypes.c_uint8),  # data
+        ctypes.POINTER(ctypes.c_int64),  # offsets
+        ctypes.c_int64,  # count
+        ctypes.POINTER(ctypes.c_uint8),  # out_hashes
     ]
     _LIB.ebp_batch_sha256.restype = ctypes.c_int32
 
@@ -80,7 +80,11 @@ if _LIB is not None:
     _LIB.ebp_bloom_add.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint64]
     _LIB.ebp_bloom_add.restype = None
 
-    _LIB.ebp_bloom_check.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint64]
+    _LIB.ebp_bloom_check.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_uint64,
+    ]
     _LIB.ebp_bloom_check.restype = ctypes.c_int32
 
     _LIB.ebp_bloom_destroy.argtypes = [ctypes.c_void_p]
@@ -197,9 +201,7 @@ class NativeBloomFilter:
     def __init__(self, capacity: int = 1_000_000, error_rate: float = 0.001):
         if _LIB is None:
             raise RuntimeError("Rust byte processor library not loaded")
-        self._ptr = _LIB.ebp_bloom_create(
-            ctypes.c_uint64(capacity), ctypes.c_double(error_rate)
-        )
+        self._ptr = _LIB.ebp_bloom_create(ctypes.c_uint64(capacity), ctypes.c_double(error_rate))
         if not self._ptr:
             raise RuntimeError("ebp_bloom_create returned NULL")
 

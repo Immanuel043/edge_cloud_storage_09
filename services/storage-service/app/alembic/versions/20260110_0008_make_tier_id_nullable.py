@@ -9,27 +9,23 @@ The tier_id column was created as NOT NULL by migration 20251101_0000
 references subscription_plans. Make tier_id nullable so create_subscription
 works without requiring the legacy column.
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-
 # revision identifiers, used by Alembic.
-revision = '20260110_0008'
-down_revision = '20260110_0007'
+revision = "20260110_0008"
+down_revision = "20260110_0007"
 branch_labels = None
 depends_on = None
 
 
 def upgrade():
     """Make tier_id nullable since plan_id is the canonical reference."""
-    op.execute(
-        "ALTER TABLE user_subscriptions ALTER COLUMN tier_id DROP NOT NULL"
-    )
+    op.execute("ALTER TABLE user_subscriptions ALTER COLUMN tier_id DROP NOT NULL")
 
 
 def downgrade():
     """Restore tier_id NOT NULL constraint."""
-    op.execute(
-        "ALTER TABLE user_subscriptions ALTER COLUMN tier_id SET NOT NULL"
-    )
+    op.execute("ALTER TABLE user_subscriptions ALTER COLUMN tier_id SET NOT NULL")

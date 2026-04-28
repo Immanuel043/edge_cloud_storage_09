@@ -15,16 +15,16 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import signal
+import sys
 from datetime import datetime
 
 from aiokafka import AIOKafkaConsumer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.search_service import search_service
 from app.config import settings
+from app.services.search_service import search_service
 from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(

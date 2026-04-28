@@ -4,10 +4,12 @@ Email Service using Mailgun API
 
 Sends verification emails and other transactional emails via Mailgun REST API.
 """
-import httpx
+
 import logging
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+
+import httpx
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ..config import settings
@@ -31,7 +33,7 @@ class EmailService:
         template_dir.mkdir(exist_ok=True)
         self.jinja_env = Environment(
             loader=FileSystemLoader(str(template_dir)),
-            autoescape=select_autoescape(['html', 'xml'])
+            autoescape=select_autoescape(["html", "xml"]),
         )
 
     async def send_verification_code(self, email: str, code: str) -> bool:
@@ -59,7 +61,7 @@ class EmailService:
             html_content = template.render(
                 code=code,
                 expiry_minutes=settings.VERIFICATION_CODE_EXPIRY_MINUTES,
-                app_name=settings.MAILGUN_FROM_NAME
+                app_name=settings.MAILGUN_FROM_NAME,
             )
 
             # Prepare email data for Mailgun API
@@ -68,16 +70,12 @@ class EmailService:
                 "to": [email],
                 "subject": f"Verify your email - {code}",
                 "html": html_content,
-                "text": f"Your verification code is: {code}\n\nThis code will expire in {settings.VERIFICATION_CODE_EXPIRY_MINUTES} minutes.\n\nIf you didn't request this code, please ignore this email."
+                "text": f"Your verification code is: {code}\n\nThis code will expire in {settings.VERIFICATION_CODE_EXPIRY_MINUTES} minutes.\n\nIf you didn't request this code, please ignore this email.",
             }
 
             # Send email via Mailgun API
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    self.api_url,
-                    auth=("api", self.api_key),
-                    data=data
-                )
+                response = await client.post(self.api_url, auth=("api", self.api_key), data=data)
 
                 if response.status_code == 200:
                     logger.info(f"Verification email sent successfully to {email}")
@@ -85,7 +83,7 @@ class EmailService:
                 else:
                     logger.error(
                         f"Failed to send verification email: {response.status_code} - {response.text}",
-                        extra={"email": email, "status_code": response.status_code}
+                        extra={"email": email, "status_code": response.status_code},
                     )
                     return False
 
@@ -93,10 +91,7 @@ class EmailService:
             logger.error(f"Timeout sending verification email to {email}")
             return False
         except Exception as e:
-            logger.error(
-                f"Error sending verification email to {email}: {str(e)}",
-                exc_info=True
-            )
+            logger.error(f"Error sending verification email to {email}: {str(e)}", exc_info=True)
             return False
 
     async def send_password_reset_code(self, email: str, code: str) -> bool:
@@ -114,7 +109,7 @@ class EmailService:
             html_content = template.render(
                 code=code,
                 expiry_minutes=settings.VERIFICATION_CODE_EXPIRY_MINUTES,
-                app_name=settings.MAILGUN_FROM_NAME
+                app_name=settings.MAILGUN_FROM_NAME,
             )
 
             data = {
@@ -122,15 +117,11 @@ class EmailService:
                 "to": [email],
                 "subject": f"Reset your password - {code}",
                 "html": html_content,
-                "text": f"Your password reset code is: {code}\n\nThis code will expire in {settings.VERIFICATION_CODE_EXPIRY_MINUTES} minutes.\n\nIf you didn't request this, please ignore this email."
+                "text": f"Your password reset code is: {code}\n\nThis code will expire in {settings.VERIFICATION_CODE_EXPIRY_MINUTES} minutes.\n\nIf you didn't request this, please ignore this email.",
             }
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    self.api_url,
-                    auth=("api", self.api_key),
-                    data=data
-                )
+                response = await client.post(self.api_url, auth=("api", self.api_key), data=data)
                 if response.status_code == 200:
                     logger.info(f"Password reset email sent successfully to {email}")
                     return True
@@ -227,8 +218,7 @@ class EmailService:
             files_payload = None
             if attachments:
                 files_payload = [
-                    ("attachment", (fname, fbytes, fmime))
-                    for fname, fbytes, fmime in attachments
+                    ("attachment", (fname, fbytes, fmime)) for fname, fbytes, fmime in attachments
                 ]
 
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -245,15 +235,12 @@ class EmailService:
                 else:
                     logger.error(
                         f"Failed to send email: {response.status_code} - {response.text}",
-                        extra={"email": to_email, "status_code": response.status_code}
+                        extra={"email": to_email, "status_code": response.status_code},
                     )
                     return False
 
         except Exception as e:
-            logger.error(
-                f"Error sending email to {to_email}: {str(e)}",
-                exc_info=True
-            )
+            logger.error(f"Error sending email to {to_email}: {str(e)}", exc_info=True)
             return False
 
     async def send_invoice_email(
@@ -290,7 +277,6 @@ class EmailService:
                 (f"{invoice_number}.pdf", pdf_bytes, "application/pdf"),
             ],
         )
-
 
     async def send_share_notification(
         self,
@@ -357,4 +343,3 @@ class EmailService:
 
 # Global service instance
 email_service = EmailService()
-

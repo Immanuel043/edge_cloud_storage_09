@@ -21,34 +21,33 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import signal
+import sys
 from datetime import datetime
 from typing import Optional
 
-from aiokafka import AIOKafkaConsumer
 import redis.asyncio as aioredis
+from aiokafka import AIOKafkaConsumer
 
 # Add parent path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.video_ingestion_service import video_ingestion_service
-from app.services.encryption import encryption_service
 from app.database import async_session, get_redis, init_redis
 from app.models.database import Object, User
+from app.services.encryption import encryption_service
+from app.services.video_ingestion_service import video_ingestion_service
 from app.workers._kafka_dlq import dlq_producer
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 # Configuration
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
-KAFKA_TOPIC = 'video-processing'
-KAFKA_GROUP_ID = 'video-processors'
-MAX_CONCURRENT_TRANSCODES = int(os.getenv('MAX_CONCURRENT_TRANSCODES', '2'))
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_TOPIC = "video-processing"
+KAFKA_GROUP_ID = "video-processors"
+MAX_CONCURRENT_TRANSCODES = int(os.getenv("MAX_CONCURRENT_TRANSCODES", "2"))
 
 
 class VideoProcessingWorker:
@@ -100,12 +99,12 @@ class VideoProcessingWorker:
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 group_id=KAFKA_GROUP_ID,
-                auto_offset_reset='earliest',
+                auto_offset_reset="earliest",
                 enable_auto_commit=False,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                 # Fetch multiple messages for LIFO sorting
                 max_poll_records=10,
-                fetch_max_wait_ms=1000
+                fetch_max_wait_ms=1000,
             )
 
             await self.consumer.start()
@@ -136,8 +135,7 @@ class VideoProcessingWorker:
             # Give tasks up to 60 seconds to complete
             try:
                 await asyncio.wait_for(
-                    asyncio.gather(*self.pending_tasks, return_exceptions=True),
-                    timeout=60
+                    asyncio.gather(*self.pending_tasks, return_exceptions=True), timeout=60
                 )
             except asyncio.TimeoutError:
                 logger.warning("   Some tasks did not complete within timeout")
@@ -150,7 +148,9 @@ class VideoProcessingWorker:
         # Flush DLQ producer
         await dlq_producer.stop()
 
-        logger.info(f"Cleanup complete. Processed: {self.processed_count}, Failed: {self.failed_count}")
+        logger.info(
+            f"Cleanup complete. Processed: {self.processed_count}, Failed: {self.failed_count}"
+        )
 
     async def _process_loop(self):
         """Main processing loop with LIFO priority"""
@@ -176,8 +176,10 @@ class VideoProcessingWorker:
                 # This ensures small videos are processed first, then newest within same priority
                 all_msgs.sort(
                     key=lambda m: (
-                        m.value.get('priority', 5),  # Lower priority first
-                        -self._parse_timestamp(m.value.get('timestamp', ''))  # Newest first within priority
+                        m.value.get("priority", 5),  # Lower priority first
+                        -self._parse_timestamp(
+                            m.value.get("timestamp", "")
+                        ),  # Newest first within priority
                     )
                 )
 
@@ -209,33 +211,29 @@ class VideoProcessingWorker:
         try:
             await self._process_video(msg.value)
         except Exception as e:
-            logger.exception(
-                "video_processing_worker: failed offset %s", msg.offset
-            )
-            await dlq_producer.send_failed_message(
-                msg, error=e, worker="video-processing-worker"
-            )
+            logger.exception("video_processing_worker: failed offset %s", msg.offset)
+            await dlq_producer.send_failed_message(msg, error=e, worker="video-processing-worker")
 
     def _parse_timestamp(self, timestamp_str: str) -> float:
         """Parse ISO timestamp to float for sorting"""
         try:
-            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
             return dt.timestamp()
         except (ValueError, AttributeError):
             return 0.0
 
     async def _process_video(self, data: dict):
         """Process a single video optimization request"""
-        file_id = data.get('file_id')
-        user_id = data.get('user_id')
+        file_id = data.get("file_id")
+        user_id = data.get("user_id")
 
         if not file_id or not user_id:
             logger.warning("Missing file_id or user_id in message")
             return
 
-        file_name = data.get('file_name', 'unknown')
-        file_size_mb = data.get('file_size', 0) / (1024 * 1024)
-        priority = data.get('priority', 5)
+        file_name = data.get("file_name", "unknown")
+        file_size_mb = data.get("file_size", 0) / (1024 * 1024)
+        priority = data.get("priority", 5)
 
         logger.info(
             f"Processing video: {file_name} ({file_size_mb:.1f}MB) "
@@ -250,9 +248,7 @@ class VideoProcessingWorker:
                     from sqlalchemy import select
 
                     # Fetch file object
-                    result = await db.execute(
-                        select(Object).filter(Object.id == file_id)
-                    )
+                    result = await db.execute(select(Object).filter(Object.id == file_id))
                     file_obj = result.scalar_one_or_none()
 
                     if not file_obj:
@@ -260,9 +256,7 @@ class VideoProcessingWorker:
                         return
 
                     # Fetch user for optimization preferences
-                    user_result = await db.execute(
-                        select(User).filter(User.id == user_id)
-                    )
+                    user_result = await db.execute(select(User).filter(User.id == user_id))
                     user = user_result.scalar_one_or_none()
 
                     if not user:
@@ -274,9 +268,12 @@ class VideoProcessingWorker:
 
                     # Fetch user's plan features for video optimization gating
                     from shared_billing import BillingService
+
                     try:
-                        billing = BillingService(db, service_type='normal')
-                        subscription = await billing.get_user_subscription(user.id, include_plan=True)
+                        billing = BillingService(db, service_type="normal")
+                        subscription = await billing.get_user_subscription(
+                            user.id, include_plan=True
+                        )
                         plan_features = subscription.plan.features or {}
                     except Exception:
                         plan_features = {}
@@ -284,7 +281,7 @@ class VideoProcessingWorker:
                     # Check if already processed (in case of duplicate messages).
                     # 'rejected' is also terminal: re-running would just hit the
                     # reject branch again and redo the poster-thumbnail attempt.
-                    if file_obj.video_processing_status in ('ready', 'skipped', 'rejected'):
+                    if file_obj.video_processing_status in ("ready", "skipped", "rejected"):
                         logger.info(
                             f"Video already processed ({file_obj.video_processing_status}): {file_name}"
                         )
@@ -296,16 +293,16 @@ class VideoProcessingWorker:
                         user=user,
                         encryption_service=encryption_service,
                         db_session=db,
-                        plan_features=plan_features
+                        plan_features=plan_features,
                     )
 
-                    if result['success']:
+                    if result["success"]:
                         self.processed_count += 1
                         logger.info(
                             f"Video optimization complete: {file_name} "
                             f"[action={result['action']}, duration={result.get('duration_seconds', 0):.1f}s]"
                         )
-                    elif result.get('action') == 'rejected':
+                    elif result.get("action") == "rejected":
                         # Transcode rejected by size/duration policy is expected,
                         # not an error. The poster-frame thumbnail path may still
                         # have succeeded independently.
@@ -328,12 +325,11 @@ class VideoProcessingWorker:
                 try:
                     async with async_session() as db:
                         from sqlalchemy import select
-                        result = await db.execute(
-                            select(Object).filter(Object.id == file_id)
-                        )
+
+                        result = await db.execute(select(Object).filter(Object.id == file_id))
                         file_obj = result.scalar_one_or_none()
                         if file_obj:
-                            file_obj.video_processing_status = 'failed'
+                            file_obj.video_processing_status = "failed"
                             file_obj.video_processing_error = str(e)[:500]
                             await db.commit()
                 except Exception as db_error:

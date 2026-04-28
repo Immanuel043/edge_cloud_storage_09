@@ -5,13 +5,13 @@ Revises: 20251101_0000
 Create Date: 2025-11-08
 
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '20251108_0000'
-down_revision = '20251101_0000'
+revision = "20251108_0000"
+down_revision = "20251101_0000"
 branch_labels = None
 depends_on = None
 
@@ -25,7 +25,9 @@ def upgrade():
     op.execute("ALTER TABLE objects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE")
 
     # Create index for trash queries
-    op.execute("CREATE INDEX IF NOT EXISTS idx_objects_is_deleted_deleted_at ON objects(is_deleted, deleted_at)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_objects_is_deleted_deleted_at ON objects(is_deleted, deleted_at)"
+    )
 
 
 def downgrade():

@@ -13,20 +13,24 @@ Handles encryption key rotation lifecycle:
 This service ensures zero-downtime key rotation with comprehensive audit logging.
 """
 
-import logging
 import asyncio
-from typing import Optional, List, Dict
+import logging
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 from uuid import UUID, uuid4
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, func
 
-from ..models.database import (
-    EncryptionKeyVersion, KeyRotationHistory, DataReencryptionQueue,
-    Object, User
-)
-from .encryption_enhanced import enhanced_encryption_service, KeyVersion
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..database import get_db
+from ..models.database import (
+    DataReencryptionQueue,
+    EncryptionKeyVersion,
+    KeyRotationHistory,
+    Object,
+    User,
+)
+from .encryption_enhanced import KeyVersion, enhanced_encryption_service
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +59,12 @@ class KeyRotationService:
         )
         return result.scalar_one_or_none()
 
-    async def get_key_version(self, db: AsyncSession, version: int) -> Optional[EncryptionKeyVersion]:
+    async def get_key_version(
+        self, db: AsyncSession, version: int
+    ) -> Optional[EncryptionKeyVersion]:
         """Get a specific key version by number"""
         result = await db.execute(
-            select(EncryptionKeyVersion)
-            .filter(EncryptionKeyVersion.version == version)
+            select(EncryptionKeyVersion).filter(EncryptionKeyVersion.version == version)
         )
         return result.scalar_one_or_none()
 
@@ -69,7 +74,7 @@ class KeyRotationService:
         new_master_key: bytes,
         user_id: UUID,
         rotation_type: str = "scheduled",
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
     ) -> KeyRotationHistory:
         """
         Initiate a new key rotation
@@ -116,10 +121,7 @@ class KeyRotationService:
             rotated_by_user_id=user_id,
             predecessor_version=old_version,
             objects_encrypted=0,
-            metadata={
-                "rotation_type": rotation_type,
-                "reason": reason
-            }
+            metadata={"rotation_type": rotation_type, "reason": reason},
         )
         db.add(new_key)
 
@@ -130,9 +132,7 @@ class KeyRotationService:
         # Count objects encrypted with old key
         # For simplicity, we assume all existing objects use the old key
         # In production, you'd track key_version on each Object
-        result = await db.execute(
-            select(func.count(Object.id))
-        )
+        result = await db.execute(select(func.count(Object.id)))
         objects_count = result.scalar() or 0
 
         # Create rotation history record
@@ -148,9 +148,7 @@ class KeyRotationService:
             objects_reencrypted=0,
             reencryption_progress=0.0,
             reason=reason,
-            metadata={
-                "started_at": datetime.utcnow().isoformat()
-            }
+            metadata={"started_at": datetime.utcnow().isoformat()},
         )
         db.add(rotation)
 
@@ -171,10 +169,7 @@ class KeyRotationService:
         return rotation
 
     async def _queue_objects_for_reencryption(
-        self,
-        rotation_id: UUID,
-        old_version: int,
-        new_version: int
+        self, rotation_id: UUID, old_version: int, new_version: int
     ):
         """
         Queue all existing objects for re-encryption (background task)
@@ -188,11 +183,7 @@ class KeyRotationService:
                 offset = 0
 
                 while True:
-                    result = await db.execute(
-                        select(Object.id)
-                        .limit(batch_size)
-                        .offset(offset)
-                    )
+                    result = await db.execute(select(Object.id).limit(batch_size).offset(offset))
                     object_ids = [row[0] for row in result.fetchall()]
 
                     if not object_ids:
@@ -210,7 +201,7 @@ class KeyRotationService:
                             status="pending",
                             priority=5,  # Normal priority
                             queued_at=datetime.utcnow(),
-                            metadata={}
+                            metadata={},
                         )
                         for obj_id in object_ids
                     ]
@@ -225,9 +216,7 @@ class KeyRotationService:
 
                     offset += batch_size
 
-                logger.info(
-                    f"Finished queuing objects for rotation {rotation_id}"
-                )
+                logger.info(f"Finished queuing objects for rotation {rotation_id}")
 
             except Exception as e:
                 logger.error(f"Error queuing objects for re-encryption: {e}")
@@ -236,10 +225,7 @@ class KeyRotationService:
                 await db.close()
 
     async def process_reencryption_queue(
-        self,
-        db: AsyncSession,
-        batch_size: int = 10,
-        max_duration_seconds: int = 300
+        self, db: AsyncSession, batch_size: int = 10, max_duration_seconds: int = 300
     ) -> Dict:
         """
         Process the re-encryption queue
@@ -273,12 +259,11 @@ class KeyRotationService:
                 .filter(
                     and_(
                         DataReencryptionQueue.status == "pending",
-                        DataReencryptionQueue.retry_count < DataReencryptionQueue.max_retries
+                        DataReencryptionQueue.retry_count < DataReencryptionQueue.max_retries,
                     )
                 )
                 .order_by(
-                    DataReencryptionQueue.priority.desc(),
-                    DataReencryptionQueue.queued_at.asc()
+                    DataReencryptionQueue.priority.desc(), DataReencryptionQueue.queued_at.asc()
                 )
                 .limit(batch_size)
             )
@@ -315,17 +300,13 @@ class KeyRotationService:
             "processed": processed,
             "succeeded": succeeded,
             "failed": failed,
-            "duration_seconds": (datetime.utcnow() - start_time).total_seconds()
+            "duration_seconds": (datetime.utcnow() - start_time).total_seconds(),
         }
 
         logger.info(f"Re-encryption queue processing complete: {stats}")
         return stats
 
-    async def _reencrypt_object(
-        self,
-        db: AsyncSession,
-        queue_item: DataReencryptionQueue
-    ) -> bool:
+    async def _reencrypt_object(self, db: AsyncSession, queue_item: DataReencryptionQueue) -> bool:
         """
         Re-encrypt a single object with the new key
 
@@ -343,9 +324,7 @@ class KeyRotationService:
             await db.commit()
 
             # Get the object
-            result = await db.execute(
-                select(Object).filter(Object.id == queue_item.object_id)
-            )
+            result = await db.execute(select(Object).filter(Object.id == queue_item.object_id))
             obj = result.scalar_one_or_none()
 
             if not obj:
@@ -394,19 +373,14 @@ class KeyRotationService:
             await db.commit()
             return False
 
-    async def _update_rotation_progress(
-        self,
-        db: AsyncSession,
-        rotation_id: UUID
-    ):
+    async def _update_rotation_progress(self, db: AsyncSession, rotation_id: UUID):
         """Update the progress of a rotation operation"""
         # Count completed items
         result = await db.execute(
-            select(func.count(DataReencryptionQueue.id))
-            .filter(
+            select(func.count(DataReencryptionQueue.id)).filter(
                 and_(
                     DataReencryptionQueue.rotation_id == rotation_id,
-                    DataReencryptionQueue.status == "completed"
+                    DataReencryptionQueue.status == "completed",
                 )
             )
         )
@@ -414,8 +388,7 @@ class KeyRotationService:
 
         # Update rotation record
         result = await db.execute(
-            select(KeyRotationHistory)
-            .filter(KeyRotationHistory.id == rotation_id)
+            select(KeyRotationHistory).filter(KeyRotationHistory.id == rotation_id)
         )
         rotation = result.scalar_one_or_none()
 
@@ -431,11 +404,7 @@ class KeyRotationService:
 
             await db.commit()
 
-    async def get_rotation_status(
-        self,
-        db: AsyncSession,
-        rotation_id: UUID
-    ) -> Dict:
+    async def get_rotation_status(self, db: AsyncSession, rotation_id: UUID) -> Dict:
         """
         Get the current status of a rotation operation
 
@@ -443,8 +412,7 @@ class KeyRotationService:
             Dict with rotation status, progress, and statistics
         """
         result = await db.execute(
-            select(KeyRotationHistory)
-            .filter(KeyRotationHistory.id == rotation_id)
+            select(KeyRotationHistory).filter(KeyRotationHistory.id == rotation_id)
         )
         rotation = result.scalar_one_or_none()
 
@@ -454,8 +422,7 @@ class KeyRotationService:
         # Get queue statistics
         result = await db.execute(
             select(
-                DataReencryptionQueue.status,
-                func.count(DataReencryptionQueue.id).label('count')
+                DataReencryptionQueue.status, func.count(DataReencryptionQueue.id).label("count")
             )
             .filter(DataReencryptionQueue.rotation_id == rotation_id)
             .group_by(DataReencryptionQueue.status)
@@ -477,15 +444,10 @@ class KeyRotationService:
             },
             "queue_status": queue_stats,
             "errors": rotation.errors_encountered,
-            "reason": rotation.reason
+            "reason": rotation.reason,
         }
 
-    async def retire_old_key_version(
-        self,
-        db: AsyncSession,
-        version: int,
-        user_id: UUID
-    ):
+    async def retire_old_key_version(self, db: AsyncSession, version: int, user_id: UUID):
         """
         Retire an old key version (after all data has been re-encrypted)
 
@@ -504,11 +466,10 @@ class KeyRotationService:
 
         # Check if any objects still use this key
         result = await db.execute(
-            select(func.count(DataReencryptionQueue.id))
-            .filter(
+            select(func.count(DataReencryptionQueue.id)).filter(
                 and_(
                     DataReencryptionQueue.current_key_version == version,
-                    DataReencryptionQueue.status.in_(["pending", "in_progress"])
+                    DataReencryptionQueue.status.in_(["pending", "in_progress"]),
                 )
             )
         )

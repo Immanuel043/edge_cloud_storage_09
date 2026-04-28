@@ -6,12 +6,13 @@ which uses Redis + Lua scripts for atomic operations and includes
 proper X-RateLimit-* headers in responses.
 """
 
+import logging
 from typing import Callable, Optional
+
 from fastapi import Request, Response
 from fastapi_limiter.depends import RateLimiter
-from jose import jwt, JWTError
+from jose import JWTError, jwt
 from slowapi.util import get_remote_address
-import logging
 
 from ..config import settings
 
@@ -114,9 +115,7 @@ async def get_user_or_ip_identifier(request: Request) -> str:
     )
     if token:
         try:
-            payload = jwt.decode(
-                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-            )
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             if payload.get("type") is None:
                 sub = payload.get("sub")
                 if sub:
@@ -164,8 +163,8 @@ async def rate_limit_callback(request: Request, response: Response, pexpire: int
         detail={
             "error": "rate_limit_exceeded",
             "message": "Too many requests. Please try again later.",
-            "retry_after": retry_after
-        }
+            "retry_after": retry_after,
+        },
     )
 
 
@@ -200,18 +199,18 @@ api_write_limiter = lambda: create_rate_limiter(**RateLimitConfig.API_WRITE)
 
 
 __all__ = [
-    'RateLimitConfig',
-    'create_rate_limiter',
-    'create_ip_rate_limiter',
-    'get_user_identifier',
-    'get_user_or_ip_identifier',
-    'get_ip_identifier',
-    'rate_limit_callback',
-    'auth_login_limiter',
-    'auth_register_limiter',
-    'auth_password_reset_limiter',
-    'file_upload_limiter',
-    'file_download_limiter',
-    'api_read_limiter',
-    'api_write_limiter',
+    "RateLimitConfig",
+    "create_rate_limiter",
+    "create_ip_rate_limiter",
+    "get_user_identifier",
+    "get_user_or_ip_identifier",
+    "get_ip_identifier",
+    "rate_limit_callback",
+    "auth_login_limiter",
+    "auth_register_limiter",
+    "auth_password_reset_limiter",
+    "file_upload_limiter",
+    "file_download_limiter",
+    "api_read_limiter",
+    "api_write_limiter",
 ]

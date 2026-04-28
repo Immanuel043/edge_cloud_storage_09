@@ -6,14 +6,15 @@ Admin API for Bandwidth Management
 Endpoints for viewing and managing user/group bandwidth limits.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
-from typing import List, Optional
-from pydantic import BaseModel
 from datetime import datetime, timedelta
+from typing import List, Optional
 
-from ..dependencies import get_db, get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_current_user, get_db
 from ..models.database import User
 from ..services.bandwidth_throttle import bandwidth_throttle_service
 
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 # ============================================================================
 # SCHEMAS
 # ============================================================================
+
 
 class BandwidthLimitUpdate(BaseModel):
     user_id: str
@@ -49,19 +51,18 @@ class BandwidthStats(BaseModel):
 # ADMIN AUTHENTICATION
 # ============================================================================
 
+
 async def require_admin(current_user: User = Depends(get_current_user)):
     """Require admin role"""
-    if not hasattr(current_user, 'plan_type') or current_user.plan_type != 'admin':
-        raise HTTPException(
-            status_code=403,
-            detail="Admin access required"
-        )
+    if not hasattr(current_user, "plan_type") or current_user.plan_type != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
 
 # ============================================================================
 # BANDWIDTH MANAGEMENT ENDPOINTS
 # ============================================================================
+
 
 @router.get("/bandwidth/stats", response_model=BandwidthStats)
 async def get_bandwidth_stats(
@@ -123,9 +124,7 @@ async def get_user_bandwidth_info(
         - Active transfers (if any)
     """
     # Get user from database
-    result = await db.execute(
-        select(User).where(User.id == user_id)
-    )
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if not user:
@@ -135,14 +134,17 @@ async def get_user_bandwidth_info(
     usage_stats = await bandwidth_throttle_service.get_usage_stats(user_id)
 
     # Get historical usage
-    usage_result = await db.execute(text("""
+    usage_result = await db.execute(
+        text("""
         SELECT
             COALESCE(SUM(bytes_uploaded), 0) as total_uploaded,
             COALESCE(SUM(bytes_downloaded), 0) as total_downloaded
         FROM bandwidth_usage
         WHERE user_id = :user_id
           AND period_start > NOW() - INTERVAL '30 days'
-    """), {"user_id": user_id})
+    """),
+        {"user_id": user_id},
+    )
 
     historical = usage_result.first()
 
@@ -157,7 +159,7 @@ async def get_user_bandwidth_info(
             "total_uploaded": historical.total_uploaded if historical else 0,
             "total_downloaded": historical.total_downloaded if historical else 0,
             "period_days": 30,
-        }
+        },
     }
 
 
@@ -178,9 +180,7 @@ async def set_user_bandwidth_limit(
     Requires admin role.
     """
     # Validate user exists
-    result = await db.execute(
-        select(User).where(User.id == update.user_id)
-    )
+    result = await db.execute(select(User).where(User.id == update.user_id))
     user = result.scalar_one_or_none()
 
     if not user:
@@ -196,10 +196,7 @@ async def set_user_bandwidth_limit(
     await db.commit()
 
     # Update runtime limit in Redis
-    await bandwidth_throttle_service.set_user_limit(
-        update.user_id,
-        update.limit_mbps
-    )
+    await bandwidth_throttle_service.set_user_limit(update.user_id, update.limit_mbps)
 
     return {
         "status": "success",
@@ -221,9 +218,7 @@ async def reset_user_bandwidth_limit(
     Requires admin role.
     """
     # Validate user exists
-    result = await db.execute(
-        select(User).where(User.id == user_id)
-    )
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if not user:
@@ -260,7 +255,8 @@ async def get_bandwidth_usage_summary(
 
     Requires admin role.
     """
-    result = await db.execute(text("""
+    result = await db.execute(
+        text("""
         SELECT
             u.id,
             u.username,
@@ -274,7 +270,9 @@ async def get_bandwidth_usage_summary(
         GROUP BY u.id, u.username, u.bandwidth_limit_mbps
         ORDER BY total_transfer DESC
         LIMIT 100
-    """), {"days": days})
+    """),
+        {"days": days},
+    )
 
     users = [
         {
@@ -298,6 +296,7 @@ async def get_bandwidth_usage_summary(
 # ============================================================================
 # REAL-TIME MONITORING ENDPOINTS (NEW)
 # ============================================================================
+
 
 @router.get("/bandwidth/realtime")
 async def get_realtime_bandwidth_stats(
@@ -325,26 +324,23 @@ async def get_realtime_bandwidth_stats(
             "message": all_stats["error"],
             "active_users": 0,
             "total_streams": 0,
-            "users": []
+            "users": [],
         }
 
     users = all_stats.get("users", {})
 
     # Calculate totals
-    total_streams = sum(
-        user.get("stream_count", 0)
-        for user in users.values()
-    )
+    total_streams = sum(user.get("stream_count", 0) for user in users.values())
 
     # Find users at high utilization (>80%)
     high_utilization_users = [
-        user_id for user_id, stats in users.items()
-        if stats.get("utilization_percent", 0) > 80
+        user_id for user_id, stats in users.items() if stats.get("utilization_percent", 0) > 80
     ]
 
     # Find users at stream limit
     at_stream_limit = [
-        user_id for user_id, stats in users.items()
+        user_id
+        for user_id, stats in users.items()
         if stats.get("stream_count", 0) >= stats.get("max_streams", 5)
     ]
 
@@ -355,7 +351,7 @@ async def get_realtime_bandwidth_stats(
         "total_streams": total_streams,
         "high_utilization_users": high_utilization_users,
         "users_at_stream_limit": at_stream_limit,
-        "users": users
+        "users": users,
     }
 
 
@@ -377,12 +373,7 @@ async def get_active_streams(
 
     redis_client = await get_redis()
     if not redis_client:
-        return {
-            "status": "error",
-            "message": "Redis unavailable",
-            "total_streams": 0,
-            "users": []
-        }
+        return {"status": "error", "message": "Redis unavailable", "total_streams": 0, "users": []}
 
     users_streams = {}
     total_streams = 0
@@ -399,17 +390,12 @@ async def get_active_streams(
                 users_streams[user_id] = {
                     "stream_count": count,
                     "max_streams": 5,
-                    "at_limit": count >= 5
+                    "at_limit": count >= 5,
                 }
                 total_streams += count
 
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e),
-            "total_streams": 0,
-            "users": {}
-        }
+        return {"status": "error", "message": str(e), "total_streams": 0, "users": {}}
 
     # Find users at limit
     at_limit = [uid for uid, data in users_streams.items() if data["at_limit"]]
@@ -420,7 +406,7 @@ async def get_active_streams(
         "total_streams": total_streams,
         "active_users": len(users_streams),
         "users_at_limit": at_limit,
-        "users": users_streams
+        "users": users_streams,
     }
 
 
@@ -443,17 +429,13 @@ async def set_bulk_bandwidth_limits(
     for update in updates:
         try:
             # Validate user exists
-            result = await db.execute(
-                select(User).where(User.id == update.user_id)
-            )
+            result = await db.execute(select(User).where(User.id == update.user_id))
             user = result.scalar_one_or_none()
 
             if not user:
-                results.append({
-                    "user_id": update.user_id,
-                    "status": "error",
-                    "message": "User not found"
-                })
+                results.append(
+                    {"user_id": update.user_id, "status": "error", "message": "User not found"}
+                )
                 continue
 
             # Update database
@@ -464,23 +446,18 @@ async def set_bulk_bandwidth_limits(
                 user.bandwidth_burst_mbps = int(update.limit_mbps * 2)
 
             # Update runtime limit in Redis
-            await bandwidth_throttle_service.set_user_limit(
-                update.user_id,
-                update.limit_mbps
+            await bandwidth_throttle_service.set_user_limit(update.user_id, update.limit_mbps)
+
+            results.append(
+                {
+                    "user_id": update.user_id,
+                    "status": "success",
+                    "new_limit_mbps": update.limit_mbps,
+                }
             )
 
-            results.append({
-                "user_id": update.user_id,
-                "status": "success",
-                "new_limit_mbps": update.limit_mbps
-            })
-
         except Exception as e:
-            results.append({
-                "user_id": update.user_id,
-                "status": "error",
-                "message": str(e)
-            })
+            results.append({"user_id": update.user_id, "status": "error", "message": str(e)})
 
     await db.commit()
 
@@ -491,5 +468,5 @@ async def set_bulk_bandwidth_limits(
         "total_updates": len(updates),
         "successful": success_count,
         "failed": len(updates) - success_count,
-        "results": results
+        "results": results,
     }

@@ -5,17 +5,19 @@ This client communicates with the Rust data plane service over Unix Domain Socke
 for high-performance chunk processing (encryption, compression, storage).
 """
 
-import os
-import time
-import json
-import socket
 import asyncio
 import base64
-from typing import Optional, Dict, Any, AsyncGenerator
+import json
+import logging
+import os
+import socket
+import time
+from typing import Any, AsyncGenerator, Dict, Optional
 from urllib.parse import quote
+
 import httpx
 from httpx import AsyncClient, Timeout
-import logging
+
 from ..utils.executors import run_in_heavy_pool
 
 logger = logging.getLogger(__name__)
@@ -27,18 +29,26 @@ def _build_batch_manifest(blocks: list, user_id: str, should_compress: bool):
     data_size = 0
     for blk in blocks:
         length = len(blk["block_data"])
-        manifest_blocks.append({
-            "block_hash": blk["block_hash"],
-            "cas_path": blk["cas_path"],
-            "offset": data_size,
-            "length": length,
-        })
+        manifest_blocks.append(
+            {
+                "block_hash": blk["block_hash"],
+                "cas_path": blk["cas_path"],
+                "offset": data_size,
+                "length": length,
+            }
+        )
         data_size += length
-    manifest_line = json.dumps({
-        "user_id": user_id,
-        "should_compress": should_compress,
-        "blocks": manifest_blocks,
-    }, separators=(",", ":")).encode("utf-8") + b"\n"
+    manifest_line = (
+        json.dumps(
+            {
+                "user_id": user_id,
+                "should_compress": should_compress,
+                "blocks": manifest_blocks,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     return manifest_line, data_size
 
 
@@ -125,7 +135,7 @@ class RustDataPlaneClient:
         try:
             response = await self.client.post(
                 "/upload",
-                content=b'\x00' * 1024,
+                content=b"\x00" * 1024,
                 headers={
                     "x-mode": "non-zk",
                     "x-file-id": "__warmup__",
@@ -359,9 +369,7 @@ class RustDataPlaneClient:
             return response.content
 
         except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Chunk download failed: {e.response.status_code} - {e.response.text}"
-            )
+            logger.error(f"Chunk download failed: {e.response.status_code} - {e.response.text}")
             raise
         except Exception as e:
             logger.error(f"Chunk download error: {e}")
@@ -486,7 +494,9 @@ class RustDataPlaneClient:
 
         try:
             async with self.client.stream(
-                "POST", "/bulk-decrypt", json=body,
+                "POST",
+                "/bulk-decrypt",
+                json=body,
                 headers={"content-type": "application/json"},
                 timeout=Timeout(120.0),
             ) as response:
@@ -511,7 +521,7 @@ class RustDataPlaneClient:
                                 f"Rust response overruns x-plaintext-size: "
                                 f"{offset + n} > {plaintext_size}"
                             )
-                        view[offset:offset + n] = chunk
+                        view[offset : offset + n] = chunk
                         offset += n
                         bytes_since_yield += n
                         if bytes_since_yield >= 4_000_000:
@@ -539,7 +549,8 @@ class RustDataPlaneClient:
 
             logger.debug(
                 "Bulk decrypt via Rust: %d chunks, plaintext_size=%s",
-                len(chunks), plaintext_size_str or "?",
+                len(chunks),
+                plaintext_size_str or "?",
             )
             return result
 
@@ -582,7 +593,9 @@ class RustDataPlaneClient:
         t0 = time.monotonic()
         try:
             async with self.client.stream(
-                "POST", "/bulk-decrypt", json=body,
+                "POST",
+                "/bulk-decrypt",
+                json=body,
                 headers={"content-type": "application/json"},
                 timeout=Timeout(120.0),
             ) as response:
@@ -594,9 +607,7 @@ class RustDataPlaneClient:
 
                 # Pre-flight check 1: header must be present
                 if not plaintext_size_str or not plaintext_size_str.isdigit():
-                    raise ValueError(
-                        "bulk_decrypt_into requires x-plaintext-size header"
-                    )
+                    raise ValueError("bulk_decrypt_into requires x-plaintext-size header")
 
                 plaintext_size = int(plaintext_size_str)
 
@@ -617,7 +628,7 @@ class RustDataPlaneClient:
                             f"Rust sent more bytes than x-plaintext-size: "
                             f"{bytes_written + n} > {plaintext_size}"
                         )
-                    target[write_pos:write_pos + n] = chunk
+                    target[write_pos : write_pos + n] = chunk
                     write_pos += n
                     bytes_written += n
                     await asyncio.sleep(0)  # yield every 1MB
@@ -625,14 +636,15 @@ class RustDataPlaneClient:
                 # Verify complete read
                 if bytes_written != plaintext_size:
                     raise RuntimeError(
-                        f"short read: expected {plaintext_size} bytes, "
-                        f"got {bytes_written}"
+                        f"short read: expected {plaintext_size} bytes, " f"got {bytes_written}"
                     )
 
             elapsed = time.monotonic() - t0
             logger.info(
                 "bulk_decrypt_into: chunks=%d bytes_written=%d elapsed=%.1fs",
-                len(chunks), bytes_written, elapsed,
+                len(chunks),
+                bytes_written,
+                elapsed,
             )
             return bytes_written
 
@@ -641,7 +653,8 @@ class RustDataPlaneClient:
         except httpx.HTTPStatusError as e:
             logger.error(
                 "bulk_decrypt_into Rust call failed: %d - %s",
-                e.response.status_code, e.response.text,
+                e.response.status_code,
+                e.response.text,
             )
             raise
         except Exception as e:
@@ -755,7 +768,9 @@ class RustDataPlaneClient:
 
             logger.info(
                 "dedup_chunk_batch: http=%.1fs body_size=%.1fMB blocks=%d",
-                t_post - t0, total_size / (1024 * 1024), len(blocks),
+                t_post - t0,
+                total_size / (1024 * 1024),
+                len(blocks),
             )
             return result
 

@@ -1,12 +1,15 @@
 # services/storage-service/app/services/activity.py
 """Activity logging service"""
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..models.database import ActivityLog
+
 
 class ActivityService:
     """Handles activity logging"""
-    
+
     @staticmethod
     async def log_activity(
         db: AsyncSession,
@@ -28,5 +31,6 @@ class ActivityService:
         db.add(activity)
         await db.commit()
         return activity
+
 
 activity_service = ActivityService()

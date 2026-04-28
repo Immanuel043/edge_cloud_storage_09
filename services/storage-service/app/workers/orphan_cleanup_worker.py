@@ -9,16 +9,17 @@ Runs every 5 minutes inside the main application lifespan.
 """
 
 import asyncio
-import os
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, delete as sa_delete
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.database import UploadSession
 from ..database import async_session, get_redis
+from ..models.database import UploadSession
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,7 @@ class OrphanCleanupWorker:
         async with async_session() as db:
             # Find expired sessions
             result = await db.execute(
-                select(UploadSession).where(
-                    UploadSession.expires_at < datetime.utcnow()
-                )
+                select(UploadSession).where(UploadSession.expires_at < datetime.utcnow())
             )
             expired_sessions = result.scalars().all()
 

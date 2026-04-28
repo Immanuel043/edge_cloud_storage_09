@@ -65,9 +65,7 @@ class ResolvedFileView:
             logger.warning("Unmigrated deduplicated_reference: %s", file_obj.id)
             ref_id = file_obj.dedup_info.get("reference_file_id")
             if ref_id:
-                ref_result = await db.execute(
-                    select(Object).filter(Object.id == ref_id)
-                )
+                ref_result = await db.execute(select(Object).filter(Object.id == ref_id))
                 ref_file = ref_result.scalar_one_or_none()
                 if ref_file:
                     enc_key = ref_file.encryption_key

@@ -1,18 +1,20 @@
 """
 Trash Cleanup Worker - Automatically deletes files older than 30 days from trash
 """
+
 import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.database import Object, ActivityLog
 from dependencies import get_db_session, get_redis_client
+from models.database import ActivityLog, Object
 
 
 async def cleanup_old_trash_files():
@@ -30,10 +32,7 @@ async def cleanup_old_trash_files():
 
         # Find files to delete
         result = await db.execute(
-            select(Object).filter(
-                Object.is_deleted == True,
-                Object.deleted_at < cutoff_date
-            )
+            select(Object).filter(Object.is_deleted == True, Object.deleted_at < cutoff_date)
         )
         files_to_delete = result.scalars().all()
 
@@ -93,7 +92,9 @@ async def cleanup_old_trash_files():
                 await db.delete(file_obj)
                 deleted_count += 1
 
-                print(f"Deleted: {file_obj.file_name} (ID: {file_obj.id}, Size: {file_obj.file_size} bytes)")
+                print(
+                    f"Deleted: {file_obj.file_name} (ID: {file_obj.id}, Size: {file_obj.file_size} bytes)"
+                )
 
             except Exception as e:
                 print(f"Failed to delete file {file_obj.id}: {e}")
@@ -109,8 +110,8 @@ async def cleanup_old_trash_files():
             meta_data={
                 "deleted_count": deleted_count,
                 "freed_space": freed_space,
-                "cutoff_date": cutoff_date.isoformat()
-            }
+                "cutoff_date": cutoff_date.isoformat(),
+            },
         )
         db.add(activity)
 
@@ -124,6 +125,7 @@ async def cleanup_old_trash_files():
         await db.rollback()
         print(f"[{datetime.utcnow()}] Error during trash cleanup: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         await db.close()

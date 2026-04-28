@@ -8,14 +8,15 @@ Strategy:
 Both paths return a FastAPI Response with correct Content-Length.
 """
 
-import io
-import os
 import base64
-import zipfile
-import tempfile
+import io
 import logging
-from typing import List, Tuple, Optional
-from fastapi.responses import Response, FileResponse
+import os
+import tempfile
+import zipfile
+from typing import List, Optional, Tuple
+
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,11 @@ async def _read_file_content(file_obj, encryption_service) -> Optional[bytes]:
         if file_obj.storage_type == "inline":
             encrypted_data = base64.b64decode(file_obj.storage_key)
             content = encryption_service.decrypt_file(encrypted_data, file_key)
-        elif file_obj.storage_type == "single" and file_obj.object_path and os.path.exists(file_obj.object_path):
+        elif (
+            file_obj.storage_type == "single"
+            and file_obj.object_path
+            and os.path.exists(file_obj.object_path)
+        ):
             with open(file_obj.object_path, "rb") as f:
                 encrypted_data = f.read()
             content = encryption_service.decrypt_file(encrypted_data, file_key)
@@ -51,12 +56,19 @@ async def _read_file_content(file_obj, encryption_service) -> Optional[bytes]:
             if content is None:
                 return None
         else:
-            logger.warning(f"Skipping file {file_obj.id} — unsupported storage type '{file_obj.storage_type}'")
+            logger.warning(
+                f"Skipping file {file_obj.id} — unsupported storage type '{file_obj.storage_type}'"
+            )
             return None
 
         # Handle compression
-        if file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False):
+        if (
+            file_obj.file_metadata
+            and isinstance(file_obj.file_metadata, dict)
+            and file_obj.file_metadata.get("compressed", False)
+        ):
             from .compression import compressor
+
             content = compressor.decompress(content)
 
         return content
@@ -97,6 +109,7 @@ async def _read_chunked_file(file_obj, file_key, encryption_service) -> Optional
             # Decompress block if needed
             if block_meta.get("compressed", False):
                 from .compression import compressor
+
                 decrypted = compressor.decompress(decrypted)
 
             parts.append(decrypted)
@@ -149,7 +162,10 @@ async def _build_zip_in_memory(
 
     if files_added == 0:
         from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="Failed to create ZIP — no files could be processed")
+
+        raise HTTPException(
+            status_code=500, detail="Failed to create ZIP — no files could be processed"
+        )
 
     return Response(
         content=zip_bytes,
@@ -182,7 +198,10 @@ async def _build_zip_on_disk(
 
         if files_added == 0:
             from fastapi import HTTPException
-            raise HTTPException(status_code=500, detail="Failed to create ZIP — no files could be processed")
+
+            raise HTTPException(
+                status_code=500, detail="Failed to create ZIP — no files could be processed"
+            )
 
         zip_size = os.path.getsize(tmp_path)
         logger.info(f"Built ZIP on disk: {zip_filename} ({zip_size} bytes, {files_added} files)")

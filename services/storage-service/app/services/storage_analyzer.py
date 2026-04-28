@@ -10,16 +10,15 @@ Analyzes user storage patterns to identify optimization opportunities:
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, text
 from uuid import UUID
-import time
 
-from ..models.database import (
-    User, Object, StorageAnalysis, FileVersion
-)
+from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.database import FileVersion, Object, StorageAnalysis, User
 
 logger = logging.getLogger(__name__)
 
@@ -31,37 +30,38 @@ class StorageAnalyzerService:
 
     # Compressible MIME types (text-based files)
     COMPRESSIBLE_TYPES = {
-        'text/', 'application/json', 'application/xml',
-        'application/javascript', 'application/x-javascript',
-        'application/ecmascript', 'text/css', 'text/csv',
-        'text/html', 'text/plain', 'text/xml',
-        'application/sql', 'application/x-sql'
+        "text/",
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-javascript",
+        "application/ecmascript",
+        "text/css",
+        "text/csv",
+        "text/html",
+        "text/plain",
+        "text/xml",
+        "application/sql",
+        "application/x-sql",
     }
 
     # Typical compression ratios by type
     COMPRESSION_RATIOS = {
-        'text/': 0.30,  # 70% compression
-        'application/json': 0.25,
-        'application/xml': 0.30,
-        'application/javascript': 0.35,
-        'default': 0.40  # 60% compression
+        "text/": 0.30,  # 70% compression
+        "application/json": 0.25,
+        "application/xml": 0.30,
+        "application/javascript": 0.35,
+        "default": 0.40,  # 60% compression
     }
 
     # Age thresholds for analysis (in days)
-    AGE_THRESHOLDS = {
-        '30d': 30,
-        '90d': 90,
-        '180d': 180,
-        '365d': 365
-    }
+    AGE_THRESHOLDS = {"30d": 30, "90d": 90, "180d": 180, "365d": 365}
 
     def __init__(self):
         pass
 
     async def analyze_user_storage(
-        self,
-        user_id: UUID,
-        db: AsyncSession
+        self, user_id: UUID, db: AsyncSession
     ) -> Optional[StorageAnalysis]:
         """
         Perform comprehensive storage analysis for a user
@@ -79,9 +79,7 @@ class StorageAnalyzerService:
             logger.info(f"Starting storage analysis for user {user_id}")
 
             # Get user
-            user_result = await db.execute(
-                select(User).where(User.id == user_id)
-            )
+            user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
             if not user:
                 logger.error(f"User {user_id} not found")
@@ -91,9 +89,7 @@ class StorageAnalyzerService:
             analysis = StorageAnalysis(user_id=user_id)
 
             # Get all files for user
-            files_result = await db.execute(
-                select(Object).where(Object.user_id == user_id)
-            )
+            files_result = await db.execute(select(Object).where(Object.user_id == user_id))
             files = files_result.scalars().all()
 
             if not files:
@@ -127,9 +123,9 @@ class StorageAnalyzerService:
 
             # Calculate total potential savings
             analysis.total_potential_savings = (
-                (analysis.estimated_savings_compression or 0) +
-                (analysis.estimated_savings_tiering or 0) +
-                (analysis.duplicate_size or 0)
+                (analysis.estimated_savings_compression or 0)
+                + (analysis.estimated_savings_tiering or 0)
+                + (analysis.duplicate_size or 0)
             )
 
             # Record duration
@@ -148,32 +144,24 @@ class StorageAnalyzerService:
             logger.error(f"Failed to analyze storage for user {user_id}: {e}", exc_info=True)
             return None
 
-    async def _analyze_tier_distribution(
-        self,
-        files: List[Object],
-        analysis: StorageAnalysis
-    ):
+    async def _analyze_tier_distribution(self, files: List[Object], analysis: StorageAnalysis):
         """Analyze distribution of files across storage tiers"""
-        tier_counts = {'cache': 0, 'warm': 0, 'cold': 0}
-        tier_sizes = {'cache': 0, 'warm': 0, 'cold': 0}
+        tier_counts = {"cache": 0, "warm": 0, "cold": 0}
+        tier_sizes = {"cache": 0, "warm": 0, "cold": 0}
 
         for file in files:
-            tier = file.storage_tier or 'warm'
+            tier = file.storage_tier or "warm"
             tier_counts[tier] = tier_counts.get(tier, 0) + 1
             tier_sizes[tier] = tier_sizes.get(tier, 0) + (file.file_size or 0)
 
-        analysis.cache_files = tier_counts.get('cache', 0)
-        analysis.cache_size = tier_sizes.get('cache', 0)
-        analysis.warm_files = tier_counts.get('warm', 0)
-        analysis.warm_size = tier_sizes.get('warm', 0)
-        analysis.cold_files = tier_counts.get('cold', 0)
-        analysis.cold_size = tier_sizes.get('cold', 0)
+        analysis.cache_files = tier_counts.get("cache", 0)
+        analysis.cache_size = tier_sizes.get("cache", 0)
+        analysis.warm_files = tier_counts.get("warm", 0)
+        analysis.warm_size = tier_sizes.get("warm", 0)
+        analysis.cold_files = tier_counts.get("cold", 0)
+        analysis.cold_size = tier_sizes.get("cold", 0)
 
-    async def _analyze_access_patterns(
-        self,
-        files: List[Object],
-        analysis: StorageAnalysis
-    ):
+    async def _analyze_access_patterns(self, files: List[Object], analysis: StorageAnalysis):
         """Analyze file access patterns"""
         total_accesses = 0
         never_accessed_files = 0
@@ -182,7 +170,7 @@ class StorageAnalyzerService:
         accessed_once_size = 0
 
         for file in files:
-            access_count = getattr(file, 'access_count', 0) or 0
+            access_count = getattr(file, "access_count", 0) or 0
             total_accesses += access_count
 
             if access_count == 0:
@@ -198,11 +186,7 @@ class StorageAnalyzerService:
         analysis.files_accessed_once = accessed_once_files
         analysis.size_accessed_once = accessed_once_size
 
-    async def _analyze_file_age(
-        self,
-        files: List[Object],
-        analysis: StorageAnalysis
-    ):
+    async def _analyze_file_age(self, files: List[Object], analysis: StorageAnalysis):
         """Analyze file age distribution"""
         now = datetime.utcnow()
 
@@ -237,9 +221,7 @@ class StorageAnalyzerService:
         analysis.size_older_180d = size_180d
 
     async def _analyze_compression_opportunities(
-        self,
-        files: List[Object],
-        analysis: StorageAnalysis
+        self, files: List[Object], analysis: StorageAnalysis
     ):
         """Identify files that could benefit from compression"""
         compressible_files = 0
@@ -248,14 +230,13 @@ class StorageAnalyzerService:
 
         for file in files:
             # Skip if already compressed
-            if getattr(file, 'is_compressed', False):
+            if getattr(file, "is_compressed", False):
                 continue
 
             # Check if mime type is compressible
-            mime_type = file.mime_type or ''
+            mime_type = file.mime_type or ""
             is_compressible = any(
-                mime_type.startswith(comp_type)
-                for comp_type in self.COMPRESSIBLE_TYPES
+                mime_type.startswith(comp_type) for comp_type in self.COMPRESSIBLE_TYPES
             )
 
             if is_compressible:
@@ -276,12 +257,10 @@ class StorageAnalyzerService:
         for type_prefix, ratio in self.COMPRESSION_RATIOS.items():
             if mime_type.startswith(type_prefix):
                 return ratio
-        return self.COMPRESSION_RATIOS['default']
+        return self.COMPRESSION_RATIOS["default"]
 
     async def _analyze_tier_migration_opportunities(
-        self,
-        files: List[Object],
-        analysis: StorageAnalysis
+        self, files: List[Object], analysis: StorageAnalysis
     ):
         """
         Identify files that should be moved to cold storage
@@ -298,7 +277,7 @@ class StorageAnalyzerService:
 
         for file in files:
             # Skip if already in cold storage
-            if file.storage_tier == 'cold':
+            if file.storage_tier == "cold":
                 continue
 
             # Check if not accessed recently
@@ -307,7 +286,7 @@ class StorageAnalyzerService:
                 continue
 
             # Check access count
-            if (getattr(file, 'access_count', 0) or 0) > 5:
+            if (getattr(file, "access_count", 0) or 0) > 5:
                 continue  # Frequently accessed, keep in warm/cache
 
             # Check size (only migrate larger files)
@@ -325,10 +304,7 @@ class StorageAnalyzerService:
         analysis.estimated_savings_tiering = estimated_savings
 
     async def _analyze_duplicates(
-        self,
-        files: List[Object],
-        analysis: StorageAnalysis,
-        db: AsyncSession
+        self, files: List[Object], analysis: StorageAnalysis, db: AsyncSession
     ):
         """
         Identify duplicate files based on hash
@@ -364,10 +340,7 @@ class StorageAnalyzerService:
         analysis.duplicate_size = duplicate_size
 
     async def get_file_candidates_for_cold_storage(
-        self,
-        user_id: UUID,
-        db: AsyncSession,
-        limit: int = 100
+        self, user_id: UUID, db: AsyncSession, limit: int = 100
     ) -> List[Dict]:
         """
         Get specific files that should be moved to cold storage.
@@ -383,15 +356,12 @@ class StorageAnalyzerService:
             .where(
                 and_(
                     Object.user_id == user_id,
-                    Object.storage_tier.in_(['cache', 'warm']),
+                    Object.storage_tier.in_(["cache", "warm"]),
                     or_(
                         Object.last_accessed < threshold_date,
-                        and_(
-                            Object.last_accessed.is_(None),
-                            Object.created_at < threshold_date
-                        )
+                        and_(Object.last_accessed.is_(None), Object.created_at < threshold_date),
                     ),
-                    Object.file_size >= 1024 * 1024  # 1MB
+                    Object.file_size >= 1024 * 1024,  # 1MB
                 )
             )
             .order_by(Object.file_size.desc())
@@ -411,9 +381,9 @@ class StorageAnalyzerService:
         now = datetime.utcnow()
         return [
             {
-                'file': c,
-                'score': (now - (c.last_accessed or c.created_at)).days,
-                'scoring_method': 'age_based',
+                "file": c,
+                "score": (now - (c.last_accessed or c.created_at)).days,
+                "scoring_method": "age_based",
             }
             for c in candidates
         ]
@@ -445,8 +415,8 @@ class StorageAnalyzerService:
             )
             access_map = {
                 str(row.file_id): {
-                    'access_count': row.access_count,
-                    'last_access': row.last_access,
+                    "access_count": row.access_count,
+                    "last_access": row.last_access,
                 }
                 for row in result.all()
             }
@@ -460,38 +430,40 @@ class StorageAnalyzerService:
             fid = str(c.id)
             if fid in access_map:
                 info = access_map[fid]
-                days_since = max(1, (now - info['last_access']).days) if info['last_access'] else 180
-                count = info['access_count']
+                days_since = (
+                    max(1, (now - info["last_access"]).days) if info["last_access"] else 180
+                )
+                count = info["access_count"]
             else:
                 # No access log entries — treat as very cold
                 days_since = (now - (c.last_accessed or c.created_at)).days
                 count = 0
 
-            size_weight = min(2.0, (c.file_size or 0) / (100 * 1024 * 1024))  # 0-2 scale, cap at 200MB
+            size_weight = min(
+                2.0, (c.file_size or 0) / (100 * 1024 * 1024)
+            )  # 0-2 scale, cap at 200MB
             score = days_since * (1 / (count + 1)) * (1 + size_weight)
 
-            scored.append({
-                'file': c,
-                'score': round(score, 2),
-                'scoring_method': 'access_data',
-                'access_count': count,
-                'days_since_last_access': days_since,
-            })
+            scored.append(
+                {
+                    "file": c,
+                    "score": round(score, 2),
+                    "scoring_method": "access_data",
+                    "access_count": count,
+                    "days_since_last_access": days_since,
+                }
+            )
 
-        scored.sort(key=lambda x: x['score'], reverse=True)
+        scored.sort(key=lambda x: x["score"], reverse=True)
         return scored
 
     async def get_compressible_files(
-        self,
-        user_id: UUID,
-        db: AsyncSession,
-        limit: int = 100
+        self, user_id: UUID, db: AsyncSession, limit: int = 100
     ) -> List[Object]:
         """Get files that could be compressed"""
         # Build MIME type filter
         mime_filters = [
-            Object.mime_type.like(f'{comp_type}%')
-            for comp_type in self.COMPRESSIBLE_TYPES
+            Object.mime_type.like(f"{comp_type}%") for comp_type in self.COMPRESSIBLE_TYPES
         ]
 
         result = await db.execute(
@@ -500,7 +472,7 @@ class StorageAnalyzerService:
                 and_(
                     Object.user_id == user_id,
                     # Object.is_compressed == False,  # Commented out - is_compressed not in Object model
-                    or_(*mime_filters)
+                    or_(*mime_filters),
                 )
             )
             .order_by(Object.file_size.desc())  # Largest files first

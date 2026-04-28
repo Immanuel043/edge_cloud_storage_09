@@ -18,7 +18,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Callable, Any, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import redis.asyncio as aioredis
 
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ChunkUploadResult:
     """Result of a chunk upload attempt with ARQ."""
+
     success: bool
     chunk_index: int
     attempts: int
@@ -39,10 +40,11 @@ class ChunkUploadResult:
 @dataclass
 class ARQConfig:
     """Configuration for ARQ behavior."""
+
     max_retries: int = 3
     retry_delays: Tuple[float, ...] = (1.0, 3.0, 10.0)  # Exponential backoff delays in seconds
     verify_checksum: bool = True
-    checksum_algorithm: str = 'sha256'
+    checksum_algorithm: str = "sha256"
 
 
 class ARQUploadService:
@@ -53,12 +55,16 @@ class ARQUploadService:
     checksum verification for data integrity, and Redis-based session tracking.
     """
 
-    def __init__(self, redis_client: Optional[aioredis.Redis] = None, config: Optional[ARQConfig] = None):
+    def __init__(
+        self, redis_client: Optional[aioredis.Redis] = None, config: Optional[ARQConfig] = None
+    ):
         self.redis = redis_client
         self.config = config or ARQConfig()
 
         # In-memory retry tracking (per upload session)
-        self._retry_counts: Dict[str, Dict[int, int]] = {}  # upload_id -> {chunk_index: retry_count}
+        self._retry_counts: Dict[str, Dict[int, int]] = (
+            {}
+        )  # upload_id -> {chunk_index: retry_count}
         self._checksums: Dict[str, Dict[int, str]] = {}  # upload_id -> {chunk_index: checksum}
 
     def set_redis(self, redis_client: aioredis.Redis):
@@ -75,9 +81,9 @@ class ARQUploadService:
         Returns:
             Hex-encoded checksum string
         """
-        if self.config.checksum_algorithm == 'sha256':
+        if self.config.checksum_algorithm == "sha256":
             return hashlib.sha256(data).hexdigest()
-        elif self.config.checksum_algorithm == 'md5':
+        elif self.config.checksum_algorithm == "md5":
             return hashlib.md5(data).hexdigest()
         else:
             raise ValueError(f"Unsupported checksum algorithm: {self.config.checksum_algorithm}")
@@ -87,7 +93,7 @@ class ARQUploadService:
         chunk_data: bytes,
         chunk_index: int,
         upload_id: str,
-        upload_func: Callable[[bytes, int, str], Any]
+        upload_func: Callable[[bytes, int, str], Any],
     ) -> ChunkUploadResult:
         """
         Upload chunk with ARQ retry logic.
@@ -131,7 +137,7 @@ class ARQUploadService:
                 # Store in Redis for persistence (if available)
                 if self.redis:
                     await self._store_chunk_status(
-                        upload_id, chunk_index, 'success', checksum, attempts
+                        upload_id, chunk_index, "success", checksum, attempts
                     )
 
                 logger.info(
@@ -140,10 +146,7 @@ class ARQUploadService:
                 )
 
                 return ChunkUploadResult(
-                    success=True,
-                    chunk_index=chunk_index,
-                    attempts=attempts,
-                    checksum=checksum
+                    success=True, chunk_index=chunk_index, attempts=attempts, checksum=checksum
                 )
 
             except Exception as e:
@@ -172,7 +175,7 @@ class ARQUploadService:
 
         if self.redis:
             await self._store_chunk_status(
-                upload_id, chunk_index, 'failed', checksum, attempts, last_error
+                upload_id, chunk_index, "failed", checksum, attempts, last_error
             )
 
         return ChunkUploadResult(
@@ -180,14 +183,11 @@ class ARQUploadService:
             chunk_index=chunk_index,
             attempts=attempts,
             checksum=checksum,
-            error=last_error
+            error=last_error,
         )
 
     async def verify_chunk_integrity(
-        self,
-        upload_id: str,
-        chunk_index: int,
-        expected_checksum: str
+        self, upload_id: str, chunk_index: int, expected_checksum: str
     ) -> bool:
         """
         Verify chunk was stored correctly by comparing checksums.
@@ -240,9 +240,9 @@ class ARQUploadService:
 
             async for key in self.redis.scan_iter(match=pattern):
                 status = await self.redis.get(key)
-                if status and status.decode() == 'failed':
+                if status and status.decode() == "failed":
                     # Extract chunk index from key
-                    parts = key.decode().split(':')
+                    parts = key.decode().split(":")
                     if len(parts) >= 4:
                         try:
                             chunk_index = int(parts[3])
@@ -275,15 +275,17 @@ class ARQUploadService:
                 status = await self.redis.get(f"arq:chunk:{upload_id}:{chunk_index}:status")
                 if status:
                     status = status.decode()
-                    if status == 'success':
+                    if status == "success":
                         successful += 1
-                    elif status == 'failed':
+                    elif status == "failed":
                         failed += 1
 
                     # Get retry count
                     retries = await self.redis.get(f"arq:chunk:{upload_id}:{chunk_index}:attempts")
                     if retries:
-                        total_retries += int(retries.decode()) - 1  # -1 because first attempt isn't a retry
+                        total_retries += (
+                            int(retries.decode()) - 1
+                        )  # -1 because first attempt isn't a retry
                 else:
                     pending += 1
         else:
@@ -294,14 +296,14 @@ class ARQUploadService:
             total_retries = sum(max(0, v - 1) for v in retry_data.values())
 
         return {
-            'upload_id': upload_id,
-            'total_chunks': total_chunks,
-            'successful': successful,
-            'failed': failed,
-            'pending': pending,
-            'progress_percent': (successful / total_chunks * 100) if total_chunks > 0 else 0,
-            'total_retries': total_retries,
-            'arq_enabled': True
+            "upload_id": upload_id,
+            "total_chunks": total_chunks,
+            "successful": successful,
+            "failed": failed,
+            "pending": pending,
+            "progress_percent": (successful / total_chunks * 100) if total_chunks > 0 else 0,
+            "total_retries": total_retries,
+            "arq_enabled": True,
         }
 
     async def cleanup_upload_session(self, upload_id: str):
@@ -332,7 +334,7 @@ class ARQUploadService:
         status: str,
         checksum: str,
         attempts: int,
-        error: Optional[str] = None
+        error: Optional[str] = None,
     ):
         """Store chunk status in Redis."""
         if not self.redis:

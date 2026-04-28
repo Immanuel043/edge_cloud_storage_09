@@ -8,16 +8,23 @@ Provides utilities for optimizing database queries:
 - Query result prefetching
 """
 
-from typing import List, Dict, Any, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
+
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload, joinedload, contains_eager
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from ..models.database import (
-    Object, Folder, User, ActivityLog,
-    StorageAnalysis, OptimizationSuggestion,
-    AuditLog, Favorite, ShareLink
+    ActivityLog,
+    AuditLog,
+    Favorite,
+    Folder,
+    Object,
+    OptimizationSuggestion,
+    ShareLink,
+    StorageAnalysis,
+    User,
 )
 
 
@@ -36,7 +43,7 @@ class QueryOptimizer:
         limit: int = 100,
         offset: int = 0,
         sort_by: str = "created_at",
-        sort_order: str = "desc"
+        sort_order: str = "desc",
     ) -> List[Object]:
         """
         Get files with eager-loaded folder information.
@@ -78,9 +85,7 @@ class QueryOptimizer:
 
     @staticmethod
     async def get_files_with_all_relations(
-        db: AsyncSession,
-        file_ids: List[str],
-        user_id: UUID
+        db: AsyncSession, file_ids: List[str], user_id: UUID
     ) -> List[Object]:
         """
         Get multiple files with all related data in single query.
@@ -99,7 +104,7 @@ class QueryOptimizer:
             .options(
                 joinedload(Object.folder),
                 selectinload(Object.share_links),
-                selectinload(Object.favorites)
+                selectinload(Object.favorites),
             )
         )
 
@@ -112,10 +117,7 @@ class QueryOptimizer:
 
     @staticmethod
     async def get_folder_tree_optimized(
-        db: AsyncSession,
-        user_id: UUID,
-        parent_id: Optional[str] = None,
-        max_depth: int = 5
+        db: AsyncSession, user_id: UUID, parent_id: Optional[str] = None, max_depth: int = 5
     ) -> List[Folder]:
         """
         Get folder tree with optimized recursive loading.
@@ -125,10 +127,7 @@ class QueryOptimizer:
         Performance: O(depth) queries instead of O(n) queries.
         """
 
-        query = (
-            select(Folder)
-            .filter(Folder.owner_id == user_id, Folder.deleted_at == None)
-        )
+        query = select(Folder).filter(Folder.owner_id == user_id, Folder.deleted_at == None)
 
         if parent_id:
             query = query.filter(Folder.parent_id == parent_id)
@@ -143,9 +142,7 @@ class QueryOptimizer:
 
     @staticmethod
     async def get_folders_with_file_counts(
-        db: AsyncSession,
-        user_id: UUID,
-        parent_id: Optional[str] = None
+        db: AsyncSession, user_id: UUID, parent_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Get folders with file counts in a single optimized query.
@@ -160,8 +157,8 @@ class QueryOptimizer:
         file_count_subq = (
             select(
                 Object.folder_id,
-                func.count(Object.id).label('file_count'),
-                func.sum(Object.file_size).label('total_size')
+                func.count(Object.id).label("file_count"),
+                func.sum(Object.file_size).label("total_size"),
             )
             .filter(Object.user_id == user_id, Object.deleted_at == None)
             .group_by(Object.folder_id)
@@ -172,8 +169,8 @@ class QueryOptimizer:
         query = (
             select(
                 Folder,
-                func.coalesce(file_count_subq.c.file_count, 0).label('file_count'),
-                func.coalesce(file_count_subq.c.total_size, 0).label('total_size')
+                func.coalesce(file_count_subq.c.file_count, 0).label("file_count"),
+                func.coalesce(file_count_subq.c.total_size, 0).label("total_size"),
             )
             .outerjoin(file_count_subq, Folder.id == file_count_subq.c.folder_id)
             .filter(Folder.owner_id == user_id, Folder.deleted_at == None)
@@ -189,11 +186,7 @@ class QueryOptimizer:
         folders = []
         for row in result:
             folder = row[0]
-            folders.append({
-                'folder': folder,
-                'file_count': row[1],
-                'total_size': row[2]
-            })
+            folders.append({"folder": folder, "file_count": row[1], "total_size": row[2]})
 
         return folders
 
@@ -207,7 +200,7 @@ class QueryOptimizer:
         user_id: UUID,
         limit: int = 100,
         offset: int = 0,
-        action_types: Optional[List[str]] = None
+        action_types: Optional[List[str]] = None,
     ) -> List[ActivityLog]:
         """
         Get user activity with optimized filtering.
@@ -236,9 +229,7 @@ class QueryOptimizer:
 
     @staticmethod
     async def batch_get_file_metadata(
-        db: AsyncSession,
-        file_ids: List[str],
-        user_id: UUID
+        db: AsyncSession, file_ids: List[str], user_id: UUID
     ) -> Dict[str, Object]:
         """
         Batch fetch file metadata.
@@ -248,10 +239,7 @@ class QueryOptimizer:
         Performance: 1 query instead of N queries.
         """
 
-        query = select(Object).filter(
-            Object.id.in_(file_ids),
-            Object.user_id == user_id
-        )
+        query = select(Object).filter(Object.id.in_(file_ids), Object.user_id == user_id)
 
         result = await db.execute(query)
         files = result.scalars().all()
@@ -260,9 +248,7 @@ class QueryOptimizer:
 
     @staticmethod
     async def batch_check_favorites(
-        db: AsyncSession,
-        file_ids: List[str],
-        user_id: UUID
+        db: AsyncSession, file_ids: List[str], user_id: UUID
     ) -> Set[str]:
         """
         Batch check which files are favorited.
@@ -273,9 +259,7 @@ class QueryOptimizer:
         """
 
         query = select(Favorite.file_id).filter(
-            Favorite.file_id.in_(file_ids),
-            Favorite.user_id == user_id,
-            Favorite.favorited == True
+            Favorite.file_id.in_(file_ids), Favorite.user_id == user_id, Favorite.favorited == True
         )
 
         result = await db.execute(query)
@@ -283,9 +267,7 @@ class QueryOptimizer:
 
     @staticmethod
     async def batch_get_share_links(
-        db: AsyncSession,
-        file_ids: List[str],
-        user_id: UUID
+        db: AsyncSession, file_ids: List[str], user_id: UUID
     ) -> Dict[str, List[ShareLink]]:
         """
         Batch fetch share links for multiple files.
@@ -298,7 +280,7 @@ class QueryOptimizer:
         query = select(ShareLink).filter(
             ShareLink.file_id.in_(file_ids),
             ShareLink.created_by == user_id,
-            ShareLink.is_active == True
+            ShareLink.is_active == True,
         )
 
         result = await db.execute(query)
@@ -319,10 +301,7 @@ class QueryOptimizer:
     # ========================================
 
     @staticmethod
-    async def get_storage_stats_optimized(
-        db: AsyncSession,
-        user_id: UUID
-    ) -> Dict[str, Any]:
+    async def get_storage_stats_optimized(db: AsyncSession, user_id: UUID) -> Dict[str, Any]:
         """
         Get comprehensive storage statistics in a single optimized query.
 
@@ -334,61 +313,40 @@ class QueryOptimizer:
 
         Performance: Single aggregation query instead of multiple queries.
         """
-        from sqlalchemy import func, case
+        from sqlalchemy import case, func
 
         query = select(
-            func.count(Object.id).label('total_files'),
-            func.sum(Object.file_size).label('total_size'),
-            func.sum(
-                case((Object.storage_tier == 'cache', Object.file_size), else_=0)
-            ).label('cache_size'),
-            func.sum(
-                case((Object.storage_tier == 'warm', Object.file_size), else_=0)
-            ).label('warm_size'),
-            func.sum(
-                case((Object.storage_tier == 'cold', Object.file_size), else_=0)
-            ).label('cold_size'),
-            func.count(
-                case((Object.storage_tier == 'cache', 1))
-            ).label('cache_files'),
-            func.count(
-                case((Object.storage_tier == 'warm', 1))
-            ).label('warm_files'),
-            func.count(
-                case((Object.storage_tier == 'cold', 1))
-            ).label('cold_files'),
-        ).filter(
-            Object.user_id == user_id,
-            Object.deleted_at == None
-        )
+            func.count(Object.id).label("total_files"),
+            func.sum(Object.file_size).label("total_size"),
+            func.sum(case((Object.storage_tier == "cache", Object.file_size), else_=0)).label(
+                "cache_size"
+            ),
+            func.sum(case((Object.storage_tier == "warm", Object.file_size), else_=0)).label(
+                "warm_size"
+            ),
+            func.sum(case((Object.storage_tier == "cold", Object.file_size), else_=0)).label(
+                "cold_size"
+            ),
+            func.count(case((Object.storage_tier == "cache", 1))).label("cache_files"),
+            func.count(case((Object.storage_tier == "warm", 1))).label("warm_files"),
+            func.count(case((Object.storage_tier == "cold", 1))).label("cold_files"),
+        ).filter(Object.user_id == user_id, Object.deleted_at == None)
 
         result = await db.execute(query)
         row = result.one()
 
         return {
-            'total_files': row.total_files or 0,
-            'total_size': row.total_size or 0,
-            'tier_distribution': {
-                'cache': {
-                    'files': row.cache_files or 0,
-                    'size': row.cache_size or 0
-                },
-                'warm': {
-                    'files': row.warm_files or 0,
-                    'size': row.warm_size or 0
-                },
-                'cold': {
-                    'files': row.cold_files or 0,
-                    'size': row.cold_size or 0
-                }
-            }
+            "total_files": row.total_files or 0,
+            "total_size": row.total_size or 0,
+            "tier_distribution": {
+                "cache": {"files": row.cache_files or 0, "size": row.cache_size or 0},
+                "warm": {"files": row.warm_files or 0, "size": row.warm_size or 0},
+                "cold": {"files": row.cold_files or 0, "size": row.cold_size or 0},
+            },
         }
 
     @staticmethod
-    async def get_file_type_distribution(
-        db: AsyncSession,
-        user_id: UUID
-    ) -> List[Dict[str, Any]]:
+    async def get_file_type_distribution(db: AsyncSession, user_id: UUID) -> List[Dict[str, Any]]:
         """
         Get file type distribution statistics.
 
@@ -401,8 +359,8 @@ class QueryOptimizer:
         query = (
             select(
                 Object.mime_type,
-                func.count(Object.id).label('file_count'),
-                func.sum(Object.file_size).label('total_size')
+                func.count(Object.id).label("file_count"),
+                func.sum(Object.file_size).label("total_size"),
             )
             .filter(Object.user_id == user_id, Object.deleted_at == None)
             .group_by(Object.mime_type)
@@ -411,14 +369,7 @@ class QueryOptimizer:
 
         result = await db.execute(query)
 
-        return [
-            {
-                'mime_type': row[0],
-                'file_count': row[1],
-                'total_size': row[2]
-            }
-            for row in result
-        ]
+        return [{"mime_type": row[0], "file_count": row[1], "total_size": row[2]} for row in result]
 
     # ========================================
     # AUDIT LOG QUERIES
@@ -431,7 +382,7 @@ class QueryOptimizer:
         event_types: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
-        limit: int = 1000
+        limit: int = 1000,
     ) -> List[AuditLog]:
         """
         Get compliance-relevant audit events with optimized filtering.

@@ -21,12 +21,13 @@ Queue Limits:
 """
 
 import asyncio
-from typing import Dict, Optional, List
-from datetime import datetime
-from collections import defaultdict
 import logging
-import psutil
 import os
+from collections import defaultdict
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ class CircuitBreaker:
     def __init__(
         self,
         memory_threshold: float = 0.85,  # Pause at 85% memory
-        disk_threshold: float = 0.90,    # Pause at 90% disk
-        check_interval: int = 30          # Check every 30 seconds
+        disk_threshold: float = 0.90,  # Pause at 90% disk
+        check_interval: int = 30,  # Check every 30 seconds
     ):
         self.memory_threshold = memory_threshold
         self.disk_threshold = disk_threshold
@@ -104,7 +105,7 @@ class CircuitBreaker:
             return {
                 "state": self.state,
                 "healthy": self.state == "CLOSED",
-                "health_info": self.last_health_info
+                "health_info": self.last_health_info,
             }
 
         self.last_check = now
@@ -127,15 +128,14 @@ class CircuitBreaker:
 
             # Determine health status
             is_healthy = (
-                memory_percent < self.memory_threshold and
-                disk_percent < self.disk_threshold
+                memory_percent < self.memory_threshold and disk_percent < self.disk_threshold
             )
 
             health_info = {
                 "memory_percent": round(memory_percent * 100, 2),
                 "disk_percent": round(disk_percent * 100, 2),
                 "memory_available_gb": round(memory_available / (1024**3), 2),
-                "disk_available_gb": round(disk.free / (1024**3), 2)
+                "disk_available_gb": round(disk.free / (1024**3), 2),
             }
             self.last_health_info = health_info
 
@@ -166,17 +166,13 @@ class CircuitBreaker:
             return {
                 "state": self.state,
                 "healthy": self.state == "CLOSED",
-                "health_info": health_info
+                "health_info": health_info,
             }
 
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             self.last_health_info = None
-            return {
-                "state": "OPEN",
-                "healthy": False,
-                "error": str(e)
-            }
+            return {"state": "OPEN", "healthy": False, "error": str(e)}
 
 
 class SmartDeduplicationQueue:
@@ -188,13 +184,13 @@ class SmartDeduplicationQueue:
         self,
         max_concurrent: int = 4,  # Increased from 2 to 4 for better throughput
         max_queue_size: int = 10_000,
-        max_per_user: int = 50
+        max_per_user: int = 50,
     ):
         # Priority queues (1=high, 2=medium, 3=low)
         self.queues = {
             1: asyncio.Queue(),  # High priority
             2: asyncio.Queue(),  # Medium priority
-            3: asyncio.Queue()   # Low priority
+            3: asyncio.Queue(),  # Low priority
         }
 
         # Limits
@@ -220,7 +216,7 @@ class SmartDeduplicationQueue:
             "total_processed": 0,
             "total_failed": 0,
             "total_rejected": 0,
-            "by_priority": {1: 0, 2: 0, 3: 0}
+            "by_priority": {1: 0, 2: 0, 3: 0},
         }
 
     async def start(self):
@@ -239,12 +235,7 @@ class SmartDeduplicationQueue:
                 pass
             logger.info("📋 Smart deduplication queue stopped")
 
-    async def enqueue(
-        self,
-        job: Dict,
-        priority: int = 2,
-        user_id: Optional[str] = None
-    ) -> Dict:
+    async def enqueue(self, job: Dict, priority: int = 2, user_id: Optional[str] = None) -> Dict:
         """
         Add job to priority queue with backpressure checks
 
@@ -270,7 +261,7 @@ class SmartDeduplicationQueue:
                 "reason": "circuit_breaker_open",
                 "message": "System overloaded, try again later",
                 "health": health_snapshot,
-                "state": health.get("state", "UNKNOWN")
+                "state": health.get("state", "UNKNOWN"),
             }
 
         # Check total queue size
@@ -280,7 +271,7 @@ class SmartDeduplicationQueue:
                 "success": False,
                 "reason": "queue_full",
                 "message": f"Queue full ({self.max_queue_size} jobs)",
-                "queue_size": self.total_jobs
+                "queue_size": self.total_jobs,
             }
 
         # Check per-user limit
@@ -290,7 +281,7 @@ class SmartDeduplicationQueue:
                 "success": False,
                 "reason": "user_quota_exceeded",
                 "message": f"User has {self.max_per_user} jobs in queue",
-                "user_jobs": self.user_job_counts[user_id]
+                "user_jobs": self.user_job_counts[user_id],
             }
 
         # Enqueue job
@@ -298,7 +289,7 @@ class SmartDeduplicationQueue:
             **job,
             "priority": priority,
             "user_id": user_id,
-            "enqueued_at": datetime.utcnow().isoformat()
+            "enqueued_at": datetime.utcnow().isoformat(),
         }
 
         await self.queues[priority].put(job_with_meta)
@@ -320,7 +311,7 @@ class SmartDeduplicationQueue:
             "success": True,
             "priority": priority,
             "queue_position": self.total_jobs,
-            "estimated_wait": self._estimate_wait_time(priority)
+            "estimated_wait": self._estimate_wait_time(priority),
         }
 
     def _estimate_wait_time(self, priority: int) -> int:
@@ -394,7 +385,9 @@ class SmartDeduplicationQueue:
         await self.queues[priority].put(job)
         logger.info(
             "📋 Re-enqueued deferred job %s (priority=%d, defer_count=%d)",
-            job.get("file_id"), priority, job.get("_defer_count", 0),
+            job.get("file_id"),
+            priority,
+            job.get("_defer_count", 0),
         )
 
     async def _process_job(self, job: Dict):
@@ -404,8 +397,7 @@ class SmartDeduplicationQueue:
         deferred = False
 
         logger.info(
-            f"▶️ Processing job: {file_id} "
-            f"(priority={job.get('priority')}, user={user_id})"
+            f"▶️ Processing job: {file_id} " f"(priority={job.get('priority')}, user={user_id})"
         )
 
         self.active_jobs[file_id] = job
@@ -419,9 +411,7 @@ class SmartDeduplicationQueue:
 
             if result == "deferred":
                 deferred = True
-                asyncio.create_task(
-                    self._deferred_enqueue(job, job.get("priority", 2), delay=10)
-                )
+                asyncio.create_task(self._deferred_enqueue(job, job.get("priority", 2), delay=10))
             else:
                 self.stats["total_processed"] += 1
 
@@ -448,20 +438,20 @@ class SmartDeduplicationQueue:
             "by_priority": {
                 "high": self.queues[1].qsize(),
                 "medium": self.queues[2].qsize(),
-                "low": self.queues[3].qsize()
+                "low": self.queues[3].qsize(),
             },
             "circuit_breaker": {
                 "state": health["state"],
                 "healthy": health["healthy"],
-                "health_info": health.get("health_info", {})
+                "health_info": health.get("health_info", {}),
             },
             "statistics": self.stats,
             "capacity": {
                 "max_queue_size": self.max_queue_size,
                 "max_per_user": self.max_per_user,
                 "max_concurrent": self.max_concurrent,
-                "available_slots": self.max_queue_size - self.total_jobs
-            }
+                "available_slots": self.max_queue_size - self.total_jobs,
+            },
         }
 
     def get_user_status(self, user_id: str) -> Dict:
@@ -470,13 +460,11 @@ class SmartDeduplicationQueue:
             "user_id": user_id,
             "jobs_in_queue": self.user_job_counts.get(user_id, 0),
             "max_allowed": self.max_per_user,
-            "slots_available": self.max_per_user - self.user_job_counts.get(user_id, 0)
+            "slots_available": self.max_per_user - self.user_job_counts.get(user_id, 0),
         }
 
 
 # Global instance
 smart_dedup_queue = SmartDeduplicationQueue(
-    max_concurrent=2,
-    max_queue_size=10_000,
-    max_per_user=50
+    max_concurrent=2, max_queue_size=10_000, max_per_user=50
 )

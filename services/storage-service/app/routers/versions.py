@@ -3,19 +3,20 @@
 File versioning endpoints - Auto-versioning and version history
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
-from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
-from typing import List
+import hashlib
 from datetime import datetime
-from pydantic import BaseModel
+from typing import List
 
-from ..dependencies import get_db, get_current_user, log_activity
-from ..models.database import User, Object, FileVersion
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import Response
+from pydantic import BaseModel
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_current_user, get_db, log_activity
+from ..models.database import FileVersion, Object, User
 from ..services.encryption import encryption_service
 from ..services.storage import storage_service
-import hashlib
 
 router = APIRouter(prefix="/api/v1", tags=["versions"])
 
@@ -50,16 +51,18 @@ async def get_file_versions(
 
     versions = []
     for version, user in versions_result.all():
-        versions.append({
-            "id": str(version.id),
-            "version_number": version.version_number,
-            "file_size": version.file_size,
-            "content_hash": version.content_hash,
-            "created_at": version.created_at.isoformat(),
-            "created_by": user.email if user else "Unknown",
-            "comment": version.comment,
-            "is_current": version.version_number == file_obj.current_version,
-        })
+        versions.append(
+            {
+                "id": str(version.id),
+                "version_number": version.version_number,
+                "file_size": version.file_size,
+                "content_hash": version.content_hash,
+                "created_at": version.created_at.isoformat(),
+                "created_by": user.email if user else "Unknown",
+                "comment": version.comment,
+                "is_current": version.version_number == file_obj.current_version,
+            }
+        )
 
     return {
         "file_id": str(file_id),
@@ -95,7 +98,7 @@ async def restore_file_version(
         select(FileVersion).filter(
             FileVersion.file_id == file_id,
             FileVersion.version_number == version_number,
-            FileVersion.is_deleted == False
+            FileVersion.is_deleted == False,
         )
     )
     version_to_restore = version_result.scalar_one_or_none()
@@ -142,8 +145,9 @@ async def restore_file_version(
 
     # Invalidate stale previews BEFORE commit
     if old_content_hash and old_content_hash != version_to_restore.content_hash:
-        from ..services.preview_storage import invalidate_preview
         from ..database import get_redis
+        from ..services.preview_storage import invalidate_preview
+
         redis_client = await get_redis()
         await invalidate_preview(file_id, old_content_hash, redis_client, db)
 
@@ -152,7 +156,10 @@ async def restore_file_version(
 
     # Log activity
     await log_activity(
-        db, current_user.id, "version_restored", str(file_id),
+        db,
+        current_user.id,
+        "version_restored",
+        str(file_id),
         {"version_number": version_number, "new_version": file_obj.current_version},
         request,
     )
@@ -189,8 +196,7 @@ async def delete_file_version(
     # Get the version
     version_result = await db.execute(
         select(FileVersion).filter(
-            FileVersion.file_id == file_id,
-            FileVersion.version_number == version_number
+            FileVersion.file_id == file_id, FileVersion.version_number == version_number
         )
     )
     version = version_result.scalar_one_or_none()
@@ -204,7 +210,10 @@ async def delete_file_version(
 
     # Log activity
     await log_activity(
-        db, current_user.id, "version_deleted", str(file_id),
+        db,
+        current_user.id,
+        "version_deleted",
+        str(file_id),
         {"version_number": version_number},
         request,
     )
@@ -235,7 +244,7 @@ async def download_file_version(
         select(FileVersion).filter(
             FileVersion.file_id == file_id,
             FileVersion.version_number == version_number,
-            FileVersion.is_deleted == False
+            FileVersion.is_deleted == False,
         )
     )
     version = version_result.scalar_one_or_none()
@@ -245,23 +254,25 @@ async def download_file_version(
 
     # Decrypt file from version storage
     import os
+
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
     storage_type = version.chunk_info.get("storage_type") if version.chunk_info else None
 
     if storage_type == "single" and version.storage_path and os.path.exists(version.storage_path):
         # Read encrypted file from disk and decrypt
-        with open(version.storage_path, 'rb') as f:
+        with open(version.storage_path, "rb") as f:
             encrypted_data = f.read()
         file_content = encryption_service.decrypt_file(encrypted_data, file_key)
     elif storage_type == "inline" and version.chunk_info and "data" in version.chunk_info:
         # Inline storage - data in chunk_info
         import base64
+
         encrypted_data = base64.b64decode(version.chunk_info["data"])
         file_content = encryption_service.decrypt_file(encrypted_data, file_key)
     elif version.storage_path and os.path.exists(version.storage_path):
         # Fallback: try reading from storage_path
-        with open(version.storage_path, 'rb') as f:
+        with open(version.storage_path, "rb") as f:
             encrypted_data = f.read()
         file_content = encryption_service.decrypt_file(encrypted_data, file_key)
     else:
@@ -298,8 +309,7 @@ async def add_version_comment(
     # Get the version
     version_result = await db.execute(
         select(FileVersion).filter(
-            FileVersion.file_id == file_id,
-            FileVersion.version_number == version_number
+            FileVersion.file_id == file_id, FileVersion.version_number == version_number
         )
     )
     version = version_result.scalar_one_or_none()

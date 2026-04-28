@@ -19,18 +19,17 @@ from ..database import get_db
 from ..dependencies import get_current_user
 from ..models.database import User
 from ..services.performance_optimizer import performance_optimizer
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 
-router = APIRouter(
-    prefix="/api/v1/performance",
-    tags=["performance"]
-)
+router = APIRouter(prefix="/api/v1/performance", tags=["performance"])
 
 
 # Response Models
 
+
 class PerformanceReportResponse(BaseModel):
     """Performance report response."""
+
     generated_at: str
     summary: Dict
     top_queries: List[Dict]
@@ -42,6 +41,7 @@ class PerformanceReportResponse(BaseModel):
 
 class CacheStatsResponse(BaseModel):
     """Cache statistics response."""
+
     total_commands_processed: int
     keyspace_hits: int
     keyspace_misses: int
@@ -52,20 +52,22 @@ class CacheStatsResponse(BaseModel):
 
 class IndexRecommendationsResponse(BaseModel):
     """Index recommendations response."""
+
     total_recommendations: int
     recommendations: List[Dict]
 
 
 class CreateIndexesRequest(BaseModel):
     """Create indexes request."""
+
     execute: bool = Field(
-        default=False,
-        description="Set to true to actually create indexes (default is dry run)"
+        default=False, description="Set to true to actually create indexes (default is dry run)"
     )
 
 
 class CreateIndexesResponse(BaseModel):
     """Create indexes response."""
+
     total_recommendations: int
     created: List[Dict]
     failed: List[Dict]
@@ -75,14 +77,15 @@ class CreateIndexesResponse(BaseModel):
 
 class ClearCacheRequest(BaseModel):
     """Clear cache request."""
+
     pattern: str = Field(
-        default="*",
-        description="Pattern to match cache keys (e.g., 'files:*', 'user:123:*')"
+        default="*", description="Pattern to match cache keys (e.g., 'files:*', 'user:123:*')"
     )
 
 
 class ClearCacheResponse(BaseModel):
     """Clear cache response."""
+
     success: bool
     pattern: str
     message: Optional[str] = None
@@ -91,29 +94,37 @@ class ClearCacheResponse(BaseModel):
 
 class QueryStatsResponse(BaseModel):
     """Query statistics response."""
+
     total_queries: int
     top_queries: List[Dict]
 
 
 class SlowQueriesResponse(BaseModel):
     """Slow queries response."""
+
     total_slow_queries: int
     slow_queries: List[Dict]
 
 
 class ResetStatsResponse(BaseModel):
     """Reset statistics response."""
+
     success: bool
     message: str
 
 
 # Endpoints
 
-@router.get("/report", response_model=PerformanceReportResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+
+@router.get(
+    "/report",
+    response_model=PerformanceReportResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_performance_report(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get comprehensive performance report.
@@ -132,7 +143,11 @@ async def get_performance_report(
     return report
 
 
-@router.get("/queries/stats", response_model=QueryStatsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/queries/stats",
+    response_model=QueryStatsResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_query_stats(
     request: Request,
     top_n: int = Query(50, ge=1, le=500, description="Number of top queries to return"),
@@ -153,11 +168,15 @@ async def get_query_stats(
 
     return {
         "total_queries": len(performance_optimizer.query_monitor.query_stats),
-        "top_queries": stats
+        "top_queries": stats,
     }
 
 
-@router.get("/queries/slow", response_model=SlowQueriesResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/queries/slow",
+    response_model=SlowQueriesResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_slow_queries(
     request: Request,
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of slow queries to return"),
@@ -175,11 +194,15 @@ async def get_slow_queries(
 
     return {
         "total_slow_queries": len(performance_optimizer.query_monitor.slow_queries),
-        "slow_queries": slow_queries
+        "slow_queries": slow_queries,
     }
 
 
-@router.post("/queries/reset", response_model=ResetStatsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.post(
+    "/queries/reset",
+    response_model=ResetStatsResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def reset_query_stats(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -197,7 +220,11 @@ async def reset_query_stats(
     return result
 
 
-@router.get("/cache/stats", response_model=CacheStatsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/cache/stats",
+    response_model=CacheStatsResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_cache_stats(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -226,7 +253,11 @@ async def get_cache_stats(
     }
 
 
-@router.post("/cache/clear", response_model=ClearCacheResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.post(
+    "/cache/clear",
+    response_model=ClearCacheResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def clear_cache(
     request: Request,
     clear_request: ClearCacheRequest,
@@ -249,11 +280,15 @@ async def clear_cache(
     return result
 
 
-@router.get("/indexes/recommendations", response_model=IndexRecommendationsResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))])
+@router.get(
+    "/indexes/recommendations",
+    response_model=IndexRecommendationsResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_READ))],
+)
 async def get_index_recommendations(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get database index recommendations.
@@ -266,18 +301,19 @@ async def get_index_recommendations(
 
     recommendations = await performance_optimizer.index_recommender.get_missing_indexes(db)
 
-    return {
-        "total_recommendations": len(recommendations),
-        "recommendations": recommendations
-    }
+    return {"total_recommendations": len(recommendations), "recommendations": recommendations}
 
 
-@router.post("/indexes/create", response_model=CreateIndexesResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))])
+@router.post(
+    "/indexes/create",
+    response_model=CreateIndexesResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.API_WRITE))],
+)
 async def create_recommended_indexes(
     request: Request,
     create_request: CreateIndexesRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create recommended database indexes.
@@ -293,8 +329,7 @@ async def create_recommended_indexes(
     """
 
     result = await performance_optimizer.create_recommended_indexes(
-        db=db,
-        execute=create_request.execute
+        db=db, execute=create_request.execute
     )
 
     return result
@@ -328,16 +363,13 @@ async def performance_health_check(
             "components": {
                 "cache": {
                     "healthy": cache_healthy,
-                    "connected": cache_stats.get("connected_clients", 0) > 0
+                    "connected": cache_stats.get("connected_clients", 0) > 0,
                 },
                 "query_monitor": {
                     "healthy": query_monitor_healthy,
-                    "queries_tracked": len(performance_optimizer.query_monitor.query_stats)
-                }
-            }
+                    "queries_tracked": len(performance_optimizer.query_monitor.query_stats),
+                },
+            },
         }
     except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Performance monitoring unhealthy: {str(e)}"
-        )
+        raise HTTPException(status_code=503, detail=f"Performance monitoring unhealthy: {str(e)}")

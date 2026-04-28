@@ -6,16 +6,17 @@ Database Performance Monitoring Middleware
 Tracks slow queries, connection pool health, and database performance metrics.
 """
 
-import time
-import logging
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
-from typing import Dict, List
 import asyncio
+import logging
+import time
 from collections import deque
 from datetime import datetime, timedelta
+from typing import Dict, List
+
+from fastapi import Request, Response
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -63,18 +64,20 @@ class DatabasePerformanceMiddleware(BaseHTTPMiddleware):
                         "duration": f"{duration:.3f}s",
                         "query_count": getattr(request.state, "query_count", 0),
                         "query_time": f"{getattr(request.state, 'query_time', 0):.3f}s",
-                    }
+                    },
                 )
 
                 # Store slow query info
-                slow_queries.append({
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "method": request.method,
-                    "path": request.url.path,
-                    "duration": duration,
-                    "query_count": getattr(request.state, "query_count", 0),
-                    "query_time": getattr(request.state, "query_time", 0),
-                })
+                slow_queries.append(
+                    {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "method": request.method,
+                        "path": request.url.path,
+                        "duration": duration,
+                        "query_count": getattr(request.state, "query_count", 0),
+                        "query_time": getattr(request.state, "query_time", 0),
+                    }
+                )
 
             # Track query stats by endpoint
             endpoint = f"{request.method}:{request.url.path}"
@@ -100,7 +103,7 @@ class DatabasePerformanceMiddleware(BaseHTTPMiddleware):
                     "method": request.method,
                     "path": request.url.path,
                     "error": str(e),
-                }
+                },
             )
             raise
 
@@ -124,7 +127,7 @@ def after_cursor_execute(conn, cursor, statement, parameters, context, executema
             extra={
                 "duration": f"{total:.3f}s",
                 "query": statement[:500],  # First 500 chars
-            }
+            },
         )
 
 

@@ -9,41 +9,52 @@ API endpoints for ML-based file organization:
 - Get organization preview
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
-from typing import List, Optional
-from datetime import datetime
 import logging
+from datetime import datetime
+from typing import List, Optional
 
-from ..dependencies import get_db, get_current_user
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_current_user, get_db
 from ..dependencies_plan import require_plan_feature
 from ..models.database import (
-    User, Object, OrganizationCluster, OrganizationRule, OrganizationSession, FileClusterAssignment)
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
+    FileClusterAssignment,
+    Object,
+    OrganizationCluster,
+    OrganizationRule,
+    OrganizationSession,
+    User,
+)
 from ..models.schemas import (
+    ApplyClusterRequest,
+    CreateRuleRequest,
     OrganizationClusterResponse,
+    OrganizationPreview,
     OrganizationRuleResponse,
     OrganizationSessionResponse,
     StartOrganizationRequest,
-    ApplyClusterRequest,
-    CreateRuleRequest,
     UpdateRuleRequest,
-    OrganizationPreview
 )
-from ..services.auto_organizer import auto_organizer
 from ..monitoring.metrics import metrics_collector
+from ..services.auto_organizer import auto_organizer
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 
 router = APIRouter(prefix="/api/v1/organization", tags=["auto-organization"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/start", response_model=OrganizationSessionResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_ANALYSIS))])
+@router.post(
+    "/start",
+    response_model=OrganizationSessionResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.ML_ANALYSIS))],
+)
 async def start_organization(
     http_request: Request,
     request: StartOrganizationRequest,
     current_user: User = Depends(require_plan_feature("ai_features")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Start ML-based file organization
@@ -66,7 +77,7 @@ async def start_organization(
             num_clusters=request.num_clusters,
             min_files=request.min_files,
             preview_only=request.preview_only,
-            db=db
+            db=db,
         )
 
         # Run clustering
@@ -75,8 +86,8 @@ async def start_organization(
         await db.commit()
 
         # Update metrics
-        metrics_collector.increment_counter('organization_sessions_started_total')
-        metrics_collector.increment_counter('organization_clusters_created_total', len(clusters))
+        metrics_collector.increment_counter("organization_sessions_started_total")
+        metrics_collector.increment_counter("organization_clusters_created_total", len(clusters))
 
         logger.info(f"Organization session {session.id} completed: {len(clusters)} clusters")
 
@@ -96,7 +107,7 @@ async def start_organization(
             error_message=session.error_message,
             created_at=session.created_at,
             started_at=session.started_at,
-            completed_at=session.completed_at
+            completed_at=session.completed_at,
         )
 
     except ValueError as e:
@@ -111,7 +122,7 @@ async def get_clusters(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     include_applied: bool = Query(False, description="Include applied clusters"),
-    algorithm: Optional[str] = Query(None, description="Filter by algorithm")
+    algorithm: Optional[str] = Query(None, description="Filter by algorithm"),
 ):
     """
     Get organization clusters for current user
@@ -128,7 +139,7 @@ async def get_clusters(
     try:
         query = select(OrganizationCluster).where(
             OrganizationCluster.user_id == current_user.id,
-            OrganizationCluster.is_dismissed == False
+            OrganizationCluster.is_dismissed == False,
         )
 
         if not include_applied:
@@ -161,7 +172,7 @@ async def get_clusters(
                 suggested_folder_path=c.suggested_folder_path,
                 is_applied=c.is_applied,
                 is_dismissed=c.is_dismissed,
-                created_at=c.created_at
+                created_at=c.created_at,
             )
             for c in clusters
         ]
@@ -179,7 +190,7 @@ async def apply_cluster(
     cluster_id: str,
     request: ApplyClusterRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Apply cluster organization
@@ -202,14 +213,14 @@ async def apply_cluster(
             cluster_id=UUID(cluster_id),
             target_folder_path=request.target_folder_path,
             user_id=current_user.id,
-            db=db
+            db=db,
         )
 
         await db.commit()
 
         # Update metrics
-        metrics_collector.increment_counter('organization_clusters_applied_total')
-        metrics_collector.increment_counter('organization_files_moved_total', result['files_moved'])
+        metrics_collector.increment_counter("organization_clusters_applied_total")
+        metrics_collector.increment_counter("organization_files_moved_total", result["files_moved"])
 
         logger.info(f"Applied cluster {cluster_id}: {result['files_moved']} files moved")
 
@@ -226,7 +237,7 @@ async def apply_cluster(
 async def dismiss_cluster(
     cluster_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Dismiss a cluster suggestion
@@ -245,7 +256,7 @@ async def dismiss_cluster(
         result = await db.execute(
             select(OrganizationCluster).where(
                 OrganizationCluster.id == UUID(cluster_id),
-                OrganizationCluster.user_id == current_user.id
+                OrganizationCluster.user_id == current_user.id,
             )
         )
         cluster = result.scalar_one_or_none()
@@ -259,7 +270,7 @@ async def dismiss_cluster(
         await db.commit()
 
         logger.info(f"Dismissed cluster {cluster_id} for user {current_user.id}")
-        metrics_collector.increment_counter('organization_clusters_dismissed_total')
+        metrics_collector.increment_counter("organization_clusters_dismissed_total")
 
         return {"status": "success", "message": "Cluster dismissed"}
 
@@ -311,14 +322,16 @@ async def get_cluster_files(
 
         files = []
         for file_obj, confidence in result.all():
-            files.append({
-                "id": str(file_obj.id),
-                "name": file_obj.file_name,
-                "mime_type": file_obj.mime_type,
-                "size": file_obj.file_size,
-                "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
-                "confidence": round(confidence, 3) if confidence else None,
-            })
+            files.append(
+                {
+                    "id": str(file_obj.id),
+                    "name": file_obj.file_name,
+                    "mime_type": file_obj.mime_type,
+                    "size": file_obj.file_size,
+                    "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                    "confidence": round(confidence, 3) if confidence else None,
+                }
+            )
 
         return {
             "cluster_id": cluster_id,
@@ -336,11 +349,12 @@ async def get_cluster_files(
 
 # Organization Rules
 
+
 @router.get("/rules", response_model=List[OrganizationRuleResponse])
 async def get_rules(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    include_inactive: bool = Query(False, description="Include inactive rules")
+    include_inactive: bool = Query(False, description="Include inactive rules"),
 ):
     """
     Get organization rules for current user
@@ -349,9 +363,7 @@ async def get_rules(
         List of OrganizationRuleResponse
     """
     try:
-        query = select(OrganizationRule).where(
-            OrganizationRule.user_id == current_user.id
-        )
+        query = select(OrganizationRule).where(OrganizationRule.user_id == current_user.id)
 
         if not include_inactive:
             query = query.where(OrganizationRule.is_active == True)
@@ -380,7 +392,7 @@ async def get_rules(
                 files_organized=r.files_organized,
                 last_applied_at=r.last_applied_at,
                 source=r.source,
-                created_at=r.created_at
+                created_at=r.created_at,
             )
             for r in rules
         ]
@@ -397,7 +409,7 @@ async def get_rules(
 async def create_rule(
     request: CreateRuleRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create organization rule
@@ -424,13 +436,13 @@ async def create_rule(
             create_subfolder_by_date=request.create_subfolder_by_date,
             auto_apply=request.auto_apply,
             priority=request.priority,
-            db=db
+            db=db,
         )
 
         await db.commit()
 
         # Update metrics
-        metrics_collector.increment_counter('organization_rules_created_total')
+        metrics_collector.increment_counter("organization_rules_created_total")
 
         return OrganizationRuleResponse(
             id=str(rule.id),
@@ -450,7 +462,7 @@ async def create_rule(
             files_organized=rule.files_organized,
             last_applied_at=rule.last_applied_at,
             source=rule.source,
-            created_at=rule.created_at
+            created_at=rule.created_at,
         )
 
     except Exception as e:
@@ -463,7 +475,7 @@ async def update_rule(
     rule_id: str,
     request: UpdateRuleRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Update organization rule
@@ -480,8 +492,7 @@ async def update_rule(
 
         result = await db.execute(
             select(OrganizationRule).where(
-                OrganizationRule.id == UUID(rule_id),
-                OrganizationRule.user_id == current_user.id
+                OrganizationRule.id == UUID(rule_id), OrganizationRule.user_id == current_user.id
             )
         )
         rule = result.scalar_one_or_none()
@@ -502,7 +513,7 @@ async def update_rule(
         await db.commit()
 
         logger.info(f"Updated rule {rule_id} for user {current_user.id}")
-        metrics_collector.increment_counter('organization_rules_updated_total')
+        metrics_collector.increment_counter("organization_rules_updated_total")
 
         return OrganizationRuleResponse(
             id=str(rule.id),
@@ -522,7 +533,7 @@ async def update_rule(
             files_organized=rule.files_organized,
             last_applied_at=rule.last_applied_at,
             source=rule.source,
-            created_at=rule.created_at
+            created_at=rule.created_at,
         )
 
     except HTTPException:
@@ -534,8 +545,7 @@ async def update_rule(
 
 @router.post("/rules/apply")
 async def apply_rules(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Apply all active organization rules
@@ -548,16 +558,17 @@ async def apply_rules(
     try:
         logger.info(f"Applying rules for user {current_user.id}")
 
-        result = await auto_organizer.apply_rules(
-            user_id=current_user.id,
-            db=db
-        )
+        result = await auto_organizer.apply_rules(user_id=current_user.id, db=db)
 
         await db.commit()
 
         # Update metrics
-        metrics_collector.increment_counter('organization_rules_applied_total', result['rules_applied'])
-        metrics_collector.increment_counter('organization_files_moved_total', result['files_organized'])
+        metrics_collector.increment_counter(
+            "organization_rules_applied_total", result["rules_applied"]
+        )
+        metrics_collector.increment_counter(
+            "organization_files_moved_total", result["files_organized"]
+        )
 
         logger.info(
             f"Applied {result['rules_applied']} rules: "
@@ -573,9 +584,7 @@ async def apply_rules(
 
 @router.delete("/rules/{rule_id}")
 async def delete_rule(
-    rule_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    rule_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Delete organization rule
@@ -591,8 +600,7 @@ async def delete_rule(
 
         result = await db.execute(
             select(OrganizationRule).where(
-                OrganizationRule.id == UUID(rule_id),
-                OrganizationRule.user_id == current_user.id
+                OrganizationRule.id == UUID(rule_id), OrganizationRule.user_id == current_user.id
             )
         )
         rule = result.scalar_one_or_none()
@@ -604,7 +612,7 @@ async def delete_rule(
         await db.commit()
 
         logger.info(f"Deleted rule {rule_id} for user {current_user.id}")
-        metrics_collector.increment_counter('organization_rules_deleted_total')
+        metrics_collector.increment_counter("organization_rules_deleted_total")
 
         return {"status": "success", "message": "Rule deleted"}
 

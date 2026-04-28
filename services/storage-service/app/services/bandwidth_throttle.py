@@ -19,12 +19,14 @@ Plan Integration:
 """
 
 import asyncio
-import time
 import logging
-from typing import Optional, Dict, AsyncGenerator, Any
+import time
+from typing import Any, AsyncGenerator, Dict, Optional
+
 from fastapi import HTTPException
-from ..database import get_redis
+
 from ..config import settings
+from ..database import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +128,13 @@ class BandwidthThrottleService:
     # Plan-aware wait thresholds: lower bandwidth plans get longer thresholds
     # because their token bucket drains more slowly.
     PLAN_WAIT_THRESHOLDS = {
-        "free": 120.0,      # 5 Mbps — 50MB file needs ~76s
-        "basic": 30.0,      # 25 Mbps
-        "pro": 10.0,        # 100 Mbps
-        "pro_plus": 10.0,   # 150 Mbps
+        "free": 120.0,  # 5 Mbps — 50MB file needs ~76s
+        "basic": 30.0,  # 25 Mbps
+        "pro": 10.0,  # 100 Mbps
+        "pro_plus": 10.0,  # 150 Mbps
         "pro_ultra": 10.0,  # 200 Mbps
-        "solo_max": 10.0,   # 300 Mbps
-        "team": 5.0,        # 500 Mbps
+        "solo_max": 10.0,  # 300 Mbps
+        "team": 5.0,  # 500 Mbps
     }
     DEFAULT_WAIT_THRESHOLD = 30.0  # Fallback for unknown plans
 
@@ -238,7 +240,7 @@ class BandwidthThrottleService:
         plan = self.get_plan_limits(plan_type)
         return (
             plan.get("bandwidth_mbps", self.DEFAULT_LIMIT_MBPS),
-            plan.get("burst_mbps", self.DEFAULT_LIMIT_MBPS * 2)
+            plan.get("burst_mbps", self.DEFAULT_LIMIT_MBPS * 2),
         )
 
     def get_wait_threshold(self, plan_type: str = "free") -> float:
@@ -247,16 +249,14 @@ class BandwidthThrottleService:
         Lower-bandwidth plans get longer thresholds because their token
         bucket drains more slowly.
         """
-        return self.PLAN_WAIT_THRESHOLDS.get(
-            plan_type, self.DEFAULT_WAIT_THRESHOLD
-        )
+        return self.PLAN_WAIT_THRESHOLDS.get(plan_type, self.DEFAULT_WAIT_THRESHOLD)
 
     async def get_user_limit_with_plan(
         self,
         user_id: str,
         plan_type: str = "free",
         db_bandwidth_override: Optional[int] = None,
-        db_burst_override: Optional[int] = None
+        db_burst_override: Optional[int] = None,
     ) -> tuple[float, float]:
         """
         Get effective bandwidth limit for a user with priority resolution.
@@ -300,10 +300,7 @@ class BandwidthThrottleService:
         return bandwidth, burst
 
     async def get_max_streams_with_plan(
-        self,
-        user_id: str,
-        plan_type: str = "free",
-        db_streams_override: Optional[int] = None
+        self, user_id: str, plan_type: str = "free", db_streams_override: Optional[int] = None
     ) -> int:
         """
         Get effective max streams for a user with priority resolution.
@@ -332,12 +329,10 @@ class BandwidthThrottleService:
         user_id: str,
         plan_type: str = "free",
         db_streams_override: int = None,
-        default_concurrency: int = 4
+        default_concurrency: int = 4,
     ) -> int:
         """Server-driven chunk upload concurrency: min(default, effective_max_streams)."""
-        max_streams = await self.get_max_streams_with_plan(
-            user_id, plan_type, db_streams_override
-        )
+        max_streams = await self.get_max_streams_with_plan(user_id, plan_type, db_streams_override)
         return min(default_concurrency, max_streams)
 
     async def _ensure_lua_scripts(self, redis_client):
@@ -355,7 +350,7 @@ class BandwidthThrottleService:
         user_id: str,
         max_streams: int = None,
         plan_type: str = None,
-        db_streams_override: int = None
+        db_streams_override: int = None,
     ) -> bool:
         """
         Acquire a stream slot for concurrent transfer limiting.
@@ -390,7 +385,7 @@ class BandwidthThrottleService:
                 ACQUIRE_STREAM_LUA,
                 1,  # number of keys
                 key,  # KEYS[1]
-                self.STREAM_SLOT_TTL  # ARGV[1]
+                self.STREAM_SLOT_TTL,  # ARGV[1]
             )
 
             if current > max_streams:
@@ -470,7 +465,7 @@ class BandwidthThrottleService:
         bytes_requested: int,
         limit_mbps: Optional[float] = None,
         plan_type: str = None,
-        db_bandwidth_override: int = None
+        db_bandwidth_override: int = None,
     ) -> tuple[bool, float]:
         """
         Check if transfer is allowed and return wait time if throttled.
@@ -514,8 +509,13 @@ class BandwidthThrottleService:
             result = await redis_client.eval(
                 CONSUME_TOKENS_LUA,
                 2,  # number of keys
-                bucket_key, last_refill_key,  # KEYS
-                bytes_requested, bytes_per_second, bucket_capacity, time.time(), 300  # ARGV
+                bucket_key,
+                last_refill_key,  # KEYS
+                bytes_requested,
+                bytes_per_second,
+                bucket_capacity,
+                time.time(),
+                300,  # ARGV
             )
 
             allowed = bool(result[0])
@@ -533,7 +533,7 @@ class BandwidthThrottleService:
         retry_count: int = 0,
         limit_mbps: Optional[float] = None,
         plan_type: str = None,
-        db_bandwidth_override: int = None
+        db_bandwidth_override: int = None,
     ) -> tuple[bool, float]:
         """
         Check transfer with retry-aware throttling (plan-aware).
@@ -559,9 +559,11 @@ class BandwidthThrottleService:
 
         if not allowed and retry_count > 0:
             # Apply exponential penalty for retries
-            penalty = self.RETRY_PENALTY_BASE ** retry_count
+            penalty = self.RETRY_PENALTY_BASE**retry_count
             wait_time = wait_time * penalty
-            logger.debug(f"Retry penalty applied: retry={retry_count}, penalty={penalty:.2f}x, wait={wait_time:.2f}s")
+            logger.debug(
+                f"Retry penalty applied: retry={retry_count}, penalty={penalty:.2f}x, wait={wait_time:.2f}s"
+            )
 
         return allowed, wait_time
 
@@ -572,7 +574,7 @@ class BandwidthThrottleService:
         limit_mbps: Optional[float] = None,
         raise_on_long_wait: bool = True,
         plan_type: str = None,
-        db_bandwidth_override: int = None
+        db_bandwidth_override: int = None,
     ) -> AsyncGenerator[bytes, None]:
         """
         Transfer data with bandwidth throttling.
@@ -615,27 +617,33 @@ class BandwidthThrottleService:
                 # Fix #4: Return 429 for long waits instead of blocking
                 wait_threshold = self.get_wait_threshold(plan_type or "free")
                 if raise_on_long_wait and wait_time > wait_threshold:
-                    logger.warning(f"User {user_id} bandwidth limit exceeded, wait={wait_time:.2f}s (threshold={wait_threshold}s)")
+                    logger.warning(
+                        f"User {user_id} bandwidth limit exceeded, wait={wait_time:.2f}s (threshold={wait_threshold}s)"
+                    )
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
-                        headers={"Retry-After": str(int(wait_time))}
+                        headers={"Retry-After": str(int(wait_time))},
                     )
 
                 # Cap sleep time to prevent blocking event loop
                 sleep_time = min(wait_time, self.MAX_WAIT_SLEEP)
-                logger.debug(f"Throttling user {user_id}: waiting {sleep_time:.2f}s (requested: {wait_time:.2f}s)")
+                logger.debug(
+                    f"Throttling user {user_id}: waiting {sleep_time:.2f}s (requested: {wait_time:.2f}s)"
+                )
                 await asyncio.sleep(sleep_time)
                 await self.force_consume(user_id, chunk_size, plan_type=plan_type)
 
                 # If we only slept partial time, re-check
                 if wait_time > sleep_time:
-                    allowed, remaining_wait = await self.can_transfer(user_id, chunk_size, limit_mbps)
+                    allowed, remaining_wait = await self.can_transfer(
+                        user_id, chunk_size, limit_mbps
+                    )
                     if not allowed and remaining_wait > wait_threshold:
                         raise HTTPException(
                             status_code=429,
                             detail=f"Bandwidth limit exceeded. Please retry after {int(remaining_wait)} seconds.",
-                            headers={"Retry-After": str(int(remaining_wait))}
+                            headers={"Retry-After": str(int(remaining_wait))},
                         )
 
             yield chunk
@@ -646,7 +654,7 @@ class BandwidthThrottleService:
         data_generator: AsyncGenerator[bytes, None],
         retry_count: int = 0,
         limit_mbps: Optional[float] = None,
-        plan_type: str = None
+        plan_type: str = None,
     ) -> AsyncGenerator[bytes, None]:
         """
         Transfer data with retry-aware throttling.
@@ -684,7 +692,7 @@ class BandwidthThrottleService:
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
-                        headers={"Retry-After": str(int(wait_time))}
+                        headers={"Retry-After": str(int(wait_time))},
                     )
 
                 sleep_time = min(wait_time, self.MAX_WAIT_SLEEP)
@@ -698,7 +706,7 @@ class BandwidthThrottleService:
         user_id: str,
         bytes_consumed: int,
         plan_type: str = None,
-        db_bandwidth_override: int = None
+        db_bandwidth_override: int = None,
     ):
         """
         Force-debit the token bucket after a soft-throttle sleep so subsequent
@@ -736,8 +744,13 @@ class BandwidthThrottleService:
             await redis_client.eval(
                 FORCE_CONSUME_LUA,
                 2,
-                bucket_key, last_refill_key,
-                bytes_consumed, bytes_per_second, bucket_capacity, time.time(), 300
+                bucket_key,
+                last_refill_key,
+                bytes_consumed,
+                bytes_per_second,
+                bucket_capacity,
+                time.time(),
+                300,
             )
         except Exception as e:
             logger.warning(f"force_consume failed for user {user_id}: {e}")
@@ -863,10 +876,7 @@ class BandwidthThrottleService:
                     if stats.get("status") == "active":
                         active_users[user_id] = stats
 
-            return {
-                "active_user_count": len(active_users),
-                "users": active_users
-            }
+            return {"active_user_count": len(active_users), "users": active_users}
 
         except Exception as e:
             logger.error(f"Error getting all users stats: {e}")

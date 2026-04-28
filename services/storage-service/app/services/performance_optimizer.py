@@ -40,7 +40,7 @@ class QueryPerformanceMonitor:
         query: str,
         duration_ms: float,
         params: Optional[Dict] = None,
-        user_id: Optional[UUID] = None
+        user_id: Optional[UUID] = None,
     ):
         """Log query execution and detect slow queries."""
 
@@ -52,9 +52,9 @@ class QueryPerformanceMonitor:
             self.query_stats[normalized_query] = {
                 "count": 0,
                 "total_duration_ms": 0,
-                "min_duration_ms": float('inf'),
+                "min_duration_ms": float("inf"),
                 "max_duration_ms": 0,
-                "avg_duration_ms": 0
+                "avg_duration_ms": 0,
             }
 
         stats = self.query_stats[normalized_query]
@@ -72,7 +72,7 @@ class QueryPerformanceMonitor:
                 "duration_ms": duration_ms,
                 "timestamp": datetime.utcnow().isoformat(),
                 "params": params,
-                "user_id": str(user_id) if user_id else None
+                "user_id": str(user_id) if user_id else None,
             }
             self.slow_queries.append(slow_query_entry)
 
@@ -84,6 +84,7 @@ class QueryPerformanceMonitor:
         """Normalize query by removing parameter values for grouping."""
         # Simple normalization: replace common patterns
         import re
+
         normalized = re.sub(r"= '[^']*'", "= ?", query)
         normalized = re.sub(r"= \d+", "= ?", normalized)
         normalized = re.sub(r"IN \([^)]+\)", "IN (?)", normalized)
@@ -95,13 +96,7 @@ class QueryPerformanceMonitor:
 
     def get_query_stats(self, top_n: int = 50) -> List[Dict]:
         """Get top N queries by total execution time."""
-        stats_list = [
-            {
-                "query": query,
-                **stats
-            }
-            for query, stats in self.query_stats.items()
-        ]
+        stats_list = [{"query": query, **stats} for query, stats in self.query_stats.items()]
 
         # Sort by total duration (descending)
         stats_list.sort(key=lambda x: x["total_duration_ms"], reverse=True)
@@ -124,9 +119,7 @@ class QueryCache:
         """Connect to Redis."""
         if not self.redis_client:
             self.redis_client = await redis.from_url(
-                settings.REDIS_URL,
-                encoding="utf-8",
-                decode_responses=False
+                settings.REDIS_URL, encoding="utf-8", decode_responses=False
             )
 
     async def disconnect(self):
@@ -147,12 +140,7 @@ class QueryCache:
             print(f"Cache get error: {e}")
             return None
 
-    async def set(
-        self,
-        key: str,
-        value: Any,
-        ttl: Optional[int] = None
-    ):
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
         """Set cached value with TTL."""
         await self.connect()
         try:
@@ -176,11 +164,7 @@ class QueryCache:
         try:
             cursor = 0
             while True:
-                cursor, keys = await self.redis_client.scan(
-                    cursor=cursor,
-                    match=pattern,
-                    count=100
-                )
+                cursor, keys = await self.redis_client.scan(cursor=cursor, match=pattern, count=100)
                 if keys:
                     await self.redis_client.delete(*keys)
                 if cursor == 0:
@@ -198,11 +182,12 @@ class QueryCache:
                 "keyspace_hits": info.get("keyspace_hits", 0),
                 "keyspace_misses": info.get("keyspace_misses", 0),
                 "hit_rate": self._calculate_hit_rate(
-                    info.get("keyspace_hits", 0),
-                    info.get("keyspace_misses", 0)
+                    info.get("keyspace_hits", 0), info.get("keyspace_misses", 0)
                 ),
                 "connected_clients": info.get("connected_clients", 0),
-                "used_memory_human": (await self.redis_client.info("memory")).get("used_memory_human", "0"),
+                "used_memory_human": (await self.redis_client.info("memory")).get(
+                    "used_memory_human", "0"
+                ),
             }
         except Exception as e:
             print(f"Cache stats error: {e}")
@@ -218,10 +203,13 @@ class QueryCache:
     def _generate_cache_key(self, prefix: str, *args, **kwargs) -> str:
         """Generate cache key from function arguments."""
         # Create a stable hash from arguments
-        arg_str = json.dumps({
-            "args": [str(arg) for arg in args],
-            "kwargs": {k: str(v) for k, v in sorted(kwargs.items())}
-        }, sort_keys=True)
+        arg_str = json.dumps(
+            {
+                "args": [str(arg) for arg in args],
+                "kwargs": {k: str(v) for k, v in sorted(kwargs.items())},
+            },
+            sort_keys=True,
+        )
 
         arg_hash = hashlib.md5(arg_str.encode()).hexdigest()[:16]
         return f"query_cache:{prefix}:{arg_hash}"
@@ -234,6 +222,7 @@ query_cache = QueryCache()
 
 def monitor_query(func: Callable) -> Callable:
     """Decorator to monitor query performance."""
+
     @wraps(func)
     async def wrapper(*args, **kwargs):
         start_time = time.time()
@@ -244,15 +233,17 @@ def monitor_query(func: Callable) -> Callable:
         await query_monitor.log_query(
             query=func.__name__,
             duration_ms=duration_ms,
-            params={"args": len(args), "kwargs": list(kwargs.keys())}
+            params={"args": len(args), "kwargs": list(kwargs.keys())},
         )
 
         return result
+
     return wrapper
 
 
 def cached_query(prefix: str, ttl: Optional[int] = None):
     """Decorator to cache query results."""
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -271,7 +262,9 @@ def cached_query(prefix: str, ttl: Optional[int] = None):
             await query_cache.set(cache_key, result, ttl)
 
             return result
+
         return wrapper
+
     return decorator
 
 
@@ -301,11 +294,7 @@ class IndexRecommender:
 
         return recommendations
 
-    async def _check_table_indexes(
-        self,
-        db: AsyncSession,
-        table_name: str
-    ) -> List[Dict]:
+    async def _check_table_indexes(self, db: AsyncSession, table_name: str) -> List[Dict]:
         """Check for missing indexes on a specific table."""
 
         recommendations = []
@@ -323,12 +312,14 @@ class IndexRecommender:
 
         for index_name, index_def in recommended_indexes.items():
             if index_name not in existing_indexes:
-                recommendations.append({
-                    "table": table_name,
-                    "index_name": index_name,
-                    "index_definition": index_def,
-                    "reason": self._get_index_reason(table_name, index_name)
-                })
+                recommendations.append(
+                    {
+                        "table": table_name,
+                        "index_name": index_name,
+                        "index_definition": index_def,
+                        "reason": self._get_index_reason(table_name, index_name),
+                    }
+                )
 
         return recommendations
 
@@ -458,12 +449,7 @@ class PerformanceOptimizer:
                 LIMIT 10
             """))
             tables = [
-                {
-                    "schema": row[0],
-                    "table": row[1],
-                    "size": row[2],
-                    "bytes": row[3]
-                }
+                {"schema": row[0], "table": row[1], "size": row[2], "bytes": row[3]}
                 for row in result
             ]
 
@@ -482,11 +468,7 @@ class PerformanceOptimizer:
             print(f"Error getting database stats: {e}")
             return {}
 
-    async def create_recommended_indexes(
-        self,
-        db: AsyncSession,
-        execute: bool = False
-    ) -> Dict:
+    async def create_recommended_indexes(self, db: AsyncSession, execute: bool = False) -> Dict:
         """Create recommended indexes."""
 
         recommendations = await self.index_recommender.get_missing_indexes(db)
@@ -495,7 +477,7 @@ class PerformanceOptimizer:
             "total_recommendations": len(recommendations),
             "created": [],
             "failed": [],
-            "skipped": []
+            "skipped": [],
         }
 
         if not execute:
@@ -517,10 +499,7 @@ class PerformanceOptimizer:
                 results["created"].append(recommendation)
             except Exception as e:
                 await db.rollback()
-                results["failed"].append({
-                    **recommendation,
-                    "error": str(e)
-                })
+                results["failed"].append({**recommendation, "error": str(e)})
 
         return results
 
@@ -532,22 +511,15 @@ class PerformanceOptimizer:
             return {
                 "success": True,
                 "pattern": pattern,
-                "message": f"Cleared cache entries matching: {pattern}"
+                "message": f"Cleared cache entries matching: {pattern}",
             }
         except Exception as e:
-            return {
-                "success": False,
-                "pattern": pattern,
-                "error": str(e)
-            }
+            return {"success": False, "pattern": pattern, "error": str(e)}
 
     def reset_query_stats(self):
         """Reset query performance statistics."""
         self.query_monitor.reset_stats()
-        return {
-            "success": True,
-            "message": "Query statistics reset"
-        }
+        return {"success": True, "message": "Query statistics reset"}
 
 
 # Global performance optimizer instance

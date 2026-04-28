@@ -22,13 +22,14 @@ Benefits:
 """
 
 import asyncio
-import os
 import logging
-import psutil
 import mmap
-from typing import AsyncGenerator, Optional, Tuple, List
+import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import AsyncGenerator, List, Optional, Tuple
+
 import aiofiles
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,11 @@ class DownloadOptimizer:
 
     # Size thresholds
     INLINE_CACHE_SIZE = 5 * 1024 * 1024  # Cache files <5MB in Redis
-    SMALL_FILE_SIZE = 10 * 1024 * 1024   # Treat <10MB as "small"
+    SMALL_FILE_SIZE = 10 * 1024 * 1024  # Treat <10MB as "small"
     LARGE_FILE_SIZE = 100 * 1024 * 1024  # Treat >100MB as "large"
 
     # Streaming configuration
-    STREAM_CHUNK_SIZE = 1 * 1024 * 1024   # 1MB chunks for streaming
+    STREAM_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB chunks for streaming
     LARGE_STREAM_CHUNK = 4 * 1024 * 1024  # 4MB for large files (better throughput)
 
     # Dynamic parallel processing
@@ -60,10 +61,10 @@ class DownloadOptimizer:
 
     # Prefetching configuration
     PREFETCH_BUFFER_SIZE = 3  # Prefetch 3 chunks ahead
-    ENABLE_PREFETCH = True     # Enable prefetching by default
+    ENABLE_PREFETCH = True  # Enable prefetching by default
 
     # Zero-copy mmap configuration
-    ENABLE_MMAP = True         # Enable mmap zero-copy by default
+    ENABLE_MMAP = True  # Enable mmap zero-copy by default
     MMAP_THRESHOLD = 1 * 1024 * 1024  # Use mmap for files >1MB
 
     def __init__(self):
@@ -72,8 +73,7 @@ class DownloadOptimizer:
 
         # Thread pool sized for CPU cores (2x for I/O overlap)
         self.decrypt_executor = ThreadPoolExecutor(
-            max_workers=self.cpu_count * 2,
-            thread_name_prefix="decrypt_worker"
+            max_workers=self.cpu_count * 2, thread_name_prefix="decrypt_worker"
         )
 
         # Current parallelism level (can be throttled)
@@ -122,9 +122,9 @@ class DownloadOptimizer:
 
         # Calculate optimal parallelism
         optimal = min(
-            total_chunks,                      # Don't exceed total chunks
-            self.current_max_parallel,          # Current throttle level
-            self.MAX_PARALLEL_CHUNKS_LIMIT      # Safety cap
+            total_chunks,  # Don't exceed total chunks
+            self.current_max_parallel,  # Current throttle level
+            self.MAX_PARALLEL_CHUNKS_LIMIT,  # Safety cap
         )
 
         return optimal
@@ -145,7 +145,7 @@ class DownloadOptimizer:
         encryption_service,
         start_byte: int = 0,
         end_byte: Optional[int] = None,
-        compressed: bool = False
+        compressed: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """
         Optimized streaming for single-file storage
@@ -166,26 +166,22 @@ class DownloadOptimizer:
             f"encrypted: {file_key is not None})"
         )
 
-        async with aiofiles.open(file_path, 'rb') as f:
+        async with aiofiles.open(file_path, "rb") as f:
             raw_data = await f.read()
 
         if file_key:
             # Encrypted file: decrypt in thread to avoid blocking
             loop = asyncio.get_event_loop()
             decrypted_data = await loop.run_in_executor(
-                self.decrypt_executor,
-                encryption_service.decrypt_file,
-                raw_data,
-                file_key
+                self.decrypt_executor, encryption_service.decrypt_file, raw_data, file_key
             )
 
             # Handle decompression if needed (only for encrypted files)
             if compressed:
                 from ..utils.compression import compressor
+
                 decrypted_data = await loop.run_in_executor(
-                    self.decrypt_executor,
-                    compressor.decompress,
-                    decrypted_data
+                    self.decrypt_executor, compressor.decompress, decrypted_data
                 )
         else:
             # Unencrypted file (defensive compatibility)
@@ -204,7 +200,7 @@ class DownloadOptimizer:
         file_key: bytes,
         encryption_service,
         start_byte: int = 0,
-        end_byte: Optional[int] = None
+        end_byte: Optional[int] = None,
     ) -> AsyncGenerator[bytes, None]:
         """
         HYPER-OPTIMIZED parallel streaming with PREFETCHING for chunked storage
@@ -262,12 +258,7 @@ class DownloadOptimizer:
         def create_chunk_task(chunk_idx):
             return asyncio.create_task(
                 self._load_and_decrypt_chunk(
-                    chunk_idx,
-                    chunk_paths,
-                    upload_id,
-                    file_key,
-                    encryption_service,
-                    was_compressed
+                    chunk_idx, chunk_paths, upload_id, file_key, encryption_service, was_compressed
                 )
             )
 
@@ -288,8 +279,7 @@ class DownloadOptimizer:
             # If we have active tasks, wait for completion
             if active_tasks:
                 done, active_tasks = await asyncio.wait(
-                    active_tasks,
-                    return_when=asyncio.FIRST_COMPLETED
+                    active_tasks, return_when=asyncio.FIRST_COMPLETED
                 )
 
                 for completed_task in done:
@@ -333,7 +323,7 @@ class DownloadOptimizer:
                 # Stream in smaller chunks for better responsiveness
                 stream_chunk_size = self.get_optimal_chunk_size(len(decrypted_chunk))
                 for i in range(0, len(decrypted_chunk), stream_chunk_size):
-                    yield decrypted_chunk[i:i + stream_chunk_size]
+                    yield decrypted_chunk[i : i + stream_chunk_size]
 
                 # IMMEDIATE MEMORY RELEASE: chunk is yielded, can be garbage collected
                 del decrypted_chunk
@@ -356,14 +346,14 @@ class DownloadOptimizer:
         Returns raw file bytes (caller must decrypt)
         """
         try:
-            with open(chunk_path, 'rb') as f:
+            with open(chunk_path, "rb") as f:
                 # Get file size
                 f.seek(0, os.SEEK_END)
                 file_size = f.tell()
                 f.seek(0)
 
                 if file_size == 0:
-                    return b''
+                    return b""
 
                 # Memory-map the file (zero-copy read)
                 with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mmapped:
@@ -374,7 +364,7 @@ class DownloadOptimizer:
         except Exception as e:
             logger.warning(f"mmap failed for {chunk_path}, falling back to standard read: {e}")
             # Fallback to standard read
-            with open(chunk_path, 'rb') as f:
+            with open(chunk_path, "rb") as f:
                 return f.read()
 
     async def _load_and_decrypt_chunk(
@@ -384,7 +374,7 @@ class DownloadOptimizer:
         upload_id: str,
         file_key: bytes,
         encryption_service,
-        was_compressed: bool
+        was_compressed: bool,
     ) -> Optional[bytes]:
         """
         Load and decrypt a single chunk with ZERO-COPY mmap optimization
@@ -414,13 +404,11 @@ class DownloadOptimizer:
             if use_mmap:
                 # ZERO-COPY: Use mmap for direct memory access
                 encrypted_chunk = await loop.run_in_executor(
-                    self.decrypt_executor,
-                    self._read_chunk_mmap,
-                    chunk_path
+                    self.decrypt_executor, self._read_chunk_mmap, chunk_path
                 )
             else:
                 # Standard async read for small files
-                async with aiofiles.open(chunk_path, 'rb') as f:
+                async with aiofiles.open(chunk_path, "rb") as f:
                     encrypted_chunk = await f.read()
 
             # Decrypt in thread pool (uses hardware AES-NI when available)
@@ -429,16 +417,15 @@ class DownloadOptimizer:
                 encryption_service.decrypt_chunk,
                 encrypted_chunk,
                 file_key,
-                chunk_idx
+                chunk_idx,
             )
 
             # Decompress if needed
             if was_compressed:
                 from ..utils.compression import compressor
+
                 decrypted_chunk = await loop.run_in_executor(
-                    self.decrypt_executor,
-                    compressor.decompress,
-                    decrypted_chunk
+                    self.decrypt_executor, compressor.decompress, decrypted_chunk
                 )
 
             return decrypted_chunk
@@ -448,10 +435,7 @@ class DownloadOptimizer:
             return None
 
     async def should_compress_transfer(
-        self,
-        mime_type: str,
-        file_size: int,
-        accept_encoding: Optional[str]
+        self, mime_type: str, file_size: int, accept_encoding: Optional[str]
     ) -> bool:
         """
         Determine if we should compress the download
@@ -461,13 +445,19 @@ class DownloadOptimizer:
         """
 
         # Check if client supports gzip
-        if not accept_encoding or 'gzip' not in accept_encoding.lower():
+        if not accept_encoding or "gzip" not in accept_encoding.lower():
             return False
 
         # Don't compress already-compressed formats
         compressed_types = {
-            'video/', 'audio/', 'image/jpeg', 'image/png', 'image/gif',
-            'application/zip', 'application/gzip', 'application/x-rar'
+            "video/",
+            "audio/",
+            "image/jpeg",
+            "image/png",
+            "image/gif",
+            "application/zip",
+            "application/gzip",
+            "application/x-rar",
         }
 
         for comp_type in compressed_types:
@@ -476,8 +466,11 @@ class DownloadOptimizer:
 
         # Compress text-based files
         text_types = {
-            'text/', 'application/json', 'application/xml',
-            'application/javascript', 'application/sql'
+            "text/",
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/sql",
         }
 
         for text_type in text_types:

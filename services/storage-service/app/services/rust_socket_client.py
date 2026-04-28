@@ -5,15 +5,15 @@ This client bypasses httpx to enable file descriptor passing via SCM_RIGHTS
 for secure encryption key transfer to the Rust data plane service.
 """
 
+import asyncio
+import json
+import logging
 import os
 import socket
-import json
-import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, Optional
-import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, Optional
 
 from ..utils.memfd_helper import MemfdHelper
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Prevents Rust chunk processing (1-9s per call) from starving preview generation,
 # session updates, and other to_thread() callers that share the default pool.
 _RUST_IO_EXECUTOR = ThreadPoolExecutor(
-    max_workers=int(os.getenv('RUST_IO_POOL_SIZE', '6')),
+    max_workers=int(os.getenv("RUST_IO_POOL_SIZE", "6")),
     thread_name_prefix="rust-io",
 )
 
@@ -37,9 +37,7 @@ class RustSocketClient:
     """
 
     def __init__(
-        self,
-        socket_path: str = "/tmp/edge-storage-dataplane.sock",
-        timeout: float = 30.0
+        self, socket_path: str = "/tmp/edge-storage-dataplane.sock", timeout: float = 30.0
     ):
         """
         Initialize Rust socket client.
@@ -111,8 +109,14 @@ class RustSocketClient:
         return await loop.run_in_executor(
             _RUST_IO_EXECUTOR,
             self._process_non_zk_sync,
-            chunk_data, file_key, file_id, chunk_index,
-            compress, filename, file_size, target_path,
+            chunk_data,
+            file_key,
+            file_id,
+            chunk_index,
+            compress,
+            filename,
+            file_size,
+            target_path,
         )
 
     async def warmup(self) -> bool:
@@ -122,10 +126,11 @@ class RustSocketClient:
         real chunks don't pay the cold-start penalty. Strictly non-fatal.
         """
         import tempfile
+
         tmp_path = None
         try:
             dummy_key = os.urandom(32)
-            dummy_data = b'\x00' * 1024  # 1KB
+            dummy_data = b"\x00" * 1024  # 1KB
             # Use a real temp file — /dev/null causes Permission denied in some containers
             fd, tmp_path = tempfile.mkstemp(prefix="rust_warmup_", dir="/tmp")
             os.close(fd)
@@ -133,8 +138,14 @@ class RustSocketClient:
             await loop.run_in_executor(
                 _RUST_IO_EXECUTOR,
                 self._process_non_zk_sync,
-                dummy_data, dummy_key, "__warmup__", 0,
-                False, None, None, tmp_path,
+                dummy_data,
+                dummy_key,
+                "__warmup__",
+                0,
+                False,
+                None,
+                None,
+                tmp_path,
             )
             logger.info("Rust data plane warmup complete")
             return True
@@ -168,7 +179,9 @@ class RustSocketClient:
 
             # 1. Create memfd with key
             logger.debug(f"Creating memfd with key for chunk {chunk_index}")
-            key_fd = MemfdHelper.create_memfd_with_key(file_key, name=f"key_{file_id}_{chunk_index}")
+            key_fd = MemfdHelper.create_memfd_with_key(
+                file_key, name=f"key_{file_id}_{chunk_index}"
+            )
             t_memfd = time.monotonic()
 
             # 2. Create Unix socket connection
@@ -203,7 +216,7 @@ class RustSocketClient:
 
             # 4. Send HTTP request + FD via SCM_RIGHTS
             logger.debug(f"Sending HTTP request + FD {key_fd} via SCM_RIGHTS")
-            MemfdHelper.send_fd_over_socket(sock, key_fd, http_request.encode('utf-8'))
+            MemfdHelper.send_fd_over_socket(sock, key_fd, http_request.encode("utf-8"))
             t_scm = time.monotonic()
 
             # 5. Send chunk data (regular socket send, not via SCM_RIGHTS)
@@ -316,8 +329,8 @@ class RustSocketClient:
 
         # Split headers and body
         headers_end = buffer.find(b"\r\n\r\n")
-        header_section = buffer[:headers_end].decode('utf-8')
-        body_start = buffer[headers_end + 4:]
+        header_section = buffer[:headers_end].decode("utf-8")
+        body_start = buffer[headers_end + 4 :]
 
         # Parse status line
         lines = header_section.split("\r\n")
@@ -348,13 +361,11 @@ class RustSocketClient:
             body += chunk
 
         # Decode body
-        body_str = body.decode('utf-8')
+        body_str = body.decode("utf-8")
 
         # Check status code
         if status_code != 200:
-            raise ValueError(
-                f"HTTP {status_code} {status_text}: {body_str}"
-            )
+            raise ValueError(f"HTTP {status_code} {status_text}: {body_str}")
 
         return body_str
 
@@ -388,7 +399,7 @@ class RustSocketClient:
             request = self._build_http_request("GET", "/health", headers)
 
             # Send request
-            sock.sendall(request.encode('utf-8'))
+            sock.sendall(request.encode("utf-8"))
 
             # Read response
             response_body = self._read_http_response(sock)
@@ -414,7 +425,9 @@ class RustSocketClient:
 _rust_socket_client: Optional[RustSocketClient] = None
 
 
-def get_rust_socket_client(socket_path: str = "/tmp/edge-storage-dataplane.sock") -> RustSocketClient:
+def get_rust_socket_client(
+    socket_path: str = "/tmp/edge-storage-dataplane.sock",
+) -> RustSocketClient:
     """
     Get or create singleton Rust socket client.
 

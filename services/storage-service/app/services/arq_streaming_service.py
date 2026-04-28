@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StreamingSession:
     """Represents an active streaming session."""
+
     session_id: str
     file_id: str
     file_path: str
@@ -55,6 +56,7 @@ class StreamingSession:
 @dataclass
 class StreamChunk:
     """A single chunk of streamed data with metadata."""
+
     chunk_index: int
     data: bytes
     checksum: str
@@ -67,12 +69,13 @@ class StreamChunk:
 @dataclass
 class ARQStreamingConfig:
     """Configuration for ARQ streaming."""
+
     default_chunk_size: int = 1 * 1024 * 1024  # 1MB default chunks
     min_chunk_size: int = 256 * 1024  # 256KB minimum
     max_chunk_size: int = 8 * 1024 * 1024  # 8MB maximum
     session_timeout_minutes: int = 30
     max_retransmissions: int = 5
-    checksum_algorithm: str = 'sha256'
+    checksum_algorithm: str = "sha256"
 
 
 class ARQStreamingService:
@@ -86,7 +89,7 @@ class ARQStreamingService:
     def __init__(
         self,
         redis_client: Optional[aioredis.Redis] = None,
-        config: Optional[ARQStreamingConfig] = None
+        config: Optional[ARQStreamingConfig] = None,
     ):
         self.redis = redis_client
         self.config = config or ARQStreamingConfig()
@@ -114,9 +117,9 @@ class ARQStreamingService:
 
     def compute_checksum(self, data: bytes) -> str:
         """Compute checksum for data integrity verification."""
-        if self.config.checksum_algorithm == 'sha256':
+        if self.config.checksum_algorithm == "sha256":
             return hashlib.sha256(data).hexdigest()
-        elif self.config.checksum_algorithm == 'md5':
+        elif self.config.checksum_algorithm == "md5":
             return hashlib.md5(data).hexdigest()
         else:
             raise ValueError(f"Unsupported checksum algorithm: {self.config.checksum_algorithm}")
@@ -128,7 +131,7 @@ class ARQStreamingService:
         chunk_size: Optional[int] = None,
         user_id: Optional[str] = None,
         plan_type: str = "free",
-        db_streams_override: int = None
+        db_streams_override: int = None,
     ) -> Dict:
         """
         Initialize a new ARQ streaming session with bandwidth throttling (plan-aware).
@@ -161,23 +164,20 @@ class ARQStreamingService:
             )
 
             stream_slot_acquired = await bandwidth_throttle_service.acquire_stream_slot(
-                user_id,
-                plan_type=plan_type,
-                db_streams_override=db_streams_override
+                user_id, plan_type=plan_type, db_streams_override=db_streams_override
             )
             if not stream_slot_acquired:
                 raise HTTPException(
                     status_code=429,
                     detail=f"Too many concurrent streams. Maximum {max_streams} streams allowed for your plan.",
-                    headers={"Retry-After": "10"}
+                    headers={"Retry-After": "10"},
                 )
             logger.debug(f"ARQ stream slot acquired for user {user_id} ({plan_type})")
 
         # Determine chunk size
         if chunk_size:
             chunk_size = max(
-                self.config.min_chunk_size,
-                min(chunk_size, self.config.max_chunk_size)
+                self.config.min_chunk_size, min(chunk_size, self.config.max_chunk_size)
             )
         else:
             chunk_size = self.config.default_chunk_size
@@ -197,7 +197,7 @@ class ARQStreamingService:
             created_at=datetime.utcnow(),
             user_id=user_id,
             plan_type=plan_type,
-            stream_slot_acquired=stream_slot_acquired
+            stream_slot_acquired=stream_slot_acquired,
         )
 
         # Store session
@@ -212,20 +212,17 @@ class ARQStreamingService:
         )
 
         return {
-            'session_id': session_id,
-            'file_id': file_id,
-            'file_size': file_size,
-            'chunk_size': chunk_size,
-            'total_chunks': total_chunks,
-            'checksum_algorithm': self.config.checksum_algorithm,
-            'throttling_enabled': user_id is not None
+            "session_id": session_id,
+            "file_id": file_id,
+            "file_size": file_size,
+            "chunk_size": chunk_size,
+            "total_chunks": total_chunks,
+            "checksum_algorithm": self.config.checksum_algorithm,
+            "throttling_enabled": user_id is not None,
         }
 
     async def get_chunk(
-        self,
-        session_id: str,
-        chunk_index: int,
-        is_retransmit: bool = False
+        self, session_id: str, chunk_index: int, is_retransmit: bool = False
     ) -> StreamChunk:
         """
         Get a specific chunk with checksum for verification.
@@ -246,8 +243,7 @@ class ARQStreamingService:
 
         if chunk_index < 0 or chunk_index >= session.total_chunks:
             raise ValueError(
-                f"Invalid chunk index {chunk_index}. "
-                f"Valid range: 0-{session.total_chunks - 1}"
+                f"Invalid chunk index {chunk_index}. " f"Valid range: 0-{session.total_chunks - 1}"
             )
 
         # Calculate byte range
@@ -270,19 +266,19 @@ class ARQStreamingService:
                 bytes_requested=chunk_size,
                 retry_count=retry_count,
                 plan_type=session.plan_type,
-                db_bandwidth_override=session.db_bandwidth_override
+                db_bandwidth_override=session.db_bandwidth_override,
             )
 
             if not allowed:
                 wait_threshold = bandwidth_throttle_service.get_wait_threshold(
-                    getattr(session, 'plan_type', 'free') or 'free'
+                    getattr(session, "plan_type", "free") or "free"
                 )
                 if wait_time > wait_threshold:
                     # Return 429 with Retry-After for long waits
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded. Please retry after {int(wait_time)} seconds.",
-                        headers={"Retry-After": str(int(wait_time))}
+                        headers={"Retry-After": str(int(wait_time))},
                     )
                 # Short wait - apply throttling (capped at 1 second)
                 await asyncio.sleep(min(wait_time, 1.0))
@@ -290,11 +286,11 @@ class ARQStreamingService:
                     user_id=session.user_id,
                     bytes_consumed=chunk_size,
                     plan_type=session.plan_type,
-                    db_bandwidth_override=session.db_bandwidth_override
+                    db_bandwidth_override=session.db_bandwidth_override,
                 )
 
         # Read chunk data
-        async with aiofiles.open(session.file_path, 'rb') as f:
+        async with aiofiles.open(session.file_path, "rb") as f:
             await f.seek(byte_start)
             data = await f.read(chunk_size)
 
@@ -317,14 +313,11 @@ class ARQStreamingService:
             is_last=is_last,
             byte_start=byte_start,
             byte_end=byte_end,
-            total_size=session.file_size
+            total_size=session.file_size,
         )
 
     async def stream_with_arq(
-        self,
-        session_id: str,
-        start_chunk: int = 0,
-        end_chunk: Optional[int] = None
+        self, session_id: str, start_chunk: int = 0, end_chunk: Optional[int] = None
     ) -> AsyncGenerator[StreamChunk, None]:
         """
         Stream chunks with ARQ support.
@@ -347,19 +340,13 @@ class ARQStreamingService:
         end_chunk = min(end_chunk, session.total_chunks - 1)
         start_chunk = max(start_chunk, 0)
 
-        logger.info(
-            f"Streaming chunks {start_chunk}-{end_chunk} for session {session_id[:8]}..."
-        )
+        logger.info(f"Streaming chunks {start_chunk}-{end_chunk} for session {session_id[:8]}...")
 
         for chunk_index in range(start_chunk, end_chunk + 1):
             chunk = await self.get_chunk(session_id, chunk_index)
             yield chunk
 
-    async def acknowledge_chunks(
-        self,
-        session_id: str,
-        chunk_indices: List[int]
-    ) -> Dict:
+    async def acknowledge_chunks(self, session_id: str, chunk_indices: List[int]) -> Dict:
         """
         Acknowledge successfully received chunks.
 
@@ -388,18 +375,16 @@ class ARQStreamingService:
         )
 
         return {
-            'session_id': session_id,
-            'acknowledged': chunk_indices,
-            'total_acknowledged': acked_count,
-            'total_chunks': session.total_chunks,
-            'progress_percent': progress,
-            'complete': acked_count == session.total_chunks
+            "session_id": session_id,
+            "acknowledged": chunk_indices,
+            "total_acknowledged": acked_count,
+            "total_chunks": session.total_chunks,
+            "progress_percent": progress,
+            "complete": acked_count == session.total_chunks,
         }
 
     async def request_retransmit(
-        self,
-        session_id: str,
-        chunk_indices: List[int]
+        self, session_id: str, chunk_indices: List[int]
     ) -> List[StreamChunk]:
         """
         Request retransmission of lost/corrupt chunks.
@@ -414,9 +399,7 @@ class ARQStreamingService:
         """
         session = await self._get_session(session_id)
 
-        logger.info(
-            f"Retransmitting {len(chunk_indices)} chunks for session {session_id[:8]}..."
-        )
+        logger.info(f"Retransmitting {len(chunk_indices)} chunks for session {session_id[:8]}...")
 
         chunks = []
         for idx in chunk_indices:
@@ -466,19 +449,19 @@ class ARQStreamingService:
         total = session.total_chunks
 
         return {
-            'session_id': session_id,
-            'file_id': session.file_id,
-            'file_size': session.file_size,
-            'chunk_size': session.chunk_size,
-            'total_chunks': total,
-            'delivered_chunks': delivered,
-            'acknowledged_chunks': acknowledged,
-            'missing_chunks': total - acknowledged,
-            'delivery_progress': (delivered / total * 100) if total > 0 else 0,
-            'ack_progress': (acknowledged / total * 100) if total > 0 else 0,
-            'complete': acknowledged == total,
-            'created_at': session.created_at.isoformat(),
-            'age_seconds': (datetime.utcnow() - session.created_at).total_seconds()
+            "session_id": session_id,
+            "file_id": session.file_id,
+            "file_size": session.file_size,
+            "chunk_size": session.chunk_size,
+            "total_chunks": total,
+            "delivered_chunks": delivered,
+            "acknowledged_chunks": acknowledged,
+            "missing_chunks": total - acknowledged,
+            "delivery_progress": (delivered / total * 100) if total > 0 else 0,
+            "ack_progress": (acknowledged / total * 100) if total > 0 else 0,
+            "complete": acknowledged == total,
+            "created_at": session.created_at.isoformat(),
+            "age_seconds": (datetime.utcnow() - session.created_at).total_seconds(),
         }
 
     async def close_session(self, session_id: str):
@@ -529,14 +512,14 @@ class ARQStreamingService:
         ttl = self.config.session_timeout_minutes * 60
 
         data = {
-            'file_id': session.file_id,
-            'file_path': session.file_path,
-            'file_size': str(session.file_size),
-            'chunk_size': str(session.chunk_size),
-            'total_chunks': str(session.total_chunks),
-            'created_at': session.created_at.isoformat(),
-            'user_id': session.user_id or '',
-            'stream_slot_acquired': '1' if session.stream_slot_acquired else '0'
+            "file_id": session.file_id,
+            "file_path": session.file_path,
+            "file_size": str(session.file_size),
+            "chunk_size": str(session.chunk_size),
+            "total_chunks": str(session.total_chunks),
+            "created_at": session.created_at.isoformat(),
+            "user_id": session.user_id or "",
+            "stream_slot_acquired": "1" if session.stream_slot_acquired else "0",
         }
 
         await self.redis.hset(key, mapping=data)
@@ -558,14 +541,14 @@ class ARQStreamingService:
 
         return StreamingSession(
             session_id=session_id,
-            file_id=data['file_id'],
-            file_path=data['file_path'],
-            file_size=int(data['file_size']),
-            chunk_size=int(data['chunk_size']),
-            total_chunks=int(data['total_chunks']),
-            created_at=datetime.fromisoformat(data['created_at']),
-            user_id=data.get('user_id') or None,
-            stream_slot_acquired=data.get('stream_slot_acquired') == '1'
+            file_id=data["file_id"],
+            file_path=data["file_path"],
+            file_size=int(data["file_size"]),
+            chunk_size=int(data["chunk_size"]),
+            total_chunks=int(data["total_chunks"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            user_id=data.get("user_id") or None,
+            stream_slot_acquired=data.get("stream_slot_acquired") == "1",
         )
 
     async def _update_session_delivery(self, session_id: str, chunk_index: int, checksum: str):
@@ -575,9 +558,7 @@ class ARQStreamingService:
 
         ttl = self.config.session_timeout_minutes * 60
         await self.redis.setex(
-            f"arq:stream:{session_id}:chunk:{chunk_index}:checksum",
-            ttl,
-            checksum
+            f"arq:stream:{session_id}:chunk:{chunk_index}:checksum", ttl, checksum
         )
         await self.redis.sadd(f"arq:stream:{session_id}:delivered", chunk_index)
         await self.redis.expire(f"arq:stream:{session_id}:delivered", ttl)
@@ -620,7 +601,8 @@ class ARQStreamingService:
                 timeout = timedelta(minutes=self.config.session_timeout_minutes)
 
                 expired = [
-                    sid for sid, session in list(self._sessions.items())
+                    sid
+                    for sid, session in list(self._sessions.items())
                     if now - session.created_at > timeout
                 ]
 

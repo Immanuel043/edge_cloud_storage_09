@@ -1,56 +1,79 @@
 # services/storage-service/app/routers/upload.py
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks, Response, Body
-from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, update
-from typing import Optional, AsyncGenerator
-import uuid
-import json
-import os
-import io
+import asyncio
 import base64
 import hashlib
-import mimetypes
-import tempfile
-from datetime import datetime
-from ..dependencies import get_db, log_activity, get_current_user, get_plan_quota
-from ..services.auth import auth_service
-from ..services.audit_logging_service import audit_service as audit_logging_service, AuditEventType
-from ..services.storage import storage_service
-from ..services.encryption import encryption_service
-from ..services.scan_streaming import iter_decrypted_chunks
-from ..models.database import User, Object, FileVersion
-from ..models.schemas import UploadInitResponse, UploadStatusResponse
-from ..database import get_redis
-from ..config import settings
-from ..utils.rate_limiter_v2 import create_rate_limiter, RateLimitConfig
-import aiofiles
-from ..utils.cache import cached
-from ..monitoring.metrics import (
-    upload_initiated, upload_completed, upload_duration,
-    active_uploads, chunk_processing_duration, errors_total
-)
-import time
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
-from ..services.deduplication_enhanced import enhanced_dedup_service
-from .background_deduplication import background_dedup_service
-from ..services.dedup_classifier import dedup_classifier
-from ..services.search_service import search_service
-from ..services.virus_scanner import get_virus_scanner, VirusScanResult
-from ..utils.compression import compressor
-from ..utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
-from ..services.dlp_service import get_dlp_service
-from ..services.audit_service import get_audit_service
-from ..services.video_optimizer import video_optimizer
-from ..services.video_ingestion_service import video_ingestion_service
-from ..services.bandwidth_throttle import bandwidth_throttle_service
-from ..services.rust_dataplane_client import get_rust_client
-from ..services.upload_session_store import save_upload_session, get_upload_session, delete_upload_session, update_upload_session_atomic, REDIS_TTL
-from ..services.kafka_client import get_kafka_producer
+import io
+import json
 import logging
+import mimetypes
+import os
+import tempfile
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from functools import partial
+from typing import AsyncGenerator, Optional
+
+import aiofiles
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.responses import StreamingResponse
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import settings
+from ..database import get_redis
+from ..dependencies import get_current_user, get_db, get_plan_quota, log_activity
+from ..models.database import FileVersion, Object, User
+from ..models.schemas import UploadInitResponse, UploadStatusResponse
+from ..monitoring.metrics import (
+    active_uploads,
+    chunk_processing_duration,
+    errors_total,
+    upload_completed,
+    upload_duration,
+    upload_initiated,
+)
+from ..services.audit_logging_service import AuditEventType
+from ..services.audit_logging_service import audit_service as audit_logging_service
+from ..services.audit_service import get_audit_service
+from ..services.auth import auth_service
+from ..services.bandwidth_throttle import bandwidth_throttle_service
+from ..services.dedup_classifier import dedup_classifier
+from ..services.deduplication_enhanced import enhanced_dedup_service
+from ..services.dlp_service import get_dlp_service
+from ..services.encryption import encryption_service
+from ..services.kafka_client import get_kafka_producer
+from ..services.rust_dataplane_client import get_rust_client
+from ..services.scan_streaming import iter_decrypted_chunks
+from ..services.search_service import search_service
+from ..services.storage import storage_service
+from ..services.upload_session_store import (
+    REDIS_TTL,
+    delete_upload_session,
+    get_upload_session,
+    save_upload_session,
+    update_upload_session_atomic,
+)
+from ..services.video_ingestion_service import video_ingestion_service
+from ..services.video_optimizer import video_optimizer
+from ..services.virus_scanner import VirusScanResult, get_virus_scanner
+from ..utils.cache import cached
+from ..utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
+from ..utils.compression import compressor
+from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
+from .background_deduplication import background_dedup_service
 
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
 logger = logging.getLogger(__name__)
@@ -63,20 +86,54 @@ executor = ThreadPoolExecutor(max_workers=min(os.cpu_count() + 1, 32))  # CPU-bo
 
 # Optimized buffer sizes
 # Read from environment variables with fallbacks
-STREAM_BUFFER_SIZE = int(os.getenv('STREAM_BUFFER_SIZE', 8 * 1024 * 1024))  # 8MB default
-INLINE_THRESHOLD = int(os.getenv('INLINE_THRESHOLD', 512 * 1024))  # 512KB
-SINGLE_OBJECT_THRESHOLD = int(os.getenv('SINGLE_OBJECT_THRESHOLD', 50 * 1024 * 1024))  # 50MB
-CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 32 * 1024 * 1024))  # 32MB default - CRITICAL CHANGE
+STREAM_BUFFER_SIZE = int(os.getenv("STREAM_BUFFER_SIZE", 8 * 1024 * 1024))  # 8MB default
+INLINE_THRESHOLD = int(os.getenv("INLINE_THRESHOLD", 512 * 1024))  # 512KB
+SINGLE_OBJECT_THRESHOLD = int(os.getenv("SINGLE_OBJECT_THRESHOLD", 50 * 1024 * 1024))  # 50MB
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 32 * 1024 * 1024))  # 32MB default - CRITICAL CHANGE
 
 # Files that are already compressed - DO NOT compress these
-COMPRESSED_FORMATS = {'.zip', '.gz', '.rar', '.7z', '.bz2', '.xz', 
-                      '.jpg', '.jpeg', '.png', '.mp4', '.mp3', '.avi',
-                      '.mkv', '.mov', '.webm', '.flac', '.aac', '.ogg',
-                      '.pdf', '.docx', '.xlsx', '.pptx'}  # Most modern formats are compressed
+COMPRESSED_FORMATS = {
+    ".zip",
+    ".gz",
+    ".rar",
+    ".7z",
+    ".bz2",
+    ".xz",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".mp4",
+    ".mp3",
+    ".avi",
+    ".mkv",
+    ".mov",
+    ".webm",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".pdf",
+    ".docx",
+    ".xlsx",
+    ".pptx",
+}  # Most modern formats are compressed
 
 # Only compress these text-based formats
-COMPRESSIBLE_FORMATS = {'.txt', '.log', '.csv', '.json', '.xml', '.sql', 
-                        '.html', '.css', '.js', '.py', '.java', '.c', '.cpp'}
+COMPRESSIBLE_FORMATS = {
+    ".txt",
+    ".log",
+    ".csv",
+    ".json",
+    ".xml",
+    ".sql",
+    ".html",
+    ".css",
+    ".js",
+    ".py",
+    ".java",
+    ".c",
+    ".cpp",
+}
+
 
 def _cleanup_rust_chunk(file_id: str, chunk_index: int):
     """Clean up a chunk file written by Rust's storage path scheme.
@@ -85,7 +142,9 @@ def _cleanup_rust_chunk(file_id: str, chunk_index: int):
     This removes the chunk and any empty parent directories left behind.
     """
     storage_root = settings.STORAGE_ROOT
-    chunk_path = os.path.join(storage_root, "files", file_id, "chunks", f"chunk-{chunk_index:010}.enc")
+    chunk_path = os.path.join(
+        storage_root, "files", file_id, "chunks", f"chunk-{chunk_index:010}.enc"
+    )
     try:
         if os.path.exists(chunk_path):
             os.remove(chunk_path)
@@ -111,6 +170,7 @@ def _cleanup_rust_file(file_id: str):
     try:
         if os.path.isdir(file_dir):
             import shutil
+
             shutil.rmtree(file_dir)
             logger.debug(f"Cleaned up Rust file directory: {file_dir}")
     except OSError as e:
@@ -120,16 +180,17 @@ def _cleanup_rust_file(file_id: str):
 def should_compress(filename: str, size: int) -> bool:
     """Determine if file should be compressed based on type and size"""
     ext = os.path.splitext(filename)[1].lower()
-    
+
     # Never compress already-compressed formats
     if ext in COMPRESSED_FORMATS:
         return False
-    
+
     # Only compress text formats larger than 1MB
     if ext in COMPRESSIBLE_FORMATS and size > 1024 * 1024:
         return True
-    
+
     return False
+
 
 async def get_user_storage_info_fast(user_id: str, db: AsyncSession, redis_client):
     """Lightweight storage check with Redis caching"""
@@ -140,30 +201,25 @@ async def get_user_storage_info_fast(user_id: str, db: AsyncSession, redis_clien
     if cached:
         # Redis returns bytes, decode to string
         if isinstance(cached, bytes):
-            cached = cached.decode('utf-8')
+            cached = cached.decode("utf-8")
         return json.loads(cached)
 
     # Cache miss - query database
     result = await db.execute(
-        select(User.storage_quota, User.storage_used)
-        .where(User.id == user_id)
+        select(User.storage_quota, User.storage_used).where(User.id == user_id)
     )
     data = result.first()
 
     if not data:
         storage_info = {"quota": 0, "used": 0}
     else:
-        storage_info = {
-            "quota": int(data.storage_quota or 0),
-            "used": int(data.storage_used or 0)
-        }
+        storage_info = {"quota": int(data.storage_quota or 0), "used": int(data.storage_used or 0)}
 
     # Cache for 30 seconds (fire-and-forget)
-    asyncio.create_task(
-        redis_client.setex(cache_key, 30, json.dumps(storage_info))
-    )
+    asyncio.create_task(redis_client.setex(cache_key, 30, json.dumps(storage_info)))
 
     return storage_info
+
 
 async def check_rust_availability():
     """
@@ -196,7 +252,10 @@ async def check_rust_availability():
         _rust_client_available = False
         return False
 
-def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int, compress: bool = False):
+
+def process_chunk_cpu_bound(
+    chunk_data: bytes, file_key: bytes, chunk_index: int, compress: bool = False
+):
     """
     CPU-intensive operations in thread pool (Python fallback).
     This is used when Rust data plane is unavailable.
@@ -207,6 +266,7 @@ def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int
     # Optional compression (only for compressible files)
     if compress:
         from ..utils.compression import compressor
+
         chunk_data = compressor.compress(chunk_data)
 
     # Encryption (AES-GCM is fast with hardware acceleration)
@@ -214,7 +274,12 @@ def process_chunk_cpu_bound(chunk_data: bytes, file_key: bytes, chunk_index: int
 
     return encrypted_chunk, original_hash
 
-@router.post("/init", response_model=UploadInitResponse, dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
+
+@router.post(
+    "/init",
+    response_model=UploadInitResponse,
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))],
+)
 async def init_upload(
     request: Request,
     file_name: str,
@@ -226,13 +291,13 @@ async def init_upload(
     """Initialize upload with smart storage decision"""
     if not file_name or file_size is None:
         raise HTTPException(400, "file_name and file_size required")
-    
+
     redis_client = await get_redis()
 
     # Check storage quota with atomic reservation to prevent TOCTOU race
     user_id_str = str(current_user.id)
     storage_info = await get_user_storage_info_fast(user_id_str, db, redis_client)
-    if storage_info['used'] + file_size > storage_info['quota']:
+    if storage_info["used"] + file_size > storage_info["quota"]:
         raise HTTPException(status_code=413, detail="Storage quota exceeded")
 
     # Atomically reserve space in Redis to prevent concurrent uploads exceeding quota
@@ -242,11 +307,13 @@ async def init_upload(
     pipe.expire(reserve_key, 86400)  # 24-hour TTL for cleanup
     results = await pipe.execute()
     reserved = results[0]
-    if storage_info['used'] + reserved > storage_info['quota']:
+    if storage_info["used"] + reserved > storage_info["quota"]:
         # Over quota with reservation - undo and reject
         await redis_client.decrby(reserve_key, file_size)
-        raise HTTPException(status_code=413, detail="Storage quota exceeded (concurrent upload limit)")
-    
+        raise HTTPException(
+            status_code=413, detail="Storage quota exceeded (concurrent upload limit)"
+        )
+
     # Determine storage strategy
     if file_size < INLINE_THRESHOLD:
         storage_strategy = "inline"
@@ -257,16 +324,16 @@ async def init_upload(
     else:
         storage_strategy = "chunked"
         total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
-    
+
     upload_id = str(uuid.uuid4())
-    
+
     # Generate encryption key for this upload
     file_key = encryption_service.generate_file_key()
     encrypted_key = encryption_service.encrypt_key(file_key)
-    
+
     # Check if compression should be used
     use_compression = should_compress(file_name, file_size)
-    
+
     session_data = {
         "id": upload_id,
         "user": str(current_user.id),
@@ -285,16 +352,17 @@ async def init_upload(
 
     # Persist session state to Redis + DB fallback
     await save_upload_session(redis_client, db, upload_id, session_data)
-    
+
     # Metrics
     upload_initiated.labels(
-        plan_type=getattr(current_user, 'plan_type', 'free'),
-        storage_strategy=storage_strategy
+        plan_type=getattr(current_user, "plan_type", "free"), storage_strategy=storage_strategy
     ).inc()
     active_uploads.inc()
-    
-    print(f"📤 Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Compression: {use_compression}")
-    
+
+    print(
+        f"📤 Upload initialized: {file_name} ({file_size/1024/1024:.1f}MB) - Compression: {use_compression}"
+    )
+
     recommended_concurrency = await bandwidth_throttle_service.get_recommended_chunk_concurrency(
         str(current_user.id), current_user.plan_type or "free", current_user.max_concurrent_streams
     )
@@ -309,6 +377,7 @@ async def init_upload(
     if storage_strategy == "chunked" and _rust_client_available:
         try:
             from ..services.rust_socket_client import get_rust_socket_client
+
             client = get_rust_socket_client(settings.RUST_DATAPLANE_SOCKET)
             asyncio.create_task(client.warmup())
         except Exception:
@@ -332,17 +401,20 @@ async def init_upload(
 async def init_zk_upload(current_user: User = Depends(get_current_user)):
     """
     Zero-Knowledge uploads are now handled by the dedicated ZK Private Vault service.
-    
+
     This endpoint has been deprecated. Please use the ZK service at port 8002.
     """
     raise HTTPException(
         status_code=410,  # Gone - indicates resource moved permanently
         detail="Zero-Knowledge uploads have moved to the ZK Private Vault service. Please use the ZK service API.",
-        headers={"X-ZK-Service-URL": "http://localhost:8002/api/v1/zk"}
+        headers={"X-ZK-Service-URL": "http://localhost:8002/api/v1/zk"},
     )
 
 
-@router.post("/chunk/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.CHUNK_UPLOAD))])
+@router.post(
+    "/chunk/{upload_id}",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.CHUNK_UPLOAD))],
+)
 async def upload_chunk(
     upload_id: str,
     chunk_index: int,
@@ -361,14 +433,12 @@ async def upload_chunk(
     # Pipeline independent Redis calls concurrently
     max_streams, stream_acquired, session = await asyncio.gather(
         bandwidth_throttle_service.get_max_streams_with_plan(
-            user_id_str,
-            current_user.plan_type,
-            current_user.max_concurrent_streams
+            user_id_str, current_user.plan_type, current_user.max_concurrent_streams
         ),
         bandwidth_throttle_service.acquire_stream_slot(
             user_id_str,
             plan_type=current_user.plan_type,
-            db_streams_override=current_user.max_concurrent_streams
+            db_streams_override=current_user.max_concurrent_streams,
         ),
         get_upload_session(redis_client, db, upload_id),
     )
@@ -378,7 +448,7 @@ async def upload_chunk(
         raise HTTPException(
             status_code=429,
             detail=f"Too many concurrent uploads. Maximum {max_streams} streams allowed for your plan.",
-            headers={"Retry-After": "10"}
+            headers={"Retry-After": "10"},
         )
 
     try:
@@ -398,7 +468,7 @@ async def upload_chunk(
         if chunk_index < 0 or chunk_index >= session["chunks"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid chunk_index {chunk_index}, must be 0-{session['chunks']-1}"
+                detail=f"Invalid chunk_index {chunk_index}, must be 0-{session['chunks']-1}",
             )
 
         if chunk_index in session["done"]:
@@ -423,7 +493,7 @@ async def upload_chunk(
         if session.get("zk_mode", False):
             raise HTTPException(
                 status_code=400,
-                detail="Zero-Knowledge uploads are handled by the ZK Private Vault service."
+                detail="Zero-Knowledge uploads are handled by the ZK Private Vault service.",
             )
 
         # Server-side encryption
@@ -444,7 +514,9 @@ async def upload_chunk(
                     # Full Rust processing: hash → compress → encrypt (requires SCM_RIGHTS)
                     from ..services.rust_socket_client import get_rust_socket_client
 
-                    logger.debug(f"Using full Rust processing (Non-ZK mode) for chunk {chunk_index}")
+                    logger.debug(
+                        f"Using full Rust processing (Non-ZK mode) for chunk {chunk_index}"
+                    )
                     rust_socket_client = get_rust_socket_client(settings.RUST_DATAPLANE_SOCKET)
 
                     result = await rust_socket_client.process_non_zk_with_scm_rights(
@@ -466,19 +538,27 @@ async def upload_chunk(
                     if encrypted_path and encrypted_path == storage_path:
                         # Zero-copy: Rust wrote directly — nothing to copy or clean up
                         if not await asyncio.to_thread(os.path.exists, storage_path):
-                            raise Exception(f"Rust reported success but chunk missing at {storage_path}")
+                            raise Exception(
+                                f"Rust reported success but chunk missing at {storage_path}"
+                            )
                     elif encrypted_path and await asyncio.to_thread(os.path.exists, encrypted_path):
                         # Defensive fallback: paths differ — copy and clean up
-                        logger.warning(f"target_path mismatch: expected {storage_path}, got {encrypted_path}; copying")
-                        async with aiofiles.open(encrypted_path, 'rb') as src:
+                        logger.warning(
+                            f"target_path mismatch: expected {storage_path}, got {encrypted_path}; copying"
+                        )
+                        async with aiofiles.open(encrypted_path, "rb") as src:
                             encrypted_chunk = await src.read()
-                        async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                        async with aiofiles.open(
+                            storage_path, "wb", buffering=STREAM_BUFFER_SIZE
+                        ) as f:
                             await f.write(encrypted_chunk)
                         _cleanup_rust_chunk(upload_id, chunk_index)
                     else:
                         raise Exception(f"Rust encrypted chunk not found at {encrypted_path}")
 
-                    logger.info(f"Chunk {chunk_index} processed fully via Rust (zero-copy direct write)")
+                    logger.info(
+                        f"Chunk {chunk_index} processed fully via Rust (zero-copy direct write)"
+                    )
                     t_process = time.monotonic()
                     processing_mode = "rust-full"
 
@@ -486,7 +566,9 @@ async def upload_chunk(
                     # Hybrid: Rust does hashing, Python does encryption
                     rust_client = get_rust_client(settings.RUST_DATAPLANE_SOCKET)
 
-                    logger.debug(f"Using hybrid Rust processing (hash-only) for chunk {chunk_index}")
+                    logger.debug(
+                        f"Using hybrid Rust processing (hash-only) for chunk {chunk_index}"
+                    )
                     result = await rust_client.process_hash_only(
                         chunk_data=chunk_data,
                         file_id=upload_id,
@@ -497,15 +579,20 @@ async def upload_chunk(
 
                     # Python still does encryption after Rust hashing
                     from ..utils.compression import compressor
+
                     if use_compression:
                         chunk_data = compressor.compress(chunk_data)
-                    encrypted_chunk = encryption_service.encrypt_chunk(chunk_data, file_key, chunk_index)
+                    encrypted_chunk = encryption_service.encrypt_chunk(
+                        chunk_data, file_key, chunk_index
+                    )
 
                     # Write encrypted data
-                    async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+                    async with aiofiles.open(storage_path, "wb", buffering=STREAM_BUFFER_SIZE) as f:
                         await f.write(encrypted_chunk)
 
-                    logger.debug(f"Chunk {chunk_index} processed via Rust (hash) + Python (compress + encrypt)")
+                    logger.debug(
+                        f"Chunk {chunk_index} processed via Rust (hash) + Python (compress + encrypt)"
+                    )
                     t_process = time.monotonic()
                     processing_mode = "hybrid"
 
@@ -530,18 +617,22 @@ async def upload_chunk(
 
             encrypted_chunk, chunk_hash = await loop.run_in_executor(
                 executor,
-                partial(process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression)
+                partial(
+                    process_chunk_cpu_bound, chunk_data, file_key, chunk_index, use_compression
+                ),
             )
 
             # Write encrypted data asynchronously with larger buffer
-            async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+            async with aiofiles.open(storage_path, "wb", buffering=STREAM_BUFFER_SIZE) as f:
                 await f.write(encrypted_chunk)
             t_process = time.monotonic()
             processing_mode = "python"
 
         # Atomically update session via Redis Lua script (single round-trip, no races)
         session = await update_upload_session_atomic(
-            redis_client, db, upload_id,
+            redis_client,
+            db,
+            upload_id,
             chunk_index=chunk_index,
             chunk_hash=chunk_hash,
             storage_path=storage_path,
@@ -577,7 +668,11 @@ async def upload_chunk(
         if not stream_slot_released:
             await bandwidth_throttle_service.release_stream_slot(user_id_str)
 
-@router.post("/direct/{upload_id}", dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))])
+
+@router.post(
+    "/direct/{upload_id}",
+    dependencies=[Depends(create_rate_limiter(**RateLimitConfig.FILE_UPLOAD))],
+)
 async def upload_direct(
     upload_id: str,
     request: Request,
@@ -592,22 +687,20 @@ async def upload_direct(
 
     # Get max streams for this user's plan (or override)
     max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
-        user_id_str,
-        current_user.plan_type,
-        current_user.max_concurrent_streams
+        user_id_str, current_user.plan_type, current_user.max_concurrent_streams
     )
 
     # ============ BANDWIDTH THROTTLING: Acquire stream slot (plan-aware) ============
     stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
         user_id_str,
         plan_type=current_user.plan_type,
-        db_streams_override=current_user.max_concurrent_streams
+        db_streams_override=current_user.max_concurrent_streams,
     )
     if not stream_acquired:
         raise HTTPException(
             status_code=429,
             detail=f"Too many concurrent uploads. Maximum {max_streams} streams allowed for your plan.",
-            headers={"Retry-After": "10"}
+            headers={"Retry-After": "10"},
         )
 
     try:
@@ -621,10 +714,12 @@ async def upload_direct(
                 user_id_str,
                 check_size,
                 plan_type=current_user.plan_type,
-                db_bandwidth_override=current_user.bandwidth_limit_mbps
+                db_bandwidth_override=current_user.bandwidth_limit_mbps,
             )
             if not allowed:
-                wait_threshold = bandwidth_throttle_service.get_wait_threshold(current_user.plan_type)
+                wait_threshold = bandwidth_throttle_service.get_wait_threshold(
+                    current_user.plan_type
+                )
                 if wait_time > wait_threshold:
                     bandwidth_mbps = current_user.bandwidth_limit_mbps or 5
 
@@ -633,7 +728,7 @@ async def upload_direct(
                     raise HTTPException(
                         status_code=429,
                         detail=f"Bandwidth limit exceeded ({bandwidth_mbps} Mbps for {current_user.plan_type} plan). Please wait {int(wait_time)} seconds.",
-                        headers={"Retry-After": str(int(wait_time))}
+                        headers={"Retry-After": str(int(wait_time))},
                     )
                 await asyncio.sleep(min(wait_time, 1.0))
 
@@ -656,6 +751,7 @@ async def upload_direct(
             # Optional compression
             if use_compression:
                 from ..utils.compression import compressor
+
                 file_data_processed = compressor.compress(file_data)
             else:
                 file_data_processed = file_data
@@ -685,7 +781,7 @@ async def upload_direct(
 
             storage_path = f"{storage_dir}/{file_id}.enc"
 
-            async with aiofiles.open(storage_path, 'wb', buffering=STREAM_BUFFER_SIZE) as f:
+            async with aiofiles.open(storage_path, "wb", buffering=STREAM_BUFFER_SIZE) as f:
                 await f.write(encrypted_data)
 
             session["storage_path"] = storage_path
@@ -697,6 +793,7 @@ async def upload_direct(
 
         # Fire-and-forget: generate previews from plaintext still in memory
         from ..services.preview_service import preview_service
+
         asyncio.create_task(
             preview_service.generate_from_plaintext(
                 file_id=str(session["id"]),
@@ -713,13 +810,14 @@ async def upload_direct(
             "upload_id": upload_id,
             "encrypted": True,
             "compressed": use_compression,
-            "ready_for_completion": True
+            "ready_for_completion": True,
         }
 
     finally:
         # ============ BANDWIDTH THROTTLING: Release stream slot (if not already released) ============
         if not stream_slot_released:
             await bandwidth_throttle_service.release_stream_slot(user_id_str)
+
 
 @router.get("/status/{upload_id}")
 async def get_upload_status(
@@ -849,7 +947,9 @@ async def cancel_upload(
     # Decrement active uploads metric
     active_uploads.dec()
 
-    logger.info(f"Upload cancelled: {upload_id}, {chunks_deleted} chunks deleted, {bytes_freed} bytes freed")
+    logger.info(
+        f"Upload cancelled: {upload_id}, {chunks_deleted} chunks deleted, {bytes_freed} bytes freed"
+    )
 
     return {
         "status": "cancelled",
@@ -896,15 +996,14 @@ async def complete_upload(
 
     storage_strategy = session.get("strategy", "chunked")
     start_time = datetime.fromisoformat(session["start"])
-    
+
     # Verify upload completion
     if storage_strategy == "chunked":
         done_set = set(session["done"])
         if len(done_set) != session["chunks"]:
             missing = set(range(session["chunks"])) - done_set
             return {"status": "incomplete", "missing_chunks": list(missing)}
-    
-    
+
     file_id = uuid.uuid4()
     mime_type = session.get("mime_type") or mimetypes.guess_type(session["name"])[0]
 
@@ -916,7 +1015,7 @@ async def complete_upload(
         raise HTTPException(
             status_code=400,
             detail="Zero-Knowledge uploads are handled by the ZK Private Vault service. "
-                   "Please use vault.yourservice.com for encrypted storage."
+            "Please use vault.yourservice.com for encrypted storage.",
         )
 
     # ============ QUOTA ENFORCEMENT ============
@@ -925,11 +1024,13 @@ async def complete_upload(
 
     # Lock user row and check quota atomically to prevent TOCTOU race
     file_size = session["size"]
-    user_row = (await db.execute(
-        select(User.storage_used, User.storage_quota)
-        .where(User.id == current_user.id)
-        .with_for_update()
-    )).first()
+    user_row = (
+        await db.execute(
+            select(User.storage_used, User.storage_quota)
+            .where(User.id == current_user.id)
+            .with_for_update()
+        )
+    ).first()
 
     storage_used = user_row.storage_used or 0
     storage_quota = user_row.storage_quota or 0
@@ -938,8 +1039,8 @@ async def complete_upload(
         raise HTTPException(
             status_code=413,
             detail=f"Storage quota exceeded. Used: {storage_used / (1024**3):.2f} GB, "
-                   f"Limit: {storage_quota / (1024**3):.2f} GB, "
-                   f"File size: {file_size / (1024**2):.2f} MB"
+            f"Limit: {storage_quota / (1024**3):.2f} GB, "
+            f"File size: {file_size / (1024**2):.2f} MB",
         )
 
     # ============ IDEMPOTENCY CHECK ============
@@ -949,8 +1050,8 @@ async def complete_upload(
         existing_file_query = await db.execute(
             select(Object).where(
                 and_(
-                    Object.chunk_info.op('->>')('upload_id') == upload_id,
-                    Object.user_id == current_user.id
+                    Object.chunk_info.op("->>")("upload_id") == upload_id,
+                    Object.user_id == current_user.id,
                 )
             )
         )
@@ -972,7 +1073,7 @@ async def complete_upload(
                 "mime_type": existing_file.mime_type,
                 "created_at": existing_file.created_at.isoformat(),
                 "status": "completed",
-                "already_exists": True  # Flag for client
+                "already_exists": True,  # Flag for client
             }
 
     # Build file metadata
@@ -995,7 +1096,7 @@ async def complete_upload(
             storage_tier="cache",
             file_metadata=file_metadata_dict,
         )
-    
+
     elif storage_strategy == "single":
         file_obj = Object(
             id=file_id,
@@ -1012,7 +1113,7 @@ async def complete_upload(
             storage_tier="cache",
             file_metadata=file_metadata_dict,
         )
-    
+
     else:  # chunked
         combined_hash = hashlib.sha256("".join(session["hashes"]).encode()).hexdigest()
 
@@ -1033,19 +1134,20 @@ async def complete_upload(
                 "paths": session.get("chunk_paths", {}),
                 "upload_id": upload_id,
                 "compressed": session.get("compress", False),
-                "chunk_size": CHUNK_SIZE  # Store chunk size for download
+                "chunk_size": CHUNK_SIZE,  # Store chunk size for download
             },
             storage_tier="cache",
             file_metadata=file_metadata_dict,
         )
-    
+
     # Save to database with proper error handling
     try:
         db.add(file_obj)
 
         # Atomic increment of storage_used within the same transaction
         await db.execute(
-            update(User).where(User.id == current_user.id)
+            update(User)
+            .where(User.id == current_user.id)
             .values(storage_used=User.storage_used + session["size"])
         )
 
@@ -1071,8 +1173,10 @@ async def complete_upload(
             file_size=session["size"],
             content_hash=file_obj.content_hash,
             storage_path=file_obj.object_path if storage_strategy in ["single"] else None,
-            chunk_info=file_obj.chunk_info if storage_strategy == "chunked" else (
-                {"storage_type": "inline"} if storage_strategy == "inline" else None
+            chunk_info=(
+                file_obj.chunk_info
+                if storage_strategy == "chunked"
+                else ({"storage_type": "inline"} if storage_strategy == "inline" else None)
             ),
             created_by=current_user.id,
             comment="Initial upload",
@@ -1082,12 +1186,15 @@ async def complete_upload(
 
         # Log activity (separate transaction)
         await log_activity(
-            db, current_user.id, "file_uploaded", str(file_id),
+            db,
+            current_user.id,
+            "file_uploaded",
+            str(file_id),
             {
                 "file_name": session["name"],
                 "size": session["size"],
                 "storage_type": storage_strategy,
-                "compressed": session.get("compress", False)
+                "compressed": session.get("compress", False),
             },
             request,
         )
@@ -1095,7 +1202,8 @@ async def complete_upload(
         # Audit log (best-effort)
         try:
             await audit_logging_service.log_event(
-                db, AuditEventType.FILE_UPLOADED,
+                db,
+                AuditEventType.FILE_UPLOADED,
                 user_id=current_user.id,
                 resource_type="file",
                 resource_id=str(file_id),
@@ -1111,16 +1219,21 @@ async def complete_upload(
 
         # Notify connected WebSocket clients via Redis Pub/Sub
         try:
-            await redis_client.publish('file_notifications', json.dumps({
-                'event': 'file_created',
-                'user_id': str(current_user.id),
-                'file_id': str(file_id),
-                'file_name': session["name"],
-                'file_size': session["size"],
-                'mime_type': mime_type,
-                'folder_id': session.get("folder"),
-                'storage_type': storage_strategy,
-            }))
+            await redis_client.publish(
+                "file_notifications",
+                json.dumps(
+                    {
+                        "event": "file_created",
+                        "user_id": str(current_user.id),
+                        "file_id": str(file_id),
+                        "file_name": session["name"],
+                        "file_size": session["size"],
+                        "mime_type": mime_type,
+                        "folder_id": session.get("folder"),
+                        "storage_type": storage_strategy,
+                    }
+                ),
+            )
         except Exception:
             pass
     except Exception as e:
@@ -1146,25 +1259,27 @@ async def complete_upload(
             _cleanup_rust_file(upload_id)
 
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-    
+
     # ============ NON-CRITICAL POST-UPLOAD WORK (BACKGROUND) ============
     # Dedup classification, security scanning, video optimization, Kafka sends,
     # preview generation, embedding, file analysis, and ES indexing all run in a
     # single background task so the /complete response returns immediately.
-    asyncio.create_task(_run_post_upload_tasks(
-        file_id=file_id,
-        upload_id=upload_id,
-        user_id=current_user.id,
-        file_name=session["name"],
-        file_size=session["size"],
-        mime_type=mime_type,
-        storage_strategy=storage_strategy,
-        session_data=session,
-        file_obj=file_obj,
-        redis_client=redis_client,
-        content_hash=file_obj.content_hash,
-        object_path=file_obj.object_path if storage_strategy == "single" else None,
-    ))
+    asyncio.create_task(
+        _run_post_upload_tasks(
+            file_id=file_id,
+            upload_id=upload_id,
+            user_id=current_user.id,
+            file_name=session["name"],
+            file_size=session["size"],
+            mime_type=mime_type,
+            storage_strategy=storage_strategy,
+            session_data=session,
+            file_obj=file_obj,
+            redis_client=redis_client,
+            content_hash=file_obj.content_hash,
+            object_path=file_obj.object_path if storage_strategy == "single" else None,
+        )
+    )
 
     # Clean up session from Redis + DB
     await delete_upload_session(redis_client, db, upload_id)
@@ -1172,9 +1287,9 @@ async def complete_upload(
     # Metrics
     duration = (datetime.utcnow() - start_time).total_seconds()
     upload_completed.labels(
-        plan_type=getattr(current_user, 'plan_type', 'free'),
+        plan_type=getattr(current_user, "plan_type", "free"),
         storage_strategy=storage_strategy,
-        status="success"
+        status="success",
     ).inc()
     upload_duration.labels(storage_strategy=storage_strategy).observe(duration)
     active_uploads.dec()
@@ -1189,12 +1304,11 @@ async def complete_upload(
         "storage_type": storage_strategy,
         "encrypted": True,
         "compressed": session.get("compress", False),
-        "deduplication": {
-            "status": "pending"
-        },
+        "deduplication": {"status": "pending"},
         "duration": round(duration, 2),
-        "throughput_mbps": round(throughput, 2)
+        "throughput_mbps": round(throughput, 2),
     }
+
 
 @router.get("/download/{file_id}")
 async def download_file(
@@ -1204,96 +1318,96 @@ async def download_file(
 ):
     """Download and decrypt file with streaming"""
     # Get file metadata
-    result = await db.execute(
-        select(Object).where(Object.id == file_id)
-    )
+    result = await db.execute(select(Object).where(Object.id == file_id))
     file_obj = result.scalar_one_or_none()
-    
+
     if not file_obj:
         raise HTTPException(404, "File not found")
-    
+
     if file_obj.user_id != current_user.id:
         raise HTTPException(403, "Unauthorized")
-    
+
     # Get encryption key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
-    
+
     # Check if file was compressed
     was_compressed = False
     if file_obj.metadata and isinstance(file_obj.metadata, dict):
         was_compressed = file_obj.metadata.get("compressed", False)
     elif file_obj.chunk_info and isinstance(file_obj.chunk_info, dict):
         was_compressed = file_obj.chunk_info.get("compressed", False)
-    
+
     async def stream_file() -> AsyncGenerator[bytes, None]:
         """Stream file content in chunks"""
         if file_obj.storage_type == "inline":
             # Decrypt inline data
             encrypted_data = base64.b64decode(file_obj.storage_key)
             file_data = encryption_service.decrypt_file(encrypted_data, file_key)
-            
+
             # Decompress if needed
             if was_compressed:
                 from ..utils.compression import compressor
+
                 file_data = compressor.decompress(file_data)
-            
+
             yield file_data
-        
+
         elif file_obj.storage_type == "single":
             # Read and decrypt single file
             if not os.path.exists(file_obj.object_path):
                 raise HTTPException(404, "File data not found on disk")
-            
-            async with aiofiles.open(file_obj.object_path, 'rb') as f:
+
+            async with aiofiles.open(file_obj.object_path, "rb") as f:
                 encrypted_data = await f.read()
-            
+
             file_data = encryption_service.decrypt_file(encrypted_data, file_key)
-            
+
             # Decompress if needed
             if was_compressed:
                 from ..utils.compression import compressor
+
                 file_data = compressor.decompress(file_data)
-            
+
             # Stream in chunks
             chunk_size = 8 * 1024 * 1024  # 8MB chunks
             for i in range(0, len(file_data), chunk_size):
-                yield file_data[i:i+chunk_size]
-        
+                yield file_data[i : i + chunk_size]
+
         else:  # chunked, content_addressed
             # Stream chunks sequentially
             chunk_info = file_obj.chunk_info
             upload_id = chunk_info.get("upload_id", str(file_obj.id))
-            
+
             for i in range(chunk_info["count"]):
                 chunk_path = chunk_info.get("paths", {}).get(str(i))
-                
+
                 if not chunk_path:
                     shard = upload_id[:2]
                     chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-                
+
                 if not os.path.exists(chunk_path):
                     raise HTTPException(404, f"Chunk {i} not found")
-                
-                async with aiofiles.open(chunk_path, 'rb') as f:
+
+                async with aiofiles.open(chunk_path, "rb") as f:
                     encrypted_chunk = await f.read()
-                
+
                 # Decrypt chunk
                 decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, i)
-                
+
                 # Decompress if needed
                 if was_compressed:
                     from ..utils.compression import compressor
+
                     decrypted_chunk = compressor.decompress(decrypted_chunk)
-                
+
                 yield decrypted_chunk
-    
+
     return StreamingResponse(
         stream_file(),
-        media_type=file_obj.mime_type or 'application/octet-stream',
-        headers={
-            "Content-Disposition": f"attachment; filename={file_obj.file_name}"
-        }
+        media_type=file_obj.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename={file_obj.file_name}"},
     )
+
 
 @router.get("/resume/{upload_id}", response_model=UploadStatusResponse)
 async def get_upload_status(
@@ -1334,25 +1448,27 @@ async def get_upload_status(
         recommended_concurrency=recommended_concurrency,
     )
 
+
 @router.post("/test-speed")
 async def test_speed(file: UploadFile = File(...)):
     """Test raw upload speed without any processing"""
     start = time.time()
     total = 0
-    
+
     while content := await file.read(64 * 1024 * 1024):
         total += len(content)
-    
+
     elapsed = time.time() - start
     speed_mbps = (total / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-    
+
     return {
         "size_mb": round(total / (1024 * 1024), 2),
         "time_seconds": round(elapsed, 2),
         "speed_mbps": round(speed_mbps, 2),
         "speed_gbps": round(speed_mbps * 8 / 1000, 2),
-        "note": "Raw speed without any processing"
+        "note": "Raw speed without any processing",
     }
+
 
 @router.post("/test-speed-encrypted")
 async def test_speed_encrypted(file: UploadFile = File(...)):
@@ -1360,29 +1476,30 @@ async def test_speed_encrypted(file: UploadFile = File(...)):
     start = time.time()
     total = 0
     file_key = encryption_service.generate_file_key()
-    
+
     chunk_index = 0
     while content := await file.read(CHUNK_SIZE):
         # Encrypt chunk
         encrypted = encryption_service.encrypt_chunk(content, file_key, chunk_index)
         total += len(content)
         chunk_index += 1
-    
+
     elapsed = time.time() - start
     speed_mbps = (total / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-    
+
     return {
         "size_mb": round(total / (1024 * 1024), 2),
         "time_seconds": round(elapsed, 2),
         "speed_mbps": round(speed_mbps, 2),
         "speed_gbps": round(speed_mbps * 8 / 1000, 2),
-        "note": "Speed with AES-GCM encryption only (no compression)"
+        "note": "Speed with AES-GCM encryption only (no compression)",
     }
 
 
 # ============================================================================
 # SECURITY SCANNING BACKGROUND TASK
 # ============================================================================
+
 
 async def _reassemble_chunked_file_for_scan(
     file_obj: Object, file_key: bytes, max_bytes: int
@@ -1449,7 +1566,7 @@ async def run_security_scans(
     file_size: int,
     mime_type: str,
     storage_strategy: str,
-    file_obj: Object
+    file_obj: Object,
 ):
     """
     Run virus scan and DLP scan in background after file upload
@@ -1477,9 +1594,8 @@ async def run_security_scans(
         logger.info(f"🔒 Starting security scans for {file_name} ({file_id})")
 
         def _needs_decompress() -> bool:
-            return (
-                isinstance(file_obj.file_metadata, dict)
-                and bool(file_obj.file_metadata.get("compressed"))
+            return isinstance(file_obj.file_metadata, dict) and bool(
+                file_obj.file_metadata.get("compressed")
             )
 
         try:
@@ -1493,7 +1609,7 @@ async def run_security_scans(
                     file_data = compressor.decompress(file_data)
             elif storage_strategy == "single":
                 if file_obj.object_path and os.path.exists(file_obj.object_path):
-                    async with aiofiles.open(file_obj.object_path, 'rb') as f:
+                    async with aiofiles.open(file_obj.object_path, "rb") as f:
                         encrypted_data = await f.read()
                     file_data = encryption_service.decrypt_data(encrypted_data, file_key)
                     if _needs_decompress():
@@ -1571,13 +1687,13 @@ async def run_security_scans(
                 # already the conservative choice below).
                 plan_tier = "free"
                 try:
-                    from ..database import async_session as _async_session_plan
                     from shared_billing import BillingService as _BillingService
+
+                    from ..database import async_session as _async_session_plan
+
                     async with _async_session_plan() as _plan_db:
                         _billing_svc = _BillingService(_plan_db, service_type="normal")
-                        _sub = await _billing_svc.get_user_subscription(
-                            user_id, include_plan=True
-                        )
+                        _sub = await _billing_svc.get_user_subscription(user_id, include_plan=True)
                         if _sub and _sub.plan:
                             tier_name = (_sub.plan.tier_name or "").lower()
                             price = float(_sub.plan.price_monthly or 0)
@@ -1596,9 +1712,7 @@ async def run_security_scans(
                 if scan_result_override is not None:
                     scan_result = scan_result_override
                 elif (
-                    storage_strategy == "chunked"
-                    and file_data is None
-                    and scan_source_path is None
+                    storage_strategy == "chunked" and file_data is None and scan_source_path is None
                 ):
                     scan_result = await virus_scanner.scan_stream(
                         iter_decrypted_chunks(file_obj, file_key),
@@ -1612,6 +1726,7 @@ async def run_security_scans(
                 # Record outcome metric for every path.
                 try:
                     from ..monitoring.metrics import virus_scan_outcomes
+
                     virus_scan_outcomes.labels(
                         outcome=scan_result.scan_status,
                         plan_tier=plan_tier,
@@ -1621,11 +1736,11 @@ async def run_security_scans(
 
                 # Map scan_status to audit action for the log entry.
                 if scan_result.is_infected:
-                    action_taken = 'blocked'
+                    action_taken = "blocked"
                 elif scan_result.bypassed and plan_tier == "paid":
-                    action_taken = 'quarantined_pending_rescan'
+                    action_taken = "quarantined_pending_rescan"
                 else:
-                    action_taken = 'allowed'
+                    action_taken = "allowed"
 
                 await audit_service.log_virus_scan(
                     file_id=file_id,
@@ -1644,24 +1759,26 @@ async def run_security_scans(
 
                     # Log suspicious activity
                     await audit_service.log_action(
-                        action='security.virus_detected',
+                        action="security.virus_detected",
                         user_id=user_id,
-                        resource_type='file',
+                        resource_type="file",
                         resource_id=file_id,
                         resource_name=file_name,
-                        status='blocked',
+                        status="blocked",
                         metadata={
-                            'virus_name': scan_result.virus_name,
-                            'file_size': file_size,
+                            "virus_name": scan_result.virus_name,
+                            "file_size": file_size,
                         },
                         is_suspicious=True,
-                        risk_level='critical',
+                        risk_level="critical",
                     )
 
                     # Quarantine infected file - block downloads
                     try:
-                        from ..database import async_session as _async_session
                         from sqlalchemy import update as _update
+
+                        from ..database import async_session as _async_session
+
                         async with _async_session() as quarantine_db:
                             await quarantine_db.execute(
                                 _update(Object)
@@ -1695,12 +1812,13 @@ async def run_security_scans(
                             )
                         else:
                             quarantine_reason_text = (
-                                "Virus scanner unavailable at upload time; "
-                                "pending rescan"
+                                "Virus scanner unavailable at upload time; " "pending rescan"
                             )
                         try:
-                            from ..database import async_session as _async_session
                             from sqlalchemy import update as _update
+
+                            from ..database import async_session as _async_session
+
                             async with _async_session() as quarantine_db:
                                 await quarantine_db.execute(
                                     _update(Object)
@@ -1713,10 +1831,13 @@ async def run_security_scans(
                                 )
                                 await quarantine_db.commit()
                         except Exception as qe:
-                            logger.error(f"Failed to quarantine bypassed paid-tier file {file_id}: {qe}")
+                            logger.error(
+                                f"Failed to quarantine bypassed paid-tier file {file_id}: {qe}"
+                            )
 
                         try:
                             from ..monitoring.metrics import virus_scan_quarantine_on_bypass
+
                             virus_scan_quarantine_on_bypass.labels(plan_tier="paid").inc()
                         except Exception:
                             pass
@@ -1724,19 +1845,19 @@ async def run_security_scans(
                         # Track as a suspicious operational event so SOC dashboards
                         # see paid-tier bypasses.
                         await audit_service.log_action(
-                            action='security.virus_scan_bypassed',
+                            action="security.virus_scan_bypassed",
                             user_id=user_id,
-                            resource_type='file',
+                            resource_type="file",
                             resource_id=file_id,
                             resource_name=file_name,
-                            status='quarantined',
+                            status="quarantined",
                             metadata={
-                                'reason': scan_result.error or 'unknown',
-                                'plan_tier': plan_tier,
-                                'file_size': file_size,
+                                "reason": scan_result.error or "unknown",
+                                "plan_tier": plan_tier,
+                                "file_size": file_size,
                             },
                             is_suspicious=True,
-                            risk_level='high',
+                            risk_level="high",
                         )
                     else:
                         logger.warning(
@@ -1755,12 +1876,17 @@ async def run_security_scans(
         # (dlp_service.max_file_size) applies to every storage strategy so we
         # don't push multi-hundred-MB text files through regex matchers.
         text_mime_types = [
-            'text/', 'application/json', 'application/xml',
-            'application/pdf', 'application/msword',
-            'application/vnd.openxmlformats'
+            "text/",
+            "application/json",
+            "application/xml",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats",
         ]
 
-        should_dlp_scan = any(mime_type.startswith(mt) if mime_type else False for mt in text_mime_types)
+        should_dlp_scan = any(
+            mime_type.startswith(mt) if mime_type else False for mt in text_mime_types
+        )
         dlp_service = get_dlp_service()
         dlp_size_cap = dlp_service.max_file_size
 
@@ -1806,8 +1932,8 @@ async def run_security_scans(
                     scan_time=dlp_result.scan_time,
                     detected_types=detected_types,
                     file_size=file_size,
-                    action_taken='flagged' if dlp_result.has_sensitive_data else 'allowed',
-                    blocked=dlp_result.blocked
+                    action_taken="flagged" if dlp_result.has_sensitive_data else "allowed",
+                    blocked=dlp_result.blocked,
                 )
 
                 if dlp_result.has_sensitive_data:
@@ -1819,19 +1945,19 @@ async def run_security_scans(
                     # Log if high risk
                     if dlp_result.risk_score > 50:
                         await audit_service.log_action(
-                            action='security.sensitive_data_detected',
+                            action="security.sensitive_data_detected",
                             user_id=user_id,
-                            resource_type='file',
+                            resource_type="file",
                             resource_id=file_id,
                             resource_name=file_name,
-                            status='flagged',
+                            status="flagged",
                             metadata={
-                                'risk_score': dlp_result.risk_score,
-                                'detected_types': detected_types,
-                                'total_matches': dlp_result.total_matches
+                                "risk_score": dlp_result.risk_score,
+                                "detected_types": detected_types,
+                                "total_matches": dlp_result.total_matches,
                             },
                             is_suspicious=dlp_result.risk_score > 70,
-                            risk_level='high' if dlp_result.risk_score > 70 else 'medium'
+                            risk_level="high" if dlp_result.risk_score > 70 else "medium",
                         )
                 else:
                     logger.info(f"✅ DLP scan clean: {file_name} ({dlp_result.scan_time:.2f}s)")
@@ -1851,26 +1977,18 @@ async def run_security_scans(
         if chunk_hold_id and chunk_hold_upload_id:
             try:
                 redis_client = await get_redis()
-                await release_chunk_hold(
-                    redis_client, chunk_hold_upload_id, chunk_hold_id
-                )
+                await release_chunk_hold(redis_client, chunk_hold_upload_id, chunk_hold_id)
             except Exception as e:
                 logger.warning(f"Failed to release chunk hold: {e}")
         if scan_source_path:
             try:
                 os.unlink(scan_source_path)
             except OSError as e:
-                logger.warning(
-                    f"Failed to remove scan temp file {scan_source_path}: {e}"
-                )
+                logger.warning(f"Failed to remove scan temp file {scan_source_path}: {e}")
 
 
 async def run_video_optimization(
-    file_id: uuid.UUID,
-    file_name: str,
-    file_path: str,
-    mime_type: str,
-    storage_strategy: str
+    file_id: uuid.UUID, file_name: str, file_path: str, mime_type: str, storage_strategy: str
 ):
     """
     Run video optimization in background after file upload
@@ -1887,11 +2005,11 @@ async def run_video_optimization(
     """
     try:
         # Only optimize video files
-        if not mime_type or not mime_type.startswith('video/'):
+        if not mime_type or not mime_type.startswith("video/"):
             return
 
         # Only optimize MOV and MP4 files (most benefit from faststart)
-        video_formats = ['video/quicktime', 'video/mp4', 'video/x-m4v']
+        video_formats = ["video/quicktime", "video/mp4", "video/x-m4v"]
         if mime_type not in video_formats:
             logger.debug(f"Skipping video optimization for {mime_type}")
             return
@@ -1910,18 +2028,16 @@ async def run_video_optimization(
 
         # Run optimization
         result = await video_optimizer.optimize_video_for_streaming(
-            file_path=file_path,
-            replace_original=True
+            file_path=file_path, replace_original=True
         )
 
         # Get new database session to update metadata
         from ..database import get_db
+
         async for db in get_db():
             try:
                 # Re-query the file object
-                result_query = await db.execute(
-                    select(Object).where(Object.id == file_id)
-                )
+                result_query = await db.execute(select(Object).where(Object.id == file_id))
                 file_obj = result_query.scalar_one_or_none()
 
                 if not file_obj:
@@ -1929,52 +2045,62 @@ async def run_video_optimization(
                     return
 
                 # Update file metadata with optimization status
-                if result['success'] and result['optimized']:
+                if result["success"] and result["optimized"]:
                     logger.info(f"✅ Video optimized successfully: {file_name}")
 
                     # Update file metadata in database
                     metadata = file_obj.file_metadata or {}
-                    metadata.update({
-                        'video_optimized': True,
-                        'faststart_applied': True,
-                        'moov_location': 'start',
-                        'optimization_date': datetime.utcnow().isoformat(),
-                        'original_moov_location': result['metadata'].get('moov_location', 'unknown')
-                    })
+                    metadata.update(
+                        {
+                            "video_optimized": True,
+                            "faststart_applied": True,
+                            "moov_location": "start",
+                            "optimization_date": datetime.utcnow().isoformat(),
+                            "original_moov_location": result["metadata"].get(
+                                "moov_location", "unknown"
+                            ),
+                        }
+                    )
 
                     file_obj.file_metadata = metadata
 
                     # Commit to database
                     await db.commit()
 
-                    logger.info(f"🎬 Video optimization completed and metadata updated: {file_name}")
+                    logger.info(
+                        f"🎬 Video optimization completed and metadata updated: {file_name}"
+                    )
 
-                elif result['success'] and not result['optimized']:
+                elif result["success"] and not result["optimized"]:
                     logger.info(f"ℹ️  Video already optimized: {file_name}")
 
                     # Still update metadata to mark as checked
                     metadata = file_obj.file_metadata or {}
-                    metadata.update({
-                        'video_optimized': True,
-                        'faststart_applied': False,
-                        'moov_location': result['metadata'].get('moov_location', 'start'),
-                        'optimization_checked': datetime.utcnow().isoformat()
-                    })
+                    metadata.update(
+                        {
+                            "video_optimized": True,
+                            "faststart_applied": False,
+                            "moov_location": result["metadata"].get("moov_location", "start"),
+                            "optimization_checked": datetime.utcnow().isoformat(),
+                        }
+                    )
 
                     file_obj.file_metadata = metadata
                     await db.commit()
 
                 else:
-                    error_msg = result.get('error', 'Unknown error')
+                    error_msg = result.get("error", "Unknown error")
                     logger.error(f"❌ Video optimization failed for {file_name}: {error_msg}")
 
                     # Mark as failed in metadata
                     metadata = file_obj.file_metadata or {}
-                    metadata.update({
-                        'video_optimized': False,
-                        'optimization_error': error_msg,
-                        'optimization_attempted': datetime.utcnow().isoformat()
-                    })
+                    metadata.update(
+                        {
+                            "video_optimized": False,
+                            "optimization_error": error_msg,
+                            "optimization_attempted": datetime.utcnow().isoformat(),
+                        }
+                    )
 
                     file_obj.file_metadata = metadata
                     await db.commit()
@@ -1995,6 +2121,7 @@ async def run_video_optimization(
 # ============================================================================
 
 PREVIEW_QUEUE_THRESHOLD = 50 * 1024 * 1024  # 50 MB
+
 
 async def _run_post_upload_tasks(
     file_id: uuid.UUID,
@@ -2020,7 +2147,7 @@ async def _run_post_upload_tasks(
     # Record upload completion time for chunk hold grace period
     session_data["_upload_completed_at"] = time.time()
 
-    is_video = bool(mime_type and mime_type.startswith('video/'))
+    is_video = bool(mime_type and mime_type.startswith("video/"))
 
     try:
         # ===== SMART DEDUPLICATION CLASSIFICATION =====
@@ -2029,7 +2156,9 @@ async def _run_post_upload_tasks(
 
         if storage_strategy in ("single", "chunked") and file_size > 1_048_576:
             try:
-                file_path = session_data.get("storage_path") if storage_strategy == "single" else None
+                file_path = (
+                    session_data.get("storage_path") if storage_strategy == "single" else None
+                )
 
                 if file_path and os.path.exists(file_path):
                     file_classification = await dedup_classifier.classify_file(
@@ -2046,7 +2175,9 @@ async def _run_post_upload_tasks(
 
                     async with _async_session() as bg_db:
                         await bg_db.execute(
-                            update(Object).where(Object.id == file_id).values(
+                            update(Object)
+                            .where(Object.id == file_id)
+                            .values(
                                 dedup_info={
                                     "classification_mode": file_classification.dedup_mode,
                                     "classification_reason": file_classification.reason,
@@ -2118,6 +2249,7 @@ async def _run_post_upload_tasks(
             try:
                 async with _async_session() as bg_db:
                     from shared_billing import BillingService
+
                     billing_svc = BillingService(bg_db, service_type="normal")
                     sub = await billing_svc.get_user_subscription(user_id, include_plan=True)
                     video_opt_enabled = bool((sub.plan.features or {}).get("video_optimization"))
@@ -2125,6 +2257,7 @@ async def _run_post_upload_tasks(
                 pass
 
             if video_opt_enabled and producer:
+
                 async def _queue_video_ingestion():
                     try:
                         queue_result = await video_ingestion_service.on_upload_complete(
@@ -2138,7 +2271,8 @@ async def _run_post_upload_tasks(
                         if queue_result["queued"]:
                             async with _async_session() as bg_db:
                                 await bg_db.execute(
-                                    update(Object).where(Object.id == file_id)
+                                    update(Object)
+                                    .where(Object.id == file_id)
                                     .values(video_processing_status="queued")
                                 )
                                 await bg_db.commit()
@@ -2153,9 +2287,12 @@ async def _run_post_upload_tasks(
 
                 kafka_futures.append(_queue_video_ingestion())
             elif not video_opt_enabled:
-                logger.info(f"Skipping video optimization for {file_name} (plan does not include it)")
+                logger.info(
+                    f"Skipping video optimization for {file_name} (plan does not include it)"
+                )
 
         if is_video and file_size > PREVIEW_QUEUE_THRESHOLD and producer:
+
             async def _queue_video_preview():
                 try:
                     await producer.send_and_wait(
@@ -2173,7 +2310,9 @@ async def _run_post_upload_tasks(
                     await redis_client.setex(
                         f"preview:status:{file_id}",
                         3600,
-                        json.dumps({"status": "queued", "queued_at": datetime.utcnow().isoformat()}),
+                        json.dumps(
+                            {"status": "queued", "queued_at": datetime.utcnow().isoformat()}
+                        ),
                     )
                     logger.info(f"Queued video preview: {file_name}")
                 except Exception as e:
@@ -2225,7 +2364,9 @@ async def _run_post_upload_tasks(
                         "size": file_size,
                         "hash": content_hash,
                         "storage_tier": "cache",
-                        "folder_id": str(session_data.get("folder")) if session_data.get("folder") else None,
+                        "folder_id": (
+                            str(session_data.get("folder")) if session_data.get("folder") else None
+                        ),
                         "user_id": str(user_id),
                         "timestamp": datetime.utcnow().isoformat(),
                     },
@@ -2242,6 +2383,7 @@ async def _run_post_upload_tasks(
         if not is_video and storage_strategy != "inline":
             from ..services.preview_service import preview_service
             from ..utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
+
             hold_id = None
             try:
                 hold_id = await acquire_chunk_hold(redis_client, upload_id, "preview_sync")

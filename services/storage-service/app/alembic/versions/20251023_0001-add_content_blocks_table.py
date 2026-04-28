@@ -5,13 +5,14 @@ Revises: 20251023_0000
 Create Date: 2025-10-23 00:01:00.000000
 
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
-revision = '20251023_0001'
-down_revision = '20251023_0000'
+revision = "20251023_0001"
+down_revision = "20251023_0000"
 branch_labels = None
 depends_on = None
 
@@ -48,4 +49,4 @@ def upgrade():
 
 def downgrade():
     """Remove content_blocks table."""
-    op.drop_table('content_blocks')
+    op.drop_table("content_blocks")

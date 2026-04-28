@@ -9,13 +9,14 @@ Protects against resource exhaustion by limiting:
 - Request rate per user
 """
 
-import time
 import asyncio
-from fastapi import Request, HTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Dict
-from collections import defaultdict
 import logging
+import time
+from collections import defaultdict
+from typing import Dict
+
+from fastapi import HTTPException, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 

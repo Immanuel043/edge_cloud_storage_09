@@ -5,15 +5,14 @@ Revises: 20251108_0001
 Create Date: 2025-11-12
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
-
 # revision identifiers, used by Alembic.
-revision = '20251112_0000'
-down_revision = '20251108_0001'
+revision = "20251112_0000"
+down_revision = "20251108_0001"
 branch_labels = None
 depends_on = None
 
@@ -29,34 +28,40 @@ def upgrade():
     inspector = inspect(bind)
 
     # Add new columns when missing
-    if not _column_exists(inspector, 'file_similarities', 'user_id'):
+    if not _column_exists(inspector, "file_similarities", "user_id"):
         op.add_column(
-            'file_similarities',
-            sa.Column('user_id', postgresql.UUID(as_uuid=True), nullable=True)
+            "file_similarities", sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=True)
         )
 
-    if not _column_exists(inspector, 'file_similarities', 'name_similarity'):
+    if not _column_exists(inspector, "file_similarities", "name_similarity"):
+        op.add_column("file_similarities", sa.Column("name_similarity", sa.Float(), nullable=True))
+
+    if not _column_exists(inspector, "file_similarities", "type_match"):
         op.add_column(
-            'file_similarities',
-            sa.Column('name_similarity', sa.Float(), nullable=True)
+            "file_similarities",
+            sa.Column("type_match", sa.Boolean(), server_default=sa.text("false"), nullable=True),
         )
 
-    if not _column_exists(inspector, 'file_similarities', 'type_match'):
+    if not _column_exists(inspector, "file_similarities", "created_at"):
         op.add_column(
-            'file_similarities',
-            sa.Column('type_match', sa.Boolean(), server_default=sa.text('false'), nullable=True)
+            "file_similarities",
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=True,
+            ),
         )
 
-    if not _column_exists(inspector, 'file_similarities', 'created_at'):
+    if not _column_exists(inspector, "file_similarities", "updated_at"):
         op.add_column(
-            'file_similarities',
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True)
-        )
-
-    if not _column_exists(inspector, 'file_similarities', 'updated_at'):
-        op.add_column(
-            'file_similarities',
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True)
+            "file_similarities",
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=True,
+            ),
         )
 
     # Refresh inspector metadata after new columns may have been added
@@ -105,10 +110,10 @@ def upgrade():
 
     if remaining_nulls == 0:
         op.alter_column(
-            'file_similarities',
-            'user_id',
+            "file_similarities",
+            "user_id",
             existing_type=postgresql.UUID(as_uuid=True),
-            nullable=False
+            nullable=False,
         )
     else:
         print(
@@ -117,19 +122,19 @@ def upgrade():
         )
 
     # Ensure indexes/constraints exist
-    indexes = {idx['name'] for idx in inspector.get_indexes('file_similarities')}
-    if 'idx_file_sim_user_id' not in indexes:
-        op.create_index('idx_file_sim_user_id', 'file_similarities', ['user_id'])
+    indexes = {idx["name"] for idx in inspector.get_indexes("file_similarities")}
+    if "idx_file_sim_user_id" not in indexes:
+        op.create_index("idx_file_sim_user_id", "file_similarities", ["user_id"])
 
-    foreign_keys = {fk['name'] for fk in inspector.get_foreign_keys('file_similarities')}
-    if 'fk_file_similarities_user_id' not in foreign_keys:
+    foreign_keys = {fk["name"] for fk in inspector.get_foreign_keys("file_similarities")}
+    if "fk_file_similarities_user_id" not in foreign_keys:
         op.create_foreign_key(
-            'fk_file_similarities_user_id',
-            'file_similarities',
-            'users',
-            ['user_id'],
-            ['id'],
-            ondelete='CASCADE'
+            "fk_file_similarities_user_id",
+            "file_similarities",
+            "users",
+            ["user_id"],
+            ["id"],
+            ondelete="CASCADE",
         )
 
 
@@ -138,23 +143,17 @@ def downgrade():
     bind = op.get_bind()
     inspector = inspect(bind)
 
-    indexes = {idx['name'] for idx in inspector.get_indexes('file_similarities')}
-    if 'idx_file_sim_user_id' in indexes:
-        op.drop_index('idx_file_sim_user_id', table_name='file_similarities')
+    indexes = {idx["name"] for idx in inspector.get_indexes("file_similarities")}
+    if "idx_file_sim_user_id" in indexes:
+        op.drop_index("idx_file_sim_user_id", table_name="file_similarities")
 
-    foreign_keys = {fk['name'] for fk in inspector.get_foreign_keys('file_similarities')}
-    if 'fk_file_similarities_user_id' in foreign_keys:
-        op.drop_constraint('fk_file_similarities_user_id', 'file_similarities', type_='foreignkey')
+    foreign_keys = {fk["name"] for fk in inspector.get_foreign_keys("file_similarities")}
+    if "fk_file_similarities_user_id" in foreign_keys:
+        op.drop_constraint("fk_file_similarities_user_id", "file_similarities", type_="foreignkey")
 
-    columns_to_drop = [
-        'updated_at',
-        'created_at',
-        'type_match',
-        'name_similarity',
-        'user_id'
-    ]
+    columns_to_drop = ["updated_at", "created_at", "type_match", "name_similarity", "user_id"]
 
-    existing_columns = {col['name'] for col in inspector.get_columns('file_similarities')}
+    existing_columns = {col["name"] for col in inspector.get_columns("file_similarities")}
     for column in columns_to_drop:
         if column in existing_columns:
-            op.drop_column('file_similarities', column)
+            op.drop_column("file_similarities", column)

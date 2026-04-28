@@ -2,19 +2,22 @@
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
-from jose import jwt, JWTError
+
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..config import settings
+from ..database import get_db
 from ..models.database import User
-from ..database import get_db 
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
+
 
 class AuthService:
     """Handles authentication and authorization"""
@@ -38,6 +41,7 @@ class AuthService:
 
             # Check password reset invalidation
             from ..database import redis_client
+
             if redis_client:
                 try:
                     pwd_reset_at = await redis_client.get(f"pwd_reset_at:{user_id}")
@@ -49,13 +53,11 @@ class AuthService:
                     pass
 
             # Get user from database
-            result = await db.execute(
-                select(User).filter(User.id == user_id)
-            )
+            result = await db.execute(select(User).filter(User.id == user_id))
             return result.scalar_one_or_none()
         except JWTError:
             return None
-    
+
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         return pwd_context.verify(plain_password, hashed_password)
@@ -63,6 +65,7 @@ class AuthService:
     @staticmethod
     async def async_verify_password(plain_password: str, hashed_password: str) -> bool:
         from ..utils.executors import run_in_heavy_pool
+
         return await run_in_heavy_pool(pwd_context.verify, plain_password, hashed_password)
 
     @staticmethod
@@ -72,8 +75,9 @@ class AuthService:
     @staticmethod
     async def async_get_password_hash(password: str) -> str:
         from ..utils.executors import run_in_heavy_pool
+
         return await run_in_heavy_pool(pwd_context.hash, password)
-    
+
     @staticmethod
     def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         to_encode = data.copy()
@@ -82,7 +86,9 @@ class AuthService:
         else:
             expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
-        to_encode.update({"exp": expire, "jti": str(uuid.uuid4()), "iat": int(datetime.utcnow().timestamp())})
+        to_encode.update(
+            {"exp": expire, "jti": str(uuid.uuid4()), "iat": int(datetime.utcnow().timestamp())}
+        )
         encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return encoded_jwt
 
@@ -90,6 +96,7 @@ class AuthService:
     async def blocklist_token(token: str):
         """Add a JWT to the blocklist in Redis. TTL = remaining token lifetime."""
         from ..database import redis_client
+
         if not redis_client:
             return
         try:
@@ -108,6 +115,7 @@ class AuthService:
     async def is_token_blocklisted(jti: str) -> bool:
         """Check if a token's jti is in the blocklist."""
         from ..database import redis_client
+
         if not redis_client:
             return False
         try:

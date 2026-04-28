@@ -1,24 +1,26 @@
 # services/storage-service/app/services/deduplication_enhanced.py
+import asyncio
 import hashlib
+import json
+import logging
 import mmap
 import os
-import asyncio
-from typing import Optional, Dict, Tuple, List
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, update, and_
-from datetime import datetime
-import aiofiles
-from ..models.database import Object, ContentBlock, User
-from ..config import settings
-from ..services.encryption import encryption_service
-from ..services.dedup_db_batch import batch_writer
-import json
-import xxhash  # For faster non-cryptographic hashing
 import time
-from ..utils.executors import run_in_heavy_pool
 from collections import defaultdict
-import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+import aiofiles
+import xxhash  # For faster non-cryptographic hashing
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import settings
+from ..models.database import ContentBlock, Object, User
+from ..services.dedup_db_batch import batch_writer
+from ..services.encryption import encryption_service
+from ..utils.executors import run_in_heavy_pool
 
 logger = logging.getLogger(__name__)
 
@@ -62,34 +64,45 @@ def _classify_blocks(
         existing_id = existing_block_map.get(block_hash)
 
         if existing_id is not None:
-            duplicate_blocks.append({
-                'hash': block_hash,
-                'size': size,
-                'offset': offset,
-                'existing_block_id': str(existing_id),
-            })
+            duplicate_blocks.append(
+                {
+                    "hash": block_hash,
+                    "size": size,
+                    "offset": offset,
+                    "existing_block_id": str(existing_id),
+                }
+            )
             saved_size += size
             duplicate_block_ids.append(existing_id)
         else:
-            new_block_ranges.append({
-                'hash': block_hash,
-                'size': size,
-                'offset': offset,
-                'index': i,
-            })
+            new_block_ranges.append(
+                {
+                    "hash": block_hash,
+                    "size": size,
+                    "offset": offset,
+                    "index": i,
+                }
+            )
             deduplicated_size += size
             new_hashes_for_bloom.append(block_hash)
 
-        blocks.append({
-            'hash': block_hash,
-            'size': size,
-            'offset': offset,
-            'is_duplicate': existing_id is not None,
-        })
+        blocks.append(
+            {
+                "hash": block_hash,
+                "size": size,
+                "offset": offset,
+                "is_duplicate": existing_id is not None,
+            }
+        )
 
     return (
-        blocks, new_block_ranges, duplicate_blocks, duplicate_block_ids,
-        new_hashes_for_bloom, deduplicated_size, saved_size,
+        blocks,
+        new_block_ranges,
+        duplicate_blocks,
+        duplicate_block_ids,
+        new_hashes_for_bloom,
+        deduplicated_size,
+        saved_size,
     )
 
 
@@ -107,22 +120,24 @@ def _extract_unique_blocks(
     starts = [0] + boundaries[:-1]
     result = []
     for entry in new_block_ranges:
-        idx = entry['index']
+        idx = entry["index"]
         chunk_start = starts[idx]
         chunk_end = boundaries[idx]
-        result.append({
-            'hash': entry['hash'],
-            'size': entry['size'],
-            'offset': entry['offset'],
-            'data': file_data[chunk_start:chunk_end],
-        })
+        result.append(
+            {
+                "hash": entry["hash"],
+                "size": entry["size"],
+                "offset": entry["offset"],
+                "data": file_data[chunk_start:chunk_end],
+            }
+        )
     return result
 
 
 class EnhancedDeduplicationService:
     """
     Enhanced Content-Addressed Storage with improved deduplication.
-    
+
     Improvements:
     - Variable block size with content-defined chunking
     - Pre-encryption deduplication for better ratios
@@ -130,13 +145,13 @@ class EnhancedDeduplicationService:
     - Bloom filter for quick duplicate detection
     - Async batch processing
     """
-    
+
     def __init__(self):
-        self.min_block_size = 2 * 1024 * 1024   # 2MB min
-        self.avg_block_size = 4 * 1024 * 1024   # 4MB average
-        self.max_block_size = 8 * 1024 * 1024   # 8MB max
-        self.cas_path = getattr(settings, 'CAS_PATH', '/app/storage/cas')
-        self.enable_cross_user_dedup = getattr(settings, 'CROSS_USER_DEDUP', False)
+        self.min_block_size = 2 * 1024 * 1024  # 2MB min
+        self.avg_block_size = 4 * 1024 * 1024  # 4MB average
+        self.max_block_size = 8 * 1024 * 1024  # 8MB max
+        self.cas_path = getattr(settings, "CAS_PATH", "/app/storage/cas")
+        self.enable_cross_user_dedup = getattr(settings, "CROSS_USER_DEDUP", False)
 
         # Rabin fingerprinting parameters for CDC
         self.window_size = 48
@@ -148,15 +163,18 @@ class EnhancedDeduplicationService:
 
         # Thread pool for parallel hashing (dynamic based on CPU cores)
         max_workers = min(os.cpu_count() * 2, 16)  # 2x CPU cores, capped at 16
-        self.hash_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="hash_worker")
+        self.hash_executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="hash_worker"
+        )
         logger.info(f"Initialized hash executor with {max_workers} workers")
 
         # Use Rust byte processor if available (CDC + batch SHA-256 + bloom)
         from ..utils.byte_processor import (
-            native_find_chunk_boundaries,
-            native_batch_sha256,
             NativeBloomFilter,
+            native_batch_sha256,
+            native_find_chunk_boundaries,
         )
+
         if native_find_chunk_boundaries is not None:
             self._native_cdc = native_find_chunk_boundaries
             self._native_batch_sha256 = native_batch_sha256
@@ -167,6 +185,7 @@ class EnhancedDeduplicationService:
             # Fall back to old C extension
             try:
                 from ..utils.rolling_hash import native_find_chunk_boundaries as c_cdc
+
                 if c_cdc is not None:
                     self._native_cdc = c_cdc
                     logger.info("Using C rolling hash fallback for CDC")
@@ -177,7 +196,7 @@ class EnhancedDeduplicationService:
 
         # Bloom filter: prefer Rust, fall back to pybloom_live
         self._init_bloom_filter(NativeBloomFilter)
-        
+
     def _init_bloom_filter(self, NativeBloomFilter=None):
         """Initialize bloom filter for quick duplicate detection."""
         if NativeBloomFilter is not None:
@@ -191,22 +210,26 @@ class EnhancedDeduplicationService:
 
         try:
             from pybloom_live import BloomFilter
+
             self.bloom_filter = BloomFilter(capacity=1000000, error_rate=0.001)
             self.bloom_enabled = True
         except ImportError:
             self.bloom_filter = None
             self.bloom_enabled = False
-    
+
     def calculate_block_hash(self, data: bytes) -> str:
         """Calculate SHA-256 hash of data block"""
         return hashlib.sha256(data).hexdigest()
-    
+
     def calculate_weak_hash(self, data: bytes) -> str:
         """Calculate fast weak hash for initial duplicate detection"""
         return xxhash.xxh64(data).hexdigest()
 
     async def calculate_hashes_parallel(
-        self, chunks: List[bytes], boundaries: List[int] = None, file_data: bytes = None,
+        self,
+        chunks: List[bytes],
+        boundaries: List[int] = None,
+        file_data: bytes = None,
     ) -> List[str]:
         """
         Calculate SHA-256 hashes for all chunks.
@@ -230,7 +253,10 @@ class EnhancedDeduplicationService:
                 start_off = 0 if i == 0 else boundaries[i - 1]
                 sub_bounds = [b - start_off for b in boundaries[i:j]]
                 batch_hashes = await run_in_heavy_pool(
-                    self._native_batch_sha256, file_data, sub_bounds, start_off,
+                    self._native_batch_sha256,
+                    file_data,
+                    sub_bounds,
+                    start_off,
                 )
                 all_hashes.extend(batch_hashes)
                 if j < len(boundaries):
@@ -297,8 +323,11 @@ class EnhancedDeduplicationService:
 
         for i in range(len(data)):
             if i >= self.window_size:
-                hash_val = (hash_val * self.prime + data[i] -
-                           data[i - self.window_size] * (self.prime ** self.window_size)) % (2**32)
+                hash_val = (
+                    hash_val * self.prime
+                    + data[i]
+                    - data[i - self.window_size] * (self.prime**self.window_size)
+                ) % (2**32)
             else:
                 hash_val = (hash_val * self.prime + data[i]) % (2**32)
 
@@ -312,14 +341,9 @@ class EnhancedDeduplicationService:
             boundaries.append(len(data))
 
         return boundaries
-    
-    
+
     async def deduplicate_before_encryption(
-        self,
-        file_data: bytes,
-        file_name: str,
-        user_id: str,
-        db: AsyncSession
+        self, file_data: bytes, file_name: str, user_id: str, db: AsyncSession
     ) -> Dict:
         """
         Perform deduplication before encryption for better dedup ratios.
@@ -342,18 +366,23 @@ class EnhancedDeduplicationService:
 
         # Compute chunk offsets and sizes from boundaries (integer arithmetic, microseconds)
         chunk_offsets = [0] + boundaries[:-1]
-        chunk_sizes = [boundaries[0]] + [boundaries[i] - boundaries[i - 1] for i in range(1, len(boundaries))]
+        chunk_sizes = [boundaries[0]] + [
+            boundaries[i] - boundaries[i - 1] for i in range(1, len(boundaries))
+        ]
 
         # Hash: Rust batch path avoids slicing entirely; Python fallback slices in thread
         if self._native_batch_sha256 is not None:
             logger.info("Calculating hashes for %d chunks (Rust batch)...", len(boundaries))
             t0_hash = time.monotonic()
             block_hashes = await self.calculate_hashes_parallel(
-                [], boundaries=boundaries, file_data=file_data,
+                [],
+                boundaries=boundaries,
+                file_data=file_data,
             )
             logger.info(
                 "Batch hashing complete: chunks=%d elapsed=%.1fs",
-                len(boundaries), time.monotonic() - t0_hash,
+                len(boundaries),
+                time.monotonic() - t0_hash,
             )
             await asyncio.sleep(0)  # Yield after hash — break GIL-contention cascade
         else:
@@ -363,7 +392,8 @@ class EnhancedDeduplicationService:
             block_hashes = await self.calculate_hashes_parallel(chunks)
             logger.info(
                 "Batch hashing complete: chunks=%d elapsed=%.1fs",
-                len(boundaries), time.monotonic() - t0_hash,
+                len(boundaries),
+                time.monotonic() - t0_hash,
             )
             await asyncio.sleep(0)  # Yield after hash — break GIL-contention cascade
 
@@ -373,15 +403,18 @@ class EnhancedDeduplicationService:
         t0_phase = time.monotonic()
 
         for batch_start in range(0, len(block_hashes), BATCH_SIZE):
-            hash_batch = block_hashes[batch_start:batch_start + BATCH_SIZE]
+            hash_batch = block_hashes[batch_start : batch_start + BATCH_SIZE]
             query = select(ContentBlock.block_hash, ContentBlock.id).where(
                 ContentBlock.block_hash.in_(hash_batch)
             )
             if not self.enable_cross_user_dedup:
                 from ..models.database import FileBlockMapping
-                query = query.join(FileBlockMapping, FileBlockMapping.block_id == ContentBlock.id)\
-                             .join(Object, Object.id == FileBlockMapping.file_id)\
-                             .where(Object.user_id == user_id)
+
+                query = (
+                    query.join(FileBlockMapping, FileBlockMapping.block_id == ContentBlock.id)
+                    .join(Object, Object.id == FileBlockMapping.file_id)
+                    .where(Object.user_id == user_id)
+                )
 
             result = await db.execute(query)
             await asyncio.sleep(0)  # Yield after database query
@@ -397,10 +430,19 @@ class EnhancedDeduplicationService:
         # Classification — offloaded to thread pool (plain data in, plain data out)
         t0_phase = time.monotonic()
         (
-            blocks, new_block_ranges, duplicate_blocks, duplicate_block_ids,
-            new_hashes_for_bloom, deduplicated_size, saved_size,
+            blocks,
+            new_block_ranges,
+            duplicate_blocks,
+            duplicate_block_ids,
+            new_hashes_for_bloom,
+            deduplicated_size,
+            saved_size,
         ) = await run_in_heavy_pool(
-            _classify_blocks, block_hashes, chunk_sizes, chunk_offsets, existing_block_map,
+            _classify_blocks,
+            block_hashes,
+            chunk_sizes,
+            chunk_offsets,
+            existing_block_map,
         )
         logger.debug("dedup-phase:classify elapsed=%.1fms", (time.monotonic() - t0_phase) * 1000)
 
@@ -411,7 +453,7 @@ class EnhancedDeduplicationService:
         if self.bloom_enabled and new_hashes_for_bloom:
             BLOOM_BATCH = 16
             for i in range(0, len(new_hashes_for_bloom), BLOOM_BATCH):
-                for h in new_hashes_for_bloom[i:i + BLOOM_BATCH]:
+                for h in new_hashes_for_bloom[i : i + BLOOM_BATCH]:
                     self.bloom_filter.add(h)
                 if i + BLOOM_BATCH < len(new_hashes_for_bloom):
                     await asyncio.sleep(0)
@@ -424,8 +466,10 @@ class EnhancedDeduplicationService:
             new_blocks = []
             for i in range(0, len(new_block_ranges), EXTRACT_BATCH):
                 batch = await run_in_heavy_pool(
-                    _extract_unique_blocks, file_data, boundaries,
-                    new_block_ranges[i:i + EXTRACT_BATCH],
+                    _extract_unique_blocks,
+                    file_data,
+                    boundaries,
+                    new_block_ranges[i : i + EXTRACT_BATCH],
                 )
                 new_blocks.extend(batch)
                 if i + EXTRACT_BATCH < len(new_block_ranges):
@@ -442,17 +486,16 @@ class EnhancedDeduplicationService:
         file_hash = await run_in_heavy_pool(self.calculate_block_hash, file_data)
 
         return {
-            'blocks': blocks,
-            'new_blocks': new_blocks,
-            'duplicate_blocks': duplicate_blocks,
-            'total_size': total_size,
-            'deduplicated_size': deduplicated_size,
-            'saved_size': saved_size,
-            'dedup_ratio': (saved_size / total_size * 100) if total_size > 0 else 0,
-            'file_hash': file_hash,
-            'block_count': len(blocks)
+            "blocks": blocks,
+            "new_blocks": new_blocks,
+            "duplicate_blocks": duplicate_blocks,
+            "total_size": total_size,
+            "deduplicated_size": deduplicated_size,
+            "saved_size": saved_size,
+            "dedup_ratio": (saved_size / total_size * 100) if total_size > 0 else 0,
+            "file_hash": file_hash,
+            "block_count": len(blocks),
         }
-    
 
     def derive_key_from_content(self, data: bytes, user_id: str = None) -> bytes:
         """
@@ -471,9 +514,9 @@ class EnhancedDeduplicationService:
             salt = hashlib.sha256(f"dedup_user_{user_id}_salt".encode()).digest()
         else:
             # Fallback for backward compatibility (less secure)
-            salt = b'dedup_convergent_encryption_salt'
+            salt = b"dedup_convergent_encryption_salt"
 
-        key = hashlib.pbkdf2_hmac('sha256', content_hash, salt, 100000, dklen=32)
+        key = hashlib.pbkdf2_hmac("sha256", content_hash, salt, 100000, dklen=32)
         return key
 
     async def _store_encrypted_block(
@@ -490,9 +533,10 @@ class EnhancedDeduplicationService:
         Returns dict with 'success' and 'was_compressed' keys.
         """
         # --- Rust fast path ---
-        if getattr(settings, 'RUST_DATAPLANE_ENABLED', False):
+        if getattr(settings, "RUST_DATAPLANE_ENABLED", False):
             try:
                 from .rust_dataplane_client import get_rust_client
+
                 client = get_rust_client()
                 result = await client.dedup_chunk(
                     block_data=block_data,
@@ -502,10 +546,11 @@ class EnhancedDeduplicationService:
                     should_compress=True,
                 )
                 if result.get("success"):
-                    compressed = result.get('was_compressed', False)
+                    compressed = result.get("was_compressed", False)
                     logger.debug(
                         "Block %s stored via Rust (%d bytes, compressed=%s)",
-                        block_hash[:12], result.get("encrypted_size", 0),
+                        block_hash[:12],
+                        result.get("encrypted_size", 0),
                         compressed,
                     )
                     # Persist compression flag as sidecar marker (Fix 21)
@@ -515,24 +560,28 @@ class EnhancedDeduplicationService:
                         except OSError:
                             pass
                     return {
-                        'success': True,
-                        'was_compressed': compressed,
-                        'encrypted_size': result.get('encrypted_size', 0),
+                        "success": True,
+                        "was_compressed": compressed,
+                        "encrypted_size": result.get("encrypted_size", 0),
                     }
             except Exception as exc:
                 logger.warning(
                     "Rust dedup_chunk failed for %s, falling back to Python: %s",
-                    block_hash[:12], exc,
+                    block_hash[:12],
+                    exc,
                 )
 
         # --- Python fallback (no compression) ---
         import hmac as _hmac
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
         from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
         block_key = self.derive_key_from_content(block_data, user_id)
         synthetic_iv = _hmac.new(
-            block_key, block_hash.encode(), hashlib.sha256,
+            block_key,
+            block_hash.encode(),
+            hashlib.sha256,
         ).digest()[:12]
 
         cipher = Cipher(
@@ -545,13 +594,15 @@ class EnhancedDeduplicationService:
         block_to_store = synthetic_iv + encryptor.tag + encrypted_data
 
         await asyncio.to_thread(
-            os.makedirs, os.path.dirname(cas_path), exist_ok=True,
+            os.makedirs,
+            os.path.dirname(cas_path),
+            exist_ok=True,
         )
-        async with aiofiles.open(cas_path, 'wb') as f:
+        async with aiofiles.open(cas_path, "wb") as f:
             await f.write(block_to_store)
 
         logger.debug("Block %s stored via Python (%d bytes)", block_hash[:12], len(block_to_store))
-        return {'success': True, 'was_compressed': False}
+        return {"success": True, "was_compressed": False}
 
     async def _store_encrypted_blocks_batch(
         self,
@@ -570,6 +621,7 @@ class EnhancedDeduplicationService:
         results: Dict[str, Dict] = {}
 
         from .rust_dataplane_client import get_rust_client
+
         client = get_rust_client()
 
         async def _send_batch(batch: List[Dict]) -> None:
@@ -577,11 +629,14 @@ class EnhancedDeduplicationService:
                 try:
                     t0 = time.monotonic()
                     resp = await client.dedup_chunk_batch(
-                        blocks=[{
-                            "block_data": b["block_data"],
-                            "block_hash": b["block_hash"],
-                            "cas_path": b["cas_path"],
-                        } for b in batch],
+                        blocks=[
+                            {
+                                "block_data": b["block_data"],
+                                "block_hash": b["block_hash"],
+                                "cas_path": b["cas_path"],
+                            }
+                            for b in batch
+                        ],
                         user_id=user_id,
                         should_compress=True,
                     )
@@ -589,7 +644,9 @@ class EnhancedDeduplicationService:
                     batch_data_size = sum(len(b["block_data"]) for b in batch)
                     logger.info(
                         "Dedup batch store: blocks=%d data=%.1fMB elapsed=%.1fs",
-                        len(batch), batch_data_size / (1024 * 1024), elapsed,
+                        len(batch),
+                        batch_data_size / (1024 * 1024),
+                        elapsed,
                     )
                     for r in resp.get("results", []):
                         if r.get("success"):
@@ -603,7 +660,11 @@ class EnhancedDeduplicationService:
                             # future uploads that reuse this CAS block (Fix 21).
                             if compressed:
                                 cas_p = next(
-                                    (b["cas_path"] for b in batch if b["block_hash"] == r["block_hash"]),
+                                    (
+                                        b["cas_path"]
+                                        for b in batch
+                                        if b["block_hash"] == r["block_hash"]
+                                    ),
                                     None,
                                 )
                                 if cas_p:
@@ -615,10 +676,7 @@ class EnhancedDeduplicationService:
                     logger.warning("Batch dedup call failed, will retry individually: %s", exc)
 
         # Partition into batches and run concurrently
-        batches = [
-            blocks[i:i + MAX_BATCH_SIZE]
-            for i in range(0, len(blocks), MAX_BATCH_SIZE)
-        ]
+        batches = [blocks[i : i + MAX_BATCH_SIZE] for i in range(0, len(blocks), MAX_BATCH_SIZE)]
         await asyncio.gather(*[_send_batch(b) for b in batches])
         return results
 
@@ -630,7 +688,7 @@ class EnhancedDeduplicationService:
         db: AsyncSession,
         metadata: Optional[Dict] = None,
         encrypt: bool = True,
-        existing_object: Optional[Object] = None
+        existing_object: Optional[Object] = None,
     ) -> Dict:
         """
         Enhanced file storage with pre-encryption deduplication.
@@ -652,20 +710,21 @@ class EnhancedDeduplicationService:
             # and the file hash was pre-computed inside deduplicate_before_encryption.
             # Clearing in-place releases ~721MB even though the caller holds a reference.
             if isinstance(file_data, mmap.mmap):
-                file_data.close()      # munmap — releases all pages immediately
+                file_data.close()  # munmap — releases all pages immediately
             elif isinstance(file_data, bytearray):
-                file_data[:] = b''     # in-place clear for bytearray
+                file_data[:] = b""  # in-place clear for bytearray
             del file_data
 
             # Use pre-computed file hash from dedup analysis
-            file_hash = dedup_result['file_hash']
+            file_hash = dedup_result["file_hash"]
 
             # Check for full-file duplicate (content_addressed with mappings only)
             from sqlalchemy import text as sa_text
+
             query = select(Object).where(
                 Object.content_hash == file_hash,
-                Object.storage_type == 'content_addressed',
-                Object.is_deleted == False
+                Object.storage_type == "content_addressed",
+                Object.is_deleted == False,
             )
             if not self.enable_cross_user_dedup:
                 query = query.where(Object.user_id == user_id)
@@ -676,9 +735,10 @@ class EnhancedDeduplicationService:
 
             # Verify the match actually has mappings (safety check)
             if existing_file:
-                has_mappings = await db.execute(sa_text(
-                    "SELECT 1 FROM file_block_mappings WHERE file_id = :fid LIMIT 1"
-                ), {"fid": str(existing_file.id)})
+                has_mappings = await db.execute(
+                    sa_text("SELECT 1 FROM file_block_mappings WHERE file_id = :fid LIMIT 1"),
+                    {"fid": str(existing_file.id)},
+                )
                 if not has_mappings.fetchone():
                     existing_file = None  # Fall through to chunk-level dedup
 
@@ -688,19 +748,19 @@ class EnhancedDeduplicationService:
 
                 if existing_object:
                     existing_object.content_hash = file_hash
-                    existing_object.file_size = dedup_result['total_size']
-                    existing_object.storage_type = 'content_addressed'
+                    existing_object.file_size = dedup_result["total_size"]
+                    existing_object.storage_type = "content_addressed"
                     existing_object.chunk_info = existing_file.chunk_info
                     existing_object.encryption_key = existing_file.encryption_key
                     existing_object.dedup_info = {
-                        'is_full_duplicate': True,
-                        'saved_size': dedup_result['total_size']
+                        "is_full_duplicate": True,
+                        "saved_size": dedup_result["total_size"],
                     }
                     if metadata:
-                        if metadata.get('mime_type'):
-                            existing_object.mime_type = metadata.get('mime_type')
-                        if metadata.get('folder_id'):
-                            existing_object.folder_id = metadata.get('folder_id')
+                        if metadata.get("mime_type"):
+                            existing_object.mime_type = metadata.get("mime_type")
+                        if metadata.get("folder_id"):
+                            existing_object.folder_id = metadata.get("folder_id")
 
                     await db.flush()
                     result_file = existing_object
@@ -709,42 +769,45 @@ class EnhancedDeduplicationService:
                         file_name=file_name,
                         user_id=user_id,
                         content_hash=file_hash,
-                        file_size=dedup_result['total_size'],
-                        storage_type='content_addressed',
+                        file_size=dedup_result["total_size"],
+                        storage_type="content_addressed",
                         chunk_info=existing_file.chunk_info,
                         dedup_info={
-                            'is_full_duplicate': True,
-                            'saved_size': dedup_result['total_size']
+                            "is_full_duplicate": True,
+                            "saved_size": dedup_result["total_size"],
                         },
-                        mime_type=metadata.get('mime_type') if metadata else None,
-                        folder_id=metadata.get('folder_id') if metadata else None,
-                        encryption_key=existing_file.encryption_key
+                        mime_type=metadata.get("mime_type") if metadata else None,
+                        folder_id=metadata.get("folder_id") if metadata else None,
+                        encryption_key=existing_file.encryption_key,
                     )
                     db.add(new_file)
                     await db.flush()
                     result_file = new_file
 
                 # Create file_block_mappings for the new file (same blocks as existing)
-                await db.execute(sa_text("""
+                await db.execute(
+                    sa_text("""
                     INSERT INTO file_block_mappings (id, file_id, block_id, block_offset, block_index)
                     SELECT gen_random_uuid(), :new_file_id, fbm.block_id, fbm.block_offset, fbm.block_index
                     FROM file_block_mappings fbm
                     WHERE fbm.file_id = :existing_file_id
                     ON CONFLICT (file_id, block_index) DO NOTHING
-                """), {"new_file_id": str(result_file.id), "existing_file_id": str(existing_file.id)})
+                """),
+                    {"new_file_id": str(result_file.id), "existing_file_id": str(existing_file.id)},
+                )
 
                 await db.commit()
                 return {
-                    'file_id': str(result_file.id),
-                    'status': 'full_duplicate',
-                    'saved_size': dedup_result['total_size'],
-                    'dedup_ratio': 100.0,
-                    'duplicate_blocks': []
+                    "file_id": str(result_file.id),
+                    "status": "full_duplicate",
+                    "saved_size": dedup_result["total_size"],
+                    "dedup_ratio": 100.0,
+                    "duplicate_blocks": [],
                 }
-            
+
             # Store new unique blocks
             stored_blocks = []
-            
+
             # For convergent encryption, use a master key for the file metadata
             # but derive block keys from content
             if encrypt:
@@ -754,10 +817,10 @@ class EnhancedDeduplicationService:
             else:
                 master_key = None
                 encrypted_master_key = None
-            
+
             # --- Phase 1: Pre-filter – batch check which CAS paths already exist ---
-            new_blocks = dedup_result['new_blocks']
-            cas_paths = [self.get_content_address(b['hash']) for b in new_blocks]
+            new_blocks = dedup_result["new_blocks"]
+            cas_paths = [self.get_content_address(b["hash"]) for b in new_blocks]
 
             def _check_existing(paths):
                 return {p: os.path.exists(p) for p in paths}
@@ -769,25 +832,33 @@ class EnhancedDeduplicationService:
             already_exists_hashes = set()
             for blk, cp in zip(new_blocks, cas_paths):
                 if existing_map.get(cp, False):
-                    already_exists_hashes.add(blk['hash'])
-                    logger.debug("Block %s already exists, reusing", blk['hash'][:8])
+                    already_exists_hashes.add(blk["hash"])
+                    logger.debug("Block %s already exists, reusing", blk["hash"][:8])
                 elif encrypt:
-                    blocks_to_store.append({
-                        "block_data": blk['data'],
-                        "block_hash": blk['hash'],
-                        "cas_path": cp,
-                    })
+                    blocks_to_store.append(
+                        {
+                            "block_data": blk["data"],
+                            "block_hash": blk["hash"],
+                            "cas_path": cp,
+                        }
+                    )
 
             # --- Phase 2: Batch store via Rust batch endpoint ---
-            logger.info("Dedup blocks to store: %d (total new blocks: %d)", len(blocks_to_store), len(new_blocks))
+            logger.info(
+                "Dedup blocks to store: %d (total new blocks: %d)",
+                len(blocks_to_store),
+                len(new_blocks),
+            )
             batch_results: Dict[str, Dict] = {}
-            if blocks_to_store and getattr(settings, 'RUST_DATAPLANE_ENABLED', False):
+            if blocks_to_store and getattr(settings, "RUST_DATAPLANE_ENABLED", False):
                 batch_results = await self._store_encrypted_blocks_batch(
-                    blocks_to_store, user_id,
+                    blocks_to_store,
+                    user_id,
                 )
                 logger.info(
                     "Batch store: %d/%d blocks stored via Rust batch endpoint",
-                    len(batch_results), len(blocks_to_store),
+                    len(batch_results),
+                    len(blocks_to_store),
                 )
 
             # --- Phase 3: Fallback – retry any blocks not in batch results ---
@@ -795,32 +866,37 @@ class EnhancedDeduplicationService:
                 bh = blk_info["block_hash"]
                 if bh not in batch_results:
                     store_result = await self._store_encrypted_block(
-                        blk_info["block_data"], bh, user_id, blk_info["cas_path"],
+                        blk_info["block_data"],
+                        bh,
+                        user_id,
+                        blk_info["cas_path"],
                     )
-                    if store_result.get('success'):
+                    if store_result.get("success"):
                         batch_results[bh] = store_result
                     else:
                         logger.error("Failed to store block %s", bh[:12])
 
             # Handle unencrypted blocks (no Rust path needed)
             for blk, cp in zip(new_blocks, cas_paths):
-                if blk['hash'] in already_exists_hashes or blk['hash'] in batch_results:
+                if blk["hash"] in already_exists_hashes or blk["hash"] in batch_results:
                     continue
                 if not encrypt and not existing_map.get(cp, False):
                     await asyncio.to_thread(
-                        os.makedirs, os.path.dirname(cp), exist_ok=True,
+                        os.makedirs,
+                        os.path.dirname(cp),
+                        exist_ok=True,
                     )
-                    async with aiofiles.open(cp, 'wb') as f:
-                        await f.write(blk['data'])
+                    async with aiofiles.open(cp, "wb") as f:
+                        await f.write(blk["data"])
 
             # --- Phase 4: Assemble stored_blocks in original order ---
             for blk, cp in zip(new_blocks, cas_paths):
-                res = batch_results.get(blk['hash'], {})
+                res = batch_results.get(blk["hash"], {})
                 # ``size`` is the logical plaintext block size used for range
                 # reconstruction. The physical CAS file can differ because
                 # convergent encryption adds AEAD overhead and some blocks are
                 # zstd-compressed before encryption.
-                encrypted_size = res.get('encrypted_size') or None
+                encrypted_size = res.get("encrypted_size") or None
                 if encrypted_size is None and os.path.exists(cp):
                     try:
                         encrypted_size = os.path.getsize(cp)
@@ -832,57 +908,60 @@ class EnhancedDeduplicationService:
                 # blocks (res == {}) check the sidecar .zst marker written
                 # during the original store (Fix 21).
                 if res:
-                    was_compressed = res.get('was_compressed', False)
+                    was_compressed = res.get("was_compressed", False)
                 else:
-                    was_compressed = os.path.exists(cp + '.zst')
+                    was_compressed = os.path.exists(cp + ".zst")
 
-                stored_blocks.append({
-                    'hash': blk['hash'],
-                    'path': cp,
-                    'size': blk['size'],
-                    'plaintext_size': blk['size'],
-                    'encrypted_size': encrypted_size,
-                    'offset': blk['offset'],
-                    'was_compressed': was_compressed,
-                })
-            
+                stored_blocks.append(
+                    {
+                        "hash": blk["hash"],
+                        "path": cp,
+                        "size": blk["size"],
+                        "plaintext_size": blk["size"],
+                        "encrypted_size": encrypted_size,
+                        "offset": blk["offset"],
+                        "was_compressed": was_compressed,
+                    }
+                )
+
             # Update existing object if provided, otherwise create new
             if existing_object:
                 # Update in-place to preserve file_id
                 existing_object.content_hash = file_hash
-                existing_object.file_size = dedup_result['total_size']
-                existing_object.storage_type = 'content_addressed'
+                existing_object.file_size = dedup_result["total_size"]
+                existing_object.storage_type = "content_addressed"
                 existing_object.chunk_info = {
-                    'blocks': dedup_result['blocks'],
-                    'stored_blocks': stored_blocks,
-                    'version': 2,
-                    'convergent_encryption': encrypt
+                    "blocks": dedup_result["blocks"],
+                    "stored_blocks": stored_blocks,
+                    "version": 2,
+                    "convergent_encryption": encrypt,
                 }
                 existing_object.dedup_info = {
-                    'saved_size': dedup_result['saved_size'],
-                    'dedup_ratio': dedup_result['dedup_ratio'],
-                    'unique_blocks': len(dedup_result['new_blocks']),
-                    'duplicate_blocks': len(dedup_result['duplicate_blocks'])
+                    "saved_size": dedup_result["saved_size"],
+                    "dedup_ratio": dedup_result["dedup_ratio"],
+                    "unique_blocks": len(dedup_result["new_blocks"]),
+                    "duplicate_blocks": len(dedup_result["duplicate_blocks"]),
                 }
                 existing_object.encryption_key = encrypted_master_key
                 if metadata:
-                    if metadata.get('mime_type'):
-                        existing_object.mime_type = metadata.get('mime_type')
-                    if metadata.get('folder_id'):
-                        existing_object.folder_id = metadata.get('folder_id')
+                    if metadata.get("mime_type"):
+                        existing_object.mime_type = metadata.get("mime_type")
+                    if metadata.get("folder_id"):
+                        existing_object.folder_id = metadata.get("folder_id")
 
                 try:
                     await db.flush()
                     result_file = existing_object
                 except Exception as flush_error:
                     # Handle stale data error - the object may have been deleted/modified
-                    logger.warning(f"Flush failed for existing object (likely deleted): {flush_error}")
+                    logger.warning(
+                        f"Flush failed for existing object (likely deleted): {flush_error}"
+                    )
                     await db.rollback()
                     # Refresh the query to get current state
                     existing_object = await db.execute(
                         select(Object).where(
-                            Object.content_hash == file_hash,
-                            Object.user_id == user_id
+                            Object.content_hash == file_hash, Object.user_id == user_id
                         )
                     )
                     existing_object = existing_object.scalars().first()
@@ -901,23 +980,23 @@ class EnhancedDeduplicationService:
                     file_name=file_name,
                     user_id=user_id,
                     content_hash=file_hash,
-                    file_size=dedup_result['total_size'],
-                    storage_type='content_addressed',
+                    file_size=dedup_result["total_size"],
+                    storage_type="content_addressed",
                     chunk_info={
-                        'blocks': dedup_result['blocks'],
-                        'stored_blocks': stored_blocks,
-                        'version': 2,
-                        'convergent_encryption': encrypt  # Mark as using convergent encryption
+                        "blocks": dedup_result["blocks"],
+                        "stored_blocks": stored_blocks,
+                        "version": 2,
+                        "convergent_encryption": encrypt,  # Mark as using convergent encryption
                     },
                     dedup_info={
-                        'saved_size': dedup_result['saved_size'],
-                        'dedup_ratio': dedup_result['dedup_ratio'],
-                        'unique_blocks': len(dedup_result['new_blocks']),
-                        'duplicate_blocks': len(dedup_result['duplicate_blocks'])
+                        "saved_size": dedup_result["saved_size"],
+                        "dedup_ratio": dedup_result["dedup_ratio"],
+                        "unique_blocks": len(dedup_result["new_blocks"]),
+                        "duplicate_blocks": len(dedup_result["duplicate_blocks"]),
                     },
-                    mime_type=metadata.get('mime_type') if metadata else None,
-                    folder_id=metadata.get('folder_id') if metadata else None,
-                    encryption_key=encrypted_master_key  # Store master key for metadata
+                    mime_type=metadata.get("mime_type") if metadata else None,
+                    folder_id=metadata.get("folder_id") if metadata else None,
+                    encryption_key=encrypted_master_key,  # Store master key for metadata
                 )
                 db.add(new_file)
                 await db.flush()
@@ -925,14 +1004,16 @@ class EnhancedDeduplicationService:
 
             # Create ContentBlock entries + file_block_mappings for new blocks
             new_chunk_data = []
-            for idx, block in enumerate(dedup_result['blocks']):
-                if not block['is_duplicate']:
-                    new_chunk_data.append({
-                        'hash': block['hash'],
-                        'size': block['size'],
-                        'offset': block['offset'],
-                        'block_index': idx
-                    })
+            for idx, block in enumerate(dedup_result["blocks"]):
+                if not block["is_duplicate"]:
+                    new_chunk_data.append(
+                        {
+                            "hash": block["hash"],
+                            "size": block["size"],
+                            "offset": block["offset"],
+                            "block_index": idx,
+                        }
+                    )
 
             # Use batched writer to prevent lock exhaustion
             if new_chunk_data:
@@ -942,7 +1023,7 @@ class EnhancedDeduplicationService:
                         chunks=new_chunk_data,
                         file_id=str(result_file.id),
                         db=db,
-                        timeout_seconds=300  # 5 minute timeout
+                        timeout_seconds=300,  # 5 minute timeout
                     )
                     logger.info(f"Successfully stored {stored_count} chunks")
                 except Exception as e:
@@ -950,48 +1031,56 @@ class EnhancedDeduplicationService:
                     raise
 
             # Create file_block_mappings for duplicate blocks
-            if dedup_result['duplicate_blocks']:
+            if dedup_result["duplicate_blocks"]:
                 from sqlalchemy import text as sa_text
+
                 dup_values = [
-                    {'file_id': str(result_file.id), 'block_hash': b['hash'],
-                     'block_offset': b['offset'], 'block_index': idx}
-                    for idx, b in enumerate(dedup_result['blocks']) if b['is_duplicate']
+                    {
+                        "file_id": str(result_file.id),
+                        "block_hash": b["hash"],
+                        "block_offset": b["offset"],
+                        "block_index": idx,
+                    }
+                    for idx, b in enumerate(dedup_result["blocks"])
+                    if b["is_duplicate"]
                 ]
                 for dv in dup_values:
-                    await db.execute(sa_text("""
+                    await db.execute(
+                        sa_text("""
                         INSERT INTO file_block_mappings (id, file_id, block_id, block_offset, block_index)
                         SELECT gen_random_uuid(), :file_id, cb.id, :block_offset, :block_index
                         FROM content_blocks cb WHERE cb.block_hash = :block_hash
                         ON CONFLICT (file_id, block_index) DO NOTHING
-                    """), dv)
+                    """),
+                        dv,
+                    )
 
             await db.commit()
 
             print(f"✅ File stored with deduplication:")
             print(f"   - Unique blocks: {len(dedup_result['new_blocks'])}")
             print(f"   - Duplicate blocks: {len(dedup_result['duplicate_blocks'])}")
-            print(f"   - Saved: {dedup_result['saved_size']/1024/1024:.1f}MB ({dedup_result['dedup_ratio']:.1f}%)")
+            print(
+                f"   - Saved: {dedup_result['saved_size']/1024/1024:.1f}MB ({dedup_result['dedup_ratio']:.1f}%)"
+            )
 
             return {
-                'file_id': str(result_file.id),
-                'status': 'stored_with_dedup',
-                'saved_size': dedup_result['saved_size'],
-                'dedup_ratio': dedup_result['dedup_ratio'],
-                'unique_blocks': len(dedup_result['new_blocks']),
-                'total_blocks': len(dedup_result['blocks']),
-                'duplicate_blocks': dedup_result['duplicate_blocks']
+                "file_id": str(result_file.id),
+                "status": "stored_with_dedup",
+                "saved_size": dedup_result["saved_size"],
+                "dedup_ratio": dedup_result["dedup_ratio"],
+                "unique_blocks": len(dedup_result["new_blocks"]),
+                "total_blocks": len(dedup_result["blocks"]),
+                "duplicate_blocks": dedup_result["duplicate_blocks"],
             }
-            
+
         except Exception as e:
             await db.rollback()
             logger.error(f"Deduplication failed for {file_name}: {e}", exc_info=True)
             raise Exception(f"Deduplication failed: {str(e)}")
-    
-    
+
     async def get_deduplication_analytics(
-        self,
-        db: AsyncSession,
-        user_id: Optional[str] = None
+        self, db: AsyncSession, user_id: Optional[str] = None
     ) -> Dict:
         """
         Get detailed deduplication analytics.
@@ -999,33 +1088,28 @@ class EnhancedDeduplicationService:
         # Base query
         if user_id:
             objects_query = select(Object).where(
-                Object.user_id == user_id,
-                Object.storage_type == 'content_addressed'
+                Object.user_id == user_id, Object.storage_type == "content_addressed"
             )
         else:
-            objects_query = select(Object).where(
-                Object.storage_type == 'content_addressed'
-            )
-        
+            objects_query = select(Object).where(Object.storage_type == "content_addressed")
+
         # Get file statistics
         files_result = await db.execute(objects_query)
         files = files_result.scalars().all()
-        
+
         total_files = len(files)
         total_logical_size = sum(f.file_size for f in files)
-        total_saved = sum(
-            f.dedup_info.get('saved_size', 0) 
-            for f in files 
-            if f.dedup_info
-        )
-        
+        total_saved = sum(f.dedup_info.get("saved_size", 0) for f in files if f.dedup_info)
+
         # Get block statistics (derived from file_block_mappings)
         from sqlalchemy import text as sa_text
+
         from ..models.database import FileBlockMapping
+
         blocks_result = await db.execute(
             select(
-                func.count(ContentBlock.id).label('total_blocks'),
-                func.sum(ContentBlock.block_size).label('total_block_size'),
+                func.count(ContentBlock.id).label("total_blocks"),
+                func.sum(ContentBlock.block_size).label("total_block_size"),
             )
         )
         block_stats = blocks_result.first()
@@ -1051,31 +1135,29 @@ class EnhancedDeduplicationService:
             ORDER BY COUNT(fbm.id) DESC
             LIMIT 10
         """))
-        
+
         return {
-            'summary': {
-                'total_files': total_files,
-                'logical_size': total_logical_size,
-                'physical_size': physical_size,
-                'saved_size': total_saved,
-                'dedup_ratio': round(dedup_ratio, 2),
-                'compression_ratio': round(total_logical_size / physical_size, 2) if physical_size > 0 else 1
+            "summary": {
+                "total_files": total_files,
+                "logical_size": total_logical_size,
+                "physical_size": physical_size,
+                "saved_size": total_saved,
+                "dedup_ratio": round(dedup_ratio, 2),
+                "compression_ratio": (
+                    round(total_logical_size / physical_size, 2) if physical_size > 0 else 1
+                ),
             },
-            'blocks': {
-                'total_blocks': block_stats.total_blocks or 0,
-                'total_size': block_stats.total_block_size or 0,
-                'avg_references': avg_references
+            "blocks": {
+                "total_blocks": block_stats.total_blocks or 0,
+                "total_size": block_stats.total_block_size or 0,
+                "avg_references": avg_references,
             },
-            'top_duplicates': [
-                {
-                    'hash': row.block_hash[:8] + '...',
-                    'size': row.block_size,
-                    'count': row.count
-                }
+            "top_duplicates": [
+                {"hash": row.block_hash[:8] + "...", "size": row.block_size, "count": row.count}
                 for row in top_duplicates
-            ]
+            ],
         }
-    
+
     GC_GRACE_PERIOD_MINUTES = 60
 
     async def garbage_collect(self, db: AsyncSession) -> Dict:
@@ -1086,14 +1168,17 @@ class EnhancedDeduplicationService:
         from sqlalchemy import text as sa_text
 
         # Find orphan blocks older than grace period, with row locking
-        orphans = await db.execute(sa_text("""
+        orphans = await db.execute(
+            sa_text("""
             SELECT cb.id, cb.block_hash
             FROM content_blocks cb
             LEFT JOIN file_block_mappings fbm ON fbm.block_id = cb.id
             WHERE fbm.id IS NULL
               AND cb.created_at < NOW() - make_interval(mins => :grace)
             FOR UPDATE OF cb SKIP LOCKED
-        """), {"grace": self.GC_GRACE_PERIOD_MINUTES})
+        """),
+            {"grace": self.GC_GRACE_PERIOD_MINUTES},
+        )
 
         deleted_count = 0
         freed_space = 0
@@ -1102,9 +1187,10 @@ class EnhancedDeduplicationService:
         for block in orphans.fetchall():
             try:
                 # Re-verify no mappings created since the SELECT
-                recheck = await db.execute(sa_text(
-                    "SELECT 1 FROM file_block_mappings WHERE block_id = :bid LIMIT 1"
-                ), {"bid": str(block.id)})
+                recheck = await db.execute(
+                    sa_text("SELECT 1 FROM file_block_mappings WHERE block_id = :bid LIMIT 1"),
+                    {"bid": str(block.id)},
+                )
                 if recheck.fetchone():
                     continue  # Mapping appeared — skip
 
@@ -1112,32 +1198,28 @@ class EnhancedDeduplicationService:
                 if os.path.exists(content_path):
                     freed_space += os.path.getsize(content_path)
                     os.remove(content_path)
-                    if os.path.exists(content_path + '.key'):
-                        os.remove(content_path + '.key')
+                    if os.path.exists(content_path + ".key"):
+                        os.remove(content_path + ".key")
 
-                await db.execute(sa_text("DELETE FROM content_blocks WHERE id = :id"), {"id": str(block.id)})
+                await db.execute(
+                    sa_text("DELETE FROM content_blocks WHERE id = :id"), {"id": str(block.id)}
+                )
                 deleted_count += 1
 
             except Exception as e:
-                errors.append({
-                    'block_hash': block.block_hash,
-                    'error': str(e)
-                })
+                errors.append({"block_hash": block.block_hash, "error": str(e)})
 
         await db.commit()
 
-        return {
-            'deleted_blocks': deleted_count,
-            'freed_space': freed_space,
-            'errors': errors
-        }
-    
-    def get_content_address(self, content_hash: str) -> str:  
+        return {"deleted_blocks": deleted_count, "freed_space": freed_space, "errors": errors}
+
+    def get_content_address(self, content_hash: str) -> str:
         """Get storage path for content hash.
         Uses first 2 chars for sharding: /cas/ab/abcdef123456...
         """
         shard = content_hash[:2]
         return os.path.join(self.cas_path, shard, content_hash)
+
 
 # Enhanced singleton instance
 enhanced_dedup_service = EnhancedDeduplicationService()

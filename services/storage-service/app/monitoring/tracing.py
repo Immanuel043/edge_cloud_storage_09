@@ -14,15 +14,16 @@ Features:
 
 import os
 from typing import Optional
+
 from opentelemetry import trace
 from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
 
 class TracingService:
@@ -40,9 +41,7 @@ class TracingService:
             return
 
         # Create resource with service name
-        resource = Resource(attributes={
-            SERVICE_NAME: service_name
-        })
+        resource = Resource(attributes={SERVICE_NAME: service_name})
 
         # Create tracer provider
         provider = TracerProvider(resource=resource)
@@ -54,9 +53,7 @@ class TracingService:
         )
 
         # Add span processor
-        provider.add_span_processor(
-            BatchSpanProcessor(jaeger_exporter)
-        )
+        provider.add_span_processor(BatchSpanProcessor(jaeger_exporter))
 
         # Set as global tracer
         trace.set_tracer_provider(provider)
@@ -86,10 +83,7 @@ class TracingService:
         if not self.enabled:
             return
 
-        SQLAlchemyInstrumentor().instrument(
-            engine=engine,
-            service="edge-storage-db"
-        )
+        SQLAlchemyInstrumentor().instrument(engine=engine, service="edge-storage-db")
 
         print("✅ Database instrumentation enabled")
 
@@ -194,6 +188,7 @@ def trace_function(name: Optional[str] = None):
 
         # Return appropriate wrapper based on function type
         import asyncio
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:

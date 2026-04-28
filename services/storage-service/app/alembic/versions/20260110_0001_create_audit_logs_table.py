@@ -9,13 +9,13 @@ that conflicted with the ORM model (database.py AuditLog class). The correct
 schema is created by migration 20251021_0002. This migration is now a no-op
 since the ORM-matching schema is already created by that earlier migration.
 """
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '20260110_0001'
-down_revision = '20260109_0003'
+revision = "20260110_0001"
+down_revision = "20260109_0003"
 branch_labels = None
 depends_on = None
 

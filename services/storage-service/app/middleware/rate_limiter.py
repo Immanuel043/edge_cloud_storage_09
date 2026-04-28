@@ -12,15 +12,16 @@ Rate Limits:
 - Plan viewing: 60/minute per user
 """
 
-import logging
-import time
-import threading
-from collections import defaultdict
-from typing import Callable, Optional
-from datetime import datetime, timedelta
-from fastapi import Request, HTTPException, status
-from redis.asyncio import Redis
 import hashlib
+import logging
+import threading
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Callable, Optional
+
+from fastapi import HTTPException, Request, status
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class InMemoryRateLimiter:
                     "limit": max_requests,
                     "remaining": 0,
                     "reset": retry_after,
-                    "retry_after": retry_after
+                    "retry_after": retry_after,
                 }
 
             timestamps.append(now)
@@ -72,14 +73,13 @@ class InMemoryRateLimiter:
                 "limit": max_requests,
                 "remaining": remaining,
                 "reset": window_seconds,
-                "retry_after": None
+                "retry_after": None,
             }
 
     def _cleanup(self, now: float):
         """Remove keys with no recent requests"""
         stale_keys = [
-            k for k, v in self._requests.items()
-            if not v or v[-1] < now - 7200  # 2 hours stale
+            k for k, v in self._requests.items() if not v or v[-1] < now - 7200  # 2 hours stale
         ]
         for k in stale_keys:
             del self._requests[k]
@@ -130,11 +130,7 @@ class RateLimiter:
         self.redis = redis_client
 
     async def check_rate_limit(
-        self,
-        key: str,
-        max_requests: int,
-        window_seconds: int,
-        identifier: str = "request"
+        self, key: str, max_requests: int, window_seconds: int, identifier: str = "request"
     ) -> tuple[bool, dict]:
         """
         Check if request is within rate limit using sliding window.
@@ -156,11 +152,7 @@ class RateLimiter:
 
         try:
             # Remove old entries outside the window
-            await self.redis.zremrangebyscore(
-                redis_key,
-                0,
-                window_start.timestamp()
-            )
+            await self.redis.zremrangebyscore(redis_key, 0, window_start.timestamp())
 
             # Count requests in current window
             current_requests = await self.redis.zcard(redis_key)
@@ -168,13 +160,11 @@ class RateLimiter:
             # Check if limit exceeded
             if current_requests >= max_requests:
                 # Calculate reset time
-                oldest_timestamp = await self.redis.zrange(
-                    redis_key, 0, 0, withscores=True
-                )
+                oldest_timestamp = await self.redis.zrange(redis_key, 0, 0, withscores=True)
                 if oldest_timestamp:
-                    reset_at = datetime.fromtimestamp(
-                        oldest_timestamp[0][1]
-                    ) + timedelta(seconds=window_seconds)
+                    reset_at = datetime.fromtimestamp(oldest_timestamp[0][1]) + timedelta(
+                        seconds=window_seconds
+                    )
                     retry_after = int((reset_at - now).total_seconds())
                 else:
                     retry_after = window_seconds
@@ -185,22 +175,19 @@ class RateLimiter:
                         "key": key,
                         "requests": current_requests,
                         "limit": max_requests,
-                        "window": window_seconds
-                    }
+                        "window": window_seconds,
+                    },
                 )
 
                 return False, {
                     "limit": max_requests,
                     "remaining": 0,
                     "reset": retry_after,
-                    "retry_after": retry_after
+                    "retry_after": retry_after,
                 }
 
             # Add current request
-            await self.redis.zadd(
-                redis_key,
-                {str(now.timestamp()): now.timestamp()}
-            )
+            await self.redis.zadd(redis_key, {str(now.timestamp()): now.timestamp()})
 
             # Set expiry on key (cleanup)
             await self.redis.expire(redis_key, window_seconds)
@@ -212,13 +199,12 @@ class RateLimiter:
                 "limit": max_requests,
                 "remaining": remaining,
                 "reset": window_seconds,
-                "retry_after": None
+                "retry_after": None,
             }
 
         except Exception as e:
             logger.error(
-                f"Rate limiter Redis error, falling back to in-memory limiter: {e}",
-                exc_info=True
+                f"Rate limiter Redis error, falling back to in-memory limiter: {e}", exc_info=True
             )
             # Use in-memory fallback instead of failing open
             return _fallback_limiter.check(key, max_requests, window_seconds)
@@ -240,9 +226,7 @@ class RateLimiter:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             # Hash the token to create stable identifier
-            token_hash = hashlib.sha256(
-                auth_header.encode()
-            ).hexdigest()[:16]
+            token_hash = hashlib.sha256(auth_header.encode()).hexdigest()[:16]
             return f"token:{token_hash}"
 
         # Fallback to IP address
@@ -255,12 +239,7 @@ class RateLimiter:
 
         return f"ip:{client_ip}"
 
-    async def apply_rate_limit(
-        self,
-        request: Request,
-        rate_limit_config: dict,
-        endpoint_name: str
-    ):
+    async def apply_rate_limit(self, request: Request, rate_limit_config: dict, endpoint_name: str):
         """
         Apply rate limit to request and raise HTTPException if exceeded.
 
@@ -279,14 +258,14 @@ class RateLimiter:
             key=key,
             max_requests=rate_limit_config["requests"],
             window_seconds=rate_limit_config["window"],
-            identifier=f"{endpoint_name} - {identifier}"
+            identifier=f"{endpoint_name} - {identifier}",
         )
 
         # Add rate limit headers to response
         request.state.rate_limit_headers = {
             "X-RateLimit-Limit": str(rate_info["limit"]),
             "X-RateLimit-Remaining": str(rate_info["remaining"]),
-            "X-RateLimit-Reset": str(rate_info["reset"])
+            "X-RateLimit-Reset": str(rate_info["reset"]),
         }
 
         if not is_allowed:
@@ -295,8 +274,8 @@ class RateLimiter:
                 extra={
                     "endpoint": endpoint_name,
                     "identifier": identifier,
-                    "limit": rate_info["limit"]
-                }
+                    "limit": rate_info["limit"],
+                },
             )
 
             raise HTTPException(
@@ -305,14 +284,14 @@ class RateLimiter:
                     "error": "rate_limit_exceeded",
                     "message": f"Too many requests. Please try again in {rate_info['retry_after']} seconds.",
                     "limit": rate_info["limit"],
-                    "retry_after": rate_info["retry_after"]
+                    "retry_after": rate_info["retry_after"],
                 },
                 headers={
                     "Retry-After": str(rate_info["retry_after"]),
                     "X-RateLimit-Limit": str(rate_info["limit"]),
                     "X-RateLimit-Remaining": "0",
-                    "X-RateLimit-Reset": str(rate_info["reset"])
-                }
+                    "X-RateLimit-Reset": str(rate_info["reset"]),
+                },
             )
 
 
@@ -326,6 +305,7 @@ def rate_limit(config: dict, endpoint_name: str):
         async def create_payment(...):
             ...
     """
+
     def decorator(func: Callable):
         async def wrapper(*args, **kwargs):
             # Extract request from kwargs
@@ -338,9 +318,7 @@ def rate_limit(config: dict, endpoint_name: str):
                         break
 
             if not request:
-                logger.error(
-                    f"Rate limiter: Could not find Request object in {endpoint_name}"
-                )
+                logger.error(f"Rate limiter: Could not find Request object in {endpoint_name}")
                 # Fail open if we can't find request
                 return await func(*args, **kwargs)
 
@@ -349,9 +327,7 @@ def rate_limit(config: dict, endpoint_name: str):
 
             # Apply rate limit
             await rate_limiter.apply_rate_limit(
-                request=request,
-                rate_limit_config=config,
-                endpoint_name=endpoint_name
+                request=request, rate_limit_config=config, endpoint_name=endpoint_name
             )
 
             # Call original function

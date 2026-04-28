@@ -3,14 +3,16 @@ Document summarization service.
 
 Pipeline: fetch OCR text → chunk if large → LLM or TF-IDF fallback → cache in file_summaries.
 """
+
 import logging
 import re
 from uuid import uuid4
-from sqlalchemy import select, delete
+
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.database import FileOCR, FileSummary, Object
 from ..config import settings
+from ..models.database import FileOCR, FileSummary, Object
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # TF-IDF extractive fallback (no LLM needed)
 # ---------------------------------------------------------------------------
+
 
 def _extractive_summary(text: str, num_sentences: int = 5) -> str:
     """Simple extractive summarisation using TF-IDF sentence scoring."""
@@ -46,7 +49,7 @@ def _extractive_summary(text: str, num_sentences: int = 5) -> str:
 
 def _split_sentences(text: str) -> list[str]:
     """Split text into sentences."""
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     return [s.strip() for s in sentences if s.strip()]
 
 
@@ -80,6 +83,7 @@ async def _llm_summarise(text: str) -> tuple[str, str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 async def generate_summary(
     file_id: str,
     db: AsyncSession,
@@ -106,9 +110,7 @@ async def generate_summary(
 
     # Check for existing cached summary (unless force regenerate)
     if not force:
-        result = await db.execute(
-            select(FileSummary).filter(FileSummary.file_id == file_id)
-        )
+        result = await db.execute(select(FileSummary).filter(FileSummary.file_id == file_id))
         existing = result.scalar_one_or_none()
         if existing:
             return _summary_to_dict(existing)
@@ -126,6 +128,7 @@ async def generate_summary(
     try:
         if settings.LLM_ENABLED:
             from .llm_client import llm_client
+
             if await llm_client.is_available():
                 summary_text, model_used = await _llm_summarise(text)
             else:

@@ -3,43 +3,64 @@
 Advanced sharing endpoints - Google Drive style collaborative sharing
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query, Body, Header, BackgroundTasks
-from fastapi.responses import StreamingResponse, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, func as sql_func
-from typing import List, Optional
-from datetime import datetime, timedelta
-import secrets
 import logging
+import secrets
+from datetime import datetime, timedelta
+from typing import List, Optional
 from urllib.parse import quote, urlencode
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
+from sqlalchemy import and_
+from sqlalchemy import func as sql_func
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 
 def _content_disposition(disposition: str, filename: str) -> str:
     """Build a Content-Disposition header value safe for non-ASCII filenames (RFC 5987)."""
-    ascii_safe = filename.encode('ascii', errors='replace').decode('ascii').replace('"', '\\"')
+    ascii_safe = filename.encode("ascii", errors="replace").decode("ascii").replace('"', '\\"')
     try:
-        filename.encode('latin-1')
+        filename.encode("latin-1")
         return f'{disposition}; filename="{ascii_safe}"'
     except UnicodeEncodeError:
-        encoded = quote(filename, safe='')
+        encoded = quote(filename, safe="")
         return f"{disposition}; filename=\"{ascii_safe}\"; filename*=UTF-8''{encoded}"
 
-from ..dependencies import get_db, get_current_user, log_activity
-from ..services.auth import auth_service, pwd_context
-from ..utils.rate_limiter import limiter, share_limiter, RateLimitConfig, check_ip_whitelist
-from ..utils.access_logger import log_share_access
-from ..models.database import User, Object, Folder, ShareLink, SharedAccess, ShareAccessLog, ShareBundle
-from ..models.schemas import (
-    ShareCreate, ShareResponse,
-    CollaborativeShareCreate, CollaborativeShareResponse,
-    SharedItemResponse, PendingInvitationResponse,
-    ShareLinkUpdate, ShareLinkDetail, ShareLinkListResponse,
-    ShareAccessLogEntry, ShareAccessLogResponse,
-    ShareAnalyticsSummary, ShareDailyStats, ShareAnalyticsTrends,
-    ShareItemStats, ShareAnalyticsTopItems,
+
+from ..dependencies import get_current_user, get_db, log_activity
+from ..models.database import (
+    Folder,
+    Object,
+    ShareAccessLog,
+    ShareBundle,
+    SharedAccess,
+    ShareLink,
+    User,
 )
+from ..models.schemas import (
+    CollaborativeShareCreate,
+    CollaborativeShareResponse,
+    PendingInvitationResponse,
+    ShareAccessLogEntry,
+    ShareAccessLogResponse,
+    ShareAnalyticsSummary,
+    ShareAnalyticsTopItems,
+    ShareAnalyticsTrends,
+    ShareCreate,
+    ShareDailyStats,
+    SharedItemResponse,
+    ShareItemStats,
+    ShareLinkDetail,
+    ShareLinkListResponse,
+    ShareLinkUpdate,
+    ShareResponse,
+)
+from ..services.auth import auth_service, pwd_context
+from ..utils.access_logger import log_share_access
+from ..utils.rate_limiter import RateLimitConfig, check_ip_whitelist, limiter, share_limiter
 
 router = APIRouter(prefix="/api/v1", tags=["sharing"])
 
@@ -71,13 +92,13 @@ async def create_folder_share_link(
         )
     )
     all_folder_files = zk_check.scalars().all()
-    zk_files_count = sum(1 for f in all_folder_files if f.encryption_mode == 'client_zk')
+    zk_files_count = sum(1 for f in all_folder_files if f.encryption_mode == "client_zk")
     non_zk_files_count = len(all_folder_files) - zk_files_count
 
     if zk_files_count > 0 and non_zk_files_count == 0:
         raise HTTPException(
             status_code=400,
-            detail="All files in this folder use zero-knowledge encryption and cannot be shared via folder link"
+            detail="All files in this folder use zero-knowledge encryption and cannot be shared via folder link",
         )
 
     # Generate unique share token
@@ -116,7 +137,10 @@ async def create_folder_share_link(
 
     # Log activity
     await log_activity(
-        db, current_user.id, "folder_shared", str(folder_id),
+        db,
+        current_user.id,
+        "folder_shared",
+        str(folder_id),
         {
             "share_type": share_data.share_type,
             "expires_hours": share_data.expires_hours,
@@ -127,7 +151,8 @@ async def create_folder_share_link(
 
     # Build frontend share URL
     from ..config import settings
-    frontend_url = getattr(settings, 'FRONTEND_URL', "http://localhost:3000")
+
+    frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
     share_url = f"{frontend_url}/share/{share_token}"
 
     zk_warning = None
@@ -188,7 +213,7 @@ async def share_file_with_users(
             shared_with_user_id=recipient_user.id if recipient_user else None,
             file_id=file_id,
             permission=share_data.permission,
-            invitation_status='accepted' if recipient_user else 'pending',
+            invitation_status="accepted" if recipient_user else "pending",
             invitation_token=invitation_token,
             expires_at=expires_at,
         )
@@ -202,18 +227,23 @@ async def share_file_with_users(
     responses = []
     for shared_access, email, invitation_token, recipient_user in shared_items:
         await db.refresh(shared_access)
-        responses.append(CollaborativeShareResponse(
-            id=str(shared_access.id),
-            shared_with_email=email,
-            permission=share_data.permission,
-            invitation_status=shared_access.invitation_status,
-            invitation_token=invitation_token if not recipient_user else None,
-            created_at=shared_access.created_at,
-        ))
+        responses.append(
+            CollaborativeShareResponse(
+                id=str(shared_access.id),
+                shared_with_email=email,
+                permission=share_data.permission,
+                invitation_status=shared_access.invitation_status,
+                invitation_token=invitation_token if not recipient_user else None,
+                created_at=shared_access.created_at,
+            )
+        )
 
     # Log activity
     await log_activity(
-        db, current_user.id, "file_shared_collaborative", str(file_id),
+        db,
+        current_user.id,
+        "file_shared_collaborative",
+        str(file_id),
         {
             "emails": share_data.emails,
             "permission": share_data.permission,
@@ -222,15 +252,15 @@ async def share_file_with_users(
     )
 
     # Send email notifications (fire-and-forget)
-    from ..services.email_service import email_service
     from ..config import settings
+    from ..services.email_service import email_service
+
     for _shared_access, email, invitation_token, recipient_user in shared_items:
         if recipient_user:
             share_url = f"{settings.FRONTEND_URL}/?view=shared-with-me"
         else:
-            share_url = (
-                f"{settings.FRONTEND_URL}/auth?"
-                + urlencode({"invitation": invitation_token, "email": email})
+            share_url = f"{settings.FRONTEND_URL}/auth?" + urlencode(
+                {"invitation": invitation_token, "email": email}
             )
         background_tasks.add_task(
             email_service.send_share_notification,
@@ -286,7 +316,7 @@ async def share_folder_with_users(
             shared_with_user_id=recipient_user.id if recipient_user else None,
             folder_id=folder_id,
             permission=share_data.permission,
-            invitation_status='accepted' if recipient_user else 'pending',
+            invitation_status="accepted" if recipient_user else "pending",
             invitation_token=invitation_token,
             expires_at=expires_at,
         )
@@ -300,18 +330,23 @@ async def share_folder_with_users(
     responses = []
     for shared_access, email, invitation_token, recipient_user in shared_items:
         await db.refresh(shared_access)
-        responses.append(CollaborativeShareResponse(
-            id=str(shared_access.id),
-            shared_with_email=email,
-            permission=share_data.permission,
-            invitation_status=shared_access.invitation_status,
-            invitation_token=invitation_token if not recipient_user else None,
-            created_at=shared_access.created_at,
-        ))
+        responses.append(
+            CollaborativeShareResponse(
+                id=str(shared_access.id),
+                shared_with_email=email,
+                permission=share_data.permission,
+                invitation_status=shared_access.invitation_status,
+                invitation_token=invitation_token if not recipient_user else None,
+                created_at=shared_access.created_at,
+            )
+        )
 
     # Log activity
     await log_activity(
-        db, current_user.id, "folder_shared_collaborative", str(folder_id),
+        db,
+        current_user.id,
+        "folder_shared_collaborative",
+        str(folder_id),
         {
             "emails": share_data.emails,
             "permission": share_data.permission,
@@ -320,15 +355,15 @@ async def share_folder_with_users(
     )
 
     # Send email notifications (fire-and-forget)
-    from ..services.email_service import email_service
     from ..config import settings
+    from ..services.email_service import email_service
+
     for _shared_access, email, invitation_token, recipient_user in shared_items:
         if recipient_user:
             share_url = f"{settings.FRONTEND_URL}/?view=shared-with-me"
         else:
-            share_url = (
-                f"{settings.FRONTEND_URL}/auth?"
-                + urlencode({"invitation": invitation_token, "email": email})
+            share_url = f"{settings.FRONTEND_URL}/auth?" + urlencode(
+                {"invitation": invitation_token, "email": email}
             )
         background_tasks.add_task(
             email_service.send_share_notification,
@@ -355,15 +390,13 @@ async def get_shared_with_me(
     base_filter = [
         or_(
             SharedAccess.shared_with_email == current_user.email,
-            SharedAccess.shared_with_user_id == current_user.id
+            SharedAccess.shared_with_user_id == current_user.id,
         ),
-        SharedAccess.invitation_status == 'accepted'
+        SharedAccess.invitation_status == "accepted",
     ]
 
     # Get total count
-    count_result = await db.execute(
-        select(sql_func.count(SharedAccess.id)).filter(*base_filter)
-    )
+    count_result = await db.execute(select(sql_func.count(SharedAccess.id)).filter(*base_filter))
     total = count_result.scalar() or 0
 
     # Get paginated items (files, folders, and bundles)
@@ -394,19 +427,21 @@ async def get_shared_with_me(
             item_name = "Unknown"
             item_type = "file"
 
-        shared_items.append(SharedItemResponse(
-            id=str(shared_access.id),
-            owner_email=owner.email if owner else "Unknown",
-            item_name=item_name,
-            item_type=item_type,
-            permission=shared_access.permission,
-            shared_at=shared_access.created_at,
-            file_id=str(file_obj.id) if file_obj else None,
-            folder_id=str(folder_obj.id) if folder_obj else None,
-            bundle_id=str(bundle_obj.id) if bundle_obj else None,
-            mime_type=file_obj.mime_type if file_obj else None,
-            file_size=file_obj.file_size if file_obj else None,
-        ))
+        shared_items.append(
+            SharedItemResponse(
+                id=str(shared_access.id),
+                owner_email=owner.email if owner else "Unknown",
+                item_name=item_name,
+                item_type=item_type,
+                permission=shared_access.permission,
+                shared_at=shared_access.created_at,
+                file_id=str(file_obj.id) if file_obj else None,
+                folder_id=str(folder_obj.id) if folder_obj else None,
+                bundle_id=str(bundle_obj.id) if bundle_obj else None,
+                mime_type=file_obj.mime_type if file_obj else None,
+                file_size=file_obj.file_size if file_obj else None,
+            )
+        )
 
     return {"items": shared_items, "total": total, "limit": limit, "offset": offset}
 
@@ -424,8 +459,8 @@ async def remove_shared_access(
             SharedAccess.id == share_access_id,
             or_(
                 SharedAccess.shared_with_email == current_user.email,
-                SharedAccess.shared_with_user_id == current_user.id
-            )
+                SharedAccess.shared_with_user_id == current_user.id,
+            ),
         )
     )
     shared_access = result.scalar_one_or_none()
@@ -460,7 +495,7 @@ async def get_pending_invitations(
         .outerjoin(Folder, SharedAccess.folder_id == Folder.id)
         .filter(
             SharedAccess.shared_with_email == current_user.email,
-            SharedAccess.invitation_status == 'pending',
+            SharedAccess.invitation_status == "pending",
         )
         .order_by(SharedAccess.created_at.desc())
     )
@@ -471,21 +506,25 @@ async def get_pending_invitations(
         if shared_access.expires_at and shared_access.expires_at < datetime.utcnow():
             continue
 
-        item_name = file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Unknown")
+        item_name = (
+            file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Unknown")
+        )
         item_type = "file" if file_obj else "folder"
 
-        invitations.append(PendingInvitationResponse(
-            id=str(shared_access.id),
-            owner_email=owner.email if owner else "Unknown",
-            item_name=item_name,
-            item_type=item_type,
-            permission=shared_access.permission,
-            invitation_token=shared_access.invitation_token,
-            created_at=shared_access.created_at,
-            expires_at=shared_access.expires_at,
-            file_id=str(file_obj.id) if file_obj else None,
-            folder_id=str(folder_obj.id) if folder_obj else None,
-        ))
+        invitations.append(
+            PendingInvitationResponse(
+                id=str(shared_access.id),
+                owner_email=owner.email if owner else "Unknown",
+                item_name=item_name,
+                item_type=item_type,
+                permission=shared_access.permission,
+                invitation_token=shared_access.invitation_token,
+                created_at=shared_access.created_at,
+                expires_at=shared_access.expires_at,
+                file_id=str(file_obj.id) if file_obj else None,
+                folder_id=str(folder_obj.id) if folder_obj else None,
+            )
+        )
 
     return invitations
 
@@ -501,7 +540,7 @@ async def accept_invitation(
         select(SharedAccess).filter(
             SharedAccess.invitation_token == invitation_token,
             SharedAccess.shared_with_email == current_user.email,
-            SharedAccess.invitation_status == 'pending',
+            SharedAccess.invitation_status == "pending",
         )
     )
     shared_access = result.scalar_one_or_none()
@@ -512,7 +551,7 @@ async def accept_invitation(
     if shared_access.expires_at and shared_access.expires_at < datetime.utcnow():
         raise HTTPException(status_code=410, detail="Invitation has expired")
 
-    shared_access.invitation_status = 'accepted'
+    shared_access.invitation_status = "accepted"
     shared_access.shared_with_user_id = current_user.id
     shared_access.accepted_at = datetime.utcnow()
     await db.commit()
@@ -533,7 +572,7 @@ async def decline_invitation(
         select(SharedAccess).filter(
             SharedAccess.invitation_token == invitation_token,
             SharedAccess.shared_with_email == current_user.email,
-            SharedAccess.invitation_status == 'pending',
+            SharedAccess.invitation_status == "pending",
         )
     )
     shared_access = result.scalar_one_or_none()
@@ -541,7 +580,7 @@ async def decline_invitation(
     if not shared_access:
         raise HTTPException(status_code=404, detail="Invitation not found or already processed")
 
-    shared_access.invitation_status = 'declined'
+    shared_access.invitation_status = "declined"
     await db.commit()
 
     logger.info(f"User {current_user.email} declined invitation {invitation_token}")
@@ -580,7 +619,9 @@ async def get_share_info(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password (accept from both header and query param, header takes precedence)
     pw = x_share_password or password
@@ -644,7 +685,9 @@ async def get_shared_folder_contents(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password (accept from both header and query param, header takes precedence)
     pw = x_share_password or password
@@ -661,7 +704,7 @@ async def get_shared_folder_contents(
         select(Object).filter(
             Object.folder_id == folder_obj.id,
             Object.is_deleted == False,
-            or_(Object.encryption_mode == None, Object.encryption_mode != 'client_zk')
+            or_(Object.encryption_mode == None, Object.encryption_mode != "client_zk"),
         )
     )
     files = files_result.scalars().all()
@@ -683,7 +726,9 @@ async def get_shared_folder_contents(
     }
 
     if len(files) == 0:
-        response["notice"] = "All files in this folder use zero-knowledge encryption and cannot be previewed or downloaded from a shared link."
+        response["notice"] = (
+            "All files in this folder use zero-knowledge encryption and cannot be previewed or downloaded from a shared link."
+        )
 
     if share_link.watermark_text:
         response["watermark_text"] = share_link.watermark_text
@@ -703,10 +748,11 @@ async def download_shared_folder_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Download an individual file from a shared folder (public, no auth required)"""
-    from ..services.encryption import encryption_service
-    from ..services.download_optimizer import download_optimizer
-    import os
     import base64
+    import os
+
+    from ..services.download_optimizer import download_optimizer
+    from ..services.encryption import encryption_service
 
     # Get share link and folder
     result = await db.execute(
@@ -727,7 +773,9 @@ async def download_shared_folder_file(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password (accept from both header and query param, header takes precedence)
     pw = x_share_password or password
@@ -738,7 +786,7 @@ async def download_shared_folder_file(
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Enforce download permission
-    if share_link.share_type == 'view':
+    if share_link.share_type == "view":
         raise HTTPException(status_code=403, detail="Download not allowed - view only")
 
     # Enforce download limit
@@ -748,9 +796,7 @@ async def download_shared_folder_file(
     # Verify file belongs to the shared folder (direct children only)
     file_result = await db.execute(
         select(Object).filter(
-            Object.id == file_id,
-            Object.folder_id == folder_obj.id,
-            Object.is_deleted == False
+            Object.id == file_id, Object.folder_id == folder_obj.id, Object.is_deleted == False
         )
     )
     file_obj = file_result.scalar_one_or_none()
@@ -759,20 +805,25 @@ async def download_shared_folder_file(
         raise HTTPException(status_code=404, detail="File not found in shared folder")
 
     # Block ZK-encrypted files
-    if file_obj.encryption_mode == 'client_zk':
-        raise HTTPException(status_code=404, detail="This file uses zero-knowledge encryption and cannot be downloaded from a shared folder")
+    if file_obj.encryption_mode == "client_zk":
+        raise HTTPException(
+            status_code=404,
+            detail="This file uses zero-knowledge encryption and cannot be downloaded from a shared folder",
+        )
 
     # Increment download count
     share_link.download_count += 1
     share_link.last_accessed = datetime.utcnow()
     await db.commit()
 
-    background_tasks.add_task(log_share_access, request, "download_file", share_link_id=share_link.id, file_id=file_obj.id)
+    background_tasks.add_task(
+        log_share_access, request, "download_file", share_link_id=share_link.id, file_id=file_obj.id
+    )
 
     # Decrypt file key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
-    mime_type = file_obj.mime_type or 'application/octet-stream'
+    mime_type = file_obj.mime_type or "application/octet-stream"
     filename = file_obj.file_name.replace('"', '\\"')
     total_size = file_obj.file_size
 
@@ -782,7 +833,11 @@ async def download_shared_folder_file(
         "Content-Length": str(total_size),
     }
 
-    was_compressed = file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False)
+    was_compressed = (
+        file_obj.file_metadata
+        and isinstance(file_obj.file_metadata, dict)
+        and file_obj.file_metadata.get("compressed", False)
+    )
 
     # INLINE STORAGE
     if file_obj.storage_type == "inline":
@@ -791,6 +846,7 @@ async def download_shared_folder_file(
 
         if was_compressed:
             from ..utils.compression import compressor
+
             file_data = compressor.decompress(file_data)
 
         return Response(content=file_data, status_code=200, headers=headers)
@@ -806,7 +862,7 @@ async def download_shared_folder_file(
             encryption_service=encryption_service,
             start_byte=0,
             end_byte=total_size - 1,
-            compressed=was_compressed
+            compressed=was_compressed,
         )
         return StreamingResponse(generator, status_code=200, headers=headers, media_type=mime_type)
 
@@ -851,7 +907,9 @@ async def download_shared_folder_as_zip(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password
     pw = x_share_password or password
@@ -862,7 +920,7 @@ async def download_shared_folder_as_zip(
             raise HTTPException(status_code=401, detail="Invalid password")
 
     # Check download permission
-    if share_link.share_type == 'view':
+    if share_link.share_type == "view":
         raise HTTPException(status_code=403, detail="Download not allowed — view only")
 
     # Check max downloads
@@ -876,9 +934,7 @@ async def download_shared_folder_as_zip(
     queue = [(root_folder.id, "")]
     while queue:
         parent_id, parent_path = queue.pop(0)
-        subfolder_result = await db.execute(
-            select(Folder).filter(Folder.parent_id == parent_id)
-        )
+        subfolder_result = await db.execute(select(Folder).filter(Folder.parent_id == parent_id))
         for subfolder in subfolder_result.scalars().all():
             sub_path = f"{parent_path}{subfolder.name}/"
             folder_ids.append(subfolder.id)
@@ -890,7 +946,7 @@ async def download_shared_folder_as_zip(
         select(Object).filter(
             Object.folder_id.in_(folder_ids),
             Object.is_deleted == False,
-            or_(Object.encryption_mode == None, Object.encryption_mode != 'client_zk'),
+            or_(Object.encryption_mode == None, Object.encryption_mode != "client_zk"),
         )
     )
     files = files_result.scalars().all()
@@ -906,7 +962,7 @@ async def download_shared_folder_as_zip(
         entries.append(ZipFileEntry(file_obj, zip_path))
 
     # Generate ZIP filename
-    safe_name = "".join(c for c in root_folder.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    safe_name = "".join(c for c in root_folder.name if c.isalnum() or c in (" ", "-", "_")).rstrip()
     zip_filename = f"{safe_name}.zip"
 
     response = await build_zip_response(entries, encryption_service, zip_filename)
@@ -916,7 +972,9 @@ async def download_shared_folder_as_zip(
     share_link.last_accessed = datetime.utcnow()
     await db.commit()
 
-    background_tasks.add_task(log_share_access, request, "download_zip", share_link_id=share_link.id)
+    background_tasks.add_task(
+        log_share_access, request, "download_zip", share_link_id=share_link.id
+    )
 
     return response
 
@@ -934,12 +992,14 @@ async def stream_shared_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Stream a shared file for preview (video, audio, PDF, images)"""
-    from ..services.encryption import encryption_service
-    from ..services.download_optimizer import download_optimizer
-    from ..config import settings
-    import os
     import base64
+    import os
+
     import aiofiles
+
+    from ..config import settings
+    from ..services.download_optimizer import download_optimizer
+    from ..services.encryption import encryption_service
 
     # Get share link and file
     result = await db.execute(
@@ -961,7 +1021,9 @@ async def stream_shared_file(
 
     # Check IP whitelist
     if not check_ip_whitelist(request, share_link.allowed_ips):
-        raise HTTPException(status_code=403, detail="Access denied: your IP is not on the allow list")
+        raise HTTPException(
+            status_code=403, detail="Access denied: your IP is not on the allow list"
+        )
 
     # Verify password (accept from both header and query param, header takes precedence)
     pw = x_share_password or password
@@ -971,7 +1033,9 @@ async def stream_shared_file(
         if not await auth_service.async_verify_password(pw, share_link.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
-    background_tasks.add_task(log_share_access, request, "stream", share_link_id=share_link.id, file_id=file_obj.id)
+    background_tasks.add_task(
+        log_share_access, request, "stream", share_link_id=share_link.id, file_id=file_obj.id
+    )
 
     # Check if preview is allowed
     if not share_link.allow_preview:
@@ -980,14 +1044,14 @@ async def stream_shared_file(
     # Get encryption key - decrypt the file's encryption key
     file_key = encryption_service.decrypt_key(file_obj.encryption_key)
 
-    mime_type = file_obj.mime_type or 'application/octet-stream'
+    mime_type = file_obj.mime_type or "application/octet-stream"
     filename = file_obj.file_name.replace('"', '\\"')
     total_size = file_obj.file_size
 
     # Browser compatibility fix for video
     display_mime_type = mime_type
-    if mime_type == 'video/quicktime' and file_obj.file_name.lower().endswith(('.mov', '.qt')):
-        display_mime_type = 'video/mp4'
+    if mime_type == "video/quicktime" and file_obj.file_name.lower().endswith((".mov", ".qt")):
+        display_mime_type = "video/mp4"
 
     # Handle range requests
     range_header = request.headers.get("Range")
@@ -998,9 +1062,9 @@ async def stream_shared_file(
             return None
         try:
             range_spec = header[6:]
-            if '-' not in range_spec:
+            if "-" not in range_spec:
                 return None
-            parts = range_spec.split('-')
+            parts = range_spec.split("-")
             start = int(parts[0]) if parts[0] else 0
             end = int(parts[1]) if parts[1] else file_size - 1
             if start > end or start >= file_size:
@@ -1020,12 +1084,12 @@ async def stream_shared_file(
     }
 
     # Video compatible streaming (transcoded H.264 MP4)
-    if compatible and mime_type.startswith('video/'):
-        from ..services.video_transcoder import video_transcoder, VideoTranscodeError
+    if compatible and mime_type.startswith("video/"):
+        from ..services.video_transcoder import VideoTranscodeError, video_transcoder
+
         try:
             compat_path = await video_transcoder.get_or_create_stream(
-                file_obj=file_obj,
-                encryption_service=encryption_service
+                file_obj=file_obj, encryption_service=encryption_service
             )
             if compat_path:
                 compat_size = os.path.getsize(compat_path)
@@ -1036,7 +1100,9 @@ async def stream_shared_file(
                 headers = {
                     **base_headers,
                     "Content-Type": "video/mp4",
-                    "Content-Disposition": _content_disposition("inline", f'{filename.rsplit(".", 1)[0]}.mp4'),
+                    "Content-Disposition": _content_disposition(
+                        "inline", f'{filename.rsplit(".", 1)[0]}.mp4'
+                    ),
                     "Content-Length": str(end - start + 1),
                     "X-Video-Transcoded": "true",
                 }
@@ -1044,7 +1110,7 @@ async def stream_shared_file(
                     headers["Content-Range"] = f"bytes {start}-{end}/{compat_size}"
 
                 async def stream_compat():
-                    async with aiofiles.open(compat_path, 'rb') as f:
+                    async with aiofiles.open(compat_path, "rb") as f:
                         await f.seek(start)
                         remaining = end - start + 1
                         while remaining > 0:
@@ -1054,15 +1120,26 @@ async def stream_shared_file(
                             remaining -= len(chunk)
                             yield chunk
 
-                return StreamingResponse(stream_compat(), status_code=status_code, headers=headers, media_type="video/mp4")
+                return StreamingResponse(
+                    stream_compat(),
+                    status_code=status_code,
+                    headers=headers,
+                    media_type="video/mp4",
+                )
         except VideoTranscodeError as exc:
             if exc.status_code == 202:
-                raise HTTPException(status_code=202, detail={"status": "transcoding", "message": exc.message})
+                raise HTTPException(
+                    status_code=202, detail={"status": "transcoding", "message": exc.message}
+                )
             # Fall back to regular streaming
             logger.warning(f"Video transcode failed, falling back: {exc.message}")
 
     # Handle different storage types
-    was_compressed = file_obj.file_metadata and isinstance(file_obj.file_metadata, dict) and file_obj.file_metadata.get("compressed", False)
+    was_compressed = (
+        file_obj.file_metadata
+        and isinstance(file_obj.file_metadata, dict)
+        and file_obj.file_metadata.get("compressed", False)
+    )
 
     # INLINE STORAGE
     if file_obj.storage_type == "inline":
@@ -1071,12 +1148,17 @@ async def stream_shared_file(
 
         if was_compressed:
             from ..utils.compression import compressor
+
             data = compressor.decompress(data)
 
         if parsed_range:
             start, end = parsed_range
-            chunk = data[start:end + 1]
-            headers = {**base_headers, "Content-Range": f"bytes {start}-{end}/{total_size}", "Content-Length": str(len(chunk))}
+            chunk = data[start : end + 1]
+            headers = {
+                **base_headers,
+                "Content-Range": f"bytes {start}-{end}/{total_size}",
+                "Content-Length": str(len(chunk)),
+            }
             return Response(content=chunk, status_code=206, headers=headers)
         else:
             headers = {**base_headers, "Content-Length": str(len(data))}
@@ -1089,16 +1171,22 @@ async def stream_shared_file(
 
         if parsed_range:
             start, end = parsed_range
-            headers = {**base_headers, "Content-Range": f"bytes {start}-{end}/{total_size}", "Content-Length": str(end - start + 1)}
+            headers = {
+                **base_headers,
+                "Content-Range": f"bytes {start}-{end}/{total_size}",
+                "Content-Length": str(end - start + 1),
+            }
             generator = download_optimizer.stream_single_file_optimized(
                 file_path=file_obj.object_path,
                 file_key=file_key,
                 encryption_service=encryption_service,
                 start_byte=start,
                 end_byte=end,
-                compressed=was_compressed
+                compressed=was_compressed,
             )
-            return StreamingResponse(generator, status_code=206, headers=headers, media_type=display_mime_type)
+            return StreamingResponse(
+                generator, status_code=206, headers=headers, media_type=display_mime_type
+            )
         else:
             headers = {**base_headers, "Content-Length": str(total_size)}
             generator = download_optimizer.stream_single_file_optimized(
@@ -1107,9 +1195,11 @@ async def stream_shared_file(
                 encryption_service=encryption_service,
                 start_byte=0,
                 end_byte=total_size - 1,
-                compressed=was_compressed
+                compressed=was_compressed,
             )
-            return StreamingResponse(generator, status_code=200, headers=headers, media_type=display_mime_type)
+            return StreamingResponse(
+                generator, status_code=200, headers=headers, media_type=display_mime_type
+            )
 
     # CHUNKED STORAGE (including content-addressed)
     else:
@@ -1117,13 +1207,23 @@ async def stream_shared_file(
 
         if parsed_range:
             start, end = parsed_range
-            headers = {**base_headers, "Content-Range": f"bytes {start}-{end}/{total_size}", "Content-Length": str(end - start + 1)}
+            headers = {
+                **base_headers,
+                "Content-Range": f"bytes {start}-{end}/{total_size}",
+                "Content-Length": str(end - start + 1),
+            }
             generator = stream_chunked_range(file_obj, start, end, file_key, encryption_service)
-            return StreamingResponse(generator, status_code=206, headers=headers, media_type=display_mime_type)
+            return StreamingResponse(
+                generator, status_code=206, headers=headers, media_type=display_mime_type
+            )
         else:
             headers = {**base_headers, "Content-Length": str(total_size)}
-            generator = stream_chunked_range(file_obj, 0, total_size - 1, file_key, encryption_service)
-            return StreamingResponse(generator, status_code=200, headers=headers, media_type=display_mime_type)
+            generator = stream_chunked_range(
+                file_obj, 0, total_size - 1, file_key, encryption_service
+            )
+            return StreamingResponse(
+                generator, status_code=200, headers=headers, media_type=display_mime_type
+            )
 
 
 # ============================================================================
@@ -1136,7 +1236,7 @@ def _share_link_to_detail(link: ShareLink, item_name: str, item_type: str) -> Sh
     return ShareLinkDetail(
         id=str(link.id),
         share_token=link.share_token,
-        share_type=link.share_type or 'view',
+        share_type=link.share_type or "view",
         item_name=item_name,
         item_type=item_type,
         file_id=str(link.file_id) if link.file_id else None,
@@ -1169,9 +1269,7 @@ async def list_share_links(
     if active_only:
         filters.append(ShareLink.is_active == True)
 
-    count_result = await db.execute(
-        select(sql_func.count(ShareLink.id)).filter(*filters)
-    )
+    count_result = await db.execute(select(sql_func.count(ShareLink.id)).filter(*filters))
     total = count_result.scalar() or 0
 
     result = await db.execute(
@@ -1186,7 +1284,9 @@ async def list_share_links(
 
     items = []
     for link, file_obj, folder_obj in result.all():
-        item_name = file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+        item_name = (
+            file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+        )
         item_type = "file" if link.file_id else "folder"
         items.append(_share_link_to_detail(link, item_name, item_type))
 
@@ -1211,7 +1311,9 @@ async def get_share_link_detail(
         raise HTTPException(status_code=404, detail="Share link not found")
 
     link, file_obj, folder_obj = row
-    item_name = file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+    item_name = (
+        file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+    )
     item_type = "file" if link.file_id else "folder"
     return _share_link_to_detail(link, item_name, item_type)
 
@@ -1237,12 +1339,14 @@ async def update_share_link(
     link, file_obj, folder_obj = row
 
     if update_data.share_type is not None:
-        if update_data.share_type not in ('view', 'download', 'edit'):
-            raise HTTPException(status_code=400, detail="Invalid share_type. Must be view, download, or edit")
+        if update_data.share_type not in ("view", "download", "edit"):
+            raise HTTPException(
+                status_code=400, detail="Invalid share_type. Must be view, download, or edit"
+            )
         link.share_type = update_data.share_type
 
     if update_data.password is not None:
-        if update_data.password == '':
+        if update_data.password == "":
             link.password_hash = None
         else:
             link.password_hash = await auth_service.async_get_password_hash(update_data.password)
@@ -1273,7 +1377,9 @@ async def update_share_link(
     await db.commit()
     await db.refresh(link)
 
-    item_name = file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+    item_name = (
+        file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+    )
     item_type = "file" if link.file_id else "folder"
 
     logger.info(f"User {current_user.email} updated share link {link_id}")
@@ -1331,10 +1437,14 @@ async def regenerate_share_link(
     await db.commit()
     await db.refresh(link)
 
-    item_name = file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+    item_name = (
+        file_obj.file_name if file_obj else (folder_obj.name if folder_obj else "Deleted item")
+    )
     item_type = "file" if link.file_id else "folder"
 
-    logger.info(f"User {current_user.email} regenerated share link {link_id} (old token: {old_token[:8]}...)")
+    logger.info(
+        f"User {current_user.email} regenerated share link {link_id} (old token: {old_token[:8]}...)"
+    )
     return _share_link_to_detail(link, item_name, item_type)
 
 
@@ -1398,7 +1508,9 @@ async def get_share_bundle_access_log(
     """Get access log for a share bundle (owner only)"""
     # Verify ownership
     bundle_result = await db.execute(
-        select(ShareBundle).filter(ShareBundle.id == bundle_id, ShareBundle.user_id == current_user.id)
+        select(ShareBundle).filter(
+            ShareBundle.id == bundle_id, ShareBundle.user_id == current_user.id
+        )
     )
     if not bundle_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Share bundle not found")
@@ -1435,6 +1547,7 @@ async def get_share_bundle_access_log(
 # Share Analytics
 # ============================================================================
 
+
 @router.get("/share-analytics/summary", response_model=ShareAnalyticsSummary)
 async def get_share_analytics_summary(
     current_user: User = Depends(get_current_user),
@@ -1444,118 +1557,174 @@ async def get_share_analytics_summary(
     user_id = current_user.id
 
     # Count shares
-    total_links = (await db.execute(
-        select(sql_func.count(ShareLink.id)).filter(ShareLink.user_id == user_id)
-    )).scalar() or 0
+    total_links = (
+        await db.execute(select(sql_func.count(ShareLink.id)).filter(ShareLink.user_id == user_id))
+    ).scalar() or 0
 
-    total_bundles = (await db.execute(
-        select(sql_func.count(ShareBundle.id)).filter(ShareBundle.user_id == user_id)
-    )).scalar() or 0
-
-    active_link_count = (await db.execute(
-        select(sql_func.count(ShareLink.id)).filter(
-            ShareLink.user_id == user_id, ShareLink.is_active == True
+    total_bundles = (
+        await db.execute(
+            select(sql_func.count(ShareBundle.id)).filter(ShareBundle.user_id == user_id)
         )
-    )).scalar() or 0
+    ).scalar() or 0
 
-    active_bundle_count = (await db.execute(
-        select(sql_func.count(ShareBundle.id)).filter(
-            ShareBundle.user_id == user_id, ShareBundle.is_active == True
+    active_link_count = (
+        await db.execute(
+            select(sql_func.count(ShareLink.id)).filter(
+                ShareLink.user_id == user_id, ShareLink.is_active == True
+            )
         )
-    )).scalar() or 0
+    ).scalar() or 0
+
+    active_bundle_count = (
+        await db.execute(
+            select(sql_func.count(ShareBundle.id)).filter(
+                ShareBundle.user_id == user_id, ShareBundle.is_active == True
+            )
+        )
+    ).scalar() or 0
 
     # Total views/downloads from counters
     total_views = (
-        ((await db.execute(
-            select(sql_func.coalesce(sql_func.sum(ShareLink.view_count), 0))
-            .filter(ShareLink.user_id == user_id)
-        )).scalar() or 0)
-        + ((await db.execute(
-            select(sql_func.coalesce(sql_func.sum(ShareBundle.view_count), 0))
-            .filter(ShareBundle.user_id == user_id)
-        )).scalar() or 0)
+        (
+            await db.execute(
+                select(sql_func.coalesce(sql_func.sum(ShareLink.view_count), 0)).filter(
+                    ShareLink.user_id == user_id
+                )
+            )
+        ).scalar()
+        or 0
+    ) + (
+        (
+            await db.execute(
+                select(sql_func.coalesce(sql_func.sum(ShareBundle.view_count), 0)).filter(
+                    ShareBundle.user_id == user_id
+                )
+            )
+        ).scalar()
+        or 0
     )
 
     total_downloads = (
-        ((await db.execute(
-            select(sql_func.coalesce(sql_func.sum(ShareLink.download_count), 0))
-            .filter(ShareLink.user_id == user_id)
-        )).scalar() or 0)
-        + ((await db.execute(
-            select(sql_func.coalesce(sql_func.sum(ShareBundle.download_count), 0))
-            .filter(ShareBundle.user_id == user_id)
-        )).scalar() or 0)
+        (
+            await db.execute(
+                select(sql_func.coalesce(sql_func.sum(ShareLink.download_count), 0)).filter(
+                    ShareLink.user_id == user_id
+                )
+            )
+        ).scalar()
+        or 0
+    ) + (
+        (
+            await db.execute(
+                select(sql_func.coalesce(sql_func.sum(ShareBundle.download_count), 0)).filter(
+                    ShareBundle.user_id == user_id
+                )
+            )
+        ).scalar()
+        or 0
     )
 
     # Unique IPs from access logs
-    total_unique_ips = (await db.execute(
-        select(sql_func.count(sql_func.distinct(ShareAccessLog.ip_address))).filter(
-            or_(
-                ShareAccessLog.share_link_id.in_(
-                    select(ShareLink.id).filter(ShareLink.user_id == user_id)
-                ),
-                ShareAccessLog.bundle_id.in_(
-                    select(ShareBundle.id).filter(ShareBundle.user_id == user_id)
-                ),
+    total_unique_ips = (
+        await db.execute(
+            select(sql_func.count(sql_func.distinct(ShareAccessLog.ip_address))).filter(
+                or_(
+                    ShareAccessLog.share_link_id.in_(
+                        select(ShareLink.id).filter(ShareLink.user_id == user_id)
+                    ),
+                    ShareAccessLog.bundle_id.in_(
+                        select(ShareBundle.id).filter(ShareBundle.user_id == user_id)
+                    ),
+                )
             )
         )
-    )).scalar() or 0
+    ).scalar() or 0
 
     # Most viewed share
     most_viewed_share = None
-    mvl_row = (await db.execute(
-        select(ShareLink, Object, Folder)
-        .outerjoin(Object, ShareLink.file_id == Object.id)
-        .outerjoin(Folder, ShareLink.folder_id == Folder.id)
-        .filter(ShareLink.user_id == user_id, ShareLink.view_count > 0)
-        .order_by(ShareLink.view_count.desc())
-        .limit(1)
-    )).first()
+    mvl_row = (
+        await db.execute(
+            select(ShareLink, Object, Folder)
+            .outerjoin(Object, ShareLink.file_id == Object.id)
+            .outerjoin(Folder, ShareLink.folder_id == Folder.id)
+            .filter(ShareLink.user_id == user_id, ShareLink.view_count > 0)
+            .order_by(ShareLink.view_count.desc())
+            .limit(1)
+        )
+    ).first()
 
-    mvb = (await db.execute(
-        select(ShareBundle)
-        .filter(ShareBundle.user_id == user_id, ShareBundle.view_count > 0)
-        .order_by(ShareBundle.view_count.desc())
-        .limit(1)
-    )).scalar_one_or_none()
+    mvb = (
+        await db.execute(
+            select(ShareBundle)
+            .filter(ShareBundle.user_id == user_id, ShareBundle.view_count > 0)
+            .order_by(ShareBundle.view_count.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     if mvl_row:
         link, obj, folder = mvl_row
         name = obj.file_name if obj else (folder.name if folder else "Unknown")
         item_type = "file" if obj else "folder"
         if not mvb or link.view_count >= mvb.view_count:
-            most_viewed_share = {"id": str(link.id), "name": name, "type": item_type, "views": link.view_count}
+            most_viewed_share = {
+                "id": str(link.id),
+                "name": name,
+                "type": item_type,
+                "views": link.view_count,
+            }
 
     if mvb and (not most_viewed_share or mvb.view_count > most_viewed_share["views"]):
-        most_viewed_share = {"id": str(mvb.id), "name": mvb.name, "type": "bundle", "views": mvb.view_count}
+        most_viewed_share = {
+            "id": str(mvb.id),
+            "name": mvb.name,
+            "type": "bundle",
+            "views": mvb.view_count,
+        }
 
     # Most downloaded share
     most_downloaded_share = None
-    mdl_row = (await db.execute(
-        select(ShareLink, Object, Folder)
-        .outerjoin(Object, ShareLink.file_id == Object.id)
-        .outerjoin(Folder, ShareLink.folder_id == Folder.id)
-        .filter(ShareLink.user_id == user_id, ShareLink.download_count > 0)
-        .order_by(ShareLink.download_count.desc())
-        .limit(1)
-    )).first()
+    mdl_row = (
+        await db.execute(
+            select(ShareLink, Object, Folder)
+            .outerjoin(Object, ShareLink.file_id == Object.id)
+            .outerjoin(Folder, ShareLink.folder_id == Folder.id)
+            .filter(ShareLink.user_id == user_id, ShareLink.download_count > 0)
+            .order_by(ShareLink.download_count.desc())
+            .limit(1)
+        )
+    ).first()
 
-    mdb = (await db.execute(
-        select(ShareBundle)
-        .filter(ShareBundle.user_id == user_id, ShareBundle.download_count > 0)
-        .order_by(ShareBundle.download_count.desc())
-        .limit(1)
-    )).scalar_one_or_none()
+    mdb = (
+        await db.execute(
+            select(ShareBundle)
+            .filter(ShareBundle.user_id == user_id, ShareBundle.download_count > 0)
+            .order_by(ShareBundle.download_count.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     if mdl_row:
         link, obj, folder = mdl_row
         name = obj.file_name if obj else (folder.name if folder else "Unknown")
         item_type = "file" if obj else "folder"
         if not mdb or link.download_count >= mdb.download_count:
-            most_downloaded_share = {"id": str(link.id), "name": name, "type": item_type, "downloads": link.download_count}
+            most_downloaded_share = {
+                "id": str(link.id),
+                "name": name,
+                "type": item_type,
+                "downloads": link.download_count,
+            }
 
-    if mdb and (not most_downloaded_share or mdb.download_count > most_downloaded_share["downloads"]):
-        most_downloaded_share = {"id": str(mdb.id), "name": mdb.name, "type": "bundle", "downloads": mdb.download_count}
+    if mdb and (
+        not most_downloaded_share or mdb.download_count > most_downloaded_share["downloads"]
+    ):
+        most_downloaded_share = {
+            "id": str(mdb.id),
+            "name": mdb.name,
+            "type": "bundle",
+            "downloads": mdb.download_count,
+        }
 
     return ShareAnalyticsSummary(
         total_shares=total_links + total_bundles,
@@ -1654,51 +1823,68 @@ async def get_share_analytics_top(
     for link, obj, folder in links_result.all():
         name = obj.file_name if obj else (folder.name if folder else "Unknown")
         item_type = "file" if obj else "folder"
-        ip_count = (await db.execute(
-            select(sql_func.count(sql_func.distinct(ShareAccessLog.ip_address)))
-            .filter(ShareAccessLog.share_link_id == link.id)
-        )).scalar() or 0
-        items.append(ShareItemStats(
-            id=str(link.id),
-            name=name,
-            share_type="link",
-            item_type=item_type,
-            views=link.view_count,
-            downloads=link.download_count,
-            unique_ips=ip_count,
-            is_active=link.is_active,
-            created_at=link.created_at,
-            last_accessed=link.last_accessed,
-        ))
+        ip_count = (
+            await db.execute(
+                select(sql_func.count(sql_func.distinct(ShareAccessLog.ip_address))).filter(
+                    ShareAccessLog.share_link_id == link.id
+                )
+            )
+        ).scalar() or 0
+        items.append(
+            ShareItemStats(
+                id=str(link.id),
+                name=name,
+                share_type="link",
+                item_type=item_type,
+                views=link.view_count,
+                downloads=link.download_count,
+                unique_ips=ip_count,
+                is_active=link.is_active,
+                created_at=link.created_at,
+                last_accessed=link.last_accessed,
+            )
+        )
 
     for bundle in bundles_result.scalars().all():
-        ip_count = (await db.execute(
-            select(sql_func.count(sql_func.distinct(ShareAccessLog.ip_address)))
-            .filter(ShareAccessLog.bundle_id == bundle.id)
-        )).scalar() or 0
-        items.append(ShareItemStats(
-            id=str(bundle.id),
-            name=bundle.name,
-            share_type="bundle",
-            item_type="bundle",
-            views=bundle.view_count,
-            downloads=bundle.download_count,
-            unique_ips=ip_count,
-            is_active=bundle.is_active,
-            created_at=bundle.created_at,
-            last_accessed=bundle.last_accessed,
-        ))
+        ip_count = (
+            await db.execute(
+                select(sql_func.count(sql_func.distinct(ShareAccessLog.ip_address))).filter(
+                    ShareAccessLog.bundle_id == bundle.id
+                )
+            )
+        ).scalar() or 0
+        items.append(
+            ShareItemStats(
+                id=str(bundle.id),
+                name=bundle.name,
+                share_type="bundle",
+                item_type="bundle",
+                views=bundle.view_count,
+                downloads=bundle.download_count,
+                unique_ips=ip_count,
+                is_active=bundle.is_active,
+                created_at=bundle.created_at,
+                last_accessed=bundle.last_accessed,
+            )
+        )
 
     items.sort(key=lambda x: x.views if sort_by == "views" else x.downloads, reverse=True)
     items = items[:limit]
 
     total_count = (
-        ((await db.execute(
-            select(sql_func.count(ShareLink.id)).filter(ShareLink.user_id == user_id)
-        )).scalar() or 0)
-        + ((await db.execute(
-            select(sql_func.count(ShareBundle.id)).filter(ShareBundle.user_id == user_id)
-        )).scalar() or 0)
+        (
+            await db.execute(
+                select(sql_func.count(ShareLink.id)).filter(ShareLink.user_id == user_id)
+            )
+        ).scalar()
+        or 0
+    ) + (
+        (
+            await db.execute(
+                select(sql_func.count(ShareBundle.id)).filter(ShareBundle.user_id == user_id)
+            )
+        ).scalar()
+        or 0
     )
 
     return ShareAnalyticsTopItems(items=items, total=total_count)

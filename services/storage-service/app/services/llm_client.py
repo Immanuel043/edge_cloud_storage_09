@@ -3,7 +3,9 @@ OpenAI-compatible LLM client for document summarization and smart naming.
 
 Uses existing httpx dependency — no new pip install required.
 """
+
 import logging
+
 import httpx
 from app.config import settings
 

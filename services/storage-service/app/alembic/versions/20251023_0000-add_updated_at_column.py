@@ -5,13 +5,14 @@ Revises: 20251022_0001
 Create Date: 2025-10-23 00:00:00.000000
 
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.sql import func
 
 # revision identifiers, used by Alembic.
-revision = '20251023_0000'
-down_revision = '20251022_0001'
+revision = "20251023_0000"
+down_revision = "20251022_0001"
 branch_labels = None
 depends_on = None
 
@@ -36,4 +37,4 @@ def upgrade():
 
 def downgrade():
     """Remove updated_at column from objects table."""
-    op.drop_column('objects', 'updated_at')
+    op.drop_column("objects", "updated_at")

@@ -16,9 +16,10 @@ Perfect for production deployments where you want a clean slate.
 """
 
 import asyncio
-import sys
 import os
-from sqlalchemy import text, inspect
+import sys
+
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.schema import CreateTable
 
@@ -26,8 +27,8 @@ from sqlalchemy.schema import CreateTable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings
-from app.models.database import Base
 from app.database import engine
+from app.models.database import Base
 
 
 async def check_database_exists():
@@ -142,7 +143,7 @@ async def verify_schema():
         return False
 
     # Check for extra tables (not in models)
-    extra_tables = actual_tables - expected_tables - {'alembic_version'}  # Exclude alembic table
+    extra_tables = actual_tables - expected_tables - {"alembic_version"}  # Exclude alembic table
     if extra_tables:
         print(f"ℹ️  Extra tables (not in models): {', '.join(extra_tables)}")
 
@@ -202,11 +203,13 @@ async def main():
     print()
 
     # Configuration
-    force_recreate = os.getenv('FORCE_RECREATE', 'false').lower() == 'true'
-    skip_seed = os.getenv('SKIP_SEED', 'false').lower() == 'true'
+    force_recreate = os.getenv("FORCE_RECREATE", "false").lower() == "true"
+    skip_seed = os.getenv("SKIP_SEED", "false").lower() == "true"
 
     print(f"📝 Configuration:")
-    print(f"   Database URL: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}")
+    print(
+        f"   Database URL: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}"
+    )
     print(f"   Force recreate: {force_recreate}")
     print(f"   Skip seed data: {skip_seed}")
     print()
@@ -234,11 +237,13 @@ async def main():
         # Skip confirmation in non-interactive mode (Docker)
         if sys.stdin.isatty():
             confirm = input("⚠️  Are you sure you want to DROP ALL TABLES? Type 'yes' to confirm: ")
-            if confirm.lower() != 'yes':
+            if confirm.lower() != "yes":
                 print("❌ Aborted by user")
                 sys.exit(0)
         else:
-            print("⚠️  FORCE_RECREATE=true detected - proceeding with table drop (non-interactive mode)")
+            print(
+                "⚠️  FORCE_RECREATE=true detected - proceeding with table drop (non-interactive mode)"
+            )
 
         await drop_all_tables(force=True)
         print()
