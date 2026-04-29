@@ -41,6 +41,9 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
   const streamUrl = isZKEncrypted
     ? `${serviceUrl}${apiPath}/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`
     : `${API_URL}/api/v1/files/${file.id}/download?inline=true${isVideoFile ? '&compatible=true' : ''}`;
+  // Non-ZK only: open the untranscoded file in a new tab so the browser's native
+  // HTML5 player handles streaming/Range and exposes its own download menu.
+  const originalStreamUrl = `${API_URL}/api/v1/files/${file.id}/download?inline=true&original=true`;
 
   const [previewUrl, _setPreviewUrl] = useState<string>('');
   const previewUrlRef = useRef<string>('');
@@ -583,14 +586,26 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                 >
                   Try Again
                 </Button>
-                <a
-                  href={downloadLink}
-                  download={file.name}
-                  className={buttonVariants({ variant: 'secondary' })}
-                >
-                  <Download className="h-4 w-4 shrink-0" aria-hidden />
-                  <span>Download Original</span>
-                </a>
+                {isZKEncrypted ? (
+                  <a
+                    href={downloadLink}
+                    download={file.name}
+                    className={buttonVariants({ variant: 'secondary' })}
+                  >
+                    <Download className="h-4 w-4 shrink-0" aria-hidden />
+                    <span>Download Original</span>
+                  </a>
+                ) : (
+                  <a
+                    href={originalStreamUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={buttonVariants({ variant: 'secondary' })}
+                  >
+                    <Download className="h-4 w-4 shrink-0" aria-hidden />
+                    <span>Download Original</span>
+                  </a>
+                )}
               </div>
             )}
             {!isVideoFile && (
@@ -706,14 +721,26 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                 <p className="text-caption text-fg-subtle mb-3">
                   Can&rsquo;t wait? Download the original file to play locally:
                 </p>
-                <a
-                  href={downloadLink}
-                  download={file.name}
-                  className={buttonVariants({ variant: 'secondary' })}
-                >
-                  <Download className="h-4 w-4" />
-                  Download Original
-                </a>
+                {isZKEncrypted ? (
+                  <a
+                    href={downloadLink}
+                    download={file.name}
+                    className={buttonVariants({ variant: 'secondary' })}
+                  >
+                    <Download className="h-4 w-4" />
+                    Download Original
+                  </a>
+                ) : (
+                  <a
+                    href={originalStreamUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={buttonVariants({ variant: 'secondary' })}
+                  >
+                    <Download className="h-4 w-4" />
+                    Download Original
+                  </a>
+                )}
               </div>
             </div>
           )
