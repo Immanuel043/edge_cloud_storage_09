@@ -574,13 +574,13 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
               <div className="flex flex-col sm:flex-row items-center gap-3">
                 <Button
                   variant="primary"
+                  leftIcon={<RotateCw className="h-4 w-4" />}
                   onClick={() => {
                     setFatalError(null);
                     setStreamReady(false);
                     setPreviewWarning('Checking video status...');
                   }}
                 >
-                  <RotateCw className="h-4 w-4" />
                   Try Again
                 </Button>
                 <a
@@ -588,8 +588,8 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                   download={file.name}
                   className={buttonVariants({ variant: 'secondary' })}
                 >
-                  <Download className="h-4 w-4" />
-                  Download Original
+                  <Download className="h-4 w-4 shrink-0" aria-hidden />
+                  <span>Download Original</span>
                 </a>
               </div>
             )}
