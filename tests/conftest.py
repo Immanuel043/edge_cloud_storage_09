@@ -21,8 +21,9 @@ from sqlalchemy.pool import StaticPool
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../services/storage-service"))
 
 from app.config import Settings
-from app.database import Base, get_db
+from app.database import get_db
 from app.main import app
+from app.models.database import Base
 from app.models import (
     ClusteringSession,
     File,
