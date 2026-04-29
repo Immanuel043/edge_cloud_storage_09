@@ -44,7 +44,7 @@ jobs:
 
       - name: Run ML feature tests with detailed markers
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
+          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db
           SECRET_KEY: test-secret-key-for-ci-only-not-for-production
           TESTING: true
         run: |
@@ -52,7 +52,7 @@ jobs:
 
       - name: Run slow/integration tests
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
+          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db
           SECRET_KEY: test-secret-key-for-ci-only-not-for-production
           TESTING: true
         run: |
@@ -105,7 +105,7 @@ jobs:
 
       - name: Run performance benchmarks
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
+          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db
           SECRET_KEY: test-secret-key-for-ci-only-not-for-production
           TESTING: true
         run: |
