@@ -1131,12 +1131,17 @@ async def get_transcode_progress(
     Get transcoding progress for a video file.
 
     Returns:
-        - status: 'not_started', 'transcoding', 'complete', 'failed'
+        - status: 'not_started', 'transcoding', 'complete', 'failed', 'rejected'
         - percent: Progress percentage (0-100)
         - fps: Current encoding speed (frames per second)
         - eta_seconds: Estimated time remaining (optional)
         - started_at: Transcoding start timestamp
+
+    For 'rejected' (file exceeds in-page-player limits or worker pipeline gave
+    up), returns: reason ('size_or_duration' | 'worker_failed'),
+    duration_seconds, size_bytes, max_size_gib, max_duration_minutes, message.
     """
+    from ..services.encryption import encryption_service
     from ..services.video_transcoder import video_transcoder
 
     # Verify file belongs to user
@@ -1148,9 +1153,63 @@ async def get_transcode_progress(
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Check if cached version exists
+    # ──────────────────────────────────────────────────────────────────────
+    # Reject-checks must NOT mask an already-playable stream. Order matters:
+    # cache hits → DB-failed → fresh-probe reject → existing progress branches.
+    # ──────────────────────────────────────────────────────────────────────
+
+    # 1. On-demand transcoder cache hit
     if video_transcoder.is_cached(file_id):
         return {"status": "complete", "percent": 100, "file_id": file_id}
+
+    # 2. Worker pipeline already produced an optimized copy
+    optimized_path = getattr(file_obj, "optimized_path", None)
+    if optimized_path and os.path.exists(optimized_path):
+        return {"status": "complete", "percent": 100, "file_id": file_id}
+
+    # 3. Worker pipeline marked the file failed/rejected — surface to UI
+    if getattr(file_obj, "video_processing_status", None) == "failed":
+        return {
+            "status": "rejected",
+            "reason": "worker_failed",
+            "duration_seconds": None,
+            "size_bytes": file_obj.file_size,
+            "max_size_gib": float(os.getenv("TRANSCODE_MAX_SIZE_GB", "2")),
+            "max_duration_minutes": int(os.getenv("TRANSCODE_MAX_DURATION_MINUTES", "30")),
+            "message": (
+                getattr(file_obj, "video_processing_error", None)
+                or "Video processing failed. Use Open Original to play it directly in your browser."
+            ),
+            "file_id": file_id,
+        }
+
+    # 4. Fresh probe — does this file exceed our in-page-player limits?
+    try:
+        decision_info = await video_transcoder.get_transcode_decision(
+            file_obj, encryption_service
+        )
+    except Exception as e:  # noqa: BLE001 — probe failures shouldn't break progress polling
+        logger.warning(
+            "transcode_progress: probe failed for file_id=%s err=%s; falling through", file_id, e
+        )
+        decision_info = None
+
+    if decision_info and decision_info.get("decision") == "reject":
+        probe = decision_info.get("probe_data") or {}
+        limits = decision_info["limits"]
+        return {
+            "status": "rejected",
+            "reason": "size_or_duration",
+            "duration_seconds": probe.get("duration"),
+            "size_bytes": file_obj.file_size,
+            "max_size_gib": limits["max_size_gib"],
+            "max_duration_minutes": limits["max_duration_minutes"],
+            "message": (
+                "Video is too long or too large for the in-page player. "
+                "Use Open Original to play it directly in your browser."
+            ),
+            "file_id": file_id,
+        }
 
     # Get current progress
     progress = video_transcoder.get_progress(file_id)

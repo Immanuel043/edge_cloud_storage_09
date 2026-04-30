@@ -860,23 +860,8 @@ class VideoTranscoder:
             logger.warning(f"Failed to build thumbnail probe file for {file_obj.file_name}: {e}")
             return False
 
-    async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
-        """Return path to compatible MP4 stream, or None if not needed."""
-
-        logger.info(f"🎬 get_or_create_stream called for {file_obj.file_name}")
-
-        file_id = str(file_obj.id)
-        target_path = self._target_path(file_obj)
-
-        # ============ CHECK CACHE FIRST (before any expensive operations) ============
-        # If a transcoded version already exists, return it immediately without probing
-        if os.path.exists(target_path):
-            logger.info(
-                f"⚡ Using cached compatible stream for {file_obj.file_name} (skipped probe)"
-            )
-            return target_path
-
-        # ============ PROBE FILE METADATA (with content_hash cache) ============
+    async def _load_or_probe_metadata(self, file_obj, encryption_service) -> Optional[Dict]:
+        """Return probe data for file_obj, using on-disk content_hash cache when present."""
         content_hash = getattr(file_obj, "content_hash", None)
         probe_cache_path = (
             os.path.join(self.OUTPUT_DIR, f"probe_{content_hash}.json") if content_hash else None
@@ -895,7 +880,6 @@ class VideoTranscoder:
 
         if probe_data is None:
             probe_data = await self._probe_file_metadata(file_obj, encryption_service)
-            # Cache probe results for future dedup refs with same content_hash
             if probe_data and probe_cache_path:
                 try:
                     async with aiofiles.open(probe_cache_path, "w") as pf:
@@ -903,6 +887,51 @@ class VideoTranscoder:
                     logger.info(f"Cached probe result for content_hash={content_hash[:12]}")
                 except Exception:
                     pass
+
+        return probe_data
+
+    async def get_transcode_decision(self, file_obj, encryption_service) -> Dict:
+        """
+        Pure-read: return the cached or freshly-probed transcode decision for a file.
+
+        Does NOT start transcoding. Reuses the on-disk probe cache. Used by
+        /transcode/progress to surface a "rejected" status to the UI before the
+        <video> element ever attempts to load the stream.
+
+        Returns a dict: {decision, probe_data, limits} where decision is one of
+        'skip', 'remux', 'transcode', 'reject'.
+        """
+        max_size_gib = float(os.getenv("TRANSCODE_MAX_SIZE_GB", "2"))
+        max_duration_min = int(os.getenv("TRANSCODE_MAX_DURATION_MINUTES", "30"))
+        limits = {"max_size_gib": max_size_gib, "max_duration_minutes": max_duration_min}
+
+        # Size-only reject can short-circuit without probing the file.
+        file_size_gib = (file_obj.file_size or 0) / (1024**3)
+        if file_size_gib > max_size_gib:
+            return {"decision": "reject", "probe_data": None, "limits": limits}
+
+        probe_data = await self._load_or_probe_metadata(file_obj, encryption_service)
+        decision = self._needs_transcode(file_obj, probe_data)
+        return {"decision": decision, "probe_data": probe_data, "limits": limits}
+
+    async def get_or_create_stream(self, file_obj, encryption_service) -> Optional[str]:
+        """Return path to compatible MP4 stream, or None if not needed."""
+
+        logger.info(f"🎬 get_or_create_stream called for {file_obj.file_name}")
+
+        file_id = str(file_obj.id)
+        target_path = self._target_path(file_obj)
+
+        # ============ CHECK CACHE FIRST (before any expensive operations) ============
+        # If a transcoded version already exists, return it immediately without probing
+        if os.path.exists(target_path):
+            logger.info(
+                f"⚡ Using cached compatible stream for {file_obj.file_name} (skipped probe)"
+            )
+            return target_path
+
+        # ============ PROBE FILE METADATA (with content_hash cache) ============
+        probe_data = await self._load_or_probe_metadata(file_obj, encryption_service)
 
         logger.info(f"🎬 Probe data: {probe_data}")
 

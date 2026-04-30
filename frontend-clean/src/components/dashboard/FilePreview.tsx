@@ -6,9 +6,9 @@ import { VIDEO_EXTENSIONS, EXCEL_EXTENSIONS, XML_EXTENSIONS, TEXT_EXTENSIONS, AU
 import SecureVideoPlayer from './SecureVideoPlayer';
 import { zkStorageService } from '../../services/zkStorageService';
 import { isZKSessionUnlocked } from '../../services/zkEncryptionService';
-import type { FilePreviewProps, ZKDecryptProgress, TranscodeProgressResponse } from './types';
+import type { FilePreviewProps, ZKDecryptProgress, TranscodeProgressResponse, TranscodeRejection } from './types';
 import { getErrorMessage } from './types';
-import { Modal, ModalHeader, ModalBody, IconButton, Button, buttonVariants, iconButtonVariants, Badge, Spinner, Progress } from '@/components/ui';
+import { Modal, ModalHeader, ModalBody, IconButton, Button, buttonVariants, iconButtonVariants, Badge, Spinner, Progress, Banner } from '@/components/ui';
 
 const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) => {
   const { isAuthenticated } = useAuth();
@@ -61,6 +61,10 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [previewWarning, setPreviewWarning] = useState<string | null>(null);
   const [streamReady, setStreamReady] = useState<boolean>(!isVideoFile);
+  // Set when /transcode/progress reports the file can't auto-play in the modal.
+  // When non-null, suppresses the <video> element and renders an informative
+  // banner with a CTA to open the original in a new tab.
+  const [transcodeRejected, setTranscodeRejected] = useState<TranscodeRejection | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // ZK preview state
@@ -85,6 +89,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     setRotation(0);
     setPreviewWarning(null);
     setFatalError(null);
+    setTranscodeRejected(null);
     setStreamReady(!isVideoFile);
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
@@ -143,6 +148,23 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
             clearTimer();
             setStreamReady(true);
             setPreviewWarning(null);
+            return;
+          }
+
+          if (data.status === 'rejected') {
+            clearTimer();
+            setStreamReady(false);
+            setPreviewWarning(null);
+            setTranscodeRejected({
+              reason: data.reason ?? 'size_or_duration',
+              durationSeconds: data.duration_seconds ?? null,
+              sizeBytes: data.size_bytes ?? null,
+              maxSizeGib: data.max_size_gib ?? 2,
+              maxDurationMinutes: data.max_duration_minutes ?? 30,
+              message:
+                data.message ??
+                'This video can’t play in the in-page player. Use Open Original to play it directly in your browser.',
+            });
             return;
           }
 
@@ -263,6 +285,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
   const loadPreview = async (): Promise<void> => {
     setLoading(true);
     setFatalError(null);
+    setTranscodeRejected(null);
     setPreviewWarning(null);
     setPreviewUrl('');
 
@@ -580,6 +603,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
                   leftIcon={<RotateCw className="h-4 w-4" />}
                   onClick={() => {
                     setFatalError(null);
+                    setTranscodeRejected(null);
                     setStreamReady(false);
                     setPreviewWarning('Checking video status...');
                   }}
@@ -683,7 +707,62 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
           </div>
         ) : isVideoFile ? (
           // Regular video — server-side streaming
-          streamReady ? (
+          transcodeRejected ? (
+            (() => {
+              const fmtDuration = (s: number | null): string => {
+                if (s == null || s <= 0) return '—';
+                const total = Math.round(s);
+                const h = Math.floor(total / 3600);
+                const m = Math.floor((total % 3600) / 60);
+                return h > 0 ? `${h} h ${m} min` : `${m} min`;
+              };
+              const fmtSizeGiB = (bytes: number | null): string => {
+                if (bytes == null || bytes <= 0) return '—';
+                return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+              };
+              const isStructured = transcodeRejected.reason === 'size_or_duration';
+              return (
+                <div className="flex w-full max-w-2xl flex-col items-center gap-6 p-8 text-center">
+                  <Banner
+                    variant="warning"
+                    title="This video is too long or too large for the in-page player"
+                    className="w-full text-left"
+                  >
+                    {isStructured ? (
+                      <>
+                        <p className="mb-1">
+                          Your video:{' '}
+                          <strong>
+                            {fmtDuration(transcodeRejected.durationSeconds)},{' '}
+                            {fmtSizeGiB(transcodeRejected.sizeBytes)}
+                          </strong>
+                        </p>
+                        <p className="mb-2">
+                          In-page player limit:{' '}
+                          <strong>
+                            {transcodeRejected.maxDurationMinutes} min,{' '}
+                            {transcodeRejected.maxSizeGib} GiB
+                          </strong>
+                        </p>
+                        <p>{transcodeRejected.message}</p>
+                      </>
+                    ) : (
+                      <p>{transcodeRejected.message}</p>
+                    )}
+                  </Banner>
+                  <a
+                    href={originalStreamUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={buttonVariants({ variant: 'primary' })}
+                  >
+                    <Download className="h-4 w-4 shrink-0" aria-hidden />
+                    <span>Open Original</span>
+                  </a>
+                </div>
+              );
+            })()
+          ) : streamReady ? (
             <div className="flex w-full max-w-4xl flex-col items-center">
               <div className="relative w-full">
                 <video

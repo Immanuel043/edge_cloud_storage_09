@@ -916,10 +916,26 @@ export interface ZKDecryptProgress {
  * Transcode Progress Response
  */
 export interface TranscodeProgressResponse {
-  status: 'complete' | 'transcoding' | 'not_started';
+  status: 'complete' | 'transcoding' | 'not_started' | 'rejected';
   percent?: number;
   fps?: number;
   eta_seconds?: number;
+  // Populated only when status === 'rejected'
+  reason?: 'size_or_duration' | 'worker_failed';
+  duration_seconds?: number | null;
+  size_bytes?: number | null;
+  max_size_gib?: number;
+  max_duration_minutes?: number;
+  message?: string;
+}
+
+export interface TranscodeRejection {
+  reason: 'size_or_duration' | 'worker_failed';
+  durationSeconds: number | null;
+  sizeBytes: number | null;
+  maxSizeGib: number;
+  maxDurationMinutes: number;
+  message: string;
 }
 
 /**
