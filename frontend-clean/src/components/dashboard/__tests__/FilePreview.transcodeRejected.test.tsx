@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import FilePreview from '../FilePreview';
 
@@ -31,7 +31,7 @@ const REJECTED_PAYLOAD = {
 };
 
 describe('FilePreview – transcode rejected', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<Parameters<typeof fetch>, ReturnType<typeof fetch>>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (input) => {
