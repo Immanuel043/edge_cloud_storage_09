@@ -118,6 +118,16 @@ export function PricingCard({
       : billingCycle === 'six_months'
         ? 'per 6 months'
         : 'per year';
+  const planBadge = plan.is_most_popular ? (
+    <Badge variant="info" size="sm" className="shrink-0">
+      Most popular
+    </Badge>
+  ) : plan.is_default ? (
+    <Badge variant="success" size="sm" className="shrink-0">
+      <Crown className="h-3 w-3" />
+      Free
+    </Badge>
+  ) : null;
 
   return (
     <Card
@@ -127,25 +137,13 @@ export function PricingCard({
         plan.is_most_popular && 'ring-2 ring-primary/40'
       )}
     >
-      {/* Corner badges */}
-      {plan.is_most_popular && (
-        <div className="absolute -top-3 right-4">
-          <Badge variant="info" size="sm">Most popular</Badge>
-        </div>
-      )}
-      {plan.is_default && (
-        <div className="absolute -top-3 left-4">
-          <Badge variant="success" size="sm">
-            <Crown className="h-3 w-3" />
-            Free
-          </Badge>
-        </div>
-      )}
-
       <CardContent className="p-6">
-        <div className="mb-4">
-          <h3 className="text-h3 font-semibold text-fg">{plan.display_name}</h3>
-          <p className="mt-1 text-body-sm text-fg-muted">{plan.description}</p>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="text-h3 font-semibold text-fg">{plan.display_name}</h3>
+            <p className="mt-1 text-body-sm text-fg-muted">{plan.description}</p>
+          </div>
+          {planBadge}
         </div>
 
         <div className="mb-5">
