@@ -1,15 +1,29 @@
 # services/storage-service/app/routers/auth.py
+import asyncio
 import logging
 from datetime import timedelta
+from typing import Any, Dict, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
+from ..database import AsyncSessionLocal
 from ..dependencies import get_current_user, get_db, log_activity
-from ..models.database import Folder, User
+from ..models.database import ActivityLog, AuditLog, Folder, User
 from ..models.schemas import (
     ForgotPasswordRequest,
     ForgotPasswordResetRequest,
@@ -24,6 +38,7 @@ from ..models.schemas import (
     VerificationResponse,
 )
 from ..services.audit_logging_service import (
+    AuditEvent,
     AuditEventType,
     AuditSeverity,
 )
@@ -103,9 +118,77 @@ async def get_public_plans(
     return {"service_type": service_type, "plans": categorized}
 
 
+async def _record_login_event(
+    user_id: Optional[str],
+    action: str,
+    ip: Optional[str],
+    user_agent: Optional[str],
+    audit_event_type: AuditEventType,
+    audit_result: str,
+    audit_severity: AuditSeverity,
+    audit_details: Optional[Dict[str, Any]] = None,
+    write_activity: bool = True,
+) -> None:
+    """Persist activity + audit log in a single fresh-session commit.
+
+    Runs as a FastAPI BackgroundTask so the login response is not blocked on
+    these writes. Uses a new session because the request-scoped one is torn
+    down once the response is sent.
+    """
+    user_uuid = UUID(user_id) if user_id else None
+    event = AuditEvent(
+        event_type=audit_event_type,
+        user_id=user_uuid,
+        action=action,
+        result=audit_result,
+        severity=audit_severity,
+        ip_address=ip,
+        user_agent=user_agent,
+        details=audit_details,
+    )
+    audit_record = AuditLog(
+        event_type=event.event_type.value,
+        event_category=event.category.value,
+        event_hash=event.event_hash,
+        user_id=user_uuid,
+        action=action,
+        result=audit_result,
+        severity=audit_severity.value,
+        ip_address=ip,
+        user_agent=user_agent,
+        details=audit_details,
+    )
+    async with AsyncSessionLocal() as bg_db:
+        try:
+            if write_activity and user_uuid:
+                activity = ActivityLog(
+                    user_id=user_uuid,
+                    action=action,
+                    ip_address=ip,
+                    user_agent=user_agent,
+                )
+                bg_db.add_all([activity, audit_record])
+            else:
+                bg_db.add(audit_record)
+            await bg_db.commit()
+        except Exception as exc:
+            logger.warning("Background login audit write failed: %s", exc)
+            try:
+                await bg_db.rollback()
+            except Exception:
+                pass
+
+    # Mirror to the audit log file (compliance trail) outside the DB transaction.
+    try:
+        audit_logging_service._write_to_log_file(event)
+    except Exception as exc:
+        logger.warning("Background login audit file write failed: %s", exc)
+
+
 @router.post("/login", response_model=Token, dependencies=[Depends(auth_login_limiter())])
 async def login(
     request: Request,
+    background_tasks: BackgroundTasks,
     email: str = Form(...),
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
@@ -114,27 +197,40 @@ async def login(
     result = await db.execute(select(User).filter(User.email == email))
     user = result.scalar_one_or_none()
 
-    password_valid = (
-        await auth_service.async_verify_password(password, user.password_hash) if user else False
-    )
+    ip = request.client.host if request and request.client else None
+    user_agent = request.headers.get("user-agent") if request else None
+
+    # Fan out bcrypt + plan lookup concurrently when the user exists.
+    # bcrypt runs in a thread pool (no DB session use) and the BillingService
+    # query owns the session for its duration, so they don't race.
+    plan_or_err: Any = None
+    if user:
+        from shared_billing import BillingService
+
+        billing = BillingService(db, service_type="normal")
+        password_valid, plan_or_err = await asyncio.gather(
+            auth_service.async_verify_password(password, user.password_hash),
+            billing.get_plan_by_code(f"normal_{user.plan_type}"),
+            return_exceptions=True,
+        )
+        if isinstance(password_valid, BaseException):
+            password_valid = False
+    else:
+        password_valid = False
+
     if not user or not password_valid:
-        # Audit: login failure (best-effort)
-        try:
-            await audit_logging_service.log_event(
-                db,
-                AuditEventType.LOGIN_FAILURE,
-                user_id=user.id if user else None,
-                action="login",
-                result="failure",
-                severity=AuditSeverity.WARNING,
-                request=request,
-                details={"attempted_email": email},
-            )
-        except Exception:
-            try:
-                await db.rollback()
-            except Exception:
-                pass
+        background_tasks.add_task(
+            _record_login_event,
+            user_id=str(user.id) if user else None,
+            action="login",
+            ip=ip,
+            user_agent=user_agent,
+            audit_event_type=AuditEventType.LOGIN_FAILURE,
+            audit_result="failure",
+            audit_severity=AuditSeverity.WARNING,
+            audit_details={"attempted_email": email},
+            write_activity=False,
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.is_active:
@@ -147,37 +243,24 @@ async def login(
             detail="Please verify your email before logging in. Check your inbox for the verification code.",
         )
 
-    await log_activity(db, user.id, "user_login", request=request)
-
-    # Audit: login success (best-effort)
-    try:
-        await audit_logging_service.log_event(
-            db,
-            AuditEventType.LOGIN_SUCCESS,
-            user_id=user.id,
-            action="login",
-            result="success",
-            request=request,
-        )
-    except Exception:
-        try:
-            await db.rollback()
-        except Exception:
-            pass
+    background_tasks.add_task(
+        _record_login_event,
+        user_id=str(user.id),
+        action="user_login",
+        ip=ip,
+        user_agent=user_agent,
+        audit_event_type=AuditEventType.LOGIN_SUCCESS,
+        audit_result="success",
+        audit_severity=AuditSeverity.INFO,
+    )
 
     access_token = auth_service.create_access_token({"sub": str(user.id), "email": email})
 
-    # Get plan limits from database for bandwidth info
-    from shared_billing import BillingService
-
-    billing = BillingService(db, service_type="normal")
-
-    try:
-        plan_code = f"normal_{user.plan_type}"
-        plan = await billing.get_plan_by_code(plan_code)
-        default_bandwidth = plan.bandwidth_mbps
-    except Exception:
-        default_bandwidth = 5  # 5 Mbps fallback
+    # Resolve plan from the earlier concurrent fetch; fall back on any failure.
+    if plan_or_err is None or isinstance(plan_or_err, BaseException):
+        default_bandwidth = 5
+    else:
+        default_bandwidth = plan_or_err.bandwidth_mbps
 
     response_data = {
         "access_token": access_token,
