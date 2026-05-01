@@ -9,6 +9,7 @@ Workers started:
 - quota_prediction_worker (daily cycle)
 - storage_optimization_worker (daily cycle)
 - orphan_cleanup_worker (every 5 minutes)
+- storage_reconcile_worker (every 6 hours)
 - video_processing_worker (Kafka consumer, supervised with backoff)
 
 Usage:
@@ -70,6 +71,7 @@ async def main():
     from app.workers.orphan_cleanup_worker import orphan_cleanup_worker
     from app.workers.quota_prediction_worker import quota_prediction_worker
     from app.workers.storage_optimization_worker import storage_optimization_worker
+    from app.workers.storage_reconcile_worker import storage_reconcile_worker
     from app.workers.video_processing_worker import VideoProcessingWorker
 
     workers = []
@@ -99,6 +101,13 @@ async def main():
         logger.info("Orphan cleanup worker started")
     except Exception as e:
         logger.error(f"Failed to start orphan cleanup worker: {e}")
+
+    try:
+        await storage_reconcile_worker.start()
+        workers.append(("storage_reconcile", storage_reconcile_worker))
+        logger.info("Storage reconcile worker started")
+    except Exception as e:
+        logger.error(f"Failed to start storage reconcile worker: {e}")
 
     try:
         video_worker = VideoProcessingWorker()

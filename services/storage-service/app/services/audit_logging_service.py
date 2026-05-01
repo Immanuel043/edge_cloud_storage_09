@@ -26,8 +26,10 @@ Compliance Standards:
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from enum import Enum
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -240,9 +242,21 @@ class AuditLoggingService:
     def __init__(self):
         self.logger = logging.getLogger("audit")
 
-        # Configure audit logger to write to separate file
+        # Audit log writes go to a path on the persisted storage volume so the
+        # compliance/forensic trail survives container restarts. Falls back to
+        # CWD if the directory cannot be created (dev / non-container envs).
         if not self.logger.handlers:
-            handler = logging.FileHandler("audit.log")
+            log_dir = "/app/storage/logs"
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, "audit.log")
+            except OSError:
+                log_path = "audit.log"
+            handler = RotatingFileHandler(
+                log_path,
+                maxBytes=100 * 1024 * 1024,  # 100MB per file
+                backupCount=20,  # keep ~2GB of history
+            )
             formatter = logging.Formatter("%(asctime)s - AUDIT - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
@@ -281,13 +295,17 @@ class AuditLoggingService:
         Returns:
             AuditEvent object
         """
-        # Extract request metadata
+        # Extract request metadata. Use _real_client_ip so we record the real
+        # end-user IP (from nginx's non-spoofable X-Real-IP header) rather than
+        # the upstream proxy's Docker network address.
         ip_address = None
         user_agent = None
         request_id = None
 
         if request:
-            ip_address = request.client.host if request.client else None
+            from ..utils.rate_limiter_v2 import _real_client_ip
+
+            ip_address = _real_client_ip(request)
             user_agent = request.headers.get("user-agent")
             request_id = request.headers.get("x-request-id")
 

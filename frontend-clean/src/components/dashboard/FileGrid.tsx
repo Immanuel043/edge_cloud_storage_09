@@ -7,6 +7,10 @@ import FileThumbnail from './FileThumbnail';
 import { FileActionsMenu } from './shared/FileActionsMenu';
 import type { FileGridProps, FileItem } from './types';
 
+// Boundary for introducing react-virtuoso/react-window later without changing
+// the normal small-list rendering path.
+const VIRTUALIZATION_RECOMMENDED_FILE_COUNT = 500;
+
 /**
  * FileGrid — card grid of folders + files. Each card is a Signal `Card`-ish
  * surface with a hover-revealed action menu; wired through to the shared
@@ -15,6 +19,7 @@ import type { FileGridProps, FileItem } from './types';
 const FileGrid: React.FC<FileGridProps> = ({
   folders,
   files,
+  emptyState,
   selectedFiles,
   onFolderClick,
   onFileClick,
@@ -37,14 +42,19 @@ const FileGrid: React.FC<FileGridProps> = ({
 
   const safeFolders = Array.isArray(folders) ? folders : [];
   const safeFiles = Array.isArray(files) ? files : [];
+  const totalItems = safeFolders.length + safeFiles.length;
 
-  if (safeFolders.length === 0 && safeFiles.length === 0) {
+  if (totalItems === 0) {
     return (
-      <EmptyState
-        icon={<FolderOpen />}
-        title="No files yet"
-        description="Upload files or create a folder to get started."
-      />
+      <>
+        {emptyState ?? (
+          <EmptyState
+            icon={<FolderOpen />}
+            title="No files yet"
+            description="Upload files or create a folder to get started."
+          />
+        )}
+      </>
     );
   }
 
@@ -54,7 +64,12 @@ const FileGrid: React.FC<FileGridProps> = ({
     'transition-all duration-fast ease-out-expo hover:shadow-md';
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5">
+    <div
+      className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5"
+      data-virtualization-ready={
+        totalItems >= VIRTUALIZATION_RECOMMENDED_FILE_COUNT ? 'true' : undefined
+      }
+    >
       {/* Folders */}
       {safeFolders.map((folder, folderIndex) => {
         const isSelected = selectedFiles.has(folder.id);

@@ -24,7 +24,17 @@ class PerformanceMiddleware(BaseHTTPMiddleware):
         self.slow_threshold = slow_threshold  # seconds
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        """Process the request and add performance tracking"""
+        """Process the request and add performance tracking.
+
+        `process_time` measures the interval between request entry and the
+        moment Starlette's `call_next` returns — which is BEFORE the response
+        body has been sent over the socket and BEFORE any FastAPI
+        `BackgroundTasks` have run. So this metric reflects handler-and-stack
+        wall-clock time, not the user-perceived TTFB exactly, and it is
+        deliberately *not* inflated by background work. If you optimize a
+        handler by deferring work into BackgroundTasks, this number will
+        drop accordingly.
+        """
 
         # Skip health checks to reduce noise
         if request.url.path in ["/api/v1/health", "/api/v1/ready", "/api/v1/live"]:

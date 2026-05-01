@@ -10,9 +10,15 @@ use http_body_util::{Full, BodyExt};
 use hyper_util::rt::TokioIo;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UnixListener;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, warn};
+
+/// Maximum time to wait for in-flight connections to complete after a
+/// shutdown signal before forcibly returning.
+const GRACEFUL_DRAIN_SECS: u64 = 30;
 
 /// Type-erased body that supports both buffered (Full) and streaming responses.
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
@@ -100,6 +106,9 @@ impl UnixSocketServer {
         let listener = UnixListener::bind(&self.config.socket_path)?;
         info!(socket = %self.config.socket_path, "Server listening on Unix socket");
 
+        // Track in-flight connection tasks so we can drain them on shutdown.
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
         // Accept connections until shutdown signal
         loop {
             tokio::select! {
@@ -117,8 +126,9 @@ impl UnixSocketServer {
                         let rate_limiter = Arc::clone(&self.rate_limiter);
                         let compression_level = self.config.compression_level;
 
-                        // Spawn connection handler
-                        tokio::spawn(async move {
+                        // Spawn connection handler into the JoinSet so the
+                        // drain phase below can wait on it.
+                        tasks.spawn(async move {
                             let io = TokioIo::new(stream);
 
                             let service = service_fn(move |req| {
@@ -143,6 +153,26 @@ impl UnixSocketServer {
                     Err(e) => {
                         error!(error = %e, "Failed to accept connection");
                     }
+                }
+            }
+        }
+
+        // Graceful drain: wait for in-flight handlers to complete, bounded by
+        // GRACEFUL_DRAIN_SECS so a stuck request can't block container exit
+        // forever. New connections were rejected the moment the listener
+        // dropped after the loop exited.
+        let inflight = tasks.len();
+        if inflight > 0 {
+            info!(inflight, "Draining in-flight requests");
+            let drain = async {
+                while tasks.join_next().await.is_some() {}
+            };
+            match tokio::time::timeout(Duration::from_secs(GRACEFUL_DRAIN_SECS), drain).await {
+                Ok(()) => info!("All in-flight requests drained"),
+                Err(_) => {
+                    let remaining = tasks.len();
+                    warn!(remaining, "Drain timeout exceeded; aborting remaining tasks");
+                    tasks.abort_all();
                 }
             }
         }

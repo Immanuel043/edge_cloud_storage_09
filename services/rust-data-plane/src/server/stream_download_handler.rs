@@ -14,6 +14,7 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
+use std::path::{Component, Path};
 use std::sync::Arc;
 use futures_util::stream::{FuturesOrdered, StreamExt};
 use memmap2::Mmap;
@@ -46,11 +47,17 @@ pub struct ChunkDescriptor {
 // ---------------------------------------------------------------------------
 
 fn validate_chunk_path(path: &str) -> Result<(), String> {
-    if !path.starts_with('/') {
+    let p = Path::new(path);
+    if !p.is_absolute() {
         return Err(format!("path must be absolute: {}", path));
     }
-    if path.contains("..") {
-        return Err(format!("path must not contain '..': {}", path));
+    // Reject parent-dir traversal at the path-component level so legitimate
+    // names containing ".." (e.g. "file..bak") are accepted while
+    // "/app/storage/../etc/passwd" is rejected.
+    for c in p.components() {
+        if matches!(c, Component::ParentDir) {
+            return Err(format!("path must not traverse parents: {}", path));
+        }
     }
     if !path.starts_with(ALLOWED_PATH_PREFIX) {
         return Err(format!(
@@ -59,6 +66,40 @@ fn validate_chunk_path(path: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod path_validation_tests {
+    use super::validate_chunk_path;
+
+    #[test]
+    fn accepts_canonical_storage_path() {
+        assert!(validate_chunk_path("/app/storage/cache/ab/file_chunk_0.enc").is_ok());
+    }
+
+    #[test]
+    fn accepts_legitimate_double_dot_in_name() {
+        // Used to be rejected by the substring check.
+        assert!(validate_chunk_path("/app/storage/cache/ab/file..bak").is_ok());
+    }
+
+    #[test]
+    fn rejects_parent_dir_traversal() {
+        assert!(validate_chunk_path("/app/storage/../etc/passwd").is_err());
+        assert!(validate_chunk_path("/app/storage/cache/../../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn rejects_relative_paths() {
+        assert!(validate_chunk_path("storage/cache/file.enc").is_err());
+        assert!(validate_chunk_path("./relative").is_err());
+    }
+
+    #[test]
+    fn rejects_paths_outside_allowed_prefix() {
+        assert!(validate_chunk_path("/etc/passwd").is_err());
+        assert!(validate_chunk_path("/tmp/file.enc").is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------

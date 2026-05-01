@@ -17,6 +17,10 @@ import FileThumbnail from './FileThumbnail';
 import { FileActionsMenu } from './shared/FileActionsMenu';
 import type { FileListProps, FileItem } from './types';
 
+// Boundary for introducing react-virtuoso/react-window later without changing
+// the normal small-list rendering path.
+const VIRTUALIZATION_RECOMMENDED_FILE_COUNT = 500;
+
 /**
  * FileList — table view for folders + files. Uses the Signal `Table`
  * primitive; action menu is the shared `FileActionsMenu` so list and grid
@@ -25,6 +29,7 @@ import type { FileListProps, FileItem } from './types';
 const FileList: React.FC<FileListProps> = ({
   folders,
   files,
+  emptyState,
   selectedFiles,
   onFolderClick,
   onFileClick,
@@ -50,19 +55,28 @@ const FileList: React.FC<FileListProps> = ({
 
   const safeFolders = Array.isArray(folders) ? folders : [];
   const safeFiles = Array.isArray(files) ? files : [];
+  const totalItems = safeFolders.length + safeFiles.length;
 
-  if (safeFolders.length === 0 && safeFiles.length === 0) {
+  if (totalItems === 0) {
     return (
-      <EmptyState
-        icon={<FolderOpen />}
-        title="No files yet"
-        description="Upload files or create a folder to get started."
-      />
+      <>
+        {emptyState ?? (
+          <EmptyState
+            icon={<FolderOpen />}
+            title="No files yet"
+            description="Upload files or create a folder to get started."
+          />
+        )}
+      </>
     );
   }
 
   return (
-    <Table>
+    <Table
+      data-virtualization-ready={
+        totalItems >= VIRTUALIZATION_RECOMMENDED_FILE_COUNT ? 'true' : undefined
+      }
+    >
       <TableHeader>
         <TableRow hover={false} className="border-b border-border">
           <TableHead className="w-12 text-center">★</TableHead>

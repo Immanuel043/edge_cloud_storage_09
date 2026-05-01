@@ -27,10 +27,16 @@ use serde::Deserialize;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, Semaphore};
-use tracing::{debug, error, info, instrument};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, instrument, warn};
+
+/// Maximum time to wait for in-flight connections to complete after a
+/// shutdown signal before forcibly returning.
+const GRACEFUL_DRAIN_SECS: u64 = 30;
 
 /// Maximum allowed chunk size (64MB) - prevents OOM from adversarial Content-Length
 const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
@@ -92,6 +98,9 @@ impl UnixSocketServerWithScmRights {
             "Server listening on Unix socket (SCM_RIGHTS enabled)"
         );
 
+        // Track in-flight connection tasks so we can drain them on shutdown.
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
         // Accept connections until shutdown signal
         loop {
             tokio::select! {
@@ -109,8 +118,8 @@ impl UnixSocketServerWithScmRights {
                         let rate_limiter = Arc::clone(&self.rate_limiter);
                         let compression_level = self.config.compression_level;
 
-                        // Spawn connection handler
-                        tokio::spawn(async move {
+                        // Spawn into JoinSet so the drain phase can wait on it.
+                        tasks.spawn(async move {
                             if let Err(e) = Self::handle_connection(
                                 stream,
                                 upload_handler,
@@ -128,6 +137,24 @@ impl UnixSocketServerWithScmRights {
                     Err(e) => {
                         error!(error = %e, "Failed to accept connection");
                     }
+                }
+            }
+        }
+
+        // Graceful drain: wait for in-flight handlers up to GRACEFUL_DRAIN_SECS
+        // so SIGTERM during a long download doesn't truncate the response.
+        let inflight = tasks.len();
+        if inflight > 0 {
+            info!(inflight, "Draining in-flight requests");
+            let drain = async {
+                while tasks.join_next().await.is_some() {}
+            };
+            match tokio::time::timeout(Duration::from_secs(GRACEFUL_DRAIN_SECS), drain).await {
+                Ok(()) => info!("All in-flight requests drained"),
+                Err(_) => {
+                    let remaining = tasks.len();
+                    warn!(remaining, "Drain timeout exceeded; aborting remaining tasks");
+                    tasks.abort_all();
                 }
             }
         }

@@ -142,6 +142,14 @@ services:
       # in-process timers again. This keeps the dev experience identical to
       # pre-worker-split behavior.
       WORKER_MODE: all
+      # Triggers `uvicorn --reload` in entrypoint.sh so saving a file in your
+      # editor reloads the running server. Only set in dev; prod keeps source
+      # baked into the image (see Dockerfile).
+      DEV_RELOAD: "true"
+    # Bind-mount the Python source as read-only so the watcher inside the
+    # container sees file changes from your host editor.
+    volumes:
+      - ../services/storage-service/app:/app/app:ro
     deploy:
       replicas: 1
       resources:

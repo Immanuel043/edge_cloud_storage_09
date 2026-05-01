@@ -150,7 +150,9 @@ const Sidebar: React.FC<SidebarProps> = ({
             </span>
           </button>
           {aiExpanded && (
-            <div className="mt-1 space-y-0.5">{aiItems.map((item) => renderNavItem(item, true))}</div>
+            <div className="mt-1 space-y-0.5 rounded-xl border border-border/70 bg-surface/70 p-1.5 shadow-sm backdrop-blur-md">
+              {aiItems.map((item) => renderNavItem(item, true))}
+            </div>
           )}
         </div>
 

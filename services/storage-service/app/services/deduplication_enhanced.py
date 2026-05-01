@@ -1159,57 +1159,74 @@ class EnhancedDeduplicationService:
         }
 
     GC_GRACE_PERIOD_MINUTES = 60
+    GC_BATCH_SIZE = 1000
 
     async def garbage_collect(self, db: AsyncSession) -> Dict:
         """
         Garbage collection: find orphan blocks (no file_block_mappings) with
         grace period + row locking to prevent racing with in-flight uploads.
+
+        Processed in bounded batches of `GC_BATCH_SIZE` so a backlog of
+        millions of orphans cannot row-lock the entire content_blocks table
+        in one query. Loops until a batch returns zero rows.
         """
         from sqlalchemy import text as sa_text
 
-        # Find orphan blocks older than grace period, with row locking
-        orphans = await db.execute(
-            sa_text("""
-            SELECT cb.id, cb.block_hash
-            FROM content_blocks cb
-            LEFT JOIN file_block_mappings fbm ON fbm.block_id = cb.id
-            WHERE fbm.id IS NULL
-              AND cb.created_at < NOW() - make_interval(mins => :grace)
-            FOR UPDATE OF cb SKIP LOCKED
-        """),
-            {"grace": self.GC_GRACE_PERIOD_MINUTES},
-        )
-
         deleted_count = 0
         freed_space = 0
-        errors = []
+        errors: list = []
 
-        for block in orphans.fetchall():
-            try:
-                # Re-verify no mappings created since the SELECT
-                recheck = await db.execute(
-                    sa_text("SELECT 1 FROM file_block_mappings WHERE block_id = :bid LIMIT 1"),
-                    {"bid": str(block.id)},
-                )
-                if recheck.fetchone():
-                    continue  # Mapping appeared — skip
+        while True:
+            # Find a bounded batch of orphan blocks older than grace period.
+            orphans = await db.execute(
+                sa_text("""
+                SELECT cb.id, cb.block_hash
+                FROM content_blocks cb
+                LEFT JOIN file_block_mappings fbm ON fbm.block_id = cb.id
+                WHERE fbm.id IS NULL
+                  AND cb.created_at < NOW() - make_interval(mins => :grace)
+                FOR UPDATE OF cb SKIP LOCKED
+                LIMIT :batch
+            """),
+                {"grace": self.GC_GRACE_PERIOD_MINUTES, "batch": self.GC_BATCH_SIZE},
+            )
+            rows = orphans.fetchall()
+            if not rows:
+                break
 
-                content_path = self.get_content_address(block.block_hash)
-                if os.path.exists(content_path):
-                    freed_space += os.path.getsize(content_path)
-                    os.remove(content_path)
-                    if os.path.exists(content_path + ".key"):
-                        os.remove(content_path + ".key")
+            for block in rows:
+                try:
+                    # Re-verify no mappings created since the SELECT
+                    recheck = await db.execute(
+                        sa_text(
+                            "SELECT 1 FROM file_block_mappings WHERE block_id = :bid LIMIT 1"
+                        ),
+                        {"bid": str(block.id)},
+                    )
+                    if recheck.fetchone():
+                        continue  # Mapping appeared — skip
 
-                await db.execute(
-                    sa_text("DELETE FROM content_blocks WHERE id = :id"), {"id": str(block.id)}
-                )
-                deleted_count += 1
+                    content_path = self.get_content_address(block.block_hash)
+                    if os.path.exists(content_path):
+                        freed_space += os.path.getsize(content_path)
+                        os.remove(content_path)
+                        if os.path.exists(content_path + ".key"):
+                            os.remove(content_path + ".key")
 
-            except Exception as e:
-                errors.append({"block_hash": block.block_hash, "error": str(e)})
+                    await db.execute(
+                        sa_text("DELETE FROM content_blocks WHERE id = :id"),
+                        {"id": str(block.id)},
+                    )
+                    deleted_count += 1
 
-        await db.commit()
+                except Exception as e:
+                    errors.append({"block_hash": block.block_hash, "error": str(e)})
+
+            await db.commit()
+
+            # If the batch was smaller than the limit there is no more work.
+            if len(rows) < self.GC_BATCH_SIZE:
+                break
 
         return {"deleted_blocks": deleted_count, "freed_space": freed_space, "errors": errors}
 

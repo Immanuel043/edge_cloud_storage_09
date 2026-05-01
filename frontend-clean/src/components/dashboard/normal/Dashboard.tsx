@@ -1,7 +1,8 @@
 import React, { Suspense, useState, useEffect, useRef, useMemo } from 'react';
 import {
   Upload, X, CheckCircle, Home, ChevronRight,
-  ArrowUpDown, FolderPlus
+  ArrowUpDown, FolderPlus, Clock, FolderOpen, Image,
+  FileText, Video, Music
 } from 'lucide-react';
 // Eager imports — always visible on default cloud-drive view
 import Sidebar from '../Sidebar';
@@ -56,6 +57,7 @@ const FileCorruptionModal = React.lazy(() => import('../FileCorruptionModal'));
 import { getFileType } from '../../../utils/helpers';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../../services/storageService';
+import { Button, EmptyState } from '@/components/ui';
 import type {
   FileItem,
   FolderItem,
@@ -963,6 +965,123 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     return { filteredFolders: resultFolders, filteredFiles: resultFiles };
   }, [files, folders, quickFilter, sortBy, searchQuery]);
 
+  const openFilePicker = (): void => {
+    fileInputRef.current?.click();
+  };
+
+  const uploadEmptyAction = (label = 'Drag files here or browse'): React.ReactElement => (
+    <button
+      type="button"
+      onClick={openFilePicker}
+      className="flex min-h-12 items-center gap-2 rounded-lg border border-dashed border-primary/50 bg-primary/5 px-4 py-3 text-body-sm font-medium text-primary transition-colors hover:bg-primary/10"
+    >
+      <Upload className="h-4 w-4" />
+      {label}
+    </button>
+  );
+
+  const folderEmptyAction = (): React.ReactElement => (
+    <Button
+      variant="secondary"
+      size="md"
+      onClick={handleCreateFolder}
+      leftIcon={<FolderPlus className="h-4 w-4" />}
+    >
+      New folder
+    </Button>
+  );
+
+  const cloudDriveEmptyState = ((): React.ReactElement => {
+    const actions = (includeFolderAction: boolean, uploadLabel?: string): React.ReactElement => (
+      <div className="flex flex-col items-center gap-3 sm:flex-row">
+        {uploadEmptyAction(uploadLabel)}
+        {includeFolderAction && folderEmptyAction()}
+      </div>
+    );
+
+    switch (quickFilter) {
+      case 'recent':
+        return (
+          <EmptyState
+            icon={<Clock />}
+            title="No recent files"
+            description="Files opened or updated in the last 7 days will appear here."
+            action={uploadEmptyAction('Upload files')}
+            size="lg"
+          />
+        );
+      case 'folders':
+        return (
+          <EmptyState
+            icon={<FolderPlus />}
+            title="No folders"
+            description="Create a folder to organize related files."
+            action={folderEmptyAction()}
+            size="lg"
+          />
+        );
+      case 'image':
+        return (
+          <EmptyState
+            icon={<Image />}
+            title="No image files"
+            description="Upload JPG, PNG, GIF, or WebP files to see them here."
+            action={uploadEmptyAction('Upload images')}
+            size="lg"
+          />
+        );
+      case 'document':
+        return (
+          <EmptyState
+            icon={<FileText />}
+            title="No document files"
+            description="Upload PDFs, text files, or office documents to see them here."
+            action={uploadEmptyAction('Upload documents')}
+            size="lg"
+          />
+        );
+      case 'video':
+        return (
+          <EmptyState
+            icon={<Video />}
+            title="No video files"
+            description="Upload MP4, MOV, or WebM files to see them here."
+            action={uploadEmptyAction('Upload videos')}
+            size="lg"
+          />
+        );
+      case 'audio':
+        return (
+          <EmptyState
+            icon={<Music />}
+            title="No audio files"
+            description="Upload MP3, WAV, or M4A files to see them here."
+            action={uploadEmptyAction('Upload audio')}
+            size="lg"
+          />
+        );
+      case 'all':
+      default:
+        return currentFolder ? (
+          <EmptyState
+            icon={<FolderOpen />}
+            title="This folder is empty"
+            description={`Add files${currentFolderName ? ` to ${currentFolderName}` : ''} or create a nested folder.`}
+            action={actions(true)}
+            size="lg"
+          />
+        ) : (
+          <EmptyState
+            icon={<Upload />}
+            title="Your drive is empty"
+            description="Upload files or create a folder to get started."
+            action={actions(true)}
+            size="lg"
+          />
+        );
+    }
+  })();
+
   // Render main content based on active view
   const renderMainContent = (): React.ReactElement => {
     switch (activeView) {
@@ -1164,6 +1283,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                       <FileGrid
                         folders={filteredFolders}
                         files={filteredFiles}
+                        emptyState={cloudDriveEmptyState}
                         selectedFiles={selectedFiles}
                         onFolderClick={navigateToFolder}
                         onFileClick={selectFile}
@@ -1185,6 +1305,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                       <FileList
                         folders={filteredFolders}
                         files={filteredFiles}
+                        emptyState={cloudDriveEmptyState}
                         selectedFiles={selectedFiles}
                         onFolderClick={navigateToFolder}
                         onFileClick={selectFile}
@@ -1204,14 +1325,6 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
                       />
                     )}
 
-                    {filteredFiles.length === 0 && filteredFolders.length === 0 && (
-                      <div className="py-12 text-center">
-                        <Upload className="mx-auto mb-3 text-fg-subtle" size={48} />
-                        <p className="text-body-sm text-fg-muted">
-                          No files or folders yet. Upload some files or create a folder to get started!
-                        </p>
-                      </div>
-                    )}
                   </>
                 )}
               </div>

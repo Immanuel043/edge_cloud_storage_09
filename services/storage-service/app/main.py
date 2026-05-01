@@ -49,6 +49,7 @@ from .routers.background_deduplication import background_dedup_service
 from .services.cold_storage_tiering import cold_storage_service  # ENABLED
 from .services.search_service import search_service
 from .workers.orphan_cleanup_worker import orphan_cleanup_worker
+from .workers.storage_reconcile_worker import storage_reconcile_worker
 from .workers.quota_prediction_worker import quota_prediction_worker
 from .workers.storage_optimization_worker import storage_optimization_worker
 from .workers.video_processing_worker import VideoProcessingWorker
@@ -115,6 +116,40 @@ async def lifespan(app: FastAPI):
         print("Database connection successful")
     except Exception as e:
         print(f"Database connection failed: {e}")
+
+    # Warmup hot paths so the first user-facing request isn't penalized.
+    # Without this, the first login pays ~500ms extra: bcrypt's native lib
+    # gets JIT-loaded, the asyncpg connection pool spins up its first
+    # connection, and `from shared_billing import BillingService` (lazy
+    # inside routers/auth.py) loads the package on demand.
+    if settings.is_api_mode:
+        try:
+            # bcrypt: routers/auth.py already calls pwd_context.hash() at
+            # module load (for _DUMMY_BCRYPT_HASH), which warms the native
+            # lib — but exercising the async/threadpool path here ensures
+            # the executor's worker threads are spun up too.
+            from .services.auth import auth_service
+
+            await auth_service.async_get_password_hash("warmup")
+        except Exception:
+            pass  # any error is fine; this is best-effort warmup
+
+        try:
+            # Pre-import shared_billing so the lazy import inside login()
+            # doesn't cost ~50–100ms on the first request.
+            from shared_billing import BillingService  # noqa: F401
+        except Exception:
+            pass
+
+        try:
+            # One trivial query to ensure the asyncpg pool has an established
+            # connection before user traffic arrives.
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception:
+            pass
+
+        print("Lifespan warmup complete (bcrypt + shared_billing + asyncpg pool)")
 
     print(
         f"WORKER_MODE={settings.WORKER_MODE} (api={settings.is_api_mode}, worker={settings.is_worker_mode})"
@@ -205,6 +240,13 @@ async def lifespan(app: FastAPI):
             print("Orphan cleanup worker started")
         except Exception as e:
             print(f"Failed to start orphan cleanup worker: {e}")
+
+        # Start storage reconcile worker (flags Objects whose chunks went missing)
+        try:
+            await storage_reconcile_worker.start()
+            print("Storage reconcile worker started")
+        except Exception as e:
+            print(f"Failed to start storage reconcile worker: {e}")
 
         # Start video processing worker (Kafka consumer for video optimization)
         # Supervised: restarts on crash with backoff, up to 5 retries
@@ -303,6 +345,13 @@ async def lifespan(app: FastAPI):
             print("Orphan cleanup worker stopped")
         except Exception as e:
             print(f"Error stopping orphan cleanup worker: {e}")
+
+        # Stop storage reconcile worker
+        try:
+            await storage_reconcile_worker.stop()
+            print("Storage reconcile worker stopped")
+        except Exception as e:
+            print(f"Error stopping storage reconcile worker: {e}")
 
         # Stop video processing worker
         try:
@@ -532,6 +581,9 @@ async def health_check():
     )
     health_status["checks"]["orphan_cleanup"] = check_worker_status(
         orphan_cleanup_worker, "orphan_cleanup"
+    )
+    health_status["checks"]["storage_reconcile"] = check_worker_status(
+        storage_reconcile_worker, "storage_reconcile"
     )
 
     # Storage directories check

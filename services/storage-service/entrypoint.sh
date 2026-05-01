@@ -17,4 +17,9 @@ else
 fi
 
 echo "Starting application..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+if [ "${DEV_RELOAD:-false}" = "true" ]; then
+  echo "DEV_RELOAD=true: enabling uvicorn --reload (intended for dev only)"
+  exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
+else
+  exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+fi

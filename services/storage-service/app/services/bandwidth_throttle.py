@@ -30,12 +30,15 @@ from ..database import get_redis
 
 logger = logging.getLogger(__name__)
 
-# Lua script for atomic stream slot acquisition (Fix #1: Race condition)
+# Lua script for atomic stream slot acquisition (Fix #1: Race condition).
+# EXPIRE is renewed on EVERY INCR — not just the 0→1 transition — so the
+# stale-slot fallback TTL stays fresh while a user is actively acquiring
+# slots. This avoids the case where a long-running multi-stream user's
+# counter key expires mid-use and a subsequent release decrements a
+# missing key, triggering the underflow-recovery path.
 ACQUIRE_STREAM_LUA = """
 local current = redis.call("INCR", KEYS[1])
-if current == 1 then
-    redis.call("EXPIRE", KEYS[1], ARGV[1])
-end
+redis.call("EXPIRE", KEYS[1], ARGV[1])
 return current
 """
 

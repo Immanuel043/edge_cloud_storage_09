@@ -54,6 +54,94 @@ RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 USE_X_ACCEL = bool(os.environ.get("USE_X_ACCEL", False))
 NGINX_STORAGE_BASE = "/app/storage"  # must match nginx alias path
 
+# In-process manifest cache for chunked downloads. Hot files (videos seeked
+# repeatedly) hit this and skip rebuilding the same chunk-path list. Keyed by
+# (file_id, current_version) so a version bump or delete forces a refresh via
+# _invalidate_manifest_cache(). Soft-bounded; FIFO eviction once full.
+_MANIFEST_CACHE_MAX = 1024
+_MANIFEST_CACHE_TTL_SECS = 300  # 5 minutes
+_manifest_cache: "dict[tuple, tuple[float, list]]" = {}
+
+
+async def _unlink_if_exists(path: Optional[str]) -> bool:
+    """Best-effort async unlink. Used by delete handlers to avoid blocking the
+    event loop on synchronous os.remove() — a 100GB chunked file could chain
+    thousands of unlinks, stalling the request thread for seconds otherwise.
+    """
+    if not path:
+        return False
+    try:
+        if not await asyncio.to_thread(os.path.exists, path):
+            return False
+        await asyncio.to_thread(os.remove, path)
+        return True
+    except OSError as exc:
+        logger.warning("Failed to unlink %s: %s", path, exc)
+        return False
+
+
+def _get_or_build_full_manifest(resolved) -> list:
+    """Return the full per-chunk manifest list for a chunked download, cached
+    for ~5 min per (file_id, version). Range requests slice this list rather
+    than rebuilding the path-resolution dict each time.
+    """
+    import time as _time
+
+    key = (str(resolved.id), getattr(resolved, "current_version", 1))
+    now = _time.monotonic()
+    cached = _manifest_cache.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    chunk_info = resolved.chunk_info or {}
+    chunk_paths = chunk_info.get("paths", {})
+    upload_id = chunk_info.get("upload_id", str(resolved.id))
+    total_chunks = chunk_info.get("count", 0)
+
+    full_manifest: list = []
+    for idx in range(total_chunks):
+        path = chunk_paths.get(str(idx))
+        if not path:
+            shard = upload_id[:2] if len(upload_id) >= 2 else "00"
+            path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{idx}.enc"
+        full_manifest.append({"index": idx, "path": path})
+
+    # Bounded FIFO eviction; cache is per-process so this is fine.
+    if len(_manifest_cache) >= _MANIFEST_CACHE_MAX:
+        try:
+            _manifest_cache.pop(next(iter(_manifest_cache)))
+        except StopIteration:
+            pass
+    _manifest_cache[key] = (now + _MANIFEST_CACHE_TTL_SECS, full_manifest)
+    return full_manifest
+
+
+def _invalidate_manifest_cache(file_id: str) -> None:
+    """Drop any cached manifests for the given file_id (all versions)."""
+    fid = str(file_id)
+    for k in [k for k in _manifest_cache if k[0] == fid]:
+        _manifest_cache.pop(k, None)
+
+
+def _resolve_chunk_paths(file_obj) -> List[str]:
+    """Build the list of chunk paths for a chunked Object, falling back to the
+    sharded cache layout when the path map is incomplete.
+    """
+    paths: List[str] = []
+    if not file_obj.chunk_info:
+        return paths
+    chunk_info = file_obj.chunk_info
+    upload_id = chunk_info.get("upload_id", str(file_obj.id))
+    chunk_count = chunk_info.get("count", 0)
+    chunk_paths = chunk_info.get("paths", {})
+    for i in range(chunk_count):
+        cp = chunk_paths.get(str(i))
+        if not cp:
+            shard = upload_id[:2] if len(upload_id) >= 2 else "00"
+            cp = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
+        paths.append(cp)
+    return paths
+
 
 async def throttled_download_generator(
     user_id: str,
@@ -134,21 +222,15 @@ async def _stream_via_rust(
 
     chunk_info = resolved.chunk_info
     chunk_size = chunk_info.get("chunk_size", 32 * 1024 * 1024)
-    chunk_paths = chunk_info.get("paths", {})
-    upload_id = chunk_info.get("upload_id", str(resolved.id))
     total_chunks = chunk_info.get("count", 0)
     was_compressed = chunk_info.get("compressed", False)
 
-    # Build manifest of chunk descriptors
+    # Slice the cached full-file manifest for this byte range. The cache is
+    # invalidated on file delete + version bump (see _invalidate_manifest_cache).
+    full_manifest = _get_or_build_full_manifest(resolved)
     first_chunk = start_byte // chunk_size
     last_chunk = min(end_byte // chunk_size, total_chunks - 1)
-    chunks = []
-    for idx in range(first_chunk, last_chunk + 1):
-        path = chunk_paths.get(str(idx))
-        if not path:
-            shard = upload_id[:2]
-            path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{idx}.enc"
-        chunks.append({"index": idx, "path": path})
+    chunks = full_manifest[first_chunk : last_chunk + 1]
 
     rust_client = get_rust_client()
     async for data in rust_client.stream_download_chunks(
@@ -670,7 +752,7 @@ async def download_file(
         await cold_storage_service.promote_file_on_access(str(file_id), db)
     except Exception as e:
         # Don't fail download if promotion fails
-        print(f"Warning: Failed to promote file {file_id}: {e}")
+        logger.warning("Failed to promote file %s: %s", file_id, e)
 
     await db.commit()
 
@@ -2024,10 +2106,7 @@ async def get_file_activity(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Get file activity error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error("Get file activity error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get file activity: {str(e)}")
 
 
@@ -2056,6 +2135,7 @@ async def delete_file(
         file_obj.is_deleted = True
         file_obj.deleted_at = datetime.utcnow()
         file_name = file_obj.file_name
+        _invalidate_manifest_cache(file_id)
 
         # Invalidate previews before commit
         from ..services.preview_storage import invalidate_preview
@@ -2107,10 +2187,7 @@ async def delete_file(
 
     except Exception as e:
         await db.rollback()
-        print(f"Delete error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error("Delete error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2244,7 +2321,7 @@ async def restore_from_trash(
 
     except Exception as e:
         await db.rollback()
-        print(f"Restore error: {e}")
+        logger.error("Restore error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2272,52 +2349,29 @@ async def permanent_delete(
         raise HTTPException(status_code=404, detail="File not found in trash")
 
     try:
+        _invalidate_manifest_cache(file_id)
         # For content_addressed: CAS cleanup handled by GC worker.
-        # For non-dedup: existing storage cleanup.
+        # For non-dedup: existing storage cleanup, all unlinks off the event loop.
         if file_obj.storage_type == "inline":
             if file_obj.storage_key:
                 try:
                     await redis_client.delete(file_obj.storage_key)
                 except Exception as e:
-                    print(f"Failed to delete from Redis: {e}")
+                    logger.warning("Failed to delete from Redis: %s", e)
 
         elif file_obj.storage_type == "single":
-            if file_obj.object_path and os.path.exists(file_obj.object_path):
-                try:
-                    os.remove(file_obj.object_path)
-                except Exception as e:
-                    print(f"Failed to delete file: {e}")
+            await _unlink_if_exists(file_obj.object_path)
 
         elif file_obj.storage_type == "chunked":
-            # Non-dedup chunked: clean up chunk files
-            if file_obj.chunk_info:
-                chunk_info = file_obj.chunk_info
-                upload_id = chunk_info.get("upload_id", str(file_obj.id))
-                chunk_count = chunk_info.get("count", 0)
-                chunk_paths = chunk_info.get("paths", {})
-
-                for i in range(chunk_count):
-                    chunk_path = chunk_paths.get(str(i))
-                    if not chunk_path:
-                        shard = upload_id[:2] if len(upload_id) >= 2 else "00"
-                        chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-
-                    if os.path.exists(chunk_path):
-                        try:
-                            os.remove(chunk_path)
-                        except Exception as e:
-                            print(f"Failed to delete chunk {chunk_path}: {e}")
+            for chunk_path in _resolve_chunk_paths(file_obj):
+                await _unlink_if_exists(chunk_path)
 
         # content_addressed: no physical cleanup needed here.
         # CAS files are shared and immutable — GC worker handles orphans.
         # file_block_mappings CASCADE-deleted when Object is deleted below.
 
         # Delete optimized video file if it exists
-        if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
-            try:
-                os.remove(file_obj.optimized_path)
-            except Exception as e:
-                print(f"Failed to delete optimized file: {e}")
+        await _unlink_if_exists(file_obj.optimized_path)
 
         # Invalidate preview assets (Redis + disk)
         from ..services.preview_storage import invalidate_preview
@@ -2408,10 +2462,7 @@ async def permanent_delete(
 
     except Exception as e:
         await db.rollback()
-        print(f"Permanent delete error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error("Permanent delete error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2446,49 +2497,26 @@ async def empty_trash(
     try:
         for file_obj in files:
             try:
+                _invalidate_manifest_cache(file_obj.id)
                 # Only non-dedup types need physical cleanup
                 if file_obj.storage_type == "inline":
                     if file_obj.storage_key:
                         try:
                             await redis_client.delete(file_obj.storage_key)
                         except Exception as e:
-                            print(f"Failed to delete from Redis: {e}")
+                            logger.warning("Failed to delete from Redis: %s", e)
 
                 elif file_obj.storage_type == "single":
-                    if file_obj.object_path and os.path.exists(file_obj.object_path):
-                        try:
-                            os.remove(file_obj.object_path)
-                        except Exception as e:
-                            print(f"Failed to delete file: {e}")
+                    await _unlink_if_exists(file_obj.object_path)
 
                 elif file_obj.storage_type == "chunked":
-                    # Non-dedup chunked: clean up chunk files
-                    if file_obj.chunk_info:
-                        chunk_info = file_obj.chunk_info
-                        upload_id = chunk_info.get("upload_id", str(file_obj.id))
-                        chunk_count = chunk_info.get("count", 0)
-                        chunk_paths = chunk_info.get("paths", {})
-
-                        for i in range(chunk_count):
-                            chunk_path = chunk_paths.get(str(i))
-                            if not chunk_path:
-                                shard = upload_id[:2] if len(upload_id) >= 2 else "00"
-                                chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
-
-                            if os.path.exists(chunk_path):
-                                try:
-                                    os.remove(chunk_path)
-                                except Exception as e:
-                                    print(f"Failed to delete chunk: {e}")
+                    for chunk_path in _resolve_chunk_paths(file_obj):
+                        await _unlink_if_exists(chunk_path)
 
                 # content_addressed: no physical cleanup needed — GC handles CAS
 
                 # Delete optimized video file if it exists
-                if file_obj.optimized_path and os.path.exists(file_obj.optimized_path):
-                    try:
-                        os.remove(file_obj.optimized_path)
-                    except Exception as e:
-                        print(f"Failed to delete optimized file: {e}")
+                await _unlink_if_exists(file_obj.optimized_path)
 
                 # Invalidate preview assets
                 from ..services.preview_storage import invalidate_preview as _invalidate_preview
@@ -2504,7 +2532,7 @@ async def empty_trash(
                 deleted_count += 1
 
             except Exception as e:
-                print(f"Failed to cleanup file {file_obj.id}: {e}")
+                logger.error("Failed to cleanup file %s: %s", file_obj.id, e, exc_info=True)
 
         # Delete related records first to avoid FK constraint violations
         file_ids = [str(f.id) for f in files]
@@ -2592,10 +2620,7 @@ async def empty_trash(
 
     except Exception as e:
         await db.rollback()
-        print(f"Empty trash error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error("Empty trash error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2694,10 +2719,7 @@ async def bulk_delete_files(
 
     except Exception as e:
         await db.rollback()
-        print(f"Bulk delete error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error("Bulk delete error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

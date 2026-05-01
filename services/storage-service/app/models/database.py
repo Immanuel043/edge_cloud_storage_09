@@ -139,6 +139,13 @@ class Object(Base):
         String(64), nullable=True
     )  # Source content hash at generation time
 
+    # Disk-vs-DB reconciliation (populated by storage_reconcile_worker).
+    # 'healthy' = all referenced chunks present on disk
+    # 'degraded' = at least one chunk missing
+    # 'broken' = enough chunks missing that the file can't be served
+    health_status = Column(String(20), nullable=False, server_default="healthy")
+    health_checked_at = Column(DateTime, nullable=True)
+
     # Performance indexes
     __table_args__ = (
         Index("idx_user_storage_type", "user_id", "storage_type"),

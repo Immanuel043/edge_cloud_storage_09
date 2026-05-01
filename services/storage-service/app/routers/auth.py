@@ -43,13 +43,23 @@ from ..services.audit_logging_service import (
     AuditSeverity,
 )
 from ..services.audit_logging_service import audit_service as audit_logging_service
-from ..services.auth import auth_service
+from ..services.auth import auth_service, pwd_context
 from ..services.email_service import email_service
 from ..services.verification_service import verification_service
 from ..utils.rate_limiter_v2 import (
+    _real_client_ip,
     auth_login_limiter,
     auth_password_reset_limiter,
     auth_register_limiter,
+)
+
+# Precomputed dummy bcrypt hash used for constant-time login: when the email
+# doesn't exist we still run bcrypt against this hash so the response time is
+# the same as a wrong-password attempt against an existing user. Computed once
+# at module load (~300ms one-time startup cost). The plaintext value is
+# irrelevant — we always discard the verify result for non-existent users.
+_DUMMY_BCRYPT_HASH = pwd_context.hash(
+    "_constant_time_dummy_for_login_timing_attack_defense_"
 )
 
 logger = logging.getLogger(__name__)
@@ -146,6 +156,18 @@ async def _record_login_event(
         user_agent=user_agent,
         details=audit_details,
     )
+
+    # Durability: write the audit event to the persistent log file FIRST. If
+    # the container is killed between this point and the DB commit below, the
+    # event survives in audit.log (which lives on the storage_data volume) and
+    # can be replayed into the DB by a future reconciliation tool. The file
+    # handler uses RotatingFileHandler with line-buffered writes, so the cost
+    # here is ~1ms (sub-page write, no fsync per call).
+    try:
+        audit_logging_service._write_to_log_file(event)
+    except Exception as exc:
+        logger.warning("Background login audit file write failed: %s", exc)
+
     audit_record = AuditLog(
         event_type=event.event_type.value,
         event_category=event.category.value,
@@ -172,17 +194,11 @@ async def _record_login_event(
                 bg_db.add(audit_record)
             await bg_db.commit()
         except Exception as exc:
-            logger.warning("Background login audit write failed: %s", exc)
+            logger.warning("Background login audit DB write failed: %s", exc)
             try:
                 await bg_db.rollback()
             except Exception:
                 pass
-
-    # Mirror to the audit log file (compliance trail) outside the DB transaction.
-    try:
-        audit_logging_service._write_to_log_file(event)
-    except Exception as exc:
-        logger.warning("Background login audit file write failed: %s", exc)
 
 
 @router.post("/login", response_model=Token, dependencies=[Depends(auth_login_limiter())])
@@ -197,25 +213,29 @@ async def login(
     result = await db.execute(select(User).filter(User.email == email))
     user = result.scalar_one_or_none()
 
-    ip = request.client.host if request and request.client else None
+    ip = _real_client_ip(request) if request else None
     user_agent = request.headers.get("user-agent") if request else None
 
-    # Fan out bcrypt + plan lookup concurrently when the user exists.
+    # Always run bcrypt — against the user's hash if found, else a precomputed
+    # dummy hash — so response time is constant regardless of whether the
+    # email exists. This defeats user-enumeration timing attacks.
     # bcrypt runs in a thread pool (no DB session use) and the BillingService
     # query owns the session for its duration, so they don't race.
-    plan_or_err: Any = None
-    if user:
-        from shared_billing import BillingService
+    from shared_billing import BillingService
 
-        billing = BillingService(db, service_type="normal")
-        password_valid, plan_or_err = await asyncio.gather(
-            auth_service.async_verify_password(password, user.password_hash),
-            billing.get_plan_by_code(f"normal_{user.plan_type}"),
-            return_exceptions=True,
-        )
-        if isinstance(password_valid, BaseException):
-            password_valid = False
-    else:
+    billing = BillingService(db, service_type="normal")
+    verify_target_hash = user.password_hash if user else _DUMMY_BCRYPT_HASH
+    plan_coro = (
+        billing.get_plan_by_code(f"normal_{user.plan_type}")
+        if user
+        else asyncio.sleep(0)
+    )
+    password_valid, plan_or_err = await asyncio.gather(
+        auth_service.async_verify_password(password, verify_target_hash),
+        plan_coro,
+        return_exceptions=True,
+    )
+    if not user or isinstance(password_valid, BaseException):
         password_valid = False
 
     if not user or not password_valid:

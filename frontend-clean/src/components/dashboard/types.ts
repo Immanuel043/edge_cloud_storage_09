@@ -8,6 +8,7 @@
  * - Proper React event types
  */
 
+import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 
 // ==================== Common Types ====================
@@ -273,6 +274,7 @@ export interface NameSuggestionEntry {
 export interface FileGridProps extends DarkModeProps {
   folders: FolderItem[];
   files: FileItem[];
+  emptyState?: ReactNode;
   selectedFiles: Set<string>;
   onFolderClick: (folderId: string, folderName: string) => void;
   onFileClick: (fileId: string, index: number, ctrlKey: boolean, shiftKey: boolean) => void;
