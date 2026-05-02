@@ -15,6 +15,7 @@ from typing import Any, AsyncGenerator
 import aiofiles
 
 from ..utils.compression import decompressor
+from ..utils.file_streaming import _read_all_bytes
 from .encryption import encryption_service
 
 
@@ -44,8 +45,9 @@ async def iter_decrypted_chunks(file_obj: Any, file_key: bytes) -> AsyncGenerato
             chunk_path = f"/app/storage/cache/{shard}/{upload_id}_chunk_{i}.enc"
         if not os.path.exists(chunk_path):
             raise FileNotFoundError(f"Missing chunk {i} for file {file_obj.id} at {chunk_path!r}")
-        async with aiofiles.open(chunk_path, "rb") as cf:
-            encrypted = await cf.read()
+        # Sync open via to_thread — async-with inside this streaming
+        # generator races with PEP 525 cleanup on cancellation.
+        encrypted = await asyncio.to_thread(_read_all_bytes, chunk_path)
         plaintext = await asyncio.to_thread(
             encryption_service.decrypt_chunk, encrypted, file_key, i
         )

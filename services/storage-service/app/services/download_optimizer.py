@@ -31,6 +31,8 @@ from typing import AsyncGenerator, List, Optional, Tuple
 import aiofiles
 import psutil
 
+from ..utils.file_streaming import _read_all_bytes
+
 logger = logging.getLogger(__name__)
 
 
@@ -166,8 +168,9 @@ class DownloadOptimizer:
             f"encrypted: {file_key is not None})"
         )
 
-        async with aiofiles.open(file_path, "rb") as f:
-            raw_data = await f.read()
+        # Sync open via to_thread — async-with on aiofiles inside a streaming
+        # generator races with PEP 525 cleanup on client disconnect.
+        raw_data = await asyncio.to_thread(_read_all_bytes, file_path)
 
         if file_key:
             # Encrypted file: decrypt in thread to avoid blocking
@@ -407,9 +410,10 @@ class DownloadOptimizer:
                     self.decrypt_executor, self._read_chunk_mmap, chunk_path
                 )
             else:
-                # Standard async read for small files
-                async with aiofiles.open(chunk_path, "rb") as f:
-                    encrypted_chunk = await f.read()
+                # Standard read for small files. Sync open via to_thread —
+                # this helper is awaited from inside streaming generators;
+                # async-with would race with PEP 525 cleanup on disconnect.
+                encrypted_chunk = await asyncio.to_thread(_read_all_bytes, chunk_path)
 
             # Decrypt in thread pool (uses hardware AES-NI when available)
             decrypted_chunk = await loop.run_in_executor(

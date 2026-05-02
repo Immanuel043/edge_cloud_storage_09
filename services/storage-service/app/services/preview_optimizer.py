@@ -551,17 +551,19 @@ async def _fetch_contiguous_range(
 
         try:
             total_written = 0
-            async with aiofiles.open(output_path, "wb") as output_f:
-                async for data in rust_client.stream_download_chunks(
-                    chunks=chunks,
-                    file_key=file_key,
-                    was_compressed=was_compressed,
-                    start_byte=start_byte,
-                    end_byte=end_byte,
-                    chunk_size=chunk_size,
-                ):
-                    await output_f.write(data)
-                    total_written += len(data)
+            stream = rust_client.open_chunk_stream(
+                chunks=chunks,
+                file_key=file_key,
+                was_compressed=was_compressed,
+                start_byte=start_byte,
+                end_byte=end_byte,
+                chunk_size=chunk_size,
+            )
+            async with stream:
+                async with aiofiles.open(output_path, "wb") as output_f:
+                    async for data in stream:
+                        await output_f.write(data)
+                        total_written += len(data)
 
             logger.info(
                 "✓ Contiguous fetch via Rust: %.1fMB written",
@@ -569,7 +571,7 @@ async def _fetch_contiguous_range(
             )
             return total_written
         except Exception as exc:
-            logger.warning("Rust stream_download_chunks failed, falling back to Python: %s", exc)
+            logger.warning("Rust chunk stream failed, falling back to Python: %s", exc)
             # Fall through to Python path below
 
     # Traditional chunked storage

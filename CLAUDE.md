@@ -167,6 +167,28 @@ Separate FastAPI service with its own PostgreSQL database. Handles FIDO2/WebAuth
 - ML features are toggled via `ML_*_ENABLED` flags in `app/config.py`
 - LLM integration (AI summarization, naming) requires setting `OPENAI_API_KEY` or configuring Ollama in `infrastructure/.env`
 
+## Async generator rules
+
+**Streaming-response generators — generators whose output is consumed by Starlette's `StreamingResponse` or similar response-streaming primitives — MUST NOT own resources whose cleanup requires `await`.**
+
+Inside a streaming-response generator:
+- ❌ `async with X: ... yield ...` — banned. `X.__aexit__` may await during PEP 525 cleanup, racing with `aclose()` from outer layers.
+- ❌ `try: ...; finally: await ...` — banned. Same race.
+- ✅ `try: ...; finally: f.close()` — sync cleanup is fine.
+- ✅ Resources requiring async cleanup live OUTSIDE the generator: in an outer scope's `async with`, attached to `Response.background` as a Starlette `BackgroundTask`, or owned by an explicit class with `__aenter__`/`__aexit__` that the route handler enters before yielding the data generator.
+
+Why: PEP 525 cleanup of nested async generators is fragile when any generator's teardown awaits — Python raises `RuntimeError: aclose(): asynchronous generator is already running` on client disconnect mid-stream.
+
+Reusable building blocks for this codebase:
+- `app/utils/stream_lease.py:StreamLease` — Redis stream slots (acquire in handler, release via `BackgroundTask`)
+- `app/utils/file_streaming.py:iter_file_chunks` — file I/O (sync open/close + `to_thread` reads)
+- `app/services/rust_dataplane_client.py:RustChunkStream` — httpx streaming (close-aware iterator class)
+- `app/routers/files.py:_build_throttled_response` — composes `StreamLease.release` + extra cleanup callables via Starlette `BackgroundTasks`
+
+Scope: this rule does NOT apply to FastAPI dependency-injection generators (`async def get_db(): async with AsyncSessionLocal() as s: yield s`) or `@asynccontextmanager` lifespan handlers — those are entered/exited by FastAPI, not by client-cancelled streaming code, and are not exposed to the cleanup race.
+
+CI lint: `python services/storage-service/scripts/check_async_gen_antipattern.py` — fails CI on new violations. Allowlist file: `services/storage-service/.async_gen_lint_allowlist.txt`.
+
 ## Code Style
 
 - **Python**: Black (100 chars), isort (black profile), flake8 (ignore E203/E266/E501/W503), mypy (Python 3.11)

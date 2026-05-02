@@ -67,6 +67,13 @@ jobs:
           pip install -r services/storage-service/requirements.txt
           pip install pytest pytest-asyncio pytest-cov httpx
 
+      - name: Async-generator antipattern check
+        # Stdlib-only AST scan; no extra deps. Hard-fails on any
+        # streaming-response generator that owns resources requiring
+        # async cleanup. See CLAUDE.md → "Async generator rules".
+        run: |
+          python services/storage-service/scripts/check_async_gen_antipattern.py
+
       - name: Run unit tests
         env:
           DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db

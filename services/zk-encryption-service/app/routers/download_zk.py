@@ -419,63 +419,57 @@ async def download_file(
     chunk_size = 1048576  # 1MB
     total_chunks = (file_obj.file_size + chunk_size - 1) // chunk_size
 
-    # ============ BANDWIDTH THROTTLING: Acquire stream slot ============
+    # Acquire stream-slot lease BEFORE building the StreamingResponse so a
+    # 429 fails fast and we don't half-construct a response. The lease's
+    # release runs as a Starlette BackgroundTask attached to the response,
+    # OUTSIDE any async-generator finally clause — see PR-D in the
+    # async-gen race plan; storage-service has the same pattern.
+    from starlette.background import BackgroundTask
+    from app.utils.stream_lease import StreamLease
+    import asyncio as _asyncio
+
     user_id_str = str(user.id)
-    
-    stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
-        user_id_str,
+    lease = StreamLease(
+        user_id=user_id_str,
         plan_type=user.plan_type,
-        db_streams_override=getattr(user, 'max_concurrent_streams', None)
+        db_streams_override=getattr(user, 'max_concurrent_streams', None),
     )
-    if not stream_acquired:
-        max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
-            user_id_str, user.plan_type, getattr(user, 'max_concurrent_streams', None)
-        )
-        raise HTTPException(
-            status_code=429,
-            detail=f"Too many concurrent downloads ({max_streams} max). Please wait and retry.",
-            headers={"Retry-After": "10"}
-        )
+    await lease.acquire()  # raises HTTPException 429 on limit
 
-    # Stream encrypted chunks with throttling
+    # Stream encrypted chunks with bandwidth throttling. NO `await` in
+    # `finally`; slot release is the BackgroundTask, not the generator.
     async def chunk_generator():
-        """Generate encrypted chunks for streaming with bandwidth throttling"""
-        import asyncio
-        
-        try:
-            for chunk_index in range(total_chunks):
-                chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
+        """Generate encrypted chunks for streaming with bandwidth throttling."""
+        for chunk_index in range(total_chunks):
+            chunk_path = storage_dir / f"chunk_{chunk_index}.enc"
 
-                if not chunk_path.exists():
-                    logger.error(
-                        "missing_chunk",
-                        file_id=file_id,
-                        chunk_index=chunk_index
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=f"Missing chunk {chunk_index}"
-                    )
-
-                # Read encrypted chunk
-                with open(chunk_path, "rb") as f:
-                    chunk_data = f.read()
-                
-                # ============ BANDWIDTH THROTTLING: Check bandwidth ============
-                chunk_size = len(chunk_data)
-                allowed, wait_time = await bandwidth_throttle_service.can_transfer(
-                    user_id_str,
-                    chunk_size,
-                    plan_type=user.plan_type,
-                    db_bandwidth_override=getattr(user, 'bandwidth_limit_mbps', None)
+            if not chunk_path.exists():
+                logger.error(
+                    "missing_chunk",
+                    file_id=file_id,
+                    chunk_index=chunk_index
                 )
-                if not allowed:
-                    await asyncio.sleep(min(wait_time, 1.0))
-                
-                yield chunk_data
-        finally:
-            # ============ BANDWIDTH THROTTLING: Release stream slot ============
-            await bandwidth_throttle_service.release_stream_slot(user_id_str)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Missing chunk {chunk_index}"
+                )
+
+            # Read encrypted chunk (sync open — no async-with race)
+            with open(chunk_path, "rb") as f:
+                chunk_data = f.read()
+
+            # Bandwidth throttling check
+            chunk_size = len(chunk_data)
+            allowed, wait_time = await bandwidth_throttle_service.can_transfer(
+                user_id_str,
+                chunk_size,
+                plan_type=user.plan_type,
+                db_bandwidth_override=getattr(user, 'bandwidth_limit_mbps', None)
+            )
+            if not allowed:
+                await _asyncio.sleep(min(wait_time, 1.0))
+
+            yield chunk_data
 
     logger.info(
         "zk_download_started",
@@ -485,20 +479,25 @@ async def download_file(
         filename_encrypted=True
     )
 
-    # Return streaming response with encrypted filename headers
-    return StreamingResponse(
-        chunk_generator(),
-        media_type=file_obj.mime_type or "application/octet-stream",
-        headers={
-            "Content-Disposition": f'attachment; filename="encrypted_file"',
-            "Content-Length": str(file_obj.file_size),
-            "X-File-Encrypted": "true",
-            "X-Encryption-Algorithm": file_obj.encryption_algorithm or "AES-256-GCM",
-            # Client uses these to decrypt filename
-            "X-Encrypted-File-Name": file_obj.encrypted_file_name or "",
-            "X-File-Name-IV": file_obj.file_name_iv or ""
-        }
-    )
+    try:
+        return StreamingResponse(
+            chunk_generator(),
+            media_type=file_obj.mime_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="encrypted_file"',
+                "Content-Length": str(file_obj.file_size),
+                "X-File-Encrypted": "true",
+                "X-Encryption-Algorithm": file_obj.encryption_algorithm or "AES-256-GCM",
+                # Client uses these to decrypt filename
+                "X-Encrypted-File-Name": file_obj.encrypted_file_name or "",
+                "X-File-Name-IV": file_obj.file_name_iv or ""
+            },
+            background=BackgroundTask(lease.release),
+        )
+    except Exception:
+        # Construction failed after lease was live — release before propagating.
+        await lease.release()
+        raise
 
 
 @router.get("/files/{file_id}/chunk/{chunk_index}")

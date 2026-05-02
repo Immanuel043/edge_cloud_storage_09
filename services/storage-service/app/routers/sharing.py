@@ -60,6 +60,7 @@ from ..models.schemas import (
 )
 from ..services.auth import auth_service, pwd_context
 from ..utils.access_logger import log_share_access
+from ..utils.file_streaming import iter_file_chunks
 from ..utils.rate_limiter import RateLimitConfig, check_ip_whitelist, limiter, share_limiter
 
 router = APIRouter(prefix="/api/v1", tags=["sharing"])
@@ -1110,15 +1111,11 @@ async def stream_shared_file(
                     headers["Content-Range"] = f"bytes {start}-{end}/{compat_size}"
 
                 async def stream_compat():
-                    async with aiofiles.open(compat_path, "rb") as f:
-                        await f.seek(start)
-                        remaining = end - start + 1
-                        while remaining > 0:
-                            chunk = await f.read(min(1024 * 1024, remaining))
-                            if not chunk:
-                                break
-                            remaining -= len(chunk)
-                            yield chunk
+                    # iter_file_chunks uses sync open/close — cancellation-safe.
+                    async for chunk in iter_file_chunks(
+                        compat_path, start=start, end=end, block_size=1024 * 1024
+                    ):
+                        yield chunk
 
                 return StreamingResponse(
                     stream_compat(),

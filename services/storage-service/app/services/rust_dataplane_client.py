@@ -12,7 +12,7 @@ import logging
 import os
 import socket
 import time
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import quote
 
 import httpx
@@ -21,6 +21,102 @@ from httpx import AsyncClient, Timeout
 from ..utils.executors import run_in_heavy_pool
 
 logger = logging.getLogger(__name__)
+
+
+class RustChunkStream:
+    """Close-aware async iterator for the Rust /stream-download endpoint.
+
+    Owns the httpx streaming-response lifecycle via `__aenter__` / `aclose`,
+    NOT via an async-generator's PEP 525 cleanup. This is required for
+    use as a streaming-response source — generators that use
+    `async with self.client.stream(...)` directly race with `aclose()`
+    on client disconnect.
+
+    Two valid usage patterns:
+
+    1. From a route handler returning `StreamingResponse` (the streaming
+       case the rule was written for):
+
+           stream = client.open_chunk_stream(...)
+           await stream.__aenter__()  # opens HTTP connection, raises on HTTP error
+           return StreamingResponse(
+               stream, background=BackgroundTask(stream.aclose), ...
+           )
+
+    2. From a non-streaming async function (e.g., preview disk-fetch):
+
+           stream = client.open_chunk_stream(...)
+           async with stream:
+               async for chunk in stream:
+                   await output_f.write(chunk)
+    """
+
+    def __init__(
+        self,
+        client: AsyncClient,
+        url: str,
+        json: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[Any] = None,
+        chunk_size: int = 1024 * 1024,
+    ):
+        self._client = client
+        self._url = url
+        self._json = json
+        self._headers = headers
+        self._timeout = timeout
+        self._chunk_size = chunk_size
+        self._stream_ctx: Optional[Any] = None
+        self._response: Optional[httpx.Response] = None
+        self._closed = False
+
+    async def __aenter__(self) -> "RustChunkStream":
+        self._stream_ctx = self._client.stream(
+            "POST",
+            self._url,
+            json=self._json,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        self._response = await self._stream_ctx.__aenter__()
+        self._response.raise_for_status()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Idempotent close — safe to call from BackgroundTask or __aexit__.
+
+        Wrapped in asyncio.shield so caller cancellation does not interrupt
+        the actual httpx aclose mid-flight. This await is OUTSIDE async-
+        generator cleanup; it runs in the response task group, not as part
+        of any generator's `aclose()` walk.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._stream_ctx is None:
+            return
+        try:
+            await asyncio.shield(self._stream_ctx.__aexit__(None, None, None))
+        except Exception as exc:
+            logger.warning("RustChunkStream close failed: %s", exc)
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._iter()
+
+    async def _iter(self) -> AsyncIterator[bytes]:
+        """Plain async generator — no async-with, no await-in-finally."""
+        if self._response is None:
+            raise RuntimeError("RustChunkStream not entered (call __aenter__ first)")
+        bytes_since_yield = 0
+        async for chunk in self._response.aiter_bytes(chunk_size=self._chunk_size):
+            yield chunk
+            bytes_since_yield += len(chunk)
+            if bytes_since_yield >= 4_000_000:
+                await asyncio.sleep(0)
+                bytes_since_yield = 0
 
 
 def _build_batch_manifest(blocks: list, user_id: str, should_compress: bool):
@@ -388,16 +484,25 @@ class RustDataPlaneClient:
         self._health_checked_at = now
         return self._health_ok
 
-    async def stream_download_chunks(
+    def open_chunk_stream(
         self,
+        *,
         chunks: list,
         file_key: bytes,
         was_compressed: bool,
         start_byte: int,
         end_byte: int,
         chunk_size: int,
-    ) -> AsyncGenerator[bytes, None]:
-        """Stream decrypted plaintext from the Rust /stream-download endpoint."""
+    ) -> RustChunkStream:
+        """Build a `RustChunkStream` configured for /stream-download.
+
+        Returns a NOT-YET-ENTERED stream. Caller must `await stream.__aenter__()`
+        (in a route handler that attaches `stream.aclose` as a BackgroundTask)
+        OR use `async with stream:` (in a non-streaming-response context such
+        as preview disk-fetch).
+
+        See RustChunkStream docstring for the two valid usage patterns.
+        """
         headers = {
             "x-file-key": base64.b64encode(file_key).decode("ascii"),
             "x-was-compressed": "true" if was_compressed else "false",
@@ -409,22 +514,13 @@ class RustDataPlaneClient:
             "end_byte": end_byte,
             "chunk_size": chunk_size,
         }
-
-        async with self.client.stream(
-            "POST",
-            "/stream-download",
+        return RustChunkStream(
+            client=self.client,
+            url="/stream-download",
             json=body,
             headers=headers,
             timeout=Timeout(120.0),
-        ) as response:
-            response.raise_for_status()
-            bytes_since_yield = 0
-            async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                yield chunk
-                bytes_since_yield += len(chunk)
-                if bytes_since_yield >= 4_000_000:
-                    await asyncio.sleep(0)
-                    bytes_since_yield = 0
+        )
 
     async def convergent_decrypt(
         self,

@@ -36,6 +36,7 @@ from ..config import settings
 from ..database import get_redis
 from ..dependencies import get_current_user, get_db, get_plan_quota, log_activity
 from ..models.database import FileVersion, Object, User
+from ..utils.file_streaming import _read_all_bytes
 from ..models.schemas import UploadInitResponse, UploadStatusResponse
 from ..monitoring.metrics import (
     active_uploads,
@@ -1357,8 +1358,9 @@ async def download_file(
             if not os.path.exists(file_obj.object_path):
                 raise HTTPException(404, "File data not found on disk")
 
-            async with aiofiles.open(file_obj.object_path, "rb") as f:
-                encrypted_data = await f.read()
+            # Sync open via to_thread — async-with inside this streaming
+            # generator races with PEP 525 cleanup on client disconnect.
+            encrypted_data = await asyncio.to_thread(_read_all_bytes, file_obj.object_path)
 
             file_data = encryption_service.decrypt_file(encrypted_data, file_key)
 
@@ -1388,8 +1390,8 @@ async def download_file(
                 if not os.path.exists(chunk_path):
                     raise HTTPException(404, f"Chunk {i} not found")
 
-                async with aiofiles.open(chunk_path, "rb") as f:
-                    encrypted_chunk = await f.read()
+                # Sync open via to_thread — see comment above.
+                encrypted_chunk = await asyncio.to_thread(_read_all_bytes, chunk_path)
 
                 # Decrypt chunk
                 decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, i)

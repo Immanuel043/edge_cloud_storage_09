@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask, BackgroundTasks
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _content_disposition(disposition: str, filename: str) -> str:
 
 import base64
 import re
-from typing import AsyncGenerator, Optional, Tuple
+from typing import Any, AsyncGenerator, Optional, Tuple
 
 import aiofiles
 from pydantic import BaseModel
@@ -47,8 +48,10 @@ from ..services.encryption import encryption_service
 from ..services.kafka_client import get_kafka_producer
 from ..services.search_service import search_service
 from ..services.storage import storage_service
+from ..utils.file_streaming import _read_all_bytes, iter_file_chunks
 from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 from ..utils.resolved_file_view import ResolvedFileView
+from ..utils.stream_lease import StreamLease
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 USE_X_ACCEL = bool(os.environ.get("USE_X_ACCEL", False))
@@ -143,81 +146,94 @@ def _resolve_chunk_paths(file_obj) -> List[str]:
     return paths
 
 
-async def throttled_download_generator(
+async def _build_throttled_response(
+    *,
     user_id: str,
-    data_generator: AsyncGenerator[bytes, None],
-    file_size: int,
-    plan_type: str = "free",
-    db_bandwidth_override: int = None,
-    db_streams_override: int = None,
-) -> AsyncGenerator[bytes, None]:
+    base_generator,  # AsyncGenerator[bytes, None] | AsyncIterable[bytes]
+    plan_type: str,
+    db_bandwidth_override: Optional[int] = None,
+    db_streams_override: Optional[int] = None,
+    status_code: int = 200,
+    headers: Optional[dict] = None,
+    media_type: Optional[str] = None,
+    extra_background: Optional[List] = None,
+) -> StreamingResponse:
+    """Acquire a stream-slot lease, build a throttled StreamingResponse,
+    and attach the lease release plus any extras as Starlette BackgroundTasks.
+
+    Slot lifetime is owned by `StreamLease` — release runs OUTSIDE any
+    async generator's `finally` block, eliminating the PEP 525 cleanup
+    race. Additional cleanup callables (e.g., `RustChunkStream.aclose`)
+    pass through `extra_background` and run AFTER `lease.release` in the
+    response's task group, so the concurrency slot frees before downstream
+    connections unwind.
+
+    Raises HTTPException 429 if the user is at their concurrent-stream
+    limit. Any failure between `acquire()` and the `StreamingResponse`
+    return path explicitly releases the lease AND awaits each
+    `extra_background` callable before propagating, since BackgroundTasks
+    are only attached on the success path.
     """
-    Wraps a download generator with bandwidth throttling and stream slot management.
-
-    - Acquires a stream slot before starting (plan-based limit)
-    - Applies per-user bandwidth limiting with token bucket algorithm
-    - Releases stream slot on completion or error
-    - Returns 429 if bandwidth limit causes long waits
-
-    Args:
-        user_id: User ID for throttling
-        data_generator: Original async generator yielding data chunks
-        file_size: Total file size (for logging)
-        plan_type: User's subscription plan tier (free, basic, pro, team)
-        db_bandwidth_override: Admin-set bandwidth override from User model
-        db_streams_override: Admin-set max streams override from User model
-    """
-    stream_acquired = False
-
-    # Get max streams for this user's plan (or override)
-    max_streams = await bandwidth_throttle_service.get_max_streams_with_plan(
-        user_id, plan_type, db_streams_override
-    )
-
+    lease = StreamLease(user_id, plan_type, db_streams_override)
+    await lease.acquire()  # raises 429 on limit
     try:
-        # Try to acquire stream slot (plan-based limit)
-        stream_acquired = await bandwidth_throttle_service.acquire_stream_slot(
-            user_id, plan_type=plan_type, db_streams_override=db_streams_override
-        )
-
-        if not stream_acquired:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Too many concurrent downloads. Maximum {max_streams} streams allowed for your plan.",
-                headers={"Retry-After": "10"},
-            )
-
-        logger.debug(
-            f"Stream slot acquired for user {user_id} ({plan_type}), starting download ({file_size} bytes)"
-        )
-
-        # Stream data with bandwidth throttling (plan-aware)
-        async for chunk in bandwidth_throttle_service.throttled_transfer(
+        byte_gen = bandwidth_throttle_service.throttled_transfer(
             user_id=user_id,
-            data_generator=data_generator,
+            data_generator=base_generator,
             raise_on_long_wait=True,
             plan_type=plan_type,
             db_bandwidth_override=db_bandwidth_override,
-        ):
-            yield chunk
-
-    except HTTPException:
-        # Re-raise HTTP exceptions (429, etc.)
+        )
+        # Compose lease release with any extras. Lease releases first so
+        # the concurrency slot frees before downstream connections close.
+        bg = BackgroundTasks()
+        bg.add_task(lease.release)
+        for fn in (extra_background or []):
+            bg.add_task(fn)
+        return StreamingResponse(
+            byte_gen,
+            status_code=status_code,
+            headers=headers,
+            media_type=media_type,
+            background=bg,
+        )
+    except Exception:
+        # Construction failed after lease was live — release lease AND any
+        # extras (e.g., a Rust stream we opened) before propagating.
+        await lease.release()
+        for fn in (extra_background or []):
+            try:
+                await fn()
+            except Exception as cleanup_exc:
+                logger.warning("Extra background cleanup failed: %s", cleanup_exc)
         raise
-    except Exception as e:
-        logger.error(f"Error in throttled download for user {user_id}: {e}")
-        raise
-    finally:
-        # Always release stream slot
-        if stream_acquired:
-            await bandwidth_throttle_service.release_stream_slot(user_id)
-            logger.debug(f"Stream slot released for user {user_id}")
 
 
-async def _stream_via_rust(
+async def _open_chunked_byte_source(
     resolved, file_key: bytes, start_byte: int, end_byte: int
-) -> AsyncGenerator[bytes, None]:
-    """Build chunk manifest and stream decrypted data from the Rust data plane."""
+) -> Tuple[Any, List]:
+    """Open the chunked-download byte source, preferring the Rust data plane
+    with a Python fallback.
+
+    Returns `(byte_source, extra_cleanup)` for `_build_throttled_response`:
+
+    - `byte_source`: an async iterable over plaintext bytes.
+    - `extra_cleanup`: list of zero-arg async callables that the response
+      must run as BackgroundTasks (in addition to lease release). When the
+      Rust path is taken, this contains `rust_stream.aclose`. When the
+      Python fallback is taken, this is empty.
+
+    Lifecycle is owned by the route handler — no resource is held inside
+    an async-generator's `finally`. See plan: PR-C "Caller pattern — adopted".
+
+    Branches (and what each guarantees):
+    1. Rust unavailable: returns Python source, empty cleanup.
+    2. Rust available but `__aenter__` fails (HTTP error, network):
+       falls through to Python source, empty cleanup. httpx unwinds
+       any partial state during the failed `__aenter__`.
+    3. Rust available and entered: returns Rust stream, `[stream.aclose]`.
+       Caller is responsible for ensuring `aclose` runs (BackgroundTask).
+    """
     from ..services.rust_dataplane_client import get_rust_client
 
     chunk_info = resolved.chunk_info
@@ -225,53 +241,49 @@ async def _stream_via_rust(
     total_chunks = chunk_info.get("count", 0)
     was_compressed = chunk_info.get("compressed", False)
 
-    # Slice the cached full-file manifest for this byte range. The cache is
-    # invalidated on file delete + version bump (see _invalidate_manifest_cache).
     full_manifest = _get_or_build_full_manifest(resolved)
     first_chunk = start_byte // chunk_size
     last_chunk = min(end_byte // chunk_size, total_chunks - 1)
-    chunks = full_manifest[first_chunk : last_chunk + 1]
+    chunks_in_range = full_manifest[first_chunk : last_chunk + 1]
 
     rust_client = get_rust_client()
-    async for data in rust_client.stream_download_chunks(
-        chunks=chunks,
-        file_key=file_key,
-        was_compressed=was_compressed,
-        start_byte=start_byte,
-        end_byte=end_byte,
-        chunk_size=chunk_size,
-    ):
-        yield data
-
-
-async def _try_rust_or_python(
-    resolved, file_key: bytes, start_byte: int, end_byte: int
-) -> AsyncGenerator[bytes, None]:
-    """Try Rust data plane for chunked download, fall back to Python."""
-    use_rust = False
+    rust_available = False
     try:
-        from ..services.rust_dataplane_client import get_rust_client
-
-        rust_client = get_rust_client()
-        if await rust_client.is_available():
-            use_rust = True
+        rust_available = await rust_client.is_available()
     except Exception:
-        pass
+        rust_available = False
 
-    if use_rust:
-        logger.debug("Using Rust data plane for chunked download")
-        async for data in _stream_via_rust(resolved, file_key, start_byte, end_byte):
-            yield data
-    else:
-        logger.debug("Falling back to Python for chunked download")
-        async for data in download_optimizer.stream_chunked_file_parallel(
-            file_obj=resolved,
+    if rust_available:
+        rust_stream = rust_client.open_chunk_stream(
+            chunks=chunks_in_range,
             file_key=file_key,
-            encryption_service=encryption_service,
+            was_compressed=was_compressed,
             start_byte=start_byte,
             end_byte=end_byte,
-        ):
-            yield data
+            chunk_size=chunk_size,
+        )
+        try:
+            await rust_stream.__aenter__()
+            logger.debug("Using Rust data plane for chunked download")
+            return rust_stream, [rust_stream.aclose]
+        except Exception as exc:
+            logger.warning("Rust stream open failed, falling back to Python: %s", exc)
+            # __aenter__ raised; httpx unwinds the partially-entered context.
+            # Belt-and-suspenders: also try aclose to be safe.
+            try:
+                await rust_stream.aclose()
+            except Exception:
+                pass
+
+    logger.debug("Falling back to Python for chunked download")
+    python_source = download_optimizer.stream_chunked_file_parallel(
+        file_obj=resolved,
+        file_key=file_key,
+        encryption_service=encryption_service,
+        start_byte=start_byte,
+        end_byte=end_byte,
+    )
+    return python_source, []
 
 
 class BulkDeleteRequest(BaseModel):
@@ -464,27 +476,15 @@ async def parse_range_header(
 
 
 async def stream_file_range_disk(path: str, start: int, end: int, block_size: int = 1024 * 1024):
-    """Stream a byte range from a disk file."""
-    async with aiofiles.open(path, "rb") as f:
-        await f.seek(start)
-        remaining = end - start + 1
-        while remaining > 0:
-            read_size = min(block_size, remaining)
-            chunk = await f.read(read_size)
-            if not chunk:
-                break
-            yield chunk
-            remaining -= len(chunk)
+    """Stream a byte range from a disk file. See iter_file_chunks for cancellation safety."""
+    async for chunk in iter_file_chunks(path, start=start, end=end, block_size=block_size):
+        yield chunk
 
 
 async def stream_full_file_disk(path: str, block_size: int = 1024 * 1024):
-    """Stream entire file from disk."""
-    async with aiofiles.open(path, "rb") as f:
-        while True:
-            chunk = await f.read(block_size)
-            if not chunk:
-                break
-            yield chunk
+    """Stream entire file from disk. See iter_file_chunks for cancellation safety."""
+    async for chunk in iter_file_chunks(path, block_size=block_size):
+        yield chunk
 
 
 async def stream_chunked_range(
@@ -528,9 +528,9 @@ async def stream_chunked_range(
             if not os.path.exists(block_path):
                 raise HTTPException(status_code=404, detail=f"Block file missing: {block_hash[:8]}")
 
-            # Read encrypted block
-            async with aiofiles.open(block_path, "rb") as f:
-                encrypted_data = await f.read()
+            # Read encrypted block (sync open via to_thread — no async-with
+            # cleanup race when client disconnects mid-stream).
+            encrypted_data = await asyncio.to_thread(_read_all_bytes, block_path)
 
             # Decrypt block
             was_compressed = stored_block.get("was_compressed", False)
@@ -664,9 +664,9 @@ async def stream_chunked_range(
             if not os.path.exists(chunk_path):
                 raise HTTPException(status_code=404, detail=f"Chunk {chunk_idx} missing")
 
-            # Read and decrypt chunk
-            async with aiofiles.open(chunk_path, "rb") as f:
-                encrypted_chunk = await f.read()
+            # Read and decrypt chunk (sync open via to_thread — no async-with
+            # cleanup race when client disconnects mid-stream).
+            encrypted_chunk = await asyncio.to_thread(_read_all_bytes, chunk_path)
 
             decrypted_chunk = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_idx)
 
@@ -995,15 +995,10 @@ async def download_file(
 
         async def _stream_compat_file(path: str, start_byte: int, end_byte: int):
             chunk_size = download_optimizer.get_optimal_chunk_size(compat_size)
-            async with aiofiles.open(path, "rb") as f:
-                await f.seek(start_byte)
-                remaining = end_byte - start_byte + 1
-                while remaining > 0:
-                    chunk = await f.read(min(chunk_size, remaining))
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-                    yield chunk
+            async for chunk in iter_file_chunks(
+                path, start=start_byte, end=end_byte, block_size=chunk_size
+            ):
+                yield chunk
 
         if request.method == "HEAD":
             return Response(status_code=status_code, headers=headers, media_type="video/mp4")
@@ -1096,17 +1091,15 @@ async def download_file(
                 end_byte=end,
                 compressed=was_compressed,
             )
-            # Wrap with bandwidth throttling and stream limiting (plan-aware)
-            throttled_generator = throttled_download_generator(
+            return await _build_throttled_response(
                 user_id=user_id_str,
-                data_generator=base_generator,
-                file_size=content_length,
+                base_generator=base_generator,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
                 db_streams_override=current_user.max_concurrent_streams,
-            )
-            return StreamingResponse(
-                throttled_generator, status_code=206, headers=headers, media_type=mime_type
+                status_code=206,
+                headers=headers,
+                media_type=mime_type,
             )
         else:
             headers = {
@@ -1121,17 +1114,15 @@ async def download_file(
                 end_byte=total_size - 1,
                 compressed=was_compressed,
             )
-            # Wrap with bandwidth throttling and stream limiting (plan-aware)
-            throttled_generator = throttled_download_generator(
+            return await _build_throttled_response(
                 user_id=user_id_str,
-                data_generator=base_generator,
-                file_size=total_size,
+                base_generator=base_generator,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
                 db_streams_override=current_user.max_concurrent_streams,
-            )
-            return StreamingResponse(
-                throttled_generator, status_code=200, headers=headers, media_type=mime_type
+                status_code=200,
+                headers=headers,
+                media_type=mime_type,
             )
 
     # CHUNKED STORAGE (includes content_addressed)
@@ -1161,19 +1152,21 @@ async def download_file(
                 base_generator = stream_chunked_range(
                     resolved, start, end, file_key, encryption_service
                 )
+                extra_bg: List = []
             else:
-                base_generator = _try_rust_or_python(resolved, file_key, start, end)
-            # Wrap with bandwidth throttling and stream limiting (plan-aware)
-            throttled_generator = throttled_download_generator(
+                base_generator, extra_bg = await _open_chunked_byte_source(
+                    resolved, file_key, start, end
+                )
+            return await _build_throttled_response(
                 user_id=user_id_str,
-                data_generator=base_generator,
-                file_size=content_length,
+                base_generator=base_generator,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
                 db_streams_override=current_user.max_concurrent_streams,
-            )
-            return StreamingResponse(
-                throttled_generator, status_code=206, headers=headers, media_type=mime_type
+                status_code=206,
+                headers=headers,
+                media_type=mime_type,
+                extra_background=extra_bg,
             )
         else:
             headers = {
@@ -1184,19 +1177,21 @@ async def download_file(
                 base_generator = stream_chunked_range(
                     resolved, 0, total_size - 1, file_key, encryption_service
                 )
+                extra_bg = []
             else:
-                base_generator = _try_rust_or_python(resolved, file_key, 0, total_size - 1)
-            # Wrap with bandwidth throttling and stream limiting (plan-aware)
-            throttled_generator = throttled_download_generator(
+                base_generator, extra_bg = await _open_chunked_byte_source(
+                    resolved, file_key, 0, total_size - 1
+                )
+            return await _build_throttled_response(
                 user_id=user_id_str,
-                data_generator=base_generator,
-                file_size=total_size,
+                base_generator=base_generator,
                 plan_type=current_user.plan_type,
                 db_bandwidth_override=current_user.bandwidth_limit_mbps,
                 db_streams_override=current_user.max_concurrent_streams,
-            )
-            return StreamingResponse(
-                throttled_generator, status_code=200, headers=headers, media_type=mime_type
+                status_code=200,
+                headers=headers,
+                media_type=mime_type,
+                extra_background=extra_bg,
             )
 
     else:

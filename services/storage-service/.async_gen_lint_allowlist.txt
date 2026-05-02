@@ -1,0 +1,11 @@
+# Allowlist for check_async_gen_antipattern.py
+#
+# One name pattern per line (supports `*` glob).
+# Lines starting with `file:` add file-path glob patterns.
+# `#` starts a comment.
+#
+# Defaults already cover get_db, get_redis, get_es_client, get_*_session,
+# lifespan, and files **/dependencies.py, **/database.py, **/main.py.
+# Add additional allowlist entries below as new dependency idioms appear.
+
+# (currently empty — defaults are sufficient)
