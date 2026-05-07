@@ -13,7 +13,19 @@ from typing import Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ..config import settings
+
 logger = logging.getLogger(__name__)
+
+# Bound total concurrent preview-generation jobs across the process. Sized
+# from settings.PREVIEW_GENERATION_CONCURRENCY (env-overridable). Both
+# entrypoints into preview generation converge on `generate_preview()`:
+#   - routers/files.py:1748 via preview_service.generate_on_demand
+#   - routers/files.py:1772 via direct call (transcoded MP4 fast path)
+# Placing the semaphore here catches both with one chokepoint. Cache hits
+# do NOT reach this method (cache check happens at the route level), so the
+# semaphore only fires on confirmed cache misses.
+_GEN_SEMAPHORE = asyncio.Semaphore(settings.PREVIEW_GENERATION_CONCURRENCY)
 
 # Try to import optional dependencies (graceful degradation)
 try:
@@ -122,59 +134,62 @@ class PreviewGenerator:
         # Ensure mime_type is never None to avoid AttributeError on .startswith()
         safe_mime_type = (mime_type or "").lower()
 
-        try:
-            # Image files
-            if ext in self.IMAGE_TYPES or safe_mime_type.startswith("image/"):
-                return await self._generate_image_preview(file_path, size_tuple)
+        # Bound concurrent generation across the process so a cache-miss
+        # burst can't saturate CPU and starve the rest of the service.
+        async with _GEN_SEMAPHORE:
+            try:
+                # Image files
+                if ext in self.IMAGE_TYPES or safe_mime_type.startswith("image/"):
+                    return await self._generate_image_preview(file_path, size_tuple)
 
-            # PDF files
-            elif ext == ".pdf" or safe_mime_type == "application/pdf":
-                if HAS_PDF_SUPPORT:
-                    return await self._generate_pdf_preview(file_path, size_tuple)
+                # PDF files
+                elif ext == ".pdf" or safe_mime_type == "application/pdf":
+                    if HAS_PDF_SUPPORT:
+                        return await self._generate_pdf_preview(file_path, size_tuple)
+                    else:
+                        return self._generate_placeholder_preview("PDF", size_tuple)
+
+                # Video files
+                elif ext in self.VIDEO_TYPES or safe_mime_type.startswith("video/"):
+                    if HAS_VIDEO_SUPPORT:
+                        return await self._generate_video_preview(
+                            file_path,
+                            size_tuple,
+                            allow_slow_decode=allow_slow_decode,
+                        )
+                    else:
+                        return self._generate_placeholder_preview("VIDEO", size_tuple)
+
+                # Document files (DOCX, TXT, etc.)
+                elif ext in self.DOCUMENT_TYPES:
+                    if ext == ".docx" and HAS_DOCX_SUPPORT:
+                        return await self._generate_docx_preview(file_path, size_tuple)
+                    elif ext in {".txt", ".md"}:
+                        return await self._generate_text_preview(file_path, size_tuple)
+                    else:
+                        return self._generate_placeholder_preview("DOC", size_tuple)
+
+                # Audio files
+                elif ext in self.AUDIO_TYPES or safe_mime_type.startswith("audio/"):
+                    return self._generate_placeholder_preview("AUDIO", size_tuple, "🎵")
+
+                # Archive files
+                elif ext in self.ARCHIVE_TYPES:
+                    return self._generate_placeholder_preview("ARCHIVE", size_tuple, "📦")
+
+                # Code files
+                elif ext in self.CODE_TYPES:
+                    return await self._generate_text_preview(file_path, size_tuple, is_code=True)
+
+                # Unknown/unsupported
                 else:
-                    return self._generate_placeholder_preview("PDF", size_tuple)
+                    return self._generate_placeholder_preview("FILE", size_tuple)
 
-            # Video files
-            elif ext in self.VIDEO_TYPES or safe_mime_type.startswith("video/"):
-                if HAS_VIDEO_SUPPORT:
-                    return await self._generate_video_preview(
-                        file_path,
-                        size_tuple,
-                        allow_slow_decode=allow_slow_decode,
-                    )
-                else:
-                    return self._generate_placeholder_preview("VIDEO", size_tuple)
-
-            # Document files (DOCX, TXT, etc.)
-            elif ext in self.DOCUMENT_TYPES:
-                if ext == ".docx" and HAS_DOCX_SUPPORT:
-                    return await self._generate_docx_preview(file_path, size_tuple)
-                elif ext in {".txt", ".md"}:
-                    return await self._generate_text_preview(file_path, size_tuple)
-                else:
-                    return self._generate_placeholder_preview("DOC", size_tuple)
-
-            # Audio files
-            elif ext in self.AUDIO_TYPES or safe_mime_type.startswith("audio/"):
-                return self._generate_placeholder_preview("AUDIO", size_tuple, "🎵")
-
-            # Archive files
-            elif ext in self.ARCHIVE_TYPES:
-                return self._generate_placeholder_preview("ARCHIVE", size_tuple, "📦")
-
-            # Code files
-            elif ext in self.CODE_TYPES:
-                return await self._generate_text_preview(file_path, size_tuple, is_code=True)
-
-            # Unknown/unsupported
-            else:
-                return self._generate_placeholder_preview("FILE", size_tuple)
-
-        except SlowCodecError:
-            raise  # Let caller decide whether to defer or retry
-        except Exception as e:
-            logger.error(f"Preview generation failed for {file_name}: {e}", exc_info=True)
-            return self._generate_placeholder_preview("ERROR", size_tuple)
+            except SlowCodecError:
+                raise  # Let caller decide whether to defer or retry
+            except Exception as e:
+                logger.error(f"Preview generation failed for {file_name}: {e}", exc_info=True)
+                return self._generate_placeholder_preview("ERROR", size_tuple)
 
     async def _generate_image_preview(
         self, file_path: str, size: Tuple[int, int]

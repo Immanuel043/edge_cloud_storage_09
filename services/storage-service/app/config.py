@@ -236,6 +236,24 @@ class Settings:
     ML_CPU_THREADS: int = int(os.getenv("ML_CPU_THREADS", 32))  # 16C/32T
     ML_BATCH_SIZE: int = int(os.getenv("ML_BATCH_SIZE", 100))  # Batch processing size
 
+    # Bound concurrent preview-generation jobs across the process so that a
+    # cache-miss burst (e.g., dashboard loading a folder of 20 files) cannot
+    # saturate the CPU and cause event-loop lag spikes. Default is half the
+    # detected core count, floor 2, so a small dev box still handles 2 in
+    # parallel and a 16-core prod box handles 8 — leaving headroom for the
+    # rest of the request handlers.
+    # Clamped to >= 1 so a misconfigured `PREVIEW_GENERATION_CONCURRENCY=0`
+    # cannot create a deadlocked semaphore (every preview would block forever).
+    PREVIEW_GENERATION_CONCURRENCY: int = max(
+        1,
+        int(
+            os.getenv(
+                "PREVIEW_GENERATION_CONCURRENCY",
+                max(2, (os.cpu_count() or 4) // 2),
+            )
+        ),
+    )
+
     # Semantic Search Configuration
     SEMANTIC_SEARCH_ENABLED: bool = os.getenv("SEMANTIC_SEARCH_ENABLED", "true").lower() == "true"
     SEMANTIC_MODEL_NAME: str = os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2")

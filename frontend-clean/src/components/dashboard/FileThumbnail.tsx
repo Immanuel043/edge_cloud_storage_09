@@ -27,6 +27,7 @@ import {
 import { decryptThumbnail, createThumbnailUrl } from '../../utils/zkThumbnails';
 import { prepareFileForDecryption, isZKSessionUnlocked } from '../../services/zkEncryptionService';
 import { bytesToBase64 } from '../../utils/zkCryptoV2';
+import { runPreviewRequest } from '../../utils/previewRequestLimiter';
 import type { FileThumbnailProps, ThumbnailSize } from './types';
 
 /**
@@ -194,30 +195,6 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
         setLoading(true);
         setError(false);
 
-        timeoutId = setTimeout(() => {
-          if (mounted) {
-            controller.abort();
-            setLoading(false);
-            setError(false);
-            abortCountRef.current += 1;
-
-            const shouldRetry =
-              wsReadyRef.current || abortCountRef.current <= MAX_ABORT_RETRIES;
-
-            if (shouldRetry) {
-              const delay = wsReadyRef.current
-                ? 2000
-                : Math.min(5000 * abortCountRef.current, 30000);
-              clearRetryTimer();
-              retryTimerRef.current = setTimeout(() => {
-                if (mounted) setRetryCount((prev) => prev + 1);
-              }, delay);
-            } else {
-              setIsProcessing(false);
-            }
-          }
-        }, timeoutMs);
-
         const cacheBuster = `&_t=${file.updated_at || Date.now()}&_r=${retryCount}`;
         const fileId = file.id || file.file_id;
 
@@ -228,17 +205,49 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
 
         const fetchUrl = `${baseUrl}${apiPath}/${fileId}/preview?size=${size}${cacheBuster}`;
 
-        const response = await fetch(fetchUrl, {
-          credentials: 'include',
-          signal: controller.signal,
-          cache: 'no-store',
-        });
+        // Bound concurrent /preview fetches to MAX_PREVIEW_FETCHES across all
+        // <FileThumbnail/> instances. Surplus tasks queue FIFO. The timeout
+        // is set INSIDE the limiter closure so a queued task does not "time
+        // out" while waiting for a slot — the timer only starts once a slot
+        // is acquired and the actual fetch begins.
+        const response = await runPreviewRequest(async () => {
+          timeoutId = setTimeout(() => {
+            if (mounted) {
+              controller.abort();
+              setLoading(false);
+              setError(false);
+              abortCountRef.current += 1;
 
-        // Clear timeout on successful response
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
+              const shouldRetry =
+                wsReadyRef.current || abortCountRef.current <= MAX_ABORT_RETRIES;
+
+              if (shouldRetry) {
+                const delay = wsReadyRef.current
+                  ? 2000
+                  : Math.min(5000 * abortCountRef.current, 30000);
+                clearRetryTimer();
+                retryTimerRef.current = setTimeout(() => {
+                  if (mounted) setRetryCount((prev) => prev + 1);
+                }, delay);
+              } else {
+                setIsProcessing(false);
+              }
+            }
+          }, timeoutMs);
+
+          try {
+            return await fetch(fetchUrl, {
+              credentials: 'include',
+              signal: controller.signal,
+              cache: 'no-store',
+            });
+          } finally {
+            if (timeoutId) {
+              clearTimeout(timeoutId);
+              timeoutId = null;
+            }
+          }
+        });
 
         // If file not found, silently fall back to icon
         if (response.status === 404) {

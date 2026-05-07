@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 
 import aiofiles
 
+from ..utils.executors import run_in_heavy_pool
 from .video_optimizer import video_optimizer
 
 logger = logging.getLogger(__name__)
@@ -271,8 +272,6 @@ async def _read_and_decrypt_cas_block(
     Returns decrypted (and decompressed if zstd) block bytes.
     Raises FileNotFoundError if block file is missing.
     """
-    from ..utils.executors import run_in_heavy_pool
-
     block_path = stored_block["path"]
     try:
         async with aiofiles.open(block_path, "rb") as f:
@@ -603,8 +602,6 @@ async def _fetch_contiguous_range(
                 logger.warning(f"Chunk {chunk_idx} not found at {chunk_path}")
                 continue
 
-            from ..utils.executors import run_in_heavy_pool
-
             def _decrypt_decompress(enc, enc_svc, key, idx, compressed):
                 dec = enc_svc.decrypt_chunk(enc, key, idx)
                 if compressed:
@@ -692,8 +689,6 @@ class PreviewOptimizer:
 
         Returns: (temp_file_path, is_complete)
         """
-        from ..utils.executors import run_in_heavy_pool
-
         # If file is small enough, download completely
         if file_size <= head_size + tail_size:
             logger.info(f"File small enough ({file_size/1024/1024:.1f}MB), downloading completely")
@@ -799,14 +794,18 @@ class PreviewOptimizer:
 
             # Handle different storage types
             if file_obj.storage_type == "inline":
-                # Inline data - always complete
+                # Inline data - always complete. Decrypt + decompress run
+                # off-thread to avoid blocking the event loop on cache-miss
+                # bursts (see plan: Preview event-loop blocking, Blocker #1).
                 encrypted_data = base64.b64decode(file_obj.storage_key)
-                file_data = encryption_service.decrypt_file(encrypted_data, file_key)
+                file_data = await run_in_heavy_pool(
+                    encryption_service.decrypt_file, encrypted_data, file_key
+                )
 
                 if was_compressed:
                     from ..utils.compression import compressor
 
-                    file_data = compressor.decompress(file_data)
+                    file_data = await run_in_heavy_pool(compressor.decompress, file_data)
 
                 async with aiofiles.open(temp_file_path, "wb") as f:
                     await f.write(file_data)
@@ -857,8 +856,6 @@ class PreviewOptimizer:
                 )
                 async with aiofiles.open(file_obj.object_path, "rb") as f:
                     encrypted_data = await f.read()  # Always read complete encrypted file
-
-                from ..utils.executors import run_in_heavy_pool
 
                 file_data = await run_in_heavy_pool(
                     encryption_service.decrypt_file, encrypted_data, file_key
@@ -1576,24 +1573,32 @@ class PreviewOptimizer:
                 was_compressed = resolved_obj.chunk_info.get("compressed", False)
 
             if resolved_obj.storage_type == "inline":
+                # Decrypt + decompress run off-thread (event-loop safety).
                 encrypted_data = base64.b64decode(resolved_obj.storage_key)
-                decrypted = encryption_service.decrypt_file(encrypted_data, file_key)
+                decrypted = await run_in_heavy_pool(
+                    encryption_service.decrypt_file, encrypted_data, file_key
+                )
                 if was_compressed:
                     from ..utils.compression import compressor
 
-                    decrypted = compressor.decompress(decrypted)
+                    decrypted = await run_in_heavy_pool(compressor.decompress, decrypted)
                 async with aiofiles.open(temp_file_path, "wb") as f:
                     await f.write(decrypted)
                 return temp_file_path
 
             if resolved_obj.storage_type == "single":
+                # NB: this path historically had no >100MB size gate, so
+                # decrypt was running on the event loop for files of any
+                # size. Off-thread always.
                 async with aiofiles.open(resolved_obj.object_path, "rb") as src:
                     encrypted_data = await src.read()
-                decrypted = encryption_service.decrypt_file(encrypted_data, file_key)
+                decrypted = await run_in_heavy_pool(
+                    encryption_service.decrypt_file, encrypted_data, file_key
+                )
                 if was_compressed:
                     from ..utils.compression import compressor
 
-                    decrypted = compressor.decompress(decrypted)
+                    decrypted = await run_in_heavy_pool(compressor.decompress, decrypted)
                 async with aiofiles.open(temp_file_path, "wb") as dest:
                     await dest.write(decrypted)
                 return temp_file_path

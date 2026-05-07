@@ -4,10 +4,12 @@ Automatically moves files between storage tiers based on access patterns
 """
 
 import asyncio
+import errno
 import logging
 import os
 import shutil
 from datetime import datetime, timedelta
+from typing import Optional
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -148,6 +150,8 @@ class ColdStorageTieringService:
                     Object.storage_tier == from_tier,
                     Object.last_accessed < threshold_date,
                     Object.object_path.isnot(None),  # Must have a file path
+                    Object.is_deleted == False,  # Skip trash rows (mirrors reconcile)
+                    Object.health_status != "broken",  # Skip rows known-missing-on-disk
                 )
             )
             .limit(limit)
@@ -183,8 +187,10 @@ class ColdStorageTieringService:
         source_tier = file_obj.storage_tier
         source_path = file_obj.object_path
 
-        if not source_path or not os.path.exists(source_path):
-            logger.warning(f"Source file not found: {source_path}")
+        if not source_path or not await asyncio.to_thread(os.path.exists, source_path):
+            await self._mark_object_broken_for_missing_source(
+                file_obj, source_path, cause="preflight_missing"
+            )
             return False
 
         # Build destination path
@@ -245,9 +251,95 @@ class ColdStorageTieringService:
 
             return True
 
-        except Exception as e:
+        except FileNotFoundError:
+            # Source file disappeared between preflight check and move
+            # (TOCTOU race with trash purge or external cleanup).
+            await self._mark_object_broken_for_missing_source(
+                file_obj, source_path, cause="move_time_missing"
+            )
+            return False
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                # ENOENT from any system call in the move chain
+                # (open / shutil.move / os.remove / makedirs).
+                await self._mark_object_broken_for_missing_source(
+                    file_obj,
+                    source_path,
+                    cause=f"move_time_enoent:{getattr(e, 'filename', None)}",
+                )
+                return False
             logger.error(f"Failed to move file {source_path} to {dest_path}: {e}")
             return False
+        except Exception as e:
+            # Permissions, disk-full, zstd-corruption, etc. — NOT a missing
+            # file; do not mark broken. Same as today.
+            logger.error(f"Failed to move file {source_path} to {dest_path}: {e}")
+            return False
+
+    async def _mark_object_broken_for_missing_source(
+        self,
+        file_obj: Object,
+        missing_path: Optional[str],
+        cause: str,
+    ) -> None:
+        """Mark a tiering candidate as broken when its source is missing on disk.
+
+        Mirrors the reconcile worker's drift-detection output so peer workers
+        skip the row and audit dashboards see one consistent event-type for
+        "system observed disk drift".
+
+        The `file_obj.health_status` update lands on the live `db` session
+        owned by `_tier_files`, so it commits with the rest of the batch.
+        The audit event is emitted via a separate session and persists
+        independently (deliberate — see `_emit_drift_audit` docstring).
+        """
+        logger.warning(
+            "Cold-tiering: source missing for object %s (path=%s, cause=%s). "
+            "Marking health_status='broken'.",
+            file_obj.id,
+            missing_path,
+            cause,
+        )
+        file_obj.health_status = "broken"
+        file_obj.health_checked_at = datetime.utcnow()
+        await self._emit_drift_audit(file_obj, missing_path=missing_path, cause=cause)
+
+    async def _emit_drift_audit(
+        self, file_obj: Object, missing_path: Optional[str], cause: str
+    ) -> None:
+        """Emit a SECURITY_VIOLATION audit event using a fresh async session.
+
+        Note: `audit_service.log_event` commits its own session internally,
+        so this audit write is INDEPENDENT of the cold-tiering batch's
+        transaction — it persists even if the batch later rolls back.
+        That's a deliberate consistency tradeoff for forensic visibility,
+        mirroring the reconcile worker. Not a true atomicity guarantee.
+        """
+        try:
+            from .audit_logging_service import (
+                AuditEventType,
+                AuditSeverity,
+                audit_service,
+            )
+            async with async_session() as audit_db:
+                await audit_service.log_event(
+                    audit_db,
+                    AuditEventType.SECURITY_VIOLATION,
+                    user_id=file_obj.user_id,
+                    resource_type="file",
+                    resource_id=str(file_obj.id),
+                    action="cold_tier_move",
+                    result="failure",
+                    severity=AuditSeverity.ERROR,
+                    details={
+                        "file_name": file_obj.file_name,
+                        "missing_path": missing_path,
+                        "new_health_status": "broken",
+                        "cause": cause,
+                    },
+                )
+        except Exception as exc:
+            logger.warning("Cold-tier drift audit emit failed: %s", exc)
 
     async def _check_tier_capacity(self, db: AsyncSession):
         """Check if any tier is over capacity and force-tier oldest files"""
@@ -270,10 +362,19 @@ class ColdStorageTieringService:
             if usage_percent > 90 and tier_config["next_tier"]:
                 logger.warning(f"Tier {tier_name} at {usage_percent:.1f}% capacity - force tiering")
 
-                # Find oldest files regardless of age
+                # Find oldest files regardless of age. Apply the same
+                # defensive filters as the age-based path so capacity-pressure
+                # cycles don't re-attempt broken/deleted/no-path rows.
                 query = (
                     select(Object)
-                    .where(Object.storage_tier == tier_name)
+                    .where(
+                        and_(
+                            Object.storage_tier == tier_name,
+                            Object.object_path.isnot(None),
+                            Object.is_deleted == False,
+                            Object.health_status != "broken",
+                        )
+                    )
                     .order_by(Object.last_accessed.asc())
                     .limit(50)
                 )
