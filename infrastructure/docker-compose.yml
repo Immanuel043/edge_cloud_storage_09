@@ -271,11 +271,34 @@ services:
         reservations:
           memory: 512M
 
+  # One-shot perms fixer for the snapshots volume. ES (uid 1000, gid 0) needs
+  # write access to /es-snapshots, but Docker creates the named volume as
+  # root:root 755 the first time it is mounted, leaving ES with only r-x on the
+  # group. Without this sidecar, daily snapshots fail silently with
+  # AccessDeniedException: /es-snapshots/indices.
+  es-snapshots-init:
+    image: alpine:3.20
+    container_name: edge-es-snapshots-init
+    logging: *default-logging
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        chown -R 1000:0 /es-snapshots
+        chmod -R 0775 /es-snapshots
+        echo "[es-snapshots-init] /es-snapshots is now owned by 1000:0 with mode 0775"
+    volumes:
+      - elasticsearch_snapshots:/es-snapshots
+    restart: "no"
+
   # Elasticsearch for Search & Analytics
   elasticsearch:
     image: elasticsearch:8.11.0
     container_name: edge-elasticsearch
     logging: *default-logging
+    depends_on:
+      es-snapshots-init:
+        condition: service_completed_successfully
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
