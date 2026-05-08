@@ -121,6 +121,17 @@ async def main():
     except Exception as e:
         logger.error(f"Failed to start cold storage tiering service: {e}")
 
+    # Dedup queue consumer + GC. Producers (API replicas) XADD to the Redis
+    # streams; this worker is the sole consumer in WORKER_MODE=worker.
+    from app.routers.background_deduplication import background_dedup_service
+
+    try:
+        await background_dedup_service.start(consumer_mode=True)
+        workers.append(("dedup_consumer", background_dedup_service))
+        logger.info("Background deduplication service started (consumer mode)")
+    except Exception as e:
+        logger.error(f"Failed to start dedup consumer: {e}")
+
     try:
         video_worker = VideoProcessingWorker()
         video_task = asyncio.create_task(_supervised_video_worker(video_worker))

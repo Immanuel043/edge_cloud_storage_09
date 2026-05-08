@@ -157,14 +157,15 @@ async def lifespan(app: FastAPI):
 
     # === API-coupled services (start in "all" and "api" modes) ===
     if settings.is_api_mode:
-        # Background dedup must stay on the API replica until smart_dedup_queue
-        # is replaced with a durable backend (Redis Streams / Kafka). The queue
-        # is an in-process asyncio.Queue (services/dedup_queue.py:191) so the
-        # producer and consumer have to live in the same process. Moving the
-        # consumer to a worker silently strands jobs.
+        # Dedup runs in producer mode on API replicas — connect to Redis
+        # Streams so enqueue_for_dedup can XADD, but do NOT start the
+        # consumer loop or GC. The consumer lives in the storage-worker
+        # container (combined_worker.py); see services/redis_dedup_queue.py.
+        # In WORKER_MODE=all (dev), the worker block below additionally
+        # starts the consumer in this same process.
         try:
-            await background_dedup_service.start()
-            print("Background deduplication service started")
+            await background_dedup_service.start(consumer_mode=False)
+            print("Background deduplication service started (producer mode)")
         except Exception as e:
             print(f"Failed to start dedup service: {e}")
 
@@ -252,6 +253,19 @@ async def lifespan(app: FastAPI):
             print("Cold storage tiering service started")
         except Exception as e:
             print(f"Failed to start tiering service: {e}")
+
+        # In WORKER_MODE=all (dev single-replica), this same process is the
+        # only consumer of the Redis dedup streams. The producer-mode call
+        # above already initialized the singleton; restart it in consumer
+        # mode here to attach the dispatch loop + GC. This is a no-op when
+        # WORKER_MODE=worker because combined_worker.py owns startup there.
+        if settings.is_api_mode:
+            try:
+                await background_dedup_service.stop()
+                await background_dedup_service.start(consumer_mode=True)
+                print("Background deduplication service upgraded to consumer mode (WORKER_MODE=all)")
+            except Exception as e:
+                print(f"Failed to start dedup consumer: {e}")
 
         # Start quota prediction worker (ML feature)
         if settings.QUOTA_PREDICTION_ENABLED:
@@ -655,10 +669,14 @@ async def get_service_stats():
     """Get real-time service statistics"""
     from .services.dedup_queue import smart_dedup_queue
 
+    # Live read from Redis Streams; reflects cluster-wide queue state, not
+    # just this replica's view.
+    queue_status = await smart_dedup_queue.get_status()
+
     return {
         "deduplication": {
-            "active_jobs": len(background_dedup_service.active_jobs),
-            "queued_jobs": smart_dedup_queue.total_jobs,
+            "active_jobs": queue_status.get("active_jobs", 0),
+            "queued_jobs": queue_status.get("queue_size", 0),
         },
         "tiering": {
             "enabled": cold_storage_service.is_running,

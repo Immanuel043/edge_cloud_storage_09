@@ -474,6 +474,13 @@ class SmartDeduplicationQueue:
 
 
 # Global instance
-smart_dedup_queue = SmartDeduplicationQueue(
+#
+# The legacy SmartDeduplicationQueue (in-process asyncio.Queue) is preserved
+# above for reference and tests, but the live singleton now points at the
+# Redis Streams-backed implementation so producer (API) and consumer (worker)
+# can run in different processes. See services/redis_dedup_queue.py.
+from .redis_dedup_queue import RedisStreamDeduplicationQueue  # noqa: E402
+
+smart_dedup_queue = RedisStreamDeduplicationQueue(
     max_concurrent=2, max_queue_size=10_000, max_per_user=50
 )

@@ -44,19 +44,34 @@ class BackgroundDeduplicationService:
         """Alias for gc_task to support health check compatibility"""
         return self.gc_task
 
-    async def start(self):
-        """Start smart queue and garbage collection"""
-        # Start smart queue (replaces old worker)
-        await smart_dedup_queue.start()
-        logger.info("Smart deduplication queue started")
+    async def start(self, consumer_mode: bool = False):
+        """Start the dedup queue.
 
-        if not self.gc_task or self.gc_task.done():
-            self.gc_task = asyncio.create_task(self._garbage_collector())
-            logger.info("Garbage collection worker started")
+        Producer mode (api replicas) — initializes the Redis Streams client
+        on the singleton so ``enqueue_for_dedup`` can XADD, but does not
+        start a consumer loop and does not run garbage collection.
+
+        Consumer mode (storage-worker) — additionally starts the consumer
+        loop dispatching to ``_process_dedup_job`` and the periodic GC.
+        """
+        redis_client = await get_redis()
+
+        if consumer_mode:
+            await smart_dedup_queue.start(
+                redis_client,
+                consumer=True,
+                processor=self._process_dedup_job,
+            )
+            logger.info("Smart deduplication queue started (consumer mode)")
+            if not self.gc_task or self.gc_task.done():
+                self.gc_task = asyncio.create_task(self._garbage_collector())
+                logger.info("Garbage collection worker started")
+        else:
+            await smart_dedup_queue.start(redis_client, consumer=False)
+            logger.info("Smart deduplication queue started (producer mode)")
 
     async def stop(self):
         """Stop background workers gracefully"""
-        # Stop smart queue
         await smart_dedup_queue.stop()
         logger.info("Smart deduplication queue stopped")
 

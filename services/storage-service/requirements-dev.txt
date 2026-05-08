@@ -15,6 +15,7 @@ pytest-xdist==3.5.0  # Parallel test execution
 pytest-timeout==2.2.0
 httpx==0.25.2  # For testing FastAPI
 faker==20.1.0  # Generate fake data for tests
+fakeredis[lua]==2.23.3  # In-memory Redis (incl. Streams + EVAL) for unit tests
 
 # -----------------------------------------------------------------------------
 # Code Quality & Linting
