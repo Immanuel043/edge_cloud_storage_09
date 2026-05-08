@@ -157,18 +157,23 @@ async def lifespan(app: FastAPI):
 
     # === API-coupled services (start in "all" and "api" modes) ===
     if settings.is_api_mode:
-        # Start background services tightly coupled to the API lifecycle
+        # Background dedup must stay on the API replica until smart_dedup_queue
+        # is replaced with a durable backend (Redis Streams / Kafka). The queue
+        # is an in-process asyncio.Queue (services/dedup_queue.py:191) so the
+        # producer and consumer have to live in the same process. Moving the
+        # consumer to a worker silently strands jobs.
         try:
             await background_dedup_service.start()
             print("Background deduplication service started")
         except Exception as e:
             print(f"Failed to start dedup service: {e}")
 
-        try:
-            await cold_storage_service.start()
-            print("Cold storage tiering service started")
-        except Exception as e:
-            print(f"Failed to start tiering service: {e}")
+        # NOTE: cold_storage_service used to start here. It moved to the
+        # `is_worker_mode` block below. The loop is DB-driven and performs
+        # synchronous shutil.move on potentially-large files — exactly the
+        # work API replicas should not be doing. WORKER_MODE=all (dev) still
+        # starts it because both flags are true; WORKER_MODE=api skips it;
+        # WORKER_MODE=worker starts it via combined_worker.py.
 
         # Initialize Elasticsearch
         if settings.ELASTICSEARCH_ENABLED:
@@ -240,6 +245,14 @@ async def lifespan(app: FastAPI):
 
     # === Extractable workers (start in "all" and "worker" modes) ===
     if settings.is_worker_mode:
+        # Cold storage tiering: DB-driven 4-hour loop, runs synchronous
+        # shutil.move on potentially-large files. Belongs in worker, not API.
+        try:
+            await cold_storage_service.start()
+            print("Cold storage tiering service started")
+        except Exception as e:
+            print(f"Failed to start tiering service: {e}")
+
         # Start quota prediction worker (ML feature)
         if settings.QUOTA_PREDICTION_ENABLED:
             try:

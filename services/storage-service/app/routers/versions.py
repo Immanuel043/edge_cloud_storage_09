@@ -3,6 +3,7 @@
 File versioning endpoints - Auto-versioning and version history
 """
 
+import asyncio
 import hashlib
 from datetime import datetime
 from typing import List
@@ -259,22 +260,26 @@ async def download_file_version(
 
     storage_type = version.chunk_info.get("storage_type") if version.chunk_info else None
 
+    # Read + decrypt run in a thread so multi-MB versions don't stall the
+    # event loop. The encryption format is whole-blob (decrypt_file takes the
+    # full ciphertext), so we cannot stream-decrypt — but offloading the
+    # synchronous read+decrypt is enough.
+    def _read_and_decrypt_file(path: str) -> bytes:
+        with open(path, "rb") as fh:
+            return encryption_service.decrypt_file(fh.read(), file_key)
+
     if storage_type == "single" and version.storage_path and os.path.exists(version.storage_path):
-        # Read encrypted file from disk and decrypt
-        with open(version.storage_path, "rb") as f:
-            encrypted_data = f.read()
-        file_content = encryption_service.decrypt_file(encrypted_data, file_key)
+        file_content = await asyncio.to_thread(_read_and_decrypt_file, version.storage_path)
     elif storage_type == "inline" and version.chunk_info and "data" in version.chunk_info:
-        # Inline storage - data in chunk_info
+        # Inline storage - data already in memory; decrypt off the event loop.
         import base64
 
         encrypted_data = base64.b64decode(version.chunk_info["data"])
-        file_content = encryption_service.decrypt_file(encrypted_data, file_key)
+        file_content = await asyncio.to_thread(
+            encryption_service.decrypt_file, encrypted_data, file_key
+        )
     elif version.storage_path and os.path.exists(version.storage_path):
-        # Fallback: try reading from storage_path
-        with open(version.storage_path, "rb") as f:
-            encrypted_data = f.read()
-        file_content = encryption_service.decrypt_file(encrypted_data, file_key)
+        file_content = await asyncio.to_thread(_read_and_decrypt_file, version.storage_path)
     else:
         raise HTTPException(status_code=404, detail="Version file data not found on disk")
 

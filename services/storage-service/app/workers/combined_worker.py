@@ -11,6 +11,7 @@ Workers started:
 - orphan_cleanup_worker (every 5 minutes)
 - storage_reconcile_worker (every 6 hours)
 - video_processing_worker (Kafka consumer, supervised with backoff)
+- cold_storage_service (every 4 hours; DB-driven file tier migration)
 
 Usage:
     python -m app.workers.combined_worker
@@ -68,6 +69,7 @@ async def main():
     logger.info("Redis connection established")
 
     # Import workers after Redis is initialized
+    from app.services.cold_storage_tiering import cold_storage_service
     from app.workers.orphan_cleanup_worker import orphan_cleanup_worker
     from app.workers.quota_prediction_worker import quota_prediction_worker
     from app.workers.storage_optimization_worker import storage_optimization_worker
@@ -108,6 +110,16 @@ async def main():
         logger.info("Storage reconcile worker started")
     except Exception as e:
         logger.error(f"Failed to start storage reconcile worker: {e}")
+
+    # Cold-tiering moved out of API replicas: it's a DB-driven 4-hour loop
+    # that performs synchronous shutil.move on potentially-large files. With
+    # one worker container there is no risk of double-processing.
+    try:
+        await cold_storage_service.start()
+        workers.append(("cold_storage_tiering", cold_storage_service))
+        logger.info("Cold storage tiering service started")
+    except Exception as e:
+        logger.error(f"Failed to start cold storage tiering service: {e}")
 
     try:
         video_worker = VideoProcessingWorker()

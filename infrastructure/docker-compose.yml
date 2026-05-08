@@ -322,6 +322,7 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '1.5'
           memory: 4G  # 2x heap for native memory + Lucene off-heap + overhead
         reservations:
           memory: 2G
@@ -481,6 +482,7 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '0.75'
           memory: 2G  # ClamAV needs significant memory for virus databases
         reservations:
           memory: 1G
@@ -502,6 +504,7 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '1.0'
           memory: 2G
         reservations:
           memory: 512M
@@ -565,6 +568,7 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '1.5'
           memory: 2G
         reservations:
           memory: 1G
@@ -1080,6 +1084,7 @@ services:
       replicas: 2              # Reduce replicas to save memory
       resources:
         limits:
+          cpus: '0.75'         # Per replica; 2 replicas → 1.5 total
           memory: 1G           # Limit each processor
         reservations:
           memory: 256M
@@ -1121,6 +1126,7 @@ services:
       replicas: 2              # 2 workers for parallel preview generation
       resources:
         limits:
+          cpus: '1.0'          # Per replica; 2 replicas → 2.0 total
           memory: 2G           # Higher limit for FFmpeg processing
         reservations:
           memory: 512M
@@ -1215,6 +1221,7 @@ services:
       replicas: 1              # 1 worker is enough for embeddings (model is single-threaded)
       resources:
         limits:
+          cpus: '1.0'
           memory: 2G           # Memory for sentence-transformers model
         reservations:
           memory: 1G
@@ -1261,6 +1268,7 @@ services:
       replicas: 1              # 1 worker for AI analysis (GPU-bound if available)
       resources:
         limits:
+          cpus: '1.0'
           memory: 4G           # Higher memory for ViT, BART, OCR models
         reservations:
           memory: 2G

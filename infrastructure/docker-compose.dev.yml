@@ -146,6 +146,12 @@ services:
       # editor reloads the running server. Only set in dev; prod keeps source
       # baked into the image (see Dockerfile).
       DEV_RELOAD: "true"
+      # 8GB Mac headroom: serialize all FFmpeg/transcode work and the preview
+      # generation pipeline. Without these the dev replica spawns multiple
+      # heavy subprocesses concurrently and triggers event-loop lag spikes.
+      MAX_CONCURRENT_PREVIEWS: "1"
+      MAX_CONCURRENT_TRANSCODES: "1"
+      PREVIEW_GENERATION_CONCURRENCY: "1"
     # Bind-mount the Python source as read-only so the watcher inside the
     # container sees file changes from your host editor.
     volumes:

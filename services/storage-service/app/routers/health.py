@@ -7,6 +7,7 @@ Provides detailed health information about database connections,
 query performance, and system resources.
 """
 
+import asyncio
 import os
 import time
 from datetime import datetime
@@ -248,19 +249,29 @@ async def system_health() -> Dict[str, Any]:
         - Process information
     """
     try:
-        # CPU usage
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        cpu_count = psutil.cpu_count()
+        # All psutil calls block briefly on /proc reads. Run them in a thread
+        # so they cannot stall the event loop. cpu_percent uses interval=None
+        # (returns the delta since last call without sleeping), avoiding the
+        # 100ms hard block of interval=0.1.
+        def _snapshot():
+            disk_path = "/app/storage" if os.path.exists("/app/storage") else "/"
+            proc = psutil.Process(os.getpid())
+            return {
+                "cpu_percent": psutil.cpu_percent(interval=None),
+                "cpu_count": psutil.cpu_count(),
+                "memory": psutil.virtual_memory(),
+                "disk": psutil.disk_usage(disk_path),
+                "process_memory": proc.memory_info(),
+                "num_threads": proc.num_threads(),
+                "num_fds": proc.num_fds() if hasattr(proc, "num_fds") else None,
+            }
 
-        # Memory usage
-        memory = psutil.virtual_memory()
-
-        # Disk usage
-        disk = psutil.disk_usage("/app/storage" if os.path.exists("/app/storage") else "/")
-
-        # Process info
-        process = psutil.Process(os.getpid())
-        process_memory = process.memory_info()
+        snap = await asyncio.to_thread(_snapshot)
+        cpu_percent = snap["cpu_percent"]
+        cpu_count = snap["cpu_count"]
+        memory = snap["memory"]
+        disk = snap["disk"]
+        process_memory = snap["process_memory"]
 
         return {
             "status": "healthy",
@@ -284,8 +295,8 @@ async def system_health() -> Dict[str, Any]:
             "process": {
                 "memory_rss": format_bytes(process_memory.rss),
                 "memory_vms": format_bytes(process_memory.vms),
-                "threads": process.num_threads(),
-                "fds": process.num_fds() if hasattr(process, "num_fds") else None,
+                "threads": snap["num_threads"],
+                "fds": snap["num_fds"],
             },
         }
 

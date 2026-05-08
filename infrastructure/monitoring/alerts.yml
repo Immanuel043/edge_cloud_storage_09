@@ -333,6 +333,39 @@ groups:
           description: "{{ $value }}% of total storage used"
 
       # =========================================
+      # Event Loop / Host Pressure Alerts
+      # =========================================
+      - alert: EventLoopLagHigh
+        expr: storage_event_loop_lag_seconds > 0.1
+        for: 1m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Event loop lag exceeds 100ms"
+          description: "Storage replica reports {{ $value }}s of event-loop lag (threshold: 100ms). Check host CPU and memory pressure."
+
+      - alert: EventLoopLagCritical
+        expr: storage_event_loop_lag_seconds > 0.5
+        for: 30s
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Event loop lag exceeds 500ms"
+          description: "Storage replica reports {{ $value }}s of event-loop lag. Almost certainly host saturation — see host MemAvailable / cpu.stat."
+
+      - alert: HostMemoryAvailableLow
+        expr: node_memory_MemAvailable_bytes < 1073741824
+        for: 2m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "Host MemAvailable below 1 GiB"
+          description: "Available memory {{ $value | humanize }}B. Page-cache reclaim under this threshold causes simultaneous event-loop lag spikes across replicas."
+
+      # =========================================
       # SLA Alerts
       # =========================================
       - alert: SLAViolation
