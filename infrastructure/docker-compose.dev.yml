@@ -6,6 +6,12 @@
 
 services:
   postgres:
+    # WAL archiving is intentionally OFF in dev: the postgres-backup container
+    # that consumes the archive is `profiles: production` and never runs in
+    # dev, so archiving is wasted I/O. Worse, prod's archive_command refuses
+    # to overwrite — when the data dir gets reset but the wal_archive volume
+    # persists, postgres logs WARNING once a minute forever about a stale
+    # WAL filename it can't re-archive. archive_mode=off avoids both.
     command: >
       postgres
       -c max_connections=50
@@ -14,8 +20,7 @@ services:
       -c maintenance_work_mem=32MB
       -c effective_cache_size=256MB
       -c wal_level=replica
-      -c archive_mode=on
-      -c archive_command='test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f'
+      -c archive_mode=off
       -c max_wal_senders=5
       -c wal_keep_size=1GB
       -c hot_standby=on
