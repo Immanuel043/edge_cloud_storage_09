@@ -52,6 +52,44 @@ services:
     networks:
       - edge-network
 
+  # cAdvisor — per-container CPU / memory / network / cgroup metrics.
+  # Required for the StorageServiceCFSThrottled alert in alerts.yml, which
+  # reads container_cpu_cfs_throttled_seconds_total filtered by the
+  # com.docker.compose.service label. The whitelist flag keeps that label;
+  # without it cAdvisor strips compose labels and the alert can't filter.
+  #
+  # NOTE: on Docker Desktop for Mac/Windows, cAdvisor cannot resolve the
+  # docker layerdb under /rootfs/var/lib/docker (overlay paths differ inside
+  # the LinuxKit VM), so it falls back to the "Raw" factory and exposes only
+  # the root cgroup. This is expected — on real Linux prod hosts the docker
+  # container factory registers cleanly and per-container metrics appear.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: edge-cadvisor
+    command:
+      - '--housekeeping_interval=10s'
+      - '--docker_only=true'
+      - '--store_container_labels=false'
+      - '--whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project'
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+      # Docker Desktop on Mac doesn't expose docker.sock under /var/run; mount
+      # it explicitly so the docker container factory can register and we get
+      # per-container metrics, not just the root cgroup.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:8090:8080"
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    networks:
+      - edge-network
+
   # Kafka consumer-lag exporter.
   # Scrapes Kafka directly and exposes per-consumer-group lag metrics
   # (kafka_consumergroup_lag, kafka_consumergroup_lag_sum) that Prometheus
