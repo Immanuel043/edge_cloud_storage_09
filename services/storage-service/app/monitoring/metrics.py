@@ -45,6 +45,10 @@ memory_usage = Gauge("storage_memory_usage_bytes", "Memory usage in bytes")
 disk_io_read = Counter("storage_disk_read_bytes_total", "Total disk read bytes")
 disk_io_write = Counter("storage_disk_write_bytes_total", "Total disk write bytes")
 db_connections_active = Gauge("storage_db_connections_active", "Active database connections")
+event_loop_lag_seconds = Gauge(
+    "storage_event_loop_lag_seconds",
+    "Most recent event loop lag sample (seconds)",
+)
 redis_connections = Gauge("storage_redis_connections", "Active Redis connections")
 
 # Error tracking
@@ -460,43 +464,57 @@ class MetricsCollector:
         self._last_disk_io = None
 
     def instrument_app(self, app):
-        """Add automatic instrumentation to FastAPI app"""
+        """Add Prometheus auto-instrumentation. Idempotent; safe at module load.
+
+        The collection loop is started separately via ``start_collection`` from
+        the FastAPI lifespan. Previously this method registered the loop via
+        ``@app.on_event("startup")``, which silently no-ops once a ``lifespan``
+        is provided — so the gauges below were stuck at zero.
+        """
         self.instrumentator.instrument(app).expose(app, endpoint="/metrics")
 
-        # Add custom metrics endpoint
-        @app.on_event("startup")
-        async def startup_metrics():
-            asyncio.create_task(self.collect_system_metrics())
-            system_info.info(
-                {
-                    "version": "1.0.0",
-                    "python_version": "3.11",
-                    "started_at": datetime.utcnow().isoformat(),
-                }
-            )
+    def start_collection(self) -> asyncio.Task:
+        """Initialize system_info and start the periodic collection task.
+
+        Call once from the FastAPI lifespan after ``instrument_app``. Returns
+        the asyncio task so the caller can cancel on shutdown.
+        """
+        system_info.info(
+            {
+                "version": "1.0.0",
+                "python_version": "3.11",
+                "started_at": datetime.utcnow().isoformat(),
+            }
+        )
+        # Prime cpu_percent so the first interval=None sample isn't 0.0.
+        psutil.cpu_percent(interval=None)
+        return asyncio.create_task(self.collect_system_metrics())
+
+    def _snapshot_system(self):
+        """Collect one round of system metrics. Runs in a thread (psutil syscalls)."""
+        # interval=None returns the delta since the last call without blocking.
+        cpu_usage.set(psutil.cpu_percent(interval=None))
+        memory = psutil.virtual_memory()
+        memory_usage.set(memory.used)
+
+        disk_io = psutil.disk_io_counters()
+        if self._last_disk_io:
+            disk_io_read.inc(disk_io.read_bytes - self._last_disk_io.read_bytes)
+            disk_io_write.inc(disk_io.write_bytes - self._last_disk_io.write_bytes)
+        self._last_disk_io = disk_io
+
+        from ..database import engine
+
+        db_connections_active.set(engine.pool.size())
 
     async def collect_system_metrics(self):
-        """Collect system metrics every 10 seconds"""
+        """Collect system metrics every 10 seconds, off the event loop."""
         while True:
             try:
-                # CPU and Memory
-                cpu_usage.set(psutil.cpu_percent(interval=1))
-                memory = psutil.virtual_memory()
-                memory_usage.set(memory.used)
-
-                # Disk I/O
-                disk_io = psutil.disk_io_counters()
-                if self._last_disk_io:
-                    disk_io_read.inc(disk_io.read_bytes - self._last_disk_io.read_bytes)
-                    disk_io_write.inc(disk_io.write_bytes - self._last_disk_io.write_bytes)
-                self._last_disk_io = disk_io
-
-                # Database connections (from your pool)
-                from ..database import engine
-
-                db_connections_active.set(engine.pool.size())
-
+                await asyncio.to_thread(self._snapshot_system)
                 await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 print(f"Error collecting metrics: {e}")
                 await asyncio.sleep(10)

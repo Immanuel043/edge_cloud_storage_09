@@ -690,16 +690,3 @@ async def get_upload_status(upload_id: str, current_user: User = Depends(get_cur
     )
 
 
-@router.on_event("startup")
-async def startup_event():
-    """Start background services on startup"""
-    await background_dedup_service.start()
-    print("Background deduplication service started")
-
-
-@router.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup resources on shutdown"""
-    production_upload_service.cleanup()
-    await background_dedup_service.stop()
-    print("Services shutdown complete")

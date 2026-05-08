@@ -377,12 +377,6 @@ async def _listen_preview_notifications():
     thread.start()
 
 
-# Start heartbeat checker on startup (preview listener started from main.py lifespan)
-@router.on_event("startup")
-async def startup_event():
-    asyncio.create_task(manager.check_heartbeats())
-
-
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,

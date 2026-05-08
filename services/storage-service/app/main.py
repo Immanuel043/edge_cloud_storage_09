@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from .config import settings
 from .database import close_redis, engine, get_redis, init_redis
-from .monitoring.metrics import metrics_collector
+from .monitoring.metrics import event_loop_lag_seconds, metrics_collector
 
 # Import routers
 from .routers import (
@@ -204,7 +204,9 @@ async def lifespan(app: FastAPI):
             while True:
                 t0 = loop.time()
                 await asyncio.sleep(0.5)
-                lag_ms = (loop.time() - t0 - 0.5) * 1000
+                lag_seconds = loop.time() - t0 - 0.5
+                event_loop_lag_seconds.set(max(lag_seconds, 0.0))
+                lag_ms = lag_seconds * 1000
                 if lag_ms > 500:
                     _lag_logger.error(f"CRITICAL event loop lag: {lag_ms:.0f}ms")
                 elif lag_ms > 100:
@@ -215,6 +217,26 @@ async def lifespan(app: FastAPI):
             print("Event loop lag monitor started (warn >100ms, error >500ms)")
         except Exception as e:
             print(f"Failed to start event loop monitor: {e}")
+
+        # Start the WebSocket heartbeat checker. Previously registered via
+        # @router.on_event("startup") in routers/websocket.py, which is silently
+        # ignored because this module uses a lifespan handler.
+        try:
+            from .routers.websocket import manager as _ws_manager
+
+            asyncio.create_task(_ws_manager.check_heartbeats())
+            print("WebSocket heartbeat checker started")
+        except Exception as e:
+            print(f"Failed to start WebSocket heartbeat checker: {e}")
+
+        # Start Prometheus system-metrics collection loop. Previously registered
+        # via @app.on_event("startup") in monitoring/metrics.py, which never ran
+        # under lifespan — so cpu/memory/db gauges were stuck at zero.
+        try:
+            metrics_collector.start_collection()
+            print("Prometheus system-metrics collection started")
+        except Exception as e:
+            print(f"Failed to start metrics collection: {e}")
 
     # === Extractable workers (start in "all" and "worker" modes) ===
     if settings.is_worker_mode:
@@ -618,10 +640,12 @@ async def health_check():
 @app.get("/api/v1/stats", tags=["Info"])
 async def get_service_stats():
     """Get real-time service statistics"""
+    from .services.dedup_queue import smart_dedup_queue
+
     return {
         "deduplication": {
             "active_jobs": len(background_dedup_service.active_jobs),
-            "queued_jobs": background_dedup_service.queue.qsize(),
+            "queued_jobs": smart_dedup_queue.total_jobs,
         },
         "tiering": {
             "enabled": cold_storage_service.is_running,
