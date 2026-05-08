@@ -162,15 +162,80 @@
       {
         "id": 19,
         "type": "row",
-        "title": "Alerts",
+        "title": "Event Loop & Host Pressure",
         "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
         "collapsed": false
       },
       {
         "id": 20,
+        "type": "graph",
+        "title": "Event Loop Lag (per replica)",
+        "description": "storage_event_loop_lag_seconds sampled every 500ms. >0.1s warns, >0.5s is CRITICAL. Almost always means host CPU/memory contention.",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "targets": [{"expr": "storage_event_loop_lag_seconds", "legendFormat": "{{instance}}"}],
+        "yaxes": [
+          {"format": "s", "min": 0},
+          {"format": "short"}
+        ],
+        "thresholds": [
+          {"value": 0.1, "colorMode": "warning", "op": "gt", "fill": true, "line": true},
+          {"value": 0.5, "colorMode": "critical", "op": "gt", "fill": true, "line": true}
+        ]
+      },
+      {
+        "id": 21,
+        "type": "graph",
+        "title": "Host MemAvailable",
+        "description": "node_memory_MemAvailable_bytes. Below 1 GiB triggers HostMemoryAvailableLow; sustained low values cause page-cache reclaim that stalls all containers.",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "targets": [{"expr": "node_memory_MemAvailable_bytes", "legendFormat": "MemAvailable"}],
+        "yaxes": [
+          {"format": "bytes", "min": 0},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 22,
+        "type": "graph",
+        "title": "Storage-service CFS Throttling",
+        "description": "rate(container_cpu_cfs_throttled_seconds_total[1m]). Non-zero = per-replica CPU cap is being hit. Distinguishes 'CPU starved' from 'memory starved'.",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+        "targets": [{
+          "expr": "rate(container_cpu_cfs_throttled_seconds_total{container_label_com_docker_compose_service=\"storage-service\"}[1m])",
+          "legendFormat": "{{name}}"
+        }],
+        "yaxes": [
+          {"format": "s", "min": 0},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 23,
+        "type": "graph",
+        "title": "Web-service HTTP Latency p95",
+        "description": "histogram_quantile(0.95, rate(web_http_request_duration_seconds_bucket[5m])) by route.",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+        "targets": [{
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(web_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{route}}"
+        }],
+        "yaxes": [
+          {"format": "s", "min": 0},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 24,
+        "type": "row",
+        "title": "Alerts",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 48},
+        "collapsed": false
+      },
+      {
+        "id": 25,
         "type": "table",
         "title": "Firing Alerts",
-        "gridPos": {"h": 6, "w": 24, "x": 0, "y": 32},
+        "gridPos": {"h": 6, "w": 24, "x": 0, "y": 49},
         "targets": [{"expr": "ALERTS{alertstate=\"firing\"}", "format": "table", "instant": true}]
       }
     ]
