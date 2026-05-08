@@ -41,6 +41,25 @@ const GRACEFUL_DRAIN_SECS: u64 = 30;
 /// Maximum allowed chunk size (64MB) - prevents OOM from adversarial Content-Length
 const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
 
+/// Walk the error chain looking for a `std::io::Error` whose kind indicates the
+/// peer closed the connection mid-request (browser cancelled a video stream,
+/// upstream proxy hung up, etc.). These are normal events and should not be
+/// logged at ERROR severity.
+fn is_client_disconnect(err: &(dyn std::error::Error + 'static)) -> bool {
+    use std::io::ErrorKind;
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = cur {
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io_err.kind(),
+                ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted,
+            );
+        }
+        cur = e.source();
+    }
+    false
+}
+
 /// Unix Domain Socket HTTP server with SCM_RIGHTS support
 pub struct UnixSocketServerWithScmRights {
     config: ServerConfig,
@@ -130,7 +149,11 @@ impl UnixSocketServerWithScmRights {
                             )
                             .await
                             {
-                                error!(error = %e, "Connection handling error");
+                                if is_client_disconnect(e.as_ref()) {
+                                    debug!(error = %e, "client disconnected mid-request");
+                                } else {
+                                    error!(error = %e, "Connection handling error");
+                                }
                             }
                         });
                     }
@@ -1363,4 +1386,71 @@ struct BulkDecryptRequest {
 struct BulkDecryptChunk {
     index: u64,
     path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_client_disconnect;
+    use std::io;
+
+    #[test]
+    fn client_disconnect_detected_for_broken_pipe() {
+        let err: Box<dyn std::error::Error + 'static> =
+            Box::new(io::Error::from(io::ErrorKind::BrokenPipe));
+        assert!(is_client_disconnect(err.as_ref()));
+    }
+
+    #[test]
+    fn client_disconnect_detected_for_connection_reset() {
+        let err: Box<dyn std::error::Error + 'static> =
+            Box::new(io::Error::from(io::ErrorKind::ConnectionReset));
+        assert!(is_client_disconnect(err.as_ref()));
+    }
+
+    #[test]
+    fn client_disconnect_detected_for_connection_aborted() {
+        let err: Box<dyn std::error::Error + 'static> =
+            Box::new(io::Error::from(io::ErrorKind::ConnectionAborted));
+        assert!(is_client_disconnect(err.as_ref()));
+    }
+
+    #[test]
+    fn other_io_errors_are_not_client_disconnects() {
+        let err: Box<dyn std::error::Error + 'static> =
+            Box::new(io::Error::new(io::ErrorKind::PermissionDenied, "nope"));
+        assert!(!is_client_disconnect(err.as_ref()));
+    }
+
+    #[test]
+    fn non_io_errors_are_not_client_disconnects() {
+        #[derive(Debug)]
+        struct Plain;
+        impl std::fmt::Display for Plain {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("plain")
+            }
+        }
+        impl std::error::Error for Plain {}
+        let err: Box<dyn std::error::Error + 'static> = Box::new(Plain);
+        assert!(!is_client_disconnect(err.as_ref()));
+    }
+
+    #[test]
+    fn wrapped_io_error_is_unwrapped_via_source() {
+        #[derive(Debug)]
+        struct Wrap(io::Error);
+        impl std::fmt::Display for Wrap {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "wrap: {}", self.0)
+            }
+        }
+        impl std::error::Error for Wrap {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let err: Box<dyn std::error::Error + 'static> =
+            Box::new(Wrap(io::Error::from(io::ErrorKind::BrokenPipe)));
+        assert!(is_client_disconnect(err.as_ref()));
+    }
 }
