@@ -43,8 +43,8 @@ const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
 
 /// Walk the error chain looking for a `std::io::Error` whose kind indicates the
 /// peer closed the connection mid-request (browser cancelled a video stream,
-/// upstream proxy hung up, etc.). These are normal events and should not be
-/// logged at ERROR severity.
+/// upstream proxy hung up, request body truncated, etc.). These are normal
+/// events and should not be logged at ERROR severity.
 fn is_client_disconnect(err: &(dyn std::error::Error + 'static)) -> bool {
     use std::io::ErrorKind;
     let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
@@ -52,7 +52,10 @@ fn is_client_disconnect(err: &(dyn std::error::Error + 'static)) -> bool {
         if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
             return matches!(
                 io_err.kind(),
-                ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted,
+                ErrorKind::BrokenPipe
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::UnexpectedEof,
             );
         }
         cur = e.source();
@@ -1411,6 +1414,13 @@ mod tests {
     fn client_disconnect_detected_for_connection_aborted() {
         let err: Box<dyn std::error::Error + 'static> =
             Box::new(io::Error::from(io::ErrorKind::ConnectionAborted));
+        assert!(is_client_disconnect(err.as_ref()));
+    }
+
+    #[test]
+    fn client_disconnect_detected_for_unexpected_eof() {
+        let err: Box<dyn std::error::Error + 'static> =
+            Box::new(io::Error::from(io::ErrorKind::UnexpectedEof));
         assert!(is_client_disconnect(err.as_ref()));
     }
 

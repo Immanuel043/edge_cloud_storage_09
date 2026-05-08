@@ -58,6 +58,10 @@ class QuotaPredictorService:
         }
 
         try:
+            # Prophet's plot module logs `Importing plotly failed` at ERROR
+            # when plotly is missing. We don't use Prophet's plotting helpers,
+            # so demote that one logger before the import.
+            logging.getLogger("prophet.plot").setLevel(logging.CRITICAL)
             from prophet import Prophet
 
             Prophet()  # Verify CmdStan backend is installed, not just the Python package

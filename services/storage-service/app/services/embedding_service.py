@@ -51,10 +51,21 @@ async def get_embedding_model():
 
         try:
             # Import here to avoid loading at startup
+            import warnings
+
             from sentence_transformers import SentenceTransformer
 
             logger.info(f"Loading embedding model: {settings.SEMANTIC_MODEL_NAME}")
-            _model = SentenceTransformer(settings.SEMANTIC_MODEL_NAME)
+            # sentence-transformers 2.7 still passes `resume_download=` to
+            # huggingface_hub, which deprecated the kwarg in 0.36. Suppress
+            # only that specific FutureWarning around the model load.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"`resume_download` is deprecated.*",
+                    category=FutureWarning,
+                )
+                _model = SentenceTransformer(settings.SEMANTIC_MODEL_NAME)
             logger.info(
                 f"Embedding model loaded successfully (dim={settings.SEMANTIC_EMBEDDING_DIM})"
             )
