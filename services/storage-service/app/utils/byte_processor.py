@@ -24,16 +24,31 @@ _SO_NAMES = [
     "libedge_byte_processor.dylib",
 ]
 
-for _name in _SO_NAMES:
-    _path = os.path.join(os.path.dirname(__file__), _name)
-    if os.path.isfile(_path):
-        try:
-            _LIB = ctypes.CDLL(_path)
-            logger.info("Loaded Rust byte processor from %s", _path)
-            break
-        except OSError as exc:
-            logger.warning("Failed to load %s: %s", _path, exc)
-            _LIB = None
+# Search both the install location next to this module AND a stable image-only
+# path. The first is the historical home for the .so, but it lives inside
+# /app/app/utils/ which the dev override (docker-compose.dev.yml) shadows with
+# a host bind mount — and the host's app/utils/ has no .so/.dylib because the
+# Rust crate is built only inside the container. Falling back to a path
+# outside /app/app keeps the native library reachable in dev as well.
+_SEARCH_DIRS = [
+    os.path.dirname(__file__),
+    "/usr/local/lib/edge-byte-processor",
+    os.environ.get("EDGE_BYTE_PROCESSOR_DIR", ""),
+]
+
+for _dir in _SEARCH_DIRS:
+    if _LIB is not None or not _dir:
+        continue
+    for _name in _SO_NAMES:
+        _path = os.path.join(_dir, _name)
+        if os.path.isfile(_path):
+            try:
+                _LIB = ctypes.CDLL(_path)
+                logger.info("Loaded Rust byte processor from %s", _path)
+                break
+            except OSError as exc:
+                logger.warning("Failed to load %s: %s", _path, exc)
+                _LIB = None
 
 # ---------------------------------------------------------------------------
 # CDC
@@ -216,9 +231,16 @@ class NativeBloomFilter:
         return _LIB.ebp_bloom_check(self._ptr, buf, ctypes.c_uint64(len(key_bytes))) != 0
 
     def close(self) -> None:
-        if self._ptr:
-            _LIB.ebp_bloom_destroy(self._ptr)
-            self._ptr = None
+        # __init__ may raise before self._ptr is set (e.g. when _LIB is None
+        # under the dev bind-mount). Guard so __del__ doesn't blow up at GC
+        # time on a half-initialized instance.
+        ptr = getattr(self, "_ptr", None)
+        if ptr:
+            _LIB.ebp_bloom_destroy(ptr)
+        self._ptr = None
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass

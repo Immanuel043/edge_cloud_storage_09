@@ -52,8 +52,16 @@ COPY services/storage-service/app/ ./app/
 # from the WORKDIR (/app), invoked via `python -m scripts.<name>`.
 COPY services/storage-service/scripts/ ./scripts/
 
-# Copy Rust cdylib from builder stage (replaces C rolling hash)
+# Copy Rust cdylib from builder stage (replaces C rolling hash).
+# Two locations on purpose:
+#  - /app/app/utils/...  the historical path next to byte_processor.py.
+#  - /usr/local/lib/edge-byte-processor/...  a stable path that survives the
+#    docker-compose.dev.yml bind mount (which overlays the host's app/ on top
+#    of /app/app and would otherwise hide the .so). byte_processor.py searches
+#    both locations.
 COPY --from=rust-builder /build/target/release/libedge_byte_processor.so /app/app/utils/libedge_byte_processor.so
+RUN mkdir -p /usr/local/lib/edge-byte-processor && \
+    cp /app/app/utils/libedge_byte_processor.so /usr/local/lib/edge-byte-processor/libedge_byte_processor.so
 
 # Create storage directories
 RUN mkdir -p /app/storage/{cache,warm,cold,temp,backup} && \
