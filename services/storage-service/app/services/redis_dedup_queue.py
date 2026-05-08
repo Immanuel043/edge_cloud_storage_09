@@ -282,21 +282,48 @@ class RedisStreamDeduplicationQueue:
         consumed by ``routers/deduplication.py:157``."""
         health = await self.circuit_breaker.check_health()
 
+        # Per-priority counts must be the consumer-group lag (unprocessed
+        # entries), not XLEN (which is the lifetime entry count and grows
+        # forever because XACK doesn't delete from the stream).
         pipe = self._redis.pipeline(transaction=False)
         pipe.get(KEY_TOTAL)
-        for stream in STREAMS_IN_PRIORITY_ORDER:
-            pipe.xlen(stream)
         pipe.hlen(KEY_ACTIVE)
         pipe.hgetall(KEY_STATS)
         results = await pipe.execute()
 
         total = int(results[0] or 0)
-        high = int(results[1] or 0)
-        medium = int(results[2] or 0)
-        low = int(results[3] or 0)
-        active = int(results[4] or 0)
-        raw_stats = results[5] or {}
+        active = int(results[1] or 0)
+        raw_stats = results[2] or {}
         stats = {_to_str(k): int(v) for k, v in raw_stats.items()}
+
+        async def _lag(stream: str) -> int:
+            # Real Redis 7+ exposes a tracked `lag` per consumer group, but
+            # fakeredis returns lag=0 with entries-read=None even when entries
+            # are pending. Fall back to XLEN-(delivered count) when lag isn't
+            # populated; XLEN alone over-reports because XACK doesn't remove
+            # entries from the stream.
+            try:
+                groups = await self._redis.xinfo_groups(stream)
+                for g in groups:
+                    if not isinstance(g, dict):
+                        continue
+                    if _to_str(g.get("name")) != CONSUMER_GROUP:
+                        continue
+                    entries_read = g.get("entries-read")
+                    lag = g.get("lag")
+                    if entries_read is not None and lag is not None:
+                        return int(lag)
+                    # Fallback: XLEN - entries already delivered to consumers.
+                    xlen = int(await self._redis.xlen(stream))
+                    delivered = int(entries_read or 0)
+                    return max(0, xlen - delivered)
+            except Exception:  # noqa: BLE001
+                pass
+            return 0
+
+        high = await _lag(PRIORITY_TO_STREAM[1])
+        medium = await _lag(PRIORITY_TO_STREAM[2])
+        low = await _lag(PRIORITY_TO_STREAM[3])
 
         self._cached_total = total
 
@@ -479,11 +506,24 @@ class RedisStreamDeduplicationQueue:
                 logger.warning("xautoclaim on %s failed (continuing): %s", stream, e)
 
     async def _decrement_counters(self, user_id: Optional[str]) -> None:
-        pipe = self._redis.pipeline(transaction=False)
-        pipe.decr(KEY_TOTAL)
-        if user_id:
-            pipe.hincrby(KEY_USER_COUNTS, user_id, -1)
-        await pipe.execute()
+        # Clamp at zero — under normal operation the Lua enqueue script keeps
+        # counters consistent, but a manually-XADDed message (debug/recovery
+        # path) wouldn't have incremented them, so blind DECR can go negative.
+        await self._redis.eval(
+            """
+            local cur = tonumber(redis.call('GET', KEYS[1]) or '0')
+            if cur > 0 then redis.call('DECR', KEYS[1]) end
+            if ARGV[1] ~= '' then
+              local u = tonumber(redis.call('HGET', KEYS[2], ARGV[1]) or '0')
+              if u > 0 then redis.call('HINCRBY', KEYS[2], ARGV[1], -1) end
+            end
+            return 1
+            """,
+            2,
+            KEY_TOTAL,
+            KEY_USER_COUNTS,
+            user_id or "",
+        )
 
     async def _incr_stat(self, field: str) -> None:
         try:

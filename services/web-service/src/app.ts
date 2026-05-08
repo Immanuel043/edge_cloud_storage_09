@@ -3,7 +3,6 @@ import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import session from 'express-session';
 import { Producer, Consumer } from 'kafkajs';
-import path from 'path';
 import compression from 'compression';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -12,6 +11,7 @@ import { createDatabasePool } from './config/database';
 import { createRedisClient } from './config/redis';
 import { createKafkaClient } from './config/kafka';
 import { wireConsumerInstrumentation, wireProducerInstrumentation } from './config/kafkaInstrumentation';
+import { register as metricsRegister, httpRequestDurationSeconds, httpRequestsTotal } from './config/metrics';
 import { setupWebSocketHandlers } from './services/webSocketService';
 import { setupKafkaConsumer } from './services/kafkaConsumer';
 import { createAuthRoutes } from './routes/auth';
@@ -260,8 +260,42 @@ app.get('/health', async (_req: Request, res: Response) => {
 });
 
 // Dashboard
+// Prometheus scrape endpoint. Default Node.js metrics (CPU, RSS, event-loop
+// lag, GC) plus the custom counters/histograms from config/metrics.ts.
+app.get('/metrics', async (_req: Request, res: Response) => {
+  try {
+    res.set('Content-Type', metricsRegister.contentType);
+    res.end(await metricsRegister.metrics());
+  } catch (err) {
+    res.status(500).end((err as Error).message);
+  }
+});
+
+// Per-request HTTP metrics middleware. Mount BEFORE routes so it sees every
+// handled request's status. The duration is captured on `finish`.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path === '/metrics' || req.path === '/health') {
+    return next();
+  }
+  const end = httpRequestDurationSeconds.startTimer();
+  res.on('finish', () => {
+    const route = req.route?.path ?? (req.path.split('/').slice(0, 3).join('/') || '/');
+    const labels = {
+      method: req.method,
+      route,
+      status: String(res.statusCode),
+    };
+    end(labels);
+    httpRequestsTotal.inc(labels);
+  });
+  next();
+});
+
 app.get('/', (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
+  // The web-service is a backend gateway in this deployment — the frontend
+  // (frontend-clean/) is served separately. Return a small JSON heartbeat
+  // instead of trying to send a public/index.html that does not exist.
+  res.json({ service: 'web-service', status: 'ok' });
 });
 
 // API Routes
@@ -275,14 +309,16 @@ app.post('/api/share/:fileId', requireAuth, (req, res) => {
   void shareController.shareFile(req as Parameters<typeof shareController.shareFile>[0], res);
 });
 
-// SPA catch-all route - serve index.html for all non-API routes
-app.get('*', (req: Request, res: Response, next: NextFunction) => {
-  // Skip API routes
+// 404 for unmatched routes. The legacy SPA-fallback handler tried to serve
+// public/index.html which doesn't exist in this deployment (frontend-clean/
+// is served separately), causing a flood of "ENOENT /app/public/index.html"
+// + 500 responses on every unmatched URL. Return a clean 404 instead.
+app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path.startsWith('/api/')) {
     next();
     return;
   }
-  res.sendFile(path.join(__dirname, '../public/index.html'));
+  res.status(404).json({ error: 'not_found', path: req.path });
 });
 
 // Global error handling middleware
