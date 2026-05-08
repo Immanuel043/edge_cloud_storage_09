@@ -365,6 +365,24 @@ groups:
           summary: "Host MemAvailable below 1 GiB"
           description: "Available memory {{ $value | humanize }}B. Page-cache reclaim under this threshold causes simultaneous event-loop lag spikes across replicas."
 
+      # Requires cAdvisor in the monitoring stack (container_cpu_cfs_throttled_*).
+      # cgroup CFS throttling on storage-service indicates the per-replica cpu
+      # cap is being hit. Distinguishes "CPU starved" from "memory starved" —
+      # if this is firing, raise the storage-service cpu limit; if not but lag
+      # is still high, the cause is memory pressure (HostMemoryAvailableLow).
+      - alert: StorageServiceCFSThrottled
+        expr: |
+          rate(container_cpu_cfs_throttled_seconds_total{
+            container_label_com_docker_compose_service="storage-service"
+          }[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "storage-service replica CFS-throttled"
+          description: "Replica {{ $labels.name }} throttled {{ $value | humanize }}s/s over the last 5m. Bump deploy.resources.limits.cpus or scale to a larger host."
+
       # =========================================
       # SLA Alerts
       # =========================================

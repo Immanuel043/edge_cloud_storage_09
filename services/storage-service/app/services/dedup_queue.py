@@ -177,7 +177,16 @@ class CircuitBreaker:
 
 class SmartDeduplicationQueue:
     """
-    Priority-based deduplication queue with backpressure and circuit breakers
+    Priority-based deduplication queue with backpressure and circuit breakers.
+
+    KNOWN LIMITATION (tracked separately): the queues below are in-process
+    asyncio.Queue instances. With multiple API replicas, each replica has its
+    own queue and processes only what it produces. Moving the consumer to the
+    storage-worker container requires first migrating producer/consumer to a
+    durable backend (Redis Streams or Kafka topic) so jobs aren't stranded
+    on whichever replica accepted the upload. Until then, dedup must stay
+    on the API replica — see app/main.py and the comment at the
+    background_dedup_service.start() call site.
     """
 
     def __init__(

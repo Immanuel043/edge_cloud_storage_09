@@ -742,7 +742,11 @@ services:
      - /tmp/upload_temp:/tmp/upload_temp
       # Shared socket volume with rust-dataplane for full mode
      - dataplane-socket:/run/dataplane
-    # Local docker-compose resource limits (works with many compose setups)
+    # Local docker-compose resource limits (works with many compose setups).
+    # Host-class assumption: prod compose targets >=16 vCPU / >=32 GB. With
+    # 2 replicas x 4.0 cpus + rust(2) + zk(2) + billing(1) we reserve ~13 vCPU
+    # before the rest of the stack. On smaller hosts, run with the dev override
+    # (docker-compose.dev.yml) which pins to 1 replica @ 2.0 cpus.
     mem_limit: 8g
     cpus: "4.0"
     # CRITICAL: Add resource limits for Swarm (only used when using `docker stack deploy`)
