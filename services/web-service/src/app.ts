@@ -11,6 +11,7 @@ import RedisStore from 'connect-redis';
 import { createDatabasePool } from './config/database';
 import { createRedisClient } from './config/redis';
 import { createKafkaClient } from './config/kafka';
+import { wireConsumerInstrumentation, wireProducerInstrumentation } from './config/kafkaInstrumentation';
 import { setupWebSocketHandlers } from './services/webSocketService';
 import { setupKafkaConsumer } from './services/kafkaConsumer';
 import { createAuthRoutes } from './routes/auth';
@@ -191,6 +192,7 @@ async function initializeServices(): Promise<void> {
   // Kafka
   await retryConnection(async () => {
     kafkaProducer = kafka.producer();
+    wireProducerInstrumentation(kafkaProducer);
     kafkaConsumer = kafka.consumer({
       groupId: 'web-service-group',
       sessionTimeout: 45000,
@@ -210,6 +212,8 @@ async function initializeServices(): Promise<void> {
         },
       },
     });
+
+    wireConsumerInstrumentation(kafkaConsumer);
 
     await kafkaProducer.connect();
     await kafkaConsumer.connect();

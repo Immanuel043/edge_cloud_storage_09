@@ -1,5 +1,6 @@
 import { Consumer, EachMessagePayload } from 'kafkajs';
 import { Server as SocketIOServer } from 'socket.io';
+import logger from '../config/logger';
 import type { KafkaEvent } from '../types/kafka';
 
 let crashRecoveryAttempts = 0;
@@ -9,19 +10,24 @@ export async function setupKafkaConsumer(
   consumer: Consumer,
   io: SocketIOServer
 ): Promise<void> {
-  // Auto-restart on consumer crash with backoff
+  // Auto-restart on consumer crash with backoff. The crash event itself is
+  // also logged by wireKafkaInstrumentation; this handler is responsible for
+  // the recovery loop, not the diagnostic.
   consumer.on('consumer.crash', async (event) => {
     const error = event.payload.error;
-    console.error(`[Kafka] Consumer crashed: ${error.message}`);
 
     if (crashRecoveryAttempts >= MAX_CRASH_RECOVERY_ATTEMPTS) {
-      console.error('[Kafka] Max crash recovery attempts reached, giving up auto-restart');
+      logger.error(
+        `[kafka] consumer.crash recovery exhausted after ${MAX_CRASH_RECOVERY_ATTEMPTS} attempts; giving up. last error=${error.message}`
+      );
       return;
     }
 
     crashRecoveryAttempts++;
     const delay = Math.min(5000 * crashRecoveryAttempts, 60000);
-    console.log(`[Kafka] Attempting recovery ${crashRecoveryAttempts}/${MAX_CRASH_RECOVERY_ATTEMPTS} in ${delay}ms...`);
+    logger.warn(
+      `[kafka] consumer.crash recovery attempt=${crashRecoveryAttempts}/${MAX_CRASH_RECOVERY_ATTEMPTS} delay=${delay}ms error=${error.message}`
+    );
 
     setTimeout(async () => {
       try {
@@ -37,10 +43,10 @@ export async function setupKafkaConsumer(
           autoCommitThreshold: 100,
           eachMessage: createMessageHandler(io),
         });
-        console.log('[Kafka] Consumer recovered successfully');
+        logger.info(`[kafka] consumer.crash recovery successful after attempt=${crashRecoveryAttempts}`);
         crashRecoveryAttempts = 0; // Reset on success
       } catch (err) {
-        console.error('[Kafka] Recovery failed:', err instanceof Error ? err.message : err);
+        logger.error(`[kafka] consumer.crash recovery failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }, delay);
   });
@@ -63,7 +69,7 @@ function createMessageHandler(io: SocketIOServer) {
       }
     } catch (err) {
       // Never rethrow from eachMessage — log and continue
-      console.error('Error processing Kafka message:', err);
+      logger.error(`[kafka] eachMessage handler error: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 }
