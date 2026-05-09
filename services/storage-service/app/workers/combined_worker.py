@@ -70,6 +70,7 @@ async def main():
 
     # Import workers after Redis is initialized
     from app.services.cold_storage_tiering import cold_storage_service
+    from app.workers.backup_worker import backup_worker
     from app.workers.orphan_cleanup_worker import orphan_cleanup_worker
     from app.workers.quota_prediction_worker import quota_prediction_worker
     from app.workers.storage_optimization_worker import storage_optimization_worker
@@ -110,6 +111,16 @@ async def main():
         logger.info("Storage reconcile worker started")
     except Exception as e:
         logger.error(f"Failed to start storage reconcile worker: {e}")
+
+    if settings.BACKUP_ENABLED:
+        try:
+            await backup_worker.start()
+            workers.append(("backup", backup_worker))
+            logger.info("Backup worker started")
+        except Exception as e:
+            logger.error(f"Failed to start backup worker: {e}")
+    else:
+        logger.info("Backup worker disabled (BACKUP_ENABLED=false)")
 
     # Cold-tiering moved out of API replicas: it's a DB-driven 4-hour loop
     # that performs synchronous shutil.move on potentially-large files. With

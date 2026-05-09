@@ -48,6 +48,7 @@ from .routers import (
 from .routers.background_deduplication import background_dedup_service
 from .services.cold_storage_tiering import cold_storage_service  # ENABLED
 from .services.search_service import search_service
+from .workers.backup_worker import backup_worker
 from .workers.orphan_cleanup_worker import orphan_cleanup_worker
 from .workers.storage_reconcile_worker import storage_reconcile_worker
 from .workers.quota_prediction_worker import quota_prediction_worker
@@ -297,6 +298,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Failed to start storage reconcile worker: {e}")
 
+        # Start backup worker (advances backup_status='pending' -> terminal state)
+        if settings.BACKUP_ENABLED:
+            try:
+                await backup_worker.start()
+                print("Backup worker started")
+            except Exception as e:
+                print(f"Failed to start backup worker: {e}")
+        else:
+            print("Backup worker disabled (BACKUP_ENABLED=false)")
+
         # Start video processing worker (Kafka consumer for video optimization)
         # Supervised: restarts on crash with backoff, up to 5 retries
         async def _supervised_video_worker():
@@ -401,6 +412,14 @@ async def lifespan(app: FastAPI):
             print("Storage reconcile worker stopped")
         except Exception as e:
             print(f"Error stopping storage reconcile worker: {e}")
+
+        # Stop backup worker
+        if settings.BACKUP_ENABLED:
+            try:
+                await backup_worker.stop()
+                print("Backup worker stopped")
+            except Exception as e:
+                print(f"Error stopping backup worker: {e}")
 
         # Stop video processing worker
         try:
@@ -634,6 +653,10 @@ async def health_check():
     health_status["checks"]["storage_reconcile"] = check_worker_status(
         storage_reconcile_worker, "storage_reconcile"
     )
+    if settings.BACKUP_ENABLED:
+        health_status["checks"]["backup_worker"] = check_worker_status(
+            backup_worker, "backup_worker"
+        )
 
     # Storage directories check
     storage_status = {}

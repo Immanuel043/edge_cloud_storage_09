@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import json
 import os
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -12,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database import redis_client
-from ..models.database import ActivityLog
+from ..models.database import ActivityLog, Object
 
 
 class BackupService:
@@ -105,6 +107,76 @@ class BackupService:
             effective_strategy = "local"
 
         return effective_strategy
+
+    # =============================
+    # 🔹 Local-disk content-addressed backup
+    # =============================
+    @staticmethod
+    def _copy_blob_atomic_sync(src: str, dst: str) -> None:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + ".tmp"
+        try:
+            with open(src, "rb") as fin, open(tmp, "wb") as fout:
+                shutil.copyfileobj(fin, fout, length=1024 * 1024)
+            os.replace(tmp, dst)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+
+    async def backup_to_local_disk(self, obj: Object) -> str:
+        """Content-addressed local-disk backup of a single Object row.
+
+        Layout: ``{BACKUP_PATH}/<sha256[:2]>/<sha256>.enc`` — sharded by the
+        first two hex chars of `content_hash`, deduplicating blobs that share
+        content across rows.
+
+        Idempotent: if the destination already exists with matching size,
+        no copy is performed.
+
+        Returns a string suitable for `objects.backup_location`:
+          - ``"inline:db"`` for inline-stored rows (no separate file to back up)
+          - ``"local:<shard>/<hash>.enc"`` for `single`-storage rows
+
+        Raises:
+          FileNotFoundError: source blob is missing on disk (worker maps to
+            ``backup_status='source_missing'``).
+          NotImplementedError: storage_type other than `inline`/`single` —
+            CAS and chunked rows need a CAS-block-aware backup path that is
+            out of scope for this MVP.
+          ValueError: row is malformed (e.g. missing content_hash).
+        """
+        if obj.storage_type == "inline":
+            return "inline:db"
+
+        if obj.storage_type != "single":
+            raise NotImplementedError(
+                f"local-disk backup not supported for storage_type={obj.storage_type!r}"
+            )
+
+        if not obj.object_path:
+            raise ValueError(f"object {obj.id} has no object_path")
+        if not obj.content_hash:
+            raise ValueError(f"object {obj.id} has no content_hash; cannot content-address backup")
+
+        src = obj.object_path
+        if not os.path.exists(src):
+            raise FileNotFoundError(src)
+
+        shard = obj.content_hash[:2]
+        dst_rel = os.path.join(shard, f"{obj.content_hash}.enc")
+        dst = os.path.join(self.backup_root, dst_rel)
+
+        try:
+            if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
+                return f"local:{dst_rel}"
+        except OSError:
+            pass
+
+        await asyncio.to_thread(self._copy_blob_atomic_sync, src, dst)
+        return f"local:{dst_rel}"
 
     # =============================
     # 🔹 Backup Methods

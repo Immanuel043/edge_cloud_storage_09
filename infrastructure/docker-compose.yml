@@ -661,7 +661,11 @@ services:
       CHUNK_SIZE: 33554432          # 32MB chunks instead of 64MB
       MAX_FILE_SIZE: 214748364800   # 200GB
       COMPRESSION_LEVEL: 3
-      BACKUP_ENABLED: "false"
+      # Local-disk content-addressed backup of `single`-storage objects
+      # to ${BACKUP_PATH}/<sha[:2]>/<sha>.enc. Doubles disk footprint for
+      # those rows; CAS / chunked / inline rows are tagged 'unsupported' or
+      # 'inline:db' and not copied. Disabled in dev override.
+      BACKUP_ENABLED: "true"
       USE_X_ACCEL: "1"
       # Add memory management settings
       PYTHONMALLOC: malloc

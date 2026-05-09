@@ -450,6 +450,26 @@ file_similarity_score_distribution = Histogram(
     buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
 )
 
+# Backup worker metrics
+storage_backup_completed_total = Counter(
+    "storage_backup_completed_total",
+    "Object rows whose backup_status advanced to 'completed'",
+    ["storage_type"],
+)
+storage_backup_unsupported_total = Counter(
+    "storage_backup_unsupported_total",
+    "Object rows skipped because their storage_type has no local-disk backup path yet",
+    ["storage_type"],
+)
+storage_backup_source_missing_total = Counter(
+    "storage_backup_source_missing_total",
+    "Object rows whose source blob was missing on disk at backup time",
+)
+storage_backup_failed_total = Counter(
+    "storage_backup_failed_total",
+    "Object rows whose backup attempt raised an unexpected exception",
+)
+
 
 class MetricsCollector:
     def __init__(self):

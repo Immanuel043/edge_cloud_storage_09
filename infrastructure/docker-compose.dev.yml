@@ -157,6 +157,10 @@ services:
       MAX_CONCURRENT_PREVIEWS: "1"
       MAX_CONCURRENT_TRANSCODES: "1"
       PREVIEW_GENERATION_CONCURRENCY: "1"
+      # Local-disk backup duplicates blobs on the laptop's disk; default off
+      # in dev. Override with `BACKUP_ENABLED=true` in infrastructure/.env to
+      # exercise the worker locally.
+      BACKUP_ENABLED: "${BACKUP_ENABLED:-false}"
     # Bind-mount the Python source as read-only so the watcher inside the
     # container sees file changes from your host editor.
     volumes:
