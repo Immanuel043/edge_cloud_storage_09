@@ -510,7 +510,10 @@ export const ZKStorageProvider: React.FC<ZKStorageProviderProps> = ({ children }
     throw new Error('Sharing not supported in ZK mode (encryption prevents server-side sharing)');
   };
 
-  const bulkDelete = async (fileIds: string[]): Promise<BulkDeleteResult> => {
+  const bulkDelete = async (
+    fileIds: string[],
+    _options: { force?: boolean } = {},
+  ): Promise<BulkDeleteResult> => {
     let deleted = 0;
     let freedSpace = 0;
 

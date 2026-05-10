@@ -38,6 +38,9 @@ export type { RadioProps, RadioGroupProps } from './Radio';
 export { Modal, ModalHeader, ModalBody, ModalFooter } from './Modal';
 export type { ModalProps } from './Modal';
 
+export { ConfirmModal } from './ConfirmModal';
+export type { ConfirmModalProps, ConfirmModalVariant } from './ConfirmModal';
+
 export { Drawer } from './Drawer';
 export type { DrawerProps } from './Drawer';
 

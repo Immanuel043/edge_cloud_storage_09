@@ -30,6 +30,7 @@ const SearchResults = React.lazy(() => import('../SearchResults'));
 // Lazy-loaded modals
 const FilePreview = React.lazy(() => import('../FilePreview'));
 const RenameModal = React.lazy(() => import('../RenameModal'));
+const NewFolderModal = React.lazy(() => import('../NewFolderModal'));
 const FileInfoPanel = React.lazy(() => import('../FileInfoPanel'));
 const ShareOptionsModal = React.lazy(() => import('../ShareOptionsModal'));
 const KeyboardShortcuts = React.lazy(() => import('../KeyboardShortcuts'));
@@ -109,6 +110,7 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
   // Modal state
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [renameFile, setRenameFile] = useState<FileItem | null>(null);
+  const [showNewFolder, setShowNewFolder] = useState<boolean>(false);
   const [fileInfo, setFileInfo] = useState<FileItem | null>(null);
   const [showShortcuts, setShowShortcuts] = useState<boolean>(false);
   const [shareFile, setShareFile] = useState<FileItem | null>(null);
@@ -559,10 +561,8 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
     }
   };
 
-  const handleCreateFolder = async (): Promise<void> => {
-    const name = prompt('Enter folder name:');
-    if (!name) return;
-    await createFolder(name);
+  const handleCreateFolder = (): void => {
+    setShowNewFolder(true);
   };
 
   // Handle share attempt - show blocked message
@@ -1006,6 +1006,14 @@ const ZKDashboard: React.FC<ZKDashboardProps> = ({
           onClose={() => setRenameFile(null)}
           onRename={handleRenameFile}
           darkMode={darkMode}
+        />
+      )}
+
+      {showNewFolder && (
+        <NewFolderModal
+          open={showNewFolder}
+          onClose={() => setShowNewFolder(false)}
+          onCreate={async (name) => { await createFolder(name); }}
         />
       )}
 

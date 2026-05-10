@@ -625,38 +625,70 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
 
   // ==================== BULK OPERATIONS ====================
 
-  const bulkDelete = async (fileIds: string[]): Promise<BulkDeleteResult> => {
+  const bulkDelete = async (
+    ids: string[],
+    options: { force?: boolean } = {},
+  ): Promise<BulkDeleteResult> => {
     if (!token) {
       throw new Error('No authentication token available');
     }
 
-    console.log(`[Normal] Bulk deleting ${fileIds.length} files`);
+    // Selection holds a mixed set of file and folder ids; backend has separate
+    // endpoints for each. Classify against current folder state.
+    const folderIdSet = new Set(folders.map((f) => f.id));
+    const folderIds = ids.filter((id) => folderIdSet.has(id));
+    const fileIds = ids.filter((id) => !folderIdSet.has(id));
+
+    console.log(
+      `[Normal] Bulk deleting ${fileIds.length} files, ${folderIds.length} folders`,
+    );
 
     try {
-      const response = await fetch(`${API_URL}/api/v1/files/bulk-delete`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ file_ids: fileIds }),
-      });
+      let result: BulkDeleteResult = { deleted: 0, freed_space: 0 };
 
-      if (!response.ok) {
-        throw new Error(`Bulk delete failed: ${response.statusText}`);
+      if (fileIds.length > 0) {
+        const response = await fetch(`${API_URL}/api/v1/files/bulk-delete`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({ file_ids: fileIds }),
+        });
+        if (!response.ok) {
+          throw new Error(`Bulk delete failed: ${response.statusText}`);
+        }
+        result = (await response.json()) as BulkDeleteResult;
       }
 
-      const result = (await response.json()) as BulkDeleteResult;
+      // Folders: no bulk endpoint, delete one at a time. force=true cascades
+      // through subfolders + soft-deletes files (matches bulk-delete-to-trash).
+      const folderFailures: string[] = [];
+      const forceQuery = options.force ? '?force=true' : '';
+      for (const folderId of folderIds) {
+        const response = await fetch(
+          `${API_URL}/api/v1/folders/${folderId}${forceQuery}`,
+          { method: 'DELETE', credentials: 'include' },
+        );
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          folderFailures.push(err.detail || `Failed to delete folder ${folderId}`);
+        } else {
+          result.deleted += 1;
+        }
+      }
 
-      // Clear cache and refresh
       requestCache.invalidate(/^files-/);
+      requestCache.invalidate(/^folders-/);
       await loadFiles();
       await loadDedupStats();
       await loadStorageStats();
-
-      // Clear selections
       clearSelection();
+
+      if (folderFailures.length > 0) {
+        throw new Error(folderFailures.join('; '));
+      }
 
       return result;
     } catch (error) {

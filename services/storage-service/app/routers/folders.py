@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/folders", tags=["folders"])
 
 
-@router.post("/", response_model=FolderResponse)
+@router.post("", response_model=FolderResponse)
 async def create_folder(
     folder_data: FolderCreate,
     current_user: User = Depends(get_current_user),
@@ -299,20 +300,27 @@ async def delete_folder(
 async def delete_folder_contents_recursive(
     db: AsyncSession, folder_id: str, user_id: str
 ) -> tuple[list[str], list[str]]:
-    """Recursively delete folder contents. Returns (file_ids, folder_ids) deleted."""
+    """Recursively soft-delete contained files (move to trash) and hard-delete
+    subfolders. Files go to trash to match bulk-delete UX, stay restorable,
+    and avoid SQLAlchemy ORM cascade traps with file-related child tables
+    (dlp_scan_logs.file_id is NOT NULL with implicit backref). Files have
+    folder_id detached so the parent folder row can be removed cleanly.
+    """
     from ..models.database import Object
 
     deleted_file_ids: list[str] = []
     deleted_folder_ids: list[str] = []
 
-    # Delete all files in this folder
+    now = datetime.utcnow()
     files_result = await db.execute(select(Object).filter(Object.folder_id == folder_id))
     files = files_result.scalars().all()
     for file in files:
+        if not file.is_deleted:
+            file.is_deleted = True
+            file.deleted_at = now
+        file.folder_id = None
         deleted_file_ids.append(str(file.id))
-        await db.delete(file)
 
-    # Recursively delete subfolders
     subfolders_result = await db.execute(select(Folder).filter(Folder.parent_id == folder_id))
     subfolders = subfolders_result.scalars().all()
 

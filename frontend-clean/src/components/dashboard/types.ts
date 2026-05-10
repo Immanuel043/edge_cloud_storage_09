@@ -250,6 +250,15 @@ export interface RenameModalProps extends DarkModeProps {
   onRename: (fileId: string, newName: string) => Promise<void>;
 }
 
+/**
+ * NewFolderModal component props
+ */
+export interface NewFolderModalProps {
+  open: boolean;
+  onClose: () => void;
+  onCreate: (name: string) => Promise<void>;
+}
+
 // ==================== File Grid/List Types ====================
 
 /**

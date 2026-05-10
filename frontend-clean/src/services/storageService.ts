@@ -89,7 +89,10 @@ class StorageService {
       credentials: 'include',
       body: JSON.stringify({ name: sanitizeInput(name), parent_id: parentId }),
     });
-    if (!response.ok) throw new Error('Failed to create folder');
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Failed to create folder');
+    }
     return await response.json();
   }
 

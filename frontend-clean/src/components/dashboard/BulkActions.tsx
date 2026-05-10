@@ -47,14 +47,7 @@ const BulkActions: React.FC<BulkActionsProps> = ({
       <Button
         variant="destructive"
         size="sm"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (
-            window.confirm(`Are you sure you want to delete ${selectedCount} selected file(s)?`)
-          ) {
-            onDelete();
-          }
-        }}
+        onClick={(e) => handleClick(e, onDelete)}
         leftIcon={<Trash2 className="h-4 w-4" />}
         title="Delete selected"
       >

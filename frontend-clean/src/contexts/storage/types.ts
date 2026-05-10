@@ -26,8 +26,15 @@ export interface FolderItem {
   name: string;
   created_at: string;
   parent_id?: string | null;
+  path?: string;
   [key: string]: unknown;
 }
+
+// Per-user synthetic root anchor created at signup (auth.py).
+// System placeholder, never a real folder card. Backend list_folders already
+// hides it; this is a defensive frontend filter.
+export const isRootAnchor = (f: FolderItem): boolean =>
+  f.name === '/' && f.path === '/' && f.parent_id == null;
 
 export interface StorageStats {
   used: number;
@@ -123,7 +130,7 @@ export interface StorageContextValue {
   createShareLink: (fileId: string, options?: ShareLinkOptions) => Promise<{ share_link: string; expires_at?: string }>;
 
   // Bulk operations
-  bulkDelete: (fileIds: string[]) => Promise<BulkDeleteResult>;
+  bulkDelete: (ids: string[], options?: { force?: boolean }) => Promise<BulkDeleteResult>;
 
   // Trash operations
   getTrash: () => Promise<FileItem[]>;

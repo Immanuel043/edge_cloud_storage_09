@@ -50,6 +50,7 @@ const FilePreview = React.lazy(() => import('../FilePreview'));
 const ShareOptionsModal = React.lazy(() => import('../ShareOptionsModal'));
 const VersionHistory = React.lazy(() => import('../VersionHistory'));
 const RenameModal = React.lazy(() => import('../RenameModal'));
+const NewFolderModal = React.lazy(() => import('../NewFolderModal'));
 const FileInfoPanel = React.lazy(() => import('../FileInfoPanel'));
 const KeyboardShortcuts = React.lazy(() => import('../KeyboardShortcuts'));
 const ShareBundleComposer = React.lazy(() => import('../ShareBundleComposer'));
@@ -57,7 +58,7 @@ const FileCorruptionModal = React.lazy(() => import('../FileCorruptionModal'));
 import { getFileType } from '../../../utils/helpers';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { storageService } from '../../../services/storageService';
-import { Button, EmptyState } from '@/components/ui';
+import { Button, ConfirmModal, EmptyState } from '@/components/ui';
 import type {
   FileItem,
   FolderItem,
@@ -116,7 +117,7 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     clearSelection,
     refreshFiles
   } = useStorage();
-  const { success: showSuccess, info: showInfo } = useNotification();
+  const { success: showSuccess, info: showInfo, error: showError } = useNotification();
 
   // Wrapper around deleteFile to show toast with Undo
   const handleDeleteFile = async (fileId: string, fileName?: string): Promise<void> => {
@@ -157,6 +158,14 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [versionFile, setVersionFile] = useState<FileItem | null>(null);
   const [renameFile, setRenameFile] = useState<FileItem | null>(null);
+  const [showNewFolder, setShowNewFolder] = useState<boolean>(false);
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState<{
+    ids: string[];
+    fileCount: number;
+    folderCount: number;
+    needsForce: boolean;
+  } | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState<boolean>(false);
   const [fileInfo, setFileInfo] = useState<FileItem | null>(null);
   const [showShortcuts, setShowShortcuts] = useState<boolean>(false);
   const [showLockConfirm, setShowLockConfirm] = useState<boolean>(false);
@@ -643,10 +652,8 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleCreateFolder = async (): Promise<void> => {
-    const name = prompt('Enter folder name:');
-    if (!name) return;
-    await createFolder(name);
+  const handleCreateFolder = (): void => {
+    setShowNewFolder(true);
   };
 
   const handleShare = (fileId: string): void => {
@@ -725,10 +732,34 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     }
   };
 
-  const handleBulkDelete = async (): Promise<void> => {
-    if (window.confirm(`Are you sure you want to delete ${selectedFiles.size} files?`)) {
-      await bulkDelete(Array.from(selectedFiles));
+  const handleBulkDelete = (): void => {
+    if (selectedFiles.size === 0) return;
+    const ids = Array.from(selectedFiles);
+    const folderIdSet = new Set(folders.map((f) => f.id));
+    const folderCount = ids.filter((id) => folderIdSet.has(id)).length;
+    const fileCount = ids.length - folderCount;
+    setBulkDeleteConfirm({ ids, fileCount, folderCount, needsForce: false });
+  };
+
+  const runBulkDelete = async (force: boolean): Promise<void> => {
+    if (!bulkDeleteConfirm) return;
+    const { ids } = bulkDeleteConfirm;
+    setBulkDeleting(true);
+    try {
+      await bulkDelete(ids, { force });
+      setBulkDeleteConfirm(null);
       clearSelection();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Backend returns this exact phrase when a non-empty folder blocks delete.
+      if (!force && /force=true/i.test(message)) {
+        setBulkDeleteConfirm({ ...bulkDeleteConfirm, needsForce: true });
+      } else {
+        setBulkDeleteConfirm(null);
+        showError(message || 'Failed to delete selection');
+      }
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -1551,6 +1582,46 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
           onClose={() => setRenameFile(null)}
           onRename={handleRenameFile}
           darkMode={darkMode}
+        />
+      )}
+
+      {showNewFolder && (
+        <NewFolderModal
+          open={showNewFolder}
+          onClose={() => setShowNewFolder(false)}
+          onCreate={async (name) => { await createFolder(name); }}
+        />
+      )}
+
+      {bulkDeleteConfirm && !bulkDeleteConfirm.needsForce && (
+        <ConfirmModal
+          open
+          onClose={() => !bulkDeleting && setBulkDeleteConfirm(null)}
+          onConfirm={() => runBulkDelete(false)}
+          title="Move to trash"
+          message={(() => {
+            const { fileCount, folderCount } = bulkDeleteConfirm;
+            const parts: string[] = [];
+            if (fileCount) parts.push(`${fileCount} file${fileCount === 1 ? '' : 's'}`);
+            if (folderCount) parts.push(`${folderCount} folder${folderCount === 1 ? '' : 's'}`);
+            return `Delete ${parts.join(' and ')}? Files move to trash and can be restored.`;
+          })()}
+          confirmLabel={bulkDeleting ? 'Deleting...' : 'Delete'}
+          variant="danger"
+          loading={bulkDeleting}
+        />
+      )}
+
+      {bulkDeleteConfirm && bulkDeleteConfirm.needsForce && (
+        <ConfirmModal
+          open
+          onClose={() => !bulkDeleting && setBulkDeleteConfirm(null)}
+          onConfirm={() => runBulkDelete(true)}
+          title="Folder isn't empty"
+          message="One or more selected folders contain files or subfolders. Delete the folder and everything inside it? Files move to trash and can be restored."
+          confirmLabel={bulkDeleting ? 'Deleting...' : 'Delete everything'}
+          variant="danger"
+          loading={bulkDeleting}
         />
       )}
 
