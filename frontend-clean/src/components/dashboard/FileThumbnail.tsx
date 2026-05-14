@@ -28,6 +28,7 @@ import { decryptThumbnail, createThumbnailUrl } from '../../utils/zkThumbnails';
 import { prepareFileForDecryption, isZKSessionUnlocked } from '../../services/zkEncryptionService';
 import { bytesToBase64 } from '../../utils/zkCryptoV2';
 import { runPreviewRequest } from '../../utils/previewRequestLimiter';
+import { apiFetch } from '../../utils/apiFetch';
 import type { FileThumbnailProps, ThumbnailSize } from './types';
 
 /**
@@ -236,7 +237,7 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
           }, timeoutMs);
 
           try {
-            return await fetch(fetchUrl, {
+            return await apiFetch(fetchUrl, {
               credentials: 'include',
               signal: controller.signal,
               cache: 'no-store',
@@ -480,7 +481,11 @@ const FileThumbnailInner: React.FC<FileThumbnailProps> = ({
     size,
     isVideoFile,
     fileName,
-    file.updated_at,
+    // file.updated_at deliberately omitted: the post-upload reconcile flips
+    // updated_at from optimistic-now → server-now ~150ms after mount, which
+    // would otherwise abort the in-flight preview fetch and start a second
+    // one (a status-0/200 race in HARs). _t in the URL still uses updated_at
+    // for cache busting on retries; retryCount is the explicit refetch signal.
     retryCount,
     file.encrypted_file_key,
     file.file_key_iv,

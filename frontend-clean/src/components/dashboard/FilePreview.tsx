@@ -9,6 +9,7 @@ import { isZKSessionUnlocked } from '../../services/zkEncryptionService';
 import type { FilePreviewProps, ZKDecryptProgress, TranscodeProgressResponse, TranscodeRejection } from './types';
 import { getErrorMessage } from './types';
 import { Modal, ModalHeader, ModalBody, IconButton, Button, buttonVariants, iconButtonVariants, Badge, Spinner, Progress, Banner } from '@/components/ui';
+import { apiFetch } from '../../utils/apiFetch';
 
 const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) => {
   const { isAuthenticated } = useAuth();
@@ -398,7 +399,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, onClose, darkMode }) =>
     }
 
     try {
-      const response = await fetch(`${API_URL}/api/v1/files/${file.id}/preview?size=large`, {
+      const response = await apiFetch(`${API_URL}/api/v1/files/${file.id}/preview?size=large`, {
         credentials: 'include'
       });
 

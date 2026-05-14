@@ -17,6 +17,41 @@ from starlette.background import BackgroundTask, BackgroundTasks
 logger = logging.getLogger(__name__)
 
 
+async def _publish_file_deleted_notifications(
+    user_id: str, deleted_files: list[dict[str, str | None]]
+) -> None:
+    """Publish backend-authoritative file_deleted notifications after DB commit."""
+    if not deleted_files:
+        return
+
+    try:
+        redis_client = await get_redis()
+    except Exception as e:
+        logger.warning("Failed to get Redis for file_deleted notification: %s", e)
+        return
+
+    for file_info in deleted_files:
+        try:
+            await redis_client.publish(
+                "file_notifications",
+                json.dumps(
+                    {
+                        "event": "file_deleted",
+                        "user_id": user_id,
+                        "file_id": file_info.get("file_id"),
+                        "file_name": file_info.get("file_name"),
+                        "folder_id": file_info.get("folder_id"),
+                    }
+                ),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to publish file_deleted notification for %s: %s",
+                file_info.get("file_id"),
+                e,
+            )
+
+
 def _content_disposition(disposition: str, filename: str) -> str:
     """Build a Content-Disposition header value safe for non-ASCII filenames (RFC 5987)."""
     ascii_safe = filename.encode("ascii", errors="replace").decode("ascii").replace('"', '\\"')
@@ -2130,6 +2165,7 @@ async def delete_file(
         file_obj.is_deleted = True
         file_obj.deleted_at = datetime.utcnow()
         file_name = file_obj.file_name
+        folder_id = str(file_obj.folder_id) if file_obj.folder_id else None
         _invalidate_manifest_cache(file_id)
 
         # Invalidate previews before commit
@@ -2152,6 +2188,16 @@ async def delete_file(
         db.add(activity)
 
         await db.commit()
+        await _publish_file_deleted_notifications(
+            str(current_user.id),
+            [
+                {
+                    "file_id": str(file_id),
+                    "file_name": file_name,
+                    "folder_id": folder_id,
+                }
+            ],
+        )
 
         # Audit log (best-effort)
         try:
@@ -2658,14 +2704,27 @@ async def bulk_delete_files(
 
         # Soft delete all files
         now = datetime.utcnow()
+        deleted_file_notifications: list[dict[str, str | None]] = []
         for file_obj in files:
             file_obj.is_deleted = True
             file_obj.deleted_at = now
             deleted_count += 1
-            deleted_files.append(str(file_obj.id))
+            file_id_str = str(file_obj.id)
+            deleted_files.append(file_id_str)
+            deleted_file_notifications.append(
+                {
+                    "file_id": file_id_str,
+                    "file_name": file_obj.file_name,
+                    "folder_id": str(file_obj.folder_id) if file_obj.folder_id else None,
+                }
+            )
 
         # Commit all changes once
         await db.commit()
+        await _publish_file_deleted_notifications(
+            str(current_user.id),
+            deleted_file_notifications,
+        )
 
         # Remove from Elasticsearch index
         if search_service.connected:

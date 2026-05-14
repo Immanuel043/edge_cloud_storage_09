@@ -12,6 +12,8 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import * as zkAuthService from '../../services/zkAuthService';
 import * as zkEncryptionService from '../../services/zkEncryptionService';
 import { ZK_STORAGE } from '../../config/constants';
+import { useNotification } from '../NotificationContext';
+import { SESSION_EXPIRED_EVENT } from '../../utils/apiFetch';
 import type {
   User,
   LoginResponse,
@@ -56,6 +58,54 @@ export const ZKAuthProvider: React.FC<ZKAuthProviderProps> = ({ children }) => {
   // Rate limiting for unlock attempts
   const [unlockAttempts, setUnlockAttempts] = useState<number>(0);
   const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+
+  // Session-expired plumbing — mirrors NormalAuthContext. The window listener
+  // for 'auth:session-expired' must read refs, not closed-over state.
+  // sessionExpiredRef is a one-shot guard reset on every successful re-login.
+  const isAuthenticatedRef = useRef<boolean>(false);
+  const sessionExpiredRef = useRef<boolean>(false);
+  useEffect(() => {
+    isAuthenticatedRef.current = isAuthenticated;
+    if (isAuthenticated) sessionExpiredRef.current = false;
+  }, [isAuthenticated]);
+
+  const notification = useNotification();
+
+  useEffect(() => {
+    const expireSessionLocally = (): void => {
+      // Best-effort backend logout — don't await; cookie is already invalid.
+      void zkAuthService.logout().catch(() => { /* server already considers us gone */ });
+      // Local teardown — mirror what logout() does locally, minus the await.
+      zkEncryptionService.lockZKSession();
+      localStorage.removeItem(ZK_STORAGE.ZK_ENABLED_KEY);
+      localStorage.removeItem(ZK_STORAGE.ZK_EMAIL_KEY);
+      localStorage.removeItem(ZK_STORAGE.ZK_DATA_KEY);
+      localStorage.removeItem(ZK_STORAGE.RECOVERY_ENABLED_KEY);
+      window.dispatchEvent(new CustomEvent('zk-mode-changed', { detail: { enabled: false } }));
+      setZkEnabled(false);
+      setZkSessionUnlocked(false);
+      setZkRecoveryEnabled(false);
+      setZkData(null);
+      setUser(null);
+      setIsAuthenticated(false);
+      setShowUnlockModal(false);
+    };
+
+    const onExpired = (): void => {
+      if (!isAuthenticatedRef.current) return;
+      if (sessionExpiredRef.current) return;
+      sessionExpiredRef.current = true;
+      expireSessionLocally();
+      notification.warning('Your session has expired. Please sign in again.', {
+        duration: 7000,
+      });
+    };
+
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    // notification is a stable context value; intentionally not in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Constants
   const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes

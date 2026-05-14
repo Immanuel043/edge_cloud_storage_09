@@ -10,6 +10,7 @@
  */
 
 import API_CONFIG from '../config/api';
+import { apiFetch } from '../utils/apiFetch';
 
 // ==================== Type Definitions ====================
 
@@ -246,7 +247,7 @@ class SubscriptionService {
    */
   async getDashboard(): Promise<SubscriptionDashboard> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/subscription-ui/dashboard`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/subscription-ui/dashboard`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -271,7 +272,7 @@ class SubscriptionService {
    */
   async getUsageSummary(): Promise<UsageSummary> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/subscription-ui/usage/summary`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/subscription-ui/usage/summary`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -296,7 +297,7 @@ class SubscriptionService {
    */
   async getAvailablePaymentGateways(): Promise<PaymentGatewayInfo[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/payment-gateways`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/payment-gateways`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -336,7 +337,7 @@ class SubscriptionService {
         payment_gateway: paymentGateway,
       };
 
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/create-payment`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/create-payment`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -391,7 +392,7 @@ class SubscriptionService {
         signature: signature,
       };
 
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/verify-payment`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/verify-payment`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -420,7 +421,7 @@ class SubscriptionService {
     try {
       const requestBody: UpgradeRequest = { new_plan_code: planCode };
 
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/upgrade`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/upgrade`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -449,7 +450,7 @@ class SubscriptionService {
     try {
       const requestBody: DowngradeRequest = { new_plan_code: planCode };
 
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/downgrade`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/downgrade`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -478,7 +479,7 @@ class SubscriptionService {
     try {
       const requestBody: PreviewChangeRequest = { new_plan_code: planCode };
 
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/preview-change`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/preview-change`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -514,7 +515,7 @@ class SubscriptionService {
         billing_cycle: billingCycle,
       };
 
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/create-checkout-session`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/create-checkout-session`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -547,7 +548,7 @@ class SubscriptionService {
    */
   async cancelSubscription(): Promise<{ success: boolean; message?: string }> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/cancel`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/cancel`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -572,7 +573,7 @@ class SubscriptionService {
    */
   async getCurrentSubscription(): Promise<Subscription> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/subscription`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/subscription`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -597,7 +598,7 @@ class SubscriptionService {
    */
   async getAvailablePlans(): Promise<Plan[]> {
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${this.baseUrl}/api/v1/billing/plans?service_type=${this.serviceType}`,
         {
           method: 'GET',
@@ -627,7 +628,7 @@ class SubscriptionService {
   async comparePlans(planCodes: string[]): Promise<Plan[]> {
     try {
       const codesParam = planCodes.join(',');
-      const response = await fetch(
+      const response = await apiFetch(
         `${this.baseUrl}/api/v1/subscription-ui/plans/compare?plan_codes=${codesParam}`,
         {
           method: 'GET',
@@ -655,7 +656,7 @@ class SubscriptionService {
    */
   async getSubscriptionHistory(): Promise<SubscriptionHistoryEntry[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/history`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/history`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -680,7 +681,7 @@ class SubscriptionService {
    */
   async getRecommendations(): Promise<Recommendation[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/recommendations`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/recommendations`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -705,7 +706,7 @@ class SubscriptionService {
    */
   async getUpcomingPayment(): Promise<UpcomingPayment | null> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/upcoming-payment`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/upcoming-payment`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -731,7 +732,7 @@ class SubscriptionService {
    */
   async getInvoices(): Promise<InvoiceListResponse> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/invoices`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/invoices`, {
         method: 'GET',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -755,7 +756,7 @@ class SubscriptionService {
    */
   async downloadInvoice(invoiceId: string): Promise<void> {
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${this.baseUrl}/api/v1/billing/invoices/${invoiceId}/download`,
         {
           method: 'GET',
@@ -791,7 +792,7 @@ class SubscriptionService {
    */
   async createBillingPortalSession(): Promise<BillingPortalSession> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/billing/portal`, {
+      const response = await apiFetch(`${this.baseUrl}/api/v1/billing/portal`, {
         method: 'POST',
         credentials: 'include',
         headers: {

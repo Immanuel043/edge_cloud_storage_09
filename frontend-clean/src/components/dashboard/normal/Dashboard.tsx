@@ -212,14 +212,23 @@ const NormalDashboard: React.FC<NormalDashboardProps> = ({
     }
   }, [isAuthenticated, authLoading, activeView]);
 
-  // Fetch pending name suggestions when files change
+  // Fetch pending name suggestions when the SET of file ids changes.
+  // Depending directly on `files` would re-fire every time the array
+  // reference changes — which happens twice per upload (optimistic insert +
+  // server reconcile both call setFiles with new arrays containing the same
+  // ids) — and produce a redundant batch fetch. The memoised id key collapses
+  // those two updates into one effect run.
+  const fileIdsKey = useMemo(
+    () => (files || []).map(f => f.id).sort().join(','),
+    [files],
+  );
   useEffect(() => {
-    if (!files || files.length === 0) return;
-    const fileIds = files.map(f => f.id);
+    if (!fileIdsKey) return;
+    const fileIds = fileIdsKey.split(',');
     getPendingSuggestions(fileIds)
       .then(res => setNameSuggestions(res.suggestions))
       .catch(() => setNameSuggestions({}));
-  }, [files]);
+  }, [fileIdsKey]);
 
   // Watch for upload completion to show toast + poll for name suggestions
   useEffect(() => {

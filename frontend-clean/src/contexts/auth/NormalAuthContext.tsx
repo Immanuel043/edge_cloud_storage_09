@@ -11,6 +11,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { authService, type UserProfile } from '../../services/authService';
 import { websocketService } from '../../services/websocketService';
+import { useNotification } from '../NotificationContext';
+import { SESSION_EXPIRED_EVENT } from '../../utils/apiFetch';
 import type { User, LoginResponse, NormalAuthContextValue } from './types';
 
 const NormalAuthContext = createContext<NormalAuthContextValue | undefined>(undefined);
@@ -63,6 +65,54 @@ export const NormalAuthProvider: React.FC<NormalAuthProviderProps> = ({ children
 
   // WebSocket management
   const wsUnsubscribersRef = useRef<Array<() => void>>([]);
+
+  // Session-expired plumbing (see auth:session-expired handler below).
+  // isAuthenticatedRef mirrors state so the long-lived window listener never
+  // closes over stale state. sessionExpiredRef is a one-shot guard against a
+  // burst of 401s from concurrent in-flight requests; it is reset on every
+  // successful (re-)login so a second expiry in the same tab also surfaces.
+  const isAuthenticatedRef = useRef<boolean>(false);
+  const sessionExpiredRef = useRef<boolean>(false);
+  useEffect(() => {
+    isAuthenticatedRef.current = isAuthenticated;
+    if (isAuthenticated) sessionExpiredRef.current = false;
+  }, [isAuthenticated]);
+
+  const notification = useNotification();
+
+  // ==================== SESSION-EXPIRED HANDLER ====================
+
+  // Listens for the global 'auth:session-expired' event dispatched by
+  // apiFetch on any 401. Clears local auth state immediately (don't await
+  // /auth/logout — the cookie is already invalid, and waiting would stall
+  // the UX), then surfaces a one-shot toast. ProtectedRoute redirects to
+  // /auth automatically once setIsAuthenticated(false) takes effect.
+  useEffect(() => {
+    const expireSessionLocally = (): void => {
+      void authService.logout().catch(() => { /* server already considers us gone */ });
+      removeWebSocketListeners();
+      if (websocketService.isConnected) websocketService.disconnect();
+      setUser(null);
+      setToken(null);
+      setIsAuthenticated(false);
+    };
+
+    const onExpired = (): void => {
+      if (!isAuthenticatedRef.current) return;        // ignore stale events
+      if (sessionExpiredRef.current) return;          // one-shot per session
+      sessionExpiredRef.current = true;
+      expireSessionLocally();
+      notification.warning('Your session has expired. Please sign in again.', {
+        duration: 7000,
+      });
+    };
+
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    // notification is a stable context value from a parent provider; intentionally
+    // not in deps to avoid re-subscribing on its identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ==================== WEBSOCKET MANAGEMENT ====================
 

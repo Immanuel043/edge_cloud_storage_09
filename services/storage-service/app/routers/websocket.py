@@ -288,6 +288,40 @@ manager = EnhancedConnectionManager(
 )
 
 
+def _build_file_notification_payload(data: dict) -> Optional[dict]:
+    """Map Redis file_notifications messages to browser notification payloads."""
+    event = data.get("event")
+    if event == "file_created":
+        return {
+            "type": "notification",
+            "event": "file_uploaded",
+            "data": {
+                "file_id": data.get("file_id"),
+                "file_name": data.get("file_name"),
+                "file_size": data.get("file_size"),
+                "mime_type": data.get("mime_type"),
+                "folder_id": data.get("folder_id"),
+                "storage_type": data.get("storage_type"),
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    if event == "file_deleted":
+        return {
+            "type": "notification",
+            "event": "file_deleted",
+            "data": {
+                "file_id": data.get("file_id"),
+                "file_name": data.get("file_name"),
+                "folder_id": data.get("folder_id"),
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    logger.warning("Unknown file notification event skipped: %s", event)
+    return None
+
+
 async def _listen_preview_notifications():
     """Subscribe to Redis Pub/Sub and bridge notifications to WebSocket clients.
 
@@ -329,24 +363,14 @@ async def _listen_preview_notifications():
                             continue
 
                         if channel == "file_notifications":
-                            payload = {
-                                "type": "notification",
-                                "event": "file_uploaded",
-                                "data": {
-                                    "file_id": data.get("file_id"),
-                                    "file_name": data.get("file_name"),
-                                    "file_size": data.get("file_size"),
-                                    "mime_type": data.get("mime_type"),
-                                    "folder_id": data.get("folder_id"),
-                                    "storage_type": data.get("storage_type"),
-                                },
-                                "timestamp": datetime.utcnow().isoformat(),
-                            }
+                            payload = _build_file_notification_payload(data)
+                            if payload is None:
+                                continue
                             asyncio.run_coroutine_threadsafe(
                                 manager.send_to_user(user_id, payload), loop
                             )
                             logger.info(
-                                f"Pushed file_uploaded to user {user_id} for file {data.get('file_id')}"
+                                f"Pushed {payload.get('event')} to user {user_id} for file {data.get('file_id')}"
                             )
                         else:
                             payload = {

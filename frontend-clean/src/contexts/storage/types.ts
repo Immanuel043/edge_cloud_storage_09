@@ -31,8 +31,8 @@ export interface FolderItem {
 }
 
 // Per-user synthetic root anchor created at signup (auth.py).
-// System placeholder, never a real folder card. Backend list_folders already
-// hides it; this is a defensive frontend filter.
+// Backend intentionally returns it in the root folder list; this helper only
+// identifies it for special handling.
 export const isRootAnchor = (f: FolderItem): boolean =>
   f.name === '/' && f.path === '/' && f.parent_id == null;
 

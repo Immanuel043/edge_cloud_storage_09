@@ -12,6 +12,7 @@ import { API_URL } from '../config/constants';
 import { sanitizeInput } from '../utils/security';
 import { rateLimiter } from '../utils/rateLimiter';
 import { requestCache } from '../utils/requestCache';
+import { apiFetch } from '../utils/apiFetch';
 
 // ==================== Storage Service ====================
 
@@ -30,7 +31,7 @@ class StorageService {
       cacheKey,
       async () => {
         const url = `${API_URL}/api/v1/files${folderId ? `?folder_id=${folderId}` : ''}`;
-        const response = await fetch(url, { credentials: 'include' });
+        const response = await apiFetch(url, { credentials: 'include' });
         if (!response.ok) throw new Error('Failed to load files');
         return await response.json();
       },
@@ -46,7 +47,7 @@ class StorageService {
       cacheKey,
       async () => {
         const url = `${API_URL}/api/v1/folders${parentId ? `?parent_id=${parentId}` : ''}`;
-        const response = await fetch(url, { credentials: 'include' });
+        const response = await apiFetch(url, { credentials: 'include' });
         if (!response.ok) throw new Error('Failed to load folders');
         return await response.json();
       },
@@ -58,7 +59,7 @@ class StorageService {
 
   async deleteFile(_token: string, fileId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/files/${fileId}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/${fileId}`, {
       method: 'DELETE',
       credentials: 'include',
     });
@@ -68,7 +69,7 @@ class StorageService {
 
   async renameFile(_token: string, fileId: string, newName: string): Promise<unknown> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/rename`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/${fileId}/rename`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -83,7 +84,7 @@ class StorageService {
 
   async createFolder(_token: string, name: string, parentId?: string | null): Promise<unknown> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/folders`, {
+    const response = await apiFetch(`${API_URL}/api/v1/folders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -104,7 +105,7 @@ class StorageService {
     options: { expiresHours?: number; password?: string | null; maxDownloads?: number | null } = {}
   ): Promise<unknown> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/share`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/${fileId}/share`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -122,7 +123,7 @@ class StorageService {
 
   async getStorageStats(_token: string): Promise<unknown> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/storage/stats`, { credentials: 'include' });
+    const response = await apiFetch(`${API_URL}/api/v1/storage/stats`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to load storage stats');
     return await response.json();
   }
@@ -131,14 +132,14 @@ class StorageService {
 
   async getActivityLogs(_token: string): Promise<unknown> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/activity`, { credentials: 'include' });
+    const response = await apiFetch(`${API_URL}/api/v1/activity`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to load activity logs');
     return await response.json();
   }
 
   async getFilePreview(_token: string, fileId: string): Promise<Blob> {
     await rateLimiter.checkLimit();
-    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/preview`, { credentials: 'include' });
+    const response = await apiFetch(`${API_URL}/api/v1/files/${fileId}/preview`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to get preview');
     return await response.blob();
   }
@@ -146,7 +147,7 @@ class StorageService {
   async getFileActivity(fileId: string, limit: number = 50): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/activity?limit=${limit}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/${fileId}/activity?limit=${limit}`, {
       method: 'GET',
       credentials: 'include',
       headers: {
@@ -167,7 +168,7 @@ class StorageService {
   async getDedupAnalytics(_token: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/dedup/analytics`, {
+    const response = await apiFetch(`${API_URL}/api/v1/dedup/analytics`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -187,7 +188,7 @@ class StorageService {
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
-      const response = await fetch(`${API_URL}/api/v1/dedup/savings`, {
+      const response = await apiFetch(`${API_URL}/api/v1/dedup/savings`, {
         method: 'GET',
         credentials: 'include',
         signal: controller.signal,
@@ -216,7 +217,7 @@ class StorageService {
       throw new Error('File ID required');
     }
 
-    const response = await fetch(`${API_URL}/api/v1/dedup/optimize/${fileId}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/dedup/optimize/${fileId}`, {
       method: 'POST',
       credentials: 'include',
     });
@@ -231,7 +232,7 @@ class StorageService {
   async runGarbageCollection(_token: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/dedup/gc`, {
+    const response = await apiFetch(`${API_URL}/api/v1/dedup/gc`, {
       method: 'POST',
       credentials: 'include',
     });
@@ -248,7 +249,7 @@ class StorageService {
   async getRecentFiles(days: number = 30): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/recents?days=${days}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/recents?days=${days}`, {
       method: 'GET',
       credentials: 'include',
       headers: {
@@ -267,7 +268,7 @@ class StorageService {
   async getFavorites(): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/favorites`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/favorites`, {
       method: 'GET',
       credentials: 'include',
       headers: {
@@ -286,7 +287,7 @@ class StorageService {
   async toggleFavorite(fileId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/${fileId}/favorite`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/${fileId}/favorite`, {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -306,7 +307,7 @@ class StorageService {
   async getSharedWithMe(): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/shared-with-me`, {
+    const response = await apiFetch(`${API_URL}/api/v1/shared-with-me`, {
       method: 'GET',
       credentials: 'include',
       headers: {
@@ -325,7 +326,7 @@ class StorageService {
   async removeSharedAccess(shareAccessId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/shared-with-me/${shareAccessId}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/shared-with-me/${shareAccessId}`, {
       method: 'DELETE',
       credentials: 'include',
       headers: {
@@ -344,7 +345,7 @@ class StorageService {
   async getPendingInvitations(): Promise<unknown[]> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/invitations/pending`, {
+    const response = await apiFetch(`${API_URL}/api/v1/invitations/pending`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -360,7 +361,7 @@ class StorageService {
   async acceptInvitation(invitationToken: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/invitations/${invitationToken}/accept`, {
+    const response = await apiFetch(`${API_URL}/api/v1/invitations/${invitationToken}/accept`, {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -379,7 +380,7 @@ class StorageService {
   async declineInvitation(invitationToken: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/invitations/${invitationToken}/decline`, {
+    const response = await apiFetch(`${API_URL}/api/v1/invitations/${invitationToken}/decline`, {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -406,7 +407,7 @@ class StorageService {
       offset: String(offset),
     });
 
-    const response = await fetch(`${API_URL}/api/v1/share-links?${params}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-links?${params}`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -422,7 +423,7 @@ class StorageService {
   async getShareLinkDetail(linkId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-links/${linkId}`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -438,7 +439,7 @@ class StorageService {
   async updateShareLink(linkId: string, data: Record<string, unknown>): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-links/${linkId}`, {
       method: 'PUT',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -456,7 +457,7 @@ class StorageService {
   async revokeShareLink(linkId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-links/${linkId}`, {
       method: 'DELETE',
       credentials: 'include',
     });
@@ -472,7 +473,7 @@ class StorageService {
   async regenerateShareLink(linkId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-links/${linkId}/regenerate`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-links/${linkId}/regenerate`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -491,7 +492,7 @@ class StorageService {
   async getShareAnalyticsSummary(): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-analytics/summary`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-analytics/summary`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -503,7 +504,7 @@ class StorageService {
   async getShareAnalyticsTrends(days: number = 30): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-analytics/trends?days=${days}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-analytics/trends?days=${days}`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -515,7 +516,7 @@ class StorageService {
   async getShareAnalyticsTop(sortBy: string = 'views', limit: number = 10): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/share-analytics/top?sort_by=${sortBy}&limit=${limit}`, {
+    const response = await apiFetch(`${API_URL}/api/v1/share-analytics/top?sort_by=${sortBy}&limit=${limit}`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -529,7 +530,7 @@ class StorageService {
   async getTrash(): Promise<unknown[]> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/trash`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/trash`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -550,7 +551,7 @@ class StorageService {
   async restoreFromTrash(fileId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/restore`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/trash/${fileId}/restore`, {
       method: 'POST',
       credentials: 'include',
     });
@@ -569,7 +570,7 @@ class StorageService {
   async permanentDelete(fileId: string): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/trash/${fileId}/permanent`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/trash/${fileId}/permanent`, {
       method: 'DELETE',
       credentials: 'include',
     });
@@ -585,7 +586,7 @@ class StorageService {
   async emptyTrash(): Promise<unknown> {
     await rateLimiter.checkLimit();
 
-    const response = await fetch(`${API_URL}/api/v1/files/trash/empty`, {
+    const response = await apiFetch(`${API_URL}/api/v1/files/trash/empty`, {
       method: 'POST',
       credentials: 'include',
     });

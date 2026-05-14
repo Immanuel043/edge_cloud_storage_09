@@ -62,11 +62,23 @@ interface ReconnectFailedEvent {
 
 // ==================== WebSocket Service Class ====================
 
+// Reconnect backoff tuning. The exponent does all the growth — DO NOT also
+// double a separate delay field per attempt; that produces 4× growth and
+// drives the cap-saturation point absurdly low (seen with a 5 min recovery
+// from a Docker Desktop bounce). Schedule produced (no jitter):
+// 0.5 s, 1 s, 2 s, 4 s, 8 s, 15 s, 15 s, …
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_CAP_MS = 15000;
+// After this many fast-backoff attempts we degrade to a slow idle tier
+// rather than giving up — a backgrounded tab or sleeping laptop should
+// always eventually recover without the user reloading the page.
+const RECONNECT_FAST_ATTEMPTS = 10;
+const RECONNECT_IDLE_MS = 60000;
+
 class WebSocketService {
   private ws: WebSocket | null;
   private reconnectAttempts: number;
-  private maxReconnectAttempts: number;
-  private reconnectDelay: number;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null;
   private listeners: Map<string, Set<WebSocketEventCallback>>;
   public isConnected: boolean; // Made public for access from contexts
   private messageQueue: string[];
@@ -80,13 +92,13 @@ class WebSocketService {
   private connectPromiseResolve: (() => void) | null;
   private connectPromiseReject: ((error: Error) => void) | null;
   private manualClose: boolean;
+  private lastToken: string | null;
   private getToken: (() => string | null | Promise<string | null>) | undefined;
 
   constructor({ getToken }: WebSocketServiceConfig = {}) {
     this.ws = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
-    this.reconnectDelay = 1000;
+    this.reconnectTimer = null;
     this.listeners = new Map();
     this.isConnected = false;
     this.messageQueue = [];
@@ -95,11 +107,12 @@ class WebSocketService {
     this.awaitingPong = false;
     this.pingIntervalMs = 60000;
     this.pongTimeoutMs = 30000;
-    this.connectTimeoutMs = 30000;
+    this.connectTimeoutMs = 8000;
     this.connectPromise = null;
     this.connectPromiseResolve = null;
     this.connectPromiseReject = null;
     this.manualClose = false; // true when client intentionally closed
+    this.lastToken = null;
     this.getToken = getToken; // optional function to retrieve a fresh token for reconnect
 
     // Listen for ZK mode changes and reconnect to the correct service
@@ -110,6 +123,30 @@ class WebSocketService {
         setTimeout(() => this.connect(), 500); // Small delay before reconnecting
       }
     });
+
+    // Network and visibility recovery: a queued backoff timer can be many
+    // seconds away when the network or tab comes back. Cancel it and
+    // attempt immediately — connect() itself is no-op when already connected.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => this._forceImmediateReconnect('network online'));
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && !this.isConnected) {
+          this._forceImmediateReconnect('tab visible');
+        }
+      });
+    }
+  }
+
+  private _forceImmediateReconnect(reason: string): void {
+    if (this.manualClose) return;
+    if (this.isConnected) return;
+    console.log(`[WebSocket] ${reason} → forcing immediate reconnect`);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
+    void this.connect(this.lastToken);
   }
 
   private _makeWsUrl(_token: string | null): string {
@@ -179,8 +216,8 @@ class WebSocketService {
           console.info('WebSocket connected');
           this.isConnected = true;
           this.reconnectAttempts = 0;
-          this.reconnectDelay = 1000;
           this.awaitingPong = false;
+          this.lastToken = token;
 
           // SECURITY FIX: Send auth token in first message (not in URL)
           if (token) {
@@ -258,24 +295,45 @@ class WebSocketService {
   }
 
   private reconnect(prevToken: string | null = null): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnection attempts reached');
-      this.emit('reconnect_failed', { attempts: this.reconnectAttempts } as ReconnectFailedEvent);
-      return;
+    if (this.manualClose) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
 
     this.reconnectAttempts += 1;
 
-    // PERFORMANCE FIX: Add jitter to prevent thundering herd problem
-    const jitter = Math.random() * 1000; // 0-1000ms random jitter
-    const baseDelay = this.reconnectDelay * 2 ** (this.reconnectAttempts - 1);
-    const delay = Math.min(baseDelay + jitter, 30000);
+    // After the fast-backoff budget, fall back to a steady idle retry rather
+    // than emitting reconnect_failed and going silent. Keep emitting the
+    // event the first time we cross the threshold so any listener can know.
+    let delay: number;
+    if (this.reconnectAttempts > RECONNECT_FAST_ATTEMPTS) {
+      delay = RECONNECT_IDLE_MS;
+      if (this.reconnectAttempts === RECONNECT_FAST_ATTEMPTS + 1) {
+        console.warn(
+          `WebSocket: fast-backoff budget exhausted after ${RECONNECT_FAST_ATTEMPTS} attempts; ` +
+          `falling back to ${RECONNECT_IDLE_MS}ms idle retries`,
+        );
+        this.emit('reconnect_failed', {
+          attempts: this.reconnectAttempts,
+        } as ReconnectFailedEvent);
+      }
+    } else {
+      // Single-source exponential: exponent does the growth, no second doubling.
+      const exp = this.reconnectAttempts - 1;
+      const base = Math.min(RECONNECT_BASE_MS * 2 ** exp, RECONNECT_CAP_MS);
+      const jitter = Math.random() * 500; // small jitter to avoid thundering herd
+      delay = base + jitter;
+    }
 
-    console.log(`WebSocket reconnect attempt ${this.reconnectAttempts} in ${delay}ms`);
+    console.log(
+      `WebSocket reconnect attempt ${this.reconnectAttempts} in ${Math.round(delay)}ms`,
+    );
 
-    setTimeout(async () => {
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       // Allow getToken to refresh token if provided
-      let token = prevToken;
+      let token = prevToken ?? this.lastToken;
       if (this.getToken) {
         try {
           const maybe = await this.getToken();
@@ -289,16 +347,18 @@ class WebSocketService {
         await this.connect(token);
       } catch (err) {
         console.error('Reconnect failed:', err);
-        // Will try again in next scheduled reconnect if allowed
+        // onclose will fire and schedule the next attempt; nothing to do here.
       }
     }, delay);
-
-    // cap reconnect delay growth (no unbounded growth)
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
   }
 
   disconnect(): void {
     this.manualClose = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
     if (this.ws) {
       try {
         this.ws.close(1000, 'Client disconnect');

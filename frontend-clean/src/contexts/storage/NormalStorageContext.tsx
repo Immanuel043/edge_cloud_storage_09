@@ -31,6 +31,23 @@ import { TransientUploadError } from '../../utils/uploadErrors';
 
 const NormalStorageContext = createContext<StorageContextValue | undefined>(undefined);
 
+const normalizeStorageStats = (rawStats: unknown): StorageStats => {
+  const rawStatsObj = rawStats as Record<string, unknown>;
+  const quota = typeof rawStatsObj.quota === 'number' ? rawStatsObj.quota : 0;
+  const totalFiles =
+    typeof rawStatsObj.total_files === 'number'
+      ? rawStatsObj.total_files
+      : typeof rawStatsObj.files_count === 'number'
+        ? rawStatsObj.files_count
+        : 0;
+
+  return {
+    ...(rawStatsObj as unknown as StorageStats),
+    total: quota,
+    files_count: totalFiles,
+  };
+};
+
 export const useNormalStorage = (): StorageContextValue => {
   const context = useContext(NormalStorageContext);
   if (!context) {
@@ -68,8 +85,12 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     currentFile: null,
   });
 
-  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRefreshingRef = useRef<boolean>(false);
+
+  // Mirror currentFolder into a ref so long-lived WS handlers always see the
+  // latest folder without forcing a re-subscription on every navigation.
+  const currentFolderRef = useRef<string | null>(currentFolder);
+  useEffect(() => { currentFolderRef.current = currentFolder; }, [currentFolder]);
 
   // Online/offline listeners
   useEffect(() => {
@@ -84,44 +105,6 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
-
-  // Debounced refresh
-  const debouncedRefresh = useCallback(() => {
-    if (refreshDebounceRef.current) {
-      clearTimeout(refreshDebounceRef.current);
-    }
-
-    refreshDebounceRef.current = setTimeout(() => {
-      if (!isRefreshingRef.current) {
-        void refreshFiles();
-      }
-    }, 500);
-  }, []);
-
-  // WebSocket listeners for real-time updates
-  useEffect(() => {
-    const handleFileUploaded = (): void => {
-      debouncedRefresh();
-    };
-
-    const handleFileDeleted = (): void => {
-      debouncedRefresh();
-    };
-
-    const handleStorageUpdate = (): void => {
-      void loadStorageStats();
-    };
-
-    const unsubFileUploaded = websocketService.on('file_uploaded', handleFileUploaded);
-    const unsubFileDeleted = websocketService.on('file_deleted', handleFileDeleted);
-    const unsubStorageUpdate = websocketService.on('storage_update', handleStorageUpdate);
-
-    return () => {
-      unsubFileUploaded();
-      unsubFileDeleted();
-      unsubStorageUpdate();
-    };
-  }, [debouncedRefresh]);
 
   // ==================== FILE LOADING ====================
 
@@ -161,13 +144,7 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
 
       const filesArray = rawFiles as FileItem[];
       const foldersArray = rawFolders as FolderItem[];
-      const rawStatsObj = rawStats as Record<string, unknown>;
-      // Map backend fields (quota, total_files) to frontend fields (total, files_count)
-      const statsData: StorageStats = {
-        ...(rawStatsObj as unknown as StorageStats),
-        total: (rawStatsObj.quota as number) || 0,
-        files_count: (rawStatsObj.total_files as number) || 0,
-      };
+      const statsData = normalizeStorageStats(rawStats);
 
       setFiles(filesArray);
       setFolders(foldersArray);
@@ -231,27 +208,93 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
     }
   };
 
-  const loadStorageStats = async (): Promise<void> => {
+  const loadStorageStats = useCallback(async (): Promise<void> => {
     if (!token) return;
 
     try {
-      const [rawStats, rawFiles] = await Promise.all([
-        storageService.getStorageStats(token),
-        storageService.getFiles(token, currentFolder),
-      ]);
-
-      const filesArray = rawFiles as FileItem[];
-      const rawStatsObj = rawStats as Record<string, unknown>;
-      const mappedStats: StorageStats = {
-        ...(rawStatsObj as unknown as StorageStats),
-        total: (rawStatsObj.quota as number) || 0,
-        files_count: (rawStatsObj.total_files as number) || filesArray.length,
-      };
-      setStorageStats(mappedStats);
+      const rawStats = await storageService.getStorageStats(token);
+      setStorageStats(normalizeStorageStats(rawStats));
     } catch (error) {
       console.error('[Normal] Failed to load storage stats:', error);
     }
-  };
+  }, [token]);
+
+  // WebSocket listeners for real-time updates.
+  // Mirrors the ZK provider's "no full reload" approach: apply incremental
+  // updates instead of re-fetching, which avoided a stale-closure bug where
+  // a long-lived handler captured loadFiles from first render (currentFolder = null)
+  // and overwrote the in-view folder's state with root data.
+  useEffect(() => {
+    const handleFileUploaded = (raw?: unknown): void => {
+      const data = (raw || {}) as {
+        file_id?: string;
+        file_name?: string;
+        file_size?: number;
+        mime_type?: string;
+        folder_id?: string | null;
+      };
+      if (!data.file_id) return;
+      // Only insert when the event is for the currently viewed folder.
+      // Files arriving for other folders will surface on next navigation.
+      if ((data.folder_id ?? null) !== currentFolderRef.current) return;
+
+      const now = new Date().toISOString();
+      const fileId = data.file_id;
+      const fileSize = data.file_size || 0;
+      const newFile: FileItem = {
+        id: fileId,
+        name: data.file_name || '',
+        size: fileSize,
+        mime_type: data.mime_type || 'application/octet-stream',
+        created_at: now,
+        updated_at: now,
+        is_encrypted: false,
+        folder_id: data.folder_id ?? null,
+      };
+      setFiles(prev => prev.some(f => f.id === fileId) ? prev : [newFile, ...prev]);
+
+      // Incremental stats bump — avoids an extra network request during upload
+      // reconciliation while still keeping the usage bar responsive.
+      setStorageStats(prev => prev ? {
+        ...prev,
+        used: (prev.used || 0) + fileSize,
+        files_count: (prev.files_count || 0) + 1,
+      } : prev);
+    };
+
+    const handleFileDeleted = (raw?: unknown): void => {
+      const data = (raw || {}) as {
+        file_id?: string;
+        folder_id?: string | null;
+      };
+      if (!data.file_id) return;
+
+      if ((data.folder_id ?? null) === currentFolderRef.current) {
+        setFiles(prev => prev.filter((file) => file.id !== data.file_id));
+      }
+      setSelectedFiles((prev) => {
+        if (!data.file_id || !prev.has(data.file_id)) return prev;
+        const next = new Set(prev);
+        next.delete(data.file_id);
+        return next;
+      });
+      void loadStorageStats();
+    };
+
+    const handleStorageUpdate = (): void => {
+      void loadStorageStats();
+    };
+
+    const unsubFileUploaded = websocketService.on('file_uploaded', handleFileUploaded);
+    const unsubFileDeleted = websocketService.on('file_deleted', handleFileDeleted);
+    const unsubStorageUpdate = websocketService.on('storage_update', handleStorageUpdate);
+
+    return () => {
+      unsubFileUploaded();
+      unsubFileDeleted();
+      unsubStorageUpdate();
+    };
+  }, [loadStorageStats]);
 
   const loadDedupStats = async (): Promise<void> => {
     if (!token) return;
@@ -404,7 +447,7 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
             is_encrypted: true,
             folder_id: currentFolder,
           };
-          setFiles(prev => [optimisticFile, ...prev]);
+          setFiles(prev => prev.some(f => f.id === optimisticFile.id) ? prev : [optimisticFile, ...prev]);
 
           requestCache.invalidate(/^files-/);
           requestCache.invalidate(/^folders-/);
@@ -485,7 +528,7 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
         is_encrypted: true,
         folder_id: currentFolder,
       };
-      setFiles(prev => [optimisticFile, ...prev]);
+      setFiles(prev => prev.some(f => f.id === optimisticFile.id) ? prev : [optimisticFile, ...prev]);
 
       // Background refresh: reconcile optimistic state with server truth
       requestCache.invalidate(/^files-/);
@@ -554,15 +597,6 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
 
     try {
       await storageService.deleteFile(token, fileId);
-
-      // Send WebSocket notification
-      if (websocketService.isConnected) {
-        websocketService.send({
-          type: 'file_deleted',
-          file_id: fileId,
-          folder_id: currentFolder,
-        });
-      }
 
       // Clear cache and refresh
       requestCache.invalidate(/^files-/);
@@ -790,9 +824,16 @@ export const NormalStorageProvider: React.FC<NormalStorageProviderProps> = ({ ch
   // ==================== NAVIGATION ====================
 
   const navigateToFolder = (folderId: string | null, folderName?: string): void => {
+    const sameFolder = folderId === currentFolder;
     setCurrentFolder(folderId);
     setCurrentFolderName(folderName || null);
     clearSelection();
+    // When the click is a no-op for setCurrentFolder, React skips the
+    // [currentFolder] auto-load effect — force a refetch so the grid still
+    // refreshes (e.g. user re-clicks the same folder card after a state drift).
+    if (sameFolder) {
+      void loadFiles(folderId);
+    }
   };
 
   // ==================== UTILITY ====================
