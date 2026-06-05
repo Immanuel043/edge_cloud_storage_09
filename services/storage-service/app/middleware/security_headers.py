@@ -109,25 +109,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # This prevents malicious iframes from using device APIs
         # For inline content (PDFs in iframes), allow fullscreen from any origin
         fullscreen_policy = "fullscreen=(*)" if is_inline_content else "fullscreen=(self)"
+        # NOTE: Only list features current browsers recognize as Permissions-Policy
+        # directives. Deprecated / never-shipped features (ambient-light-sensor,
+        # battery, document-domain, execution-while-not-rendered,
+        # execution-while-out-of-viewport, navigation-override) are ignored by
+        # Chrome and emit "Unrecognized feature" console warnings, so they are
+        # intentionally omitted.
         permissions = [
             "accelerometer=()",  # No accelerometer access
-            "ambient-light-sensor=()",
             "autoplay=()",  # No autoplay
-            "battery=()",  # No battery status
             "camera=()",  # No camera access
             "cross-origin-isolated=()",
             "display-capture=()",
-            "document-domain=()",
             "encrypted-media=()",
-            "execution-while-not-rendered=()",
-            "execution-while-out-of-viewport=()",
             fullscreen_policy,  # Allow fullscreen (relaxed for inline content)
             "geolocation=()",  # No geolocation
             "gyroscope=()",  # No gyroscope
             "magnetometer=()",  # No magnetometer
             "microphone=()",  # No microphone access
             "midi=()",
-            "navigation-override=()",
             "payment=()",  # No payment API
             "picture-in-picture=()",
             "publickey-credentials-get=()",
