@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..database import async_session
 from ..models.database import Object
+from ..monitoring.worker_heartbeat import record_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +93,22 @@ class ColdStorageTieringService:
         logger.info("Tiering worker started - checking every 4 hours")
 
         while self.is_running:
+            status, err = "ok", None
             try:
                 # Run tiering cycle
                 await self._run_tiering_cycle()
-
-                # Sleep for 4 hours before next check
-                await asyncio.sleep(4 * 3600)
 
             except asyncio.CancelledError:
                 logger.info("Tiering worker cancelled")
                 break
             except Exception as e:
+                status, err = "error", e
                 logger.error(f"Tiering worker error: {e}", exc_info=True)
-                # Wait 10 minutes before retry on error
-                await asyncio.sleep(600)
+
+            await record_heartbeat("cold_storage_tiering", status, 4 * 3600, last_error=err)
+
+            # Sleep 4 hours on success, 10 minutes before retry on error.
+            await asyncio.sleep(4 * 3600 if status == "ok" else 600)
 
     async def _run_tiering_cycle(self):
         """Run a complete tiering cycle"""

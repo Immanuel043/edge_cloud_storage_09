@@ -20,6 +20,7 @@ from ..config import settings
 from ..database import async_session
 from ..models.database import OptimizationSuggestion, StorageAnalysis, User
 from ..monitoring.metrics import metrics_collector
+from ..monitoring.worker_heartbeat import record_heartbeat
 from ..services.storage_analyzer import storage_analyzer
 from ..services.storage_optimizer import storage_optimizer
 
@@ -65,6 +66,7 @@ class StorageOptimizationWorker:
     async def _run_worker(self):
         """Main worker loop"""
         while self.is_running:
+            cycle_status, cycle_error = "ok", None
             try:
                 logger.info("Starting storage optimization worker cycle")
 
@@ -77,6 +79,7 @@ class StorageOptimizationWorker:
                         logger.info("Storage optimization worker cycle completed")
 
                     except Exception as e:
+                        cycle_status, cycle_error = "error", e
                         logger.error(
                             f"Error in storage optimization worker cycle: {e}", exc_info=True
                         )
@@ -86,8 +89,13 @@ class StorageOptimizationWorker:
                 metrics_collector.increment_counter("storage_optimization_worker_cycles_total")
 
             except Exception as e:
+                cycle_status, cycle_error = "error", e
                 logger.error(f"Fatal error in storage optimization worker: {e}", exc_info=True)
                 metrics_collector.increment_counter("storage_optimization_worker_errors_total")
+
+            await record_heartbeat(
+                "storage_optimization", cycle_status, self.check_interval, last_error=cycle_error
+            )
 
             # Sleep until next cycle
             if self.is_running:

@@ -33,6 +33,7 @@ from sqlalchemy import select, update
 from ..config import settings
 from ..database import async_session
 from ..models.database import Object
+from ..monitoring.worker_heartbeat import record_heartbeat
 from ..monitoring.metrics import (
     storage_backup_completed_total,
     storage_backup_failed_total,
@@ -77,12 +78,17 @@ class BackupWorker:
 
     async def _run_worker(self):
         while self.is_running:
+            status, err, counts = "ok", None, {}
             try:
-                await self._cycle()
+                counts = await self._cycle() or {}
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                status, err = "error", e
                 logger.error("Backup worker cycle failed: %s", e, exc_info=True)
+            await record_heartbeat(
+                "backup", status, self.check_interval, counts=counts, last_error=err
+            )
             await asyncio.sleep(self.check_interval)
 
     async def _cycle(self):
@@ -142,6 +148,13 @@ class BackupWorker:
                 source_missing,
                 failed,
             )
+
+        return {
+            "completed": completed,
+            "unsupported": unsupported,
+            "source_missing": source_missing,
+            "failed": failed,
+        }
 
     async def _backup_one(self, obj: Object) -> tuple[str, Optional[str]]:
         try:

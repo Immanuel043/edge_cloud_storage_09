@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import async_session, get_redis
 from ..models.database import Object, QuotaAlert, QuotaPrediction, StorageUsageHistory, User
 from ..monitoring.metrics import metrics_collector
+from ..monitoring.worker_heartbeat import record_heartbeat
 from ..services.quota_predictor import quota_predictor
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class QuotaPredictionWorker:
     async def _run_worker(self):
         """Main worker loop"""
         while self.is_running:
+            cycle_status, cycle_error = "ok", None
             try:
                 logger.info("Starting quota prediction worker cycle")
 
@@ -92,6 +94,7 @@ class QuotaPredictionWorker:
                         logger.info("Quota prediction worker cycle completed")
 
                     except Exception as e:
+                        cycle_status, cycle_error = "error", e
                         logger.error(f"Error in quota prediction worker cycle: {e}", exc_info=True)
                         await db.rollback()
 
@@ -99,8 +102,13 @@ class QuotaPredictionWorker:
                 metrics_collector.increment_counter("quota_prediction_worker_cycles_total")
 
             except Exception as e:
+                cycle_status, cycle_error = "error", e
                 logger.error(f"Fatal error in quota prediction worker: {e}", exc_info=True)
                 metrics_collector.increment_counter("quota_prediction_worker_errors_total")
+
+            await record_heartbeat(
+                "quota_prediction", cycle_status, self.check_interval, last_error=cycle_error
+            )
 
             # Sleep until next cycle
             if self.is_running:

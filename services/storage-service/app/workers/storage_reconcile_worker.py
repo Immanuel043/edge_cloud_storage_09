@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import async_session
 from ..models.database import Object
+from ..monitoring.worker_heartbeat import record_heartbeat
 from ..services.audit_logging_service import (
     AuditEventType,
     AuditSeverity,
@@ -81,12 +82,17 @@ class StorageReconcileWorker:
 
     async def _run_worker(self):
         while self.is_running:
+            status, err = "ok", None
             try:
                 await self._reconcile_cycle()
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                status, err = "error", e
                 logger.error("Storage reconcile cycle failed: %s", e, exc_info=True)
+            await record_heartbeat(
+                "storage_reconcile", status, self.check_interval, last_error=err
+            )
             await asyncio.sleep(self.check_interval)
 
     async def _reconcile_cycle(self):

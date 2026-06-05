@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import async_session, get_redis
 from ..models.database import UploadSession
+from ..monitoring.worker_heartbeat import record_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,17 @@ class OrphanCleanupWorker:
 
     async def _run_worker(self):
         while self.is_running:
+            status, err = "ok", None
             try:
                 await self._cleanup_cycle()
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                status, err = "error", e
                 logger.error(f"Orphan cleanup cycle failed: {e}", exc_info=True)
+            await record_heartbeat(
+                "orphan_cleanup", status, self.check_interval, last_error=err
+            )
             await asyncio.sleep(self.check_interval)
 
     async def _cleanup_cycle(self):
