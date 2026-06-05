@@ -564,6 +564,12 @@ from .routers import internal
 
 app.include_router(internal.router, prefix="/api/v1/auth/internal", tags=["Internal"])
 
+# Admin ops dashboard (DB + Redis backed, served as a standalone HTML page)
+if getattr(settings, "OPS_DASHBOARD_ENABLED", True):
+    from .ops_dashboard.router import router as ops_dashboard_router
+
+    app.include_router(ops_dashboard_router)
+
 
 # Helper functions
 async def create_storage_directories():
