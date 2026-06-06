@@ -605,9 +605,9 @@ async def _fetch_contiguous_range(
             def _decrypt_decompress(enc, enc_svc, key, idx, compressed):
                 dec = enc_svc.decrypt_chunk(enc, key, idx)
                 if compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    dec = compressor.decompress(dec)
+                    dec = decompressor.decompress(dec)
                 return dec
 
             decrypted_chunk = await run_in_heavy_pool(
@@ -803,9 +803,9 @@ class PreviewOptimizer:
                 )
 
                 if was_compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    file_data = await run_in_heavy_pool(compressor.decompress, file_data)
+                    file_data = await run_in_heavy_pool(decompressor.decompress, file_data)
 
                 async with aiofiles.open(temp_file_path, "wb") as f:
                     await f.write(file_data)
@@ -862,9 +862,9 @@ class PreviewOptimizer:
                 )
 
                 if was_compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    file_data = await run_in_heavy_pool(compressor.decompress, file_data)
+                    file_data = await run_in_heavy_pool(decompressor.decompress, file_data)
 
                 # Write file data for preview
                 # For videos, always write full data since moov atom may be at the end
@@ -1105,9 +1105,9 @@ class PreviewOptimizer:
                     def _probe_decrypt_decompress(enc, enc_svc, key, idx, compressed):
                         dec = enc_svc.decrypt_chunk(enc, key, idx)
                         if compressed:
-                            from ..utils.compression import compressor
+                            from ..utils.compression import decompressor
 
-                            dec = compressor.decompress(dec)
+                            dec = decompressor.decompress(dec)
                         return dec
 
                     # --- STAGE A: Quick probe (chunk 0 only) ---
@@ -1492,9 +1492,9 @@ class PreviewOptimizer:
                 def _std_decrypt_decompress(enc, enc_svc, key, idx, compressed):
                     dec = enc_svc.decrypt_chunk(enc, key, idx)
                     if compressed:
-                        from ..utils.compression import compressor
+                        from ..utils.compression import decompressor
 
-                        dec = compressor.decompress(dec)
+                        dec = decompressor.decompress(dec)
                     return dec
 
                 async with aiofiles.open(temp_file_path, "wb") as temp_f:
@@ -1579,9 +1579,9 @@ class PreviewOptimizer:
                     encryption_service.decrypt_file, encrypted_data, file_key
                 )
                 if was_compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    decrypted = await run_in_heavy_pool(compressor.decompress, decrypted)
+                    decrypted = await run_in_heavy_pool(decompressor.decompress, decrypted)
                 async with aiofiles.open(temp_file_path, "wb") as f:
                     await f.write(decrypted)
                 return temp_file_path
@@ -1596,9 +1596,9 @@ class PreviewOptimizer:
                     encryption_service.decrypt_file, encrypted_data, file_key
                 )
                 if was_compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    decrypted = await run_in_heavy_pool(compressor.decompress, decrypted)
+                    decrypted = await run_in_heavy_pool(decompressor.decompress, decrypted)
                 async with aiofiles.open(temp_file_path, "wb") as dest:
                     await dest.write(decrypted)
                 return temp_file_path

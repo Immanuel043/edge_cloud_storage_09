@@ -365,7 +365,7 @@ class VideoTranscoder:
         Returns total bytes written.  Runs in a thread so the event loop is
         never blocked by disk I/O or AES decryption.
         """
-        from ..utils.compression import compressor as _compressor
+        from ..utils.compression import decompressor
 
         total_bytes = 0
         with open(output_path, "wb") as out:
@@ -380,7 +380,7 @@ class VideoTranscoder:
                     encrypted_chunk, file_key, chunk_index=i
                 )
                 if was_compressed:
-                    decrypted = _compressor.decompress(decrypted)
+                    decrypted = decompressor.decompress(decrypted)
                 out.write(decrypted)
                 total_bytes += len(decrypted)
         return total_bytes
@@ -393,7 +393,7 @@ class VideoTranscoder:
 
         Runs in a thread so the event loop is never blocked.
         """
-        from ..utils.compression import compressor as _compressor
+        from ..utils.compression import decompressor
 
         tail_bytes = bytearray()
         for i in range(tail_start, total_chunks):
@@ -405,7 +405,7 @@ class VideoTranscoder:
                 encrypted_chunk = f.read()
             decrypted = encryption_service.decrypt_chunk(encrypted_chunk, file_key, chunk_index=i)
             if was_compressed:
-                decrypted = _compressor.decompress(decrypted)
+                decrypted = decompressor.decompress(decrypted)
             tail_bytes.extend(decrypted)
         return tail_bytes
 
@@ -1692,9 +1692,9 @@ class VideoTranscoder:
 
                 # Decompress if needed
                 if was_compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    decrypted = compressor.decompress(decrypted)
+                    decrypted = decompressor.decompress(decrypted)
 
                 # Write to ffmpeg stdin with back-pressure handling
                 process.stdin.write(decrypted)

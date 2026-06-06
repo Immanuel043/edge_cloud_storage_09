@@ -67,9 +67,9 @@ async def _read_file_content(file_obj, encryption_service) -> Optional[bytes]:
             and isinstance(file_obj.file_metadata, dict)
             and file_obj.file_metadata.get("compressed", False)
         ):
-            from .compression import compressor
+            from .compression import decompressor
 
-            content = compressor.decompress(content)
+            content = decompressor.decompress(content)
 
         return content
     except Exception as e:
@@ -108,9 +108,9 @@ async def _read_chunked_file(file_obj, file_key, encryption_service) -> Optional
 
             # Decompress block if needed
             if block_meta.get("compressed", False):
-                from .compression import compressor
+                from .compression import decompressor
 
-                decrypted = compressor.decompress(decrypted)
+                decrypted = decompressor.decompress(decrypted)
 
             parts.append(decrypted)
 

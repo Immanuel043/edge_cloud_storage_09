@@ -708,9 +708,9 @@ async def stream_chunked_range(
             # Handle compression
             was_compressed = chunk_info.get("compressed", False)
             if was_compressed:
-                from ..utils.compression import compressor
+                from ..utils.compression import decompressor
 
-                decrypted_chunk = compressor.decompress(decrypted_chunk)
+                decrypted_chunk = decompressor.decompress(decrypted_chunk)
 
             chunk_size = len(decrypted_chunk)
             chunk_end = current_pos + chunk_size - 1
@@ -1057,9 +1057,9 @@ async def download_file(
             and isinstance(resolved.file_metadata, dict)
             and resolved.file_metadata.get("compressed", False)
         ):
-            from ..utils.compression import compressor
+            from ..utils.compression import decompressor
 
-            data = compressor.decompress(data)
+            data = decompressor.decompress(data)
 
         # Handle range request
         if parsed_range:

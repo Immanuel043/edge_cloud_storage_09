@@ -351,9 +351,9 @@ class BackgroundDeduplicationService:
                 def _decrypt_single(enc, key, do_decompress):
                     data = encryption_service.decrypt_file(enc, key)
                     if do_decompress:
-                        from ..utils.compression import compressor
+                        from ..utils.compression import decompressor
 
-                        data = compressor.decompress(data)
+                        data = decompressor.decompress(data)
                     return data
 
                 return await run_in_heavy_pool(
@@ -395,13 +395,13 @@ class BackgroundDeduplicationService:
 
                 # Decrypt + decompress all chunks in one heavy pool call
                 def _decrypt_all(enc_chunks, key, do_decompress):
-                    from ..utils.compression import compressor as _comp
+                    from ..utils.compression import decompressor
 
                     parts = []
                     for idx, enc in enumerate(enc_chunks):
                         dec = encryption_service.decrypt_chunk(enc, key, idx)
                         if do_decompress:
-                            dec = _comp.decompress(dec)
+                            dec = decompressor.decompress(dec)
                         parts.append(dec)
                     return b"".join(parts)
 

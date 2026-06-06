@@ -72,7 +72,7 @@ from ..services.video_optimizer import video_optimizer
 from ..services.virus_scanner import VirusScanResult, get_virus_scanner
 from ..utils.cache import cached
 from ..utils.chunk_lifecycle import acquire_chunk_hold, release_chunk_hold
-from ..utils.compression import compressor
+from ..utils.compression import decompressor
 from ..utils.rate_limiter_v2 import RateLimitConfig, create_rate_limiter
 from .background_deduplication import background_dedup_service
 
@@ -1347,9 +1347,9 @@ async def download_file(
 
             # Decompress if needed
             if was_compressed:
-                from ..utils.compression import compressor
+                from ..utils.compression import decompressor
 
-                file_data = compressor.decompress(file_data)
+                file_data = decompressor.decompress(file_data)
 
             yield file_data
 
@@ -1366,9 +1366,9 @@ async def download_file(
 
             # Decompress if needed
             if was_compressed:
-                from ..utils.compression import compressor
+                from ..utils.compression import decompressor
 
-                file_data = compressor.decompress(file_data)
+                file_data = decompressor.decompress(file_data)
 
             # Stream in chunks
             chunk_size = 8 * 1024 * 1024  # 8MB chunks
@@ -1398,9 +1398,9 @@ async def download_file(
 
                 # Decompress if needed
                 if was_compressed:
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    decrypted_chunk = compressor.decompress(decrypted_chunk)
+                    decrypted_chunk = decompressor.decompress(decrypted_chunk)
 
                 yield decrypted_chunk
 
@@ -1550,7 +1550,7 @@ async def _reassemble_chunked_file_for_scan(
                     encrypted = await cf.read()
                 plaintext = encryption_service.decrypt_chunk(encrypted, file_key, i)
                 if compressed:
-                    plaintext = compressor.decompress(plaintext)
+                    plaintext = decompressor.decompress(plaintext)
                 await out.write(plaintext)
         return tmp_path
     except Exception:
@@ -1608,14 +1608,14 @@ async def run_security_scans(
                 encrypted_data = base64.b64decode(file_obj.storage_key)
                 file_data = encryption_service.decrypt_data(encrypted_data, file_key)
                 if _needs_decompress():
-                    file_data = compressor.decompress(file_data)
+                    file_data = decompressor.decompress(file_data)
             elif storage_strategy == "single":
                 if file_obj.object_path and os.path.exists(file_obj.object_path):
                     async with aiofiles.open(file_obj.object_path, "rb") as f:
                         encrypted_data = await f.read()
                     file_data = encryption_service.decrypt_data(encrypted_data, file_key)
                     if _needs_decompress():
-                        file_data = compressor.decompress(file_data)
+                        file_data = decompressor.decompress(file_data)
             elif storage_strategy == "chunked":
                 if file_size > settings.MAX_INSTREAM_BYTES:
                     # Too large for ClamAV's StreamMaxLength. Surface as a

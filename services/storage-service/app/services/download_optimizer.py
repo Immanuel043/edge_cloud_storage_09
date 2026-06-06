@@ -181,10 +181,10 @@ class DownloadOptimizer:
 
             # Handle decompression if needed (only for encrypted files)
             if compressed:
-                from ..utils.compression import compressor
+                from ..utils.compression import decompressor
 
                 decrypted_data = await loop.run_in_executor(
-                    self.decrypt_executor, compressor.decompress, decrypted_data
+                    self.decrypt_executor, decompressor.decompress, decrypted_data
                 )
         else:
             # Unencrypted file (defensive compatibility)
@@ -426,10 +426,10 @@ class DownloadOptimizer:
 
             # Decompress if needed
             if was_compressed:
-                from ..utils.compression import compressor
+                from ..utils.compression import decompressor
 
                 decrypted_chunk = await loop.run_in_executor(
-                    self.decrypt_executor, compressor.decompress, decrypted_chunk
+                    self.decrypt_executor, decompressor.decompress, decrypted_chunk
                 )
 
             return decrypted_chunk

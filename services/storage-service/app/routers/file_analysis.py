@@ -699,9 +699,9 @@ async def process_file_analysis(file_id: str, user_id: str, mime_type: str, file
                     and isinstance(file_obj.file_metadata, dict)
                     and file_obj.file_metadata.get("compressed", False)
                 ):
-                    from ..utils.compression import compressor
+                    from ..utils.compression import decompressor
 
-                    file_data = compressor.decompress(file_data)
+                    file_data = decompressor.decompress(file_data)
             else:
                 file_data = await storage_service.retrieve_file(file_obj, decrypt_key=file_key)
 

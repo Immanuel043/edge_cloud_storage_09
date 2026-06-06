@@ -846,9 +846,9 @@ async def download_shared_folder_file(
         file_data = encryption_service.decrypt_file(encrypted_data, file_key)
 
         if was_compressed:
-            from ..utils.compression import compressor
+            from ..utils.compression import decompressor
 
-            file_data = compressor.decompress(file_data)
+            file_data = decompressor.decompress(file_data)
 
         return Response(content=file_data, status_code=200, headers=headers)
 
@@ -1144,9 +1144,9 @@ async def stream_shared_file(
         data = encryption_service.decrypt_file(encrypted_data, file_key)
 
         if was_compressed:
-            from ..utils.compression import compressor
+            from ..utils.compression import decompressor
 
-            data = compressor.decompress(data)
+            data = decompressor.decompress(data)
 
         if parsed_range:
             start, end = parsed_range
