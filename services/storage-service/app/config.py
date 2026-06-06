@@ -96,6 +96,10 @@ class Settings:
     AWS_ACCESS_KEY: Optional[str] = os.getenv("AWS_ACCESS_KEY")
     AWS_SECRET_KEY: Optional[str] = os.getenv("AWS_SECRET_KEY")
 
+    # Admin ops dashboard
+    OPS_DASHBOARD_ENABLED: bool = os.getenv("OPS_DASHBOARD_ENABLED", "true").lower() == "true"
+    OPS_TOP_CONSUMERS_LIMIT: int = int(os.getenv("OPS_TOP_CONSUMERS_LIMIT", "10"))
+
     # versioning
     VERSION_RETENTION_DAYS = int(os.getenv("VERSION_RETENTION_DAYS", 90))
     MAX_VERSIONS_PER_FILE = int(os.getenv("MAX_VERSIONS_PER_FILE", 50))
